@@ -42,13 +42,22 @@ export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: st
         const rule = c.quota.claude.fable;
         specificRequired = Math.max(reserveAt(rule.reservePercent, reset, 10080 * 60_000, now), rule.minRemainingPercent);
       }
-      windows = quotaDecision(providerQuotaSnapshot(limits.checkedAt, limits.windows), { maxAgeSeconds: c.quota.maxAgeSeconds, fiveHourReservePercent: c.quota.claude.fiveHour.reservePercent, weeklyReservePercent: c.quota.claude.weekly.reservePercent }, now, specificRemaining !== null).windows.map(w => ({ ...w, reserved: Math.max(w.reserved, c.quota.claude[w.name === 'fiveHour' ? 'fiveHour' : 'weekly'].minRemainingPercent) }));
+      windows = quotaDecision(providerQuotaSnapshot(limits.checkedAt, limits.windows), { maxAgeSeconds: c.quota.maxAgeSeconds, fiveHourReservePercent: c.quota.claude.fiveHour.reservePercent, weeklyReservePercent: c.quota.claude.weekly.reservePercent }, now, specificRemaining !== null).windows.map(w => ({ ...w, reserved: specificRemaining !== null && w.name === 'weekly' ? 0 : Math.max(w.reserved, c.quota.claude[w.name === 'fiveHour' ? 'fiveHour' : 'weekly'].minRemainingPercent) }));
+    }
+    // Report the model allowance for display even when another preset on this provider was routed.
+    let displayedRemaining = specificRemaining;
+    if (displayedRemaining === null && provider.driver !== 'codex') {
+      for (const id of new Set(c.models.filter(p => p.model.instanceId === preset.model.instanceId && p.quotaWindowId).map(p => p.quotaWindowId!))) {
+        const found = limits.windows.filter(w => w.id === id);
+        const used = found.length === 1 ? Number((found[0] as { usedPercent?: unknown }).usedPercent) : NaN;
+        if (used >= 0 && used <= 100) { displayedRemaining = 100 - used; break; }
+      }
     }
     return {
-      provider: name, driver: provider.driver, allowed: windows.every(w => w.remaining > w.reserved) && (specificRemaining === null || specificRemaining > specificRequired),
+      provider: name, driver: provider.driver, allowed: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > w.reserved) && (specificRemaining === null || specificRemaining > specificRequired),
       capturedAt: limits.checkedAt, windows,
       weeklyReserveApplied: provider.driver === 'codex' ? !manual : specificRemaining === null,
-      factoryRouting: { model: preset.model, modelId: preset.id, reason: `Assigned model: ${preset.name}`, fableRemainingPercent: specificRemaining },
+      factoryRouting: { model: preset.model, modelId: preset.id, reason: `Assigned model: ${preset.name}`, fableRemainingPercent: displayedRemaining },
     };
   };
   try { return await read(refresh); }

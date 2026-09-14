@@ -280,7 +280,6 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const result = { reason, at: new Date().toISOString(), ...extra };
     store.set('lastDecision', JSON.stringify(result)); log('decision', result); return result;
   };
-  if (!c.enabled && !options.manual && !options.doctor) return decision('disabled');
   const override = !!options.manual && !!options.overrideLimits;
   const t3 = new T3(c.t3), kaneo = new Kaneo(c.kaneo);
   const shell = await t3.shell();
@@ -319,6 +318,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
       stream.models.push({ id: preset.id, name: preset.name, reason });
       if (stream.reason !== 'ready') stream.reason = reason;
     }
+    // Paused: provider status and quota stay fresh, nothing is dispatched.
+    if (!c.enabled && !options.manual && !options.doctor) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams }); }
     const queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
     const candidates = [...queue.ready];
     const skipped = [...queue.skipped];
