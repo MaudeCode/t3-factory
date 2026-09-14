@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#111816" />
+    <title>T3 Factory</title>
+    <link rel="icon" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" type="module"></script>
+  </head>
+  <body>
+    <section id="login" class="login" hidden>
+      <img src="/icon.svg" width="44" height="44" alt="" />
+      <h1>Your factory,<br />within reach.</h1>
+      <p id="login-description">
+        Pair this device with your Mac to start work and manage the factory.
+      </p>
+      <button id="sso-login" class="primary" hidden>Sign in with SSO</button>
+      <form id="pair-form" hidden>
+        <label for="pair-code">Pairing code</label
+        ><input
+          id="pair-code"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Paste a code or pairing link"
+          required
+        /><button class="primary" type="submit">Connect to factory</button>
+      </form>
+      <p id="pair-help" class="muted" hidden>
+        Create a pairing link on your Mac with <code>t3-factory web-pair</code>.
+        Links expire after 10 minutes.
+      </p>
+      <p id="login-error" role="alert"></p>
+    </section>
+    <div id="app" hidden>
+      <header>
+        <a class="brand" href="#overview" data-page="overview"
+          ><img src="/icon.svg" alt="" width="25" height="25" />T3 Factory</a
+        ><span id="connection" role="status">Connecting</span
+        ><button class="quiet" data-action="logout">Disconnect</button>
+      </header>
+      <main>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow" id="section-label">CONTROL ROOM</p>
+            <h1 id="page-title">Factory</h1>
+          </div>
+          <button class="quiet" data-action="refresh">Refresh</button>
+        </div>
+        <div id="error" class="error" role="alert" hidden></div>
+        <div id="notice" class="notice" role="status" hidden></div>
+        <div id="page"></div>
+      </main>
+      <div id="save-bar" hidden>
+        <span>Unsaved settings</span
+        ><button class="quiet" data-action="revert">Revert</button
+        ><button class="primary" data-action="save">Save changes</button>
+      </div>
+      <nav aria-label="Factory pages">
+        <button data-page="overview">Factory</button
+        ><button data-page="models">Models</button
+        ><button data-page="automation">Automation</button
+        ><button data-page="projects">Projects</button
+        ><button data-page="discovery">Discovery</button>
+      </nav>
+    </div>
+    <dialog id="model-dialog">
+      <form method="dialog" class="dialog-header">
+        <h2>Edit model</h2>
+        <button class="quiet" aria-label="Close model editor">Done</button>
+      </form>
+      <div id="model-editor"></div>
+    </dialog>
+  </body>
+</html>

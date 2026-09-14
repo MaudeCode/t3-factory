@@ -1,0 +1,31 @@
+{
+  "name": "t3-factory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "check": "tsc --noEmit",
+    "status": "node src/main.ts status",
+    "doctor": "node src/main.ts doctor",
+    "dry-run": "node src/main.ts once --dry-run",
+    "build:menu": "node scripts/build-menu.ts"
+  },
+  "engines": {
+    "node": ">=24.13"
+  },
+  "dependencies": {
+    "@kaneo/mcp": "0.1.11",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "effect": "4.0.0-beta.103",
+    "jsonc-parser": "3.3.1",
+    "openid-client": "6.8.8",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  },
+  "description": "A local scheduler for ticket-driven coding work in T3 Code",
+  "license": "MIT"
+}

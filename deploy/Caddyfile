@@ -1,0 +1,6 @@
+{$FACTORY_HOSTNAME} {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+	reverse_proxy {$FACTORY_WEB_UPSTREAM}
+}

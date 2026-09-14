@@ -1,0 +1,63 @@
+{
+  // Replace all placeholders before using live integrations. Start paused.
+  "enabled": false,
+  "pollSeconds": 60,
+  "idleMinutes": 30,
+  "maxWaitingPRs": null,
+  "monitoringTimeoutMinutes": 30,
+  "runtimeMode": "auto",
+  "stateDir": "/absolute/path/to/factory-state",
+  "t3": {
+    "url": "http://127.0.0.1:3773",
+    "credentialFile": "/absolute/path/to/t3-session.json"
+  },
+  "kaneo": {
+    "url": "https://kaneo.example.com",
+    "workspaceId": "YOUR_WORKSPACE_ID",
+    "readyLabel": "sf"
+  },
+  "models": [
+    {
+      "id": "default-model",
+      "name": "My model",
+      "model": {
+        "instanceId": "YOUR_T3_PROVIDER_INSTANCE_ID",
+        "model": "YOUR_T3_MODEL_SLUG",
+        "options": []
+      },
+      "automatic": false,
+      "maxDifficulty": "med"
+    }
+  ],
+  // Illustrative policy, not a recommendation for a particular subscription.
+  "quota": {
+    "maxAgeSeconds": 120,
+    "claude": {
+      "fiveHour": { "reservePercent": 50, "minRemainingPercent": 10 },
+      "weekly": { "reservePercent": 50, "minRemainingPercent": 10 },
+      "fable": { "reservePercent": 0, "minRemainingPercent": 15 }
+    },
+    "codex": {
+      "weekly": { "reservePercent": 50, "minRemainingPercent": 10 }
+    }
+  },
+  "discovery": {
+    "promptFile": "/absolute/path/to/discovery.md",
+    "emptyCooldownHours": 24
+  },
+  "factorySkill": "/absolute/path/to/software-factory/SKILL.md",
+  "projects": [
+    {
+      "name": "Example application",
+      "enabled": true,
+      "key": "APP",
+      "kaneoId": "YOUR_KANEO_PROJECT_ID",
+      "t3Id": "YOUR_T3_PROJECT_ID",
+      "repoPath": "/absolute/path/to/repository",
+      "githubRepo": "OWNER/REPOSITORY",
+      "baseBranch": "main",
+      "readyStatuses": ["todo"],
+      "doneStatuses": ["done"]
+    }
+  ]
+}

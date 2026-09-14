@@ -1,0 +1,20 @@
+node_modules/
+*.log
+.DS_Store
+build/
+
+.env
+.env.*
+!.env.example
+
+# Operator configuration and private runbooks
+/LOCAL.md
+/config.jsonc
+/t3-session.json
+/web.key
+/state/
+/reports/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.review.json
