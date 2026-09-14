@@ -442,6 +442,8 @@ export function createFactoryWeb(options: {
         "/app.js": ["app.js", "text/javascript"],
         "/style.css": ["style.css", "text/css"],
         "/icon.svg": ["icon.svg", "image/svg+xml"],
+        "/icon.png": ["icon.png", "image/png"],
+        "/apple-touch-icon.png": ["apple-touch-icon.png", "image/png"],
         "/manifest.webmanifest": [
           "manifest.webmanifest",
           "application/manifest+json",

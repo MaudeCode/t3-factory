@@ -54,14 +54,14 @@ export function quotaDecision(raw: unknown, c: { maxAgeSeconds: number; fiveHour
   if (age < -60_000 || age > c.maxAgeSeconds * 1000) throw new Error('Claude quota snapshot is stale or future-dated');
   const windows = [
     { name: 'fiveHour', w: entry.primary, minutes: 300, start: c.fiveHourReservePercent },
-    ...ignoreWeeklyReserve ? [] : [{ name: 'weekly', w: windowSchema.parse(entry.secondary), minutes: 10080, start: c.weeklyReservePercent }],
+    { name: 'weekly', w: windowSchema.parse(entry.secondary), minutes: 10080, start: ignoreWeeklyReserve ? 0 : c.weeklyReservePercent },
   ].map(({ name, w, minutes, start }) => {
     const reset = Date.parse(w.resetsAt);
     if (w.windowMinutes !== minutes || reset <= now || reset > now + minutes * 60_000 + 60_000) throw new Error(`Invalid or expired ${name} quota window; wait for a fresh snapshot`);
     const reserved = reserveAt(start, reset, minutes * 60_000, now);
     return { name, remaining: 100 - w.usedPercent, reserved, resetsAt: w.resetsAt };
   });
-  return { allowed: windows.every(w => w.remaining > w.reserved), capturedAt: entry.updatedAt, windows, weeklyReserveApplied: !ignoreWeeklyReserve };
+  return { allowed: windows.every(w => (ignoreWeeklyReserve && w.name === 'weekly') || w.remaining > w.reserved), capturedAt: entry.updatedAt, windows, weeklyReserveApplied: !ignoreWeeklyReserve };
 }
 export const priorities = ['urgent', 'high', 'medium', 'low', 'no-priority'] as const;
 export type Difficulty = 'low' | 'med' | 'high';
