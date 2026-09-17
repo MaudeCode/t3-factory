@@ -260,17 +260,18 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
 
 export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; ticket?: string; model?: string; }
 
-export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number): Set<string> {
-  const busy = new Set<string>();
+export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>()): Set<string> {
+  const counts = new Map(planned);
   for (const job of jobs.filter(j => j.state !== 'complete')) {
     const thread = threads.find(t => t.id === job.threadId);
     if (!['running', 'dispatching'].includes(job.state) && !(thread && executing(thread, timeout))) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? thread?.session?.providerName ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
-    if (driver) busy.add(driver);
-    else { busy.add('codex'); busy.add('claudeAgent'); } // Unknown dispatch ownership must be reconciled before another automatic start.
+    // Unknown ownership must be reconciled before any further automatic starts.
+    if (driver !== 'codex' && driver !== 'claudeAgent') return new Set(['codex', 'claudeAgent']);
+    counts.set(driver, (counts.get(driver) ?? 0) + 1);
   }
-  return busy;
+  return new Set(['claudeAgent', 'codex'].filter(driver => (counts.get(driver) ?? 0) >= limits[driver === 'codex' ? 'codex' : 'claude']));
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}) {
@@ -289,7 +290,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
   try {
     await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor);
     const jobs = store.jobs();
-    const busy = options.manual ? new Set<string>() : busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes);
+    const busy = options.manual ? new Set<string>() : busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
     const streams = ['claudeAgent', 'codex'].map(driver => ({
       driver, provider: driver === 'codex' ? 'Codex' : 'Claude',
       reason: busy.has(driver) ? 'provider-running' : 'no-eligible-model',
@@ -325,6 +326,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
     const claimedProjects = new Set<string>();
+    const planned = new Map<string, number>();
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
     while (readyModels.some(m => !busy.has(m.driver))) {
       const assignment = selectAssignment(candidates, readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
@@ -339,7 +341,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
         if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
         if (result.reason === 'dispatched' || result.reason === 'would-dispatch') {
           if (options.manual) return result;
-          busy.add(selected.driver);
+          if (result.reason === 'would-dispatch') planned.set(selected.driver, (planned.get(selected.driver) ?? 0) + 1);
+          for (const driver of busyProviders(store.jobs(), shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned)) busy.add(driver);
           (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? 'Discovery');
           if ('projectId' in result && discovery) claimedProjects.add(result.projectId as string);
           if (assignment) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
@@ -390,7 +393,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const jobs = store.jobs();
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
-    if (plan && !options.manual && busyProviders(jobs, shell.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes).has(plan.driver)) return decision('provider-running', { driver: plan.driver });
+    if (plan && !options.manual && busyProviders(jobs, shell.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('provider-running', { driver: plan.driver });
     const queue = await inventory(c, kaneo, shell.threads, jobs, store, ticketKey);
     const discovery = !ticketKey && !options.manual;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
@@ -430,7 +433,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const currentActivity = await personalActivity(t3, fresh.threads, store.jobs(), store, c.monitoringTimeoutMinutes, currentQuota.provider === 'Codex' ? 'codex' : 'claudeAgent');
     if (currentManualCodex && !currentQuota.allowed) return decision('codex-quota-exhausted', { quota: currentQuota });
     if (!override && ((!currentManualCodex && (currentActivity.active || currentActivity.idleMinutes < c.idleMinutes)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
-    if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes).has(plan.driver)) return decision('job-resumed-before-dispatch');
+    if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
     const modelReason = (options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason;

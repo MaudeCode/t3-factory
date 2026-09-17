@@ -4,6 +4,7 @@
   "pollSeconds": 60,
   "idleMinutes": 30,
   "maxWaitingPRs": null,
+  "concurrency": { "claude": 1, "codex": 1 },
   "monitoringTimeoutMinutes": 30,
   "runtimeMode": "auto",
   "stateDir": "/absolute/path/to/factory-state",

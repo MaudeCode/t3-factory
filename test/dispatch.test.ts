@@ -10,7 +10,7 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -29,18 +29,24 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
       discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'), projects: [project('FIX'), project('NEXT')],
     });
+    const parallel = scenario.startsWith('parallel');
+    if (parallel) c.concurrency = { claude: 2, codex: scenario === 'parallel-lowered' ? 1 : 3 };
     if (scenario === 'ceiling') c.models.forEach(m => { m.maxDifficulty = 'low'; });
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
-    const tasks = scenario === 'discovery' ? [] : [1, 2, 3].map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
+    const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
     const threads: Thread[] = [], store = new Store(c.stateDir), attempts: Record<string, any>[] = [];
     const providers = ['codex', 'claudeAgent'].map(instanceId => ({ instanceId, driver: instanceId, status: 'ready', installed: true, enabled: true, models: c.models.filter(m => m.model.instanceId === instanceId).map(m => ({ slug: m.model.model })) }));
     t.mock.method(T3.prototype, 'providers', async () => providers);
-    t.mock.method(T3.prototype, 'shell', async () => ({ threads, projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) }));
+    let shellReads = 0;
+    t.mock.method(T3.prototype, 'shell', async () => {
+      if (scenario === 'parallel-resumed' && ++shellReads >= 3) threads.forEach(thread => { thread.hasPendingUserInput = false; });
+      return { threads, projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) };
+    });
     t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], activities: [] }));
     t.mock.method(T3.prototype, 'provider', async (instanceId: string, refresh: boolean) => {
       const p = providers.find(p => p.instanceId === instanceId)!;
       const window = (id: string, minutes: number, usedPercent = 0) => ({ id, usedPercent, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
-      return { ...p, status: instanceId === 'codex' && scenario === 'codex-offline' ? 'error' : 'ready', usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [window('primary', 10080, scenario === 'codex-exhausted' || (refresh && scenario === 'refresh-exhausted') ? 100 : 0)] : [window('five_hour', 300), window('seven_day', 10080), window('seven_day_fable', 10080)] } };
+      return { ...p, status: instanceId === 'codex' && scenario === 'codex-offline' ? 'error' : 'ready', usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [window('primary', 10080, scenario === 'codex-exhausted' || (refresh && scenario === 'refresh-exhausted') || (scenario === 'parallel-quota' && attempts.some(a => a.modelSelection.instanceId === 'codex')) ? 100 : 0)] : [window('five_hour', 300), window('seven_day', 10080), window('seven_day_fable', 10080)] } };
     });
     t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
     t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
@@ -62,8 +68,42 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       store.save(job);
       threads.push({ id: job.threadId, title: 'Old factory', projectId: 'FIX', branch: null, worktreePath: null, modelSelection: selected, updatedAt: new Date().toISOString(), latestUserMessageAt: job.createdAt, archivedAt: null, hasPendingApprovals: false, hasPendingUserInput: scenario === 'claude-waiting', session: { status: 'running', providerName: driver, updatedAt: job.createdAt }, latestTurn: { state: 'running', completedAt: null } });
     }
+    if (['parallel-partial', 'parallel-resumed', 'parallel-lowered'].includes(scenario)) {
+      const selected = c.models[0].model;
+      const count = scenario === 'parallel-partial' ? 1 : 3;
+      for (let n = 0; n < count; n++) {
+        const job: Job = { id: `existing-${n}`, kind: 'ticket', projectId: 'FIX', taskId: `existing-task-${n}`, ticketKey: `FIX-${90+n}`, threadId: `existing-thread-${n}`, messageId: 'initial', createdAt: new Date().toISOString(), state: 'running', reason: '', lastPersonalActivity: null, reportPath: join(dir, `report-${n}`), command: null, modelSelection: selected, providerDriver: 'codex', prUrls: [], completedAt: null };
+        store.save(job);
+        threads.push({ id: job.threadId, title: 'Existing run', projectId: 'FIX', branch: null, worktreePath: null, modelSelection: selected, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, archivedAt: null, hasPendingApprovals: false, hasPendingUserInput: scenario === 'parallel-resumed', session: { status: 'running', providerName: 'codex', updatedAt: job.createdAt }, latestTurn: { state: 'running', completedAt: null } });
+      }
+    }
     try {
-      const result = await cycle(c, store);
+      const result = await cycle(c, store, scenario === 'parallel-dry-run' ? { dryRun: true } : {});
+      if (parallel) {
+        if (scenario === 'parallel-dry-run') {
+          assert.equal(attempts.length, 0);
+          assert.equal(store.jobs().length, 0);
+          const streams = (result as any).streams;
+          assert.equal(streams.find((s: any) => s.driver === 'codex').planned.length, 3);
+          assert.equal(streams.find((s: any) => s.driver === 'claudeAgent').planned.length, 2);
+          assert.equal(new Set(streams.flatMap((s: any) => s.planned)).size, 5);
+        } else {
+          const codex = attempts.filter(a => a.modelSelection.instanceId === 'codex');
+          const claude = attempts.filter(a => a.modelSelection.instanceId === 'claudeAgent');
+          const expectedCounts: Record<string, number[]> = { parallel: [3, 2], 'parallel-partial': [2, 2], 'parallel-quota': [1, 2], 'parallel-resumed': [0, 2], 'parallel-lowered': [0, 2], 'parallel-discovery': [2, 0] };
+          const expected = expectedCounts[scenario];
+          assert.deepEqual([codex.length, claude.length], expected);
+          assert.equal(new Set(attempts.map(a => a.threadId)).size, attempts.length);
+          assert.equal(new Set(attempts.map(a => a.bootstrap.prepareWorktree.branch)).size, attempts.length);
+          assert.ok(attempts.every(a => a.type === 'thread.turn.start'), 'lowering limits must never stop work');
+          if (scenario === 'parallel-discovery') assert.equal(new Set(attempts.map(a => a.bootstrap.createThread.projectId)).size, attempts.length);
+          if (scenario === 'parallel') {
+            await cycle(c, store);
+            assert.equal(attempts.length, 5, 'existing claims fill capacity on the next cycle');
+          }
+        }
+        return;
+      }
       const none = ['unclassified', 'ceiling'].includes(scenario);
       const one = ['codex-busy', 'codex-exhausted', 'codex-offline', 'refresh-exhausted'].includes(scenario);
       assert.equal(attempts.length, none ? 0 : one ? 1 : 2);
