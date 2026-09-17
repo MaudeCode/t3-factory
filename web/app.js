@@ -684,10 +684,20 @@ document.addEventListener("change", (event) => {
     message(error.message, true);
   }
 });
+$("#model-dialog").addEventListener("click", (event) => {
+  const dialog = event.currentTarget;
+  if (event.target !== dialog) return;
+  const bounds = dialog.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right ||
+      event.clientY < bounds.top || event.clientY > bounds.bottom)
+    dialog.close();
+});
 $("#model-dialog").addEventListener("close", () => {
   if (state.page === "models") render();
 });
 document.addEventListener("submit", async (event) => {
+  // Leave native forms, including method="dialog", to the browser.
+  if (!["pair-form", "run-form"].includes(event.target.id)) return;
   event.preventDefault();
   if (event.target.id === "pair-form") {
     try {
