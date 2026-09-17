@@ -12,7 +12,7 @@ The agent receives scoped ticket instructions, but its configured runtime still 
 
 ## Private files
 
-Keep `.env`, local configuration, credentials, job state, logs, reports, review proofs, and machine runbooks out of Git. The repository ignores the standard root-level private filenames and `LOCAL.md`; arbitrary external paths remain the operator's responsibility. Use restrictive permissions for credentials.
+Keep `.env`, `web-sessions.json`, local configuration, credentials, job state, logs, reports, review proofs, and machine runbooks out of Git. The repository ignores the standard root-level private filenames and `LOCAL.md`; arbitrary external paths remain the operator's responsibility. Use restrictive permissions for credentials.
 
 Example files contain placeholders. Do not replace those placeholders with real deployment values and commit the result. Logs and screenshots can also reveal repository names, paths, ticket contents, and identity-provider details.
 

@@ -21,7 +21,10 @@ test('run limits default safely for old settings and persist independent edits',
     saveSettings({ base, config: next }, file);
     assert.deepEqual(loadConfig(file).concurrency, next.concurrency);
     assert.throws(() => saveSettings({ base, config: next }, file), /Settings changed/);
-    for (const value of [0, -1, 1.5, Infinity])
+    const paused = { ...next, concurrency: { claude: 0, codex: 0 } };
+    saveSettings({ base: next, config: paused }, file);
+    assert.deepEqual(loadConfig(file).concurrency, { claude: 0, codex: 0 });
+    for (const value of [-1, 1.5, Infinity])
       assert.throws(() => configSchema.parse({ ...base, concurrency: { claude: value, codex: 1 } }));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

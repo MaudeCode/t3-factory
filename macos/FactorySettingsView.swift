@@ -99,9 +99,9 @@ struct FactorySettingsView: View {
     private var automation: some View {
         Form {
             Section("Work streams") {
-                Text("Set independent limits for automatic starts. Waiting runs free a slot. Manual runs can exceed the limit and count toward it while active. Lowering a limit does not stop running work.").font(.callout).foregroundStyle(.secondary)
-                numberField("Claude run limit", path: ["concurrency", "claude"], unit: "runs")
-                numberField("Codex run limit", path: ["concurrency", "codex"], unit: "runs")
+                Text("Set 0 to turn off automatic starts for a provider. Waiting runs free a slot. Manual runs can exceed the limit and count toward it while active. Lowering a limit does not stop running work.").font(.callout).foregroundStyle(.secondary)
+                numberField("Claude run limit", path: ["concurrency", "claude"], unit: "runs", range: 0...100000)
+                numberField("Codex run limit", path: ["concurrency", "codex"], unit: "runs", range: 0...100000)
                 Button("Set model priority and difficulty limits") { page = "models" }
             }
             Section("When to start") {

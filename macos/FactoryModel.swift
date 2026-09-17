@@ -103,6 +103,7 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         guard enabled else { return "Automatic starts paused" }
         let reason = streams.first { $0["driver"] as? String == driver }?["reason"] as? String ?? "Watching the queue"
         switch reason {
+        case "provider-disabled": return "Automatic starts off"
         case "provider-running": return "Run limit reached"
         case "dispatched": return "Work dispatched"
         case "waiting-for-idle": return "Waiting for idle time"

@@ -34,6 +34,7 @@ const titles = {
 };
 const STREAM_REASONS = {
   "provider-running": "Working",
+  "provider-disabled": "Automatic starts off",
   "waiting-for-idle": "Waiting for idle time",
   "quota-budget": "Waiting for budget",
   "no-eligible-model": "No automatic model available",
@@ -57,7 +58,7 @@ function set(path, value) {
 const saveBar = () => ($("#save-bar").hidden = !dirty());
 const pathAttr = (path) => esc(JSON.stringify(path));
 const field = (title, path, type = "text", extra = "") =>
-  `<label class="field"><span>${esc(title)}</span><input data-path="${pathAttr(path)}" data-kind="${type === "integer" ? "number" : type}" type="${["number", "integer"].includes(type) ? "number" : "text"}" value="${esc(at(path))}" ${type === "integer" ? 'min="1" step="1"' : type === "number" ? 'min="0" step="any"' : ""} ${extra}></label>`;
+  `<label class="field"><span>${esc(title)}</span><input data-path="${pathAttr(path)}" data-kind="${type === "integer" ? "number" : type}" type="${["number", "integer"].includes(type) ? "number" : "text"}" value="${esc(at(path))}" ${type === "integer" ? 'min="0" step="1"' : type === "number" ? 'min="0" step="any"' : ""} ${extra}></label>`;
 const check = (title, path) =>
   `<label class="check"><input type="checkbox" data-path="${pathAttr(path)}" data-kind="boolean" ${at(path) ? "checked" : ""}><span>${esc(title)}</span></label>`;
 const select = (title, path, options) =>
@@ -401,7 +402,7 @@ function automation() {
 <section class="section">
   <div class="section-head"><h2>Simultaneous runs</h2></div>
   <div class="form-grid">${field("Claude run limit", ["concurrency", "claude"], "integer")}${field("Codex run limit", ["concurrency", "codex"], "integer")}</div>
-  <p class="hint">Limits apply to automatic starts. Runs waiting for your input free a slot. Manual runs can exceed the limit and count toward it while active. Lowering a limit does not stop running work.</p>
+  <p class="hint">Set 0 to turn off automatic starts for that provider. Runs waiting for your input free a slot. Manual runs can exceed the limit and count toward it while active. Lowering a limit does not stop running work.</p>
 </section>
 <section class="section">
   <div class="section-head"><h2>Timing</h2></div>

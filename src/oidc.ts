@@ -1,6 +1,9 @@
 import * as client from "openid-client";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 export const oidcSchema = z.object({
   issuer: z
@@ -12,7 +15,7 @@ export const oidcSchema = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().min(1),
   requiredGroup: z.string().min(1),
-  sessionHours: z.coerce.number().positive().max(720).default(24),
+  sessionHours: z.coerce.number().positive().max(720).default(720),
   recheckSeconds: z.coerce.number().int().min(1).max(300).default(60),
 });
 export type OidcSettings = z.infer<typeof oidcSchema>;
@@ -34,6 +37,7 @@ export async function createOidc(
   origin: string,
   config?: client.Configuration,
   now = Date.now,
+  sessionFile?: string,
 ) {
   if (new URL(origin).protocol !== "https:")
     throw new Error("SSO requires an HTTPS public origin");
@@ -53,18 +57,75 @@ export async function createOidc(
     verifier: string;
     expires: number;
   };
-  type Session = {
-    subject: string;
-    token: string;
-    refresh?: string;
-    tokenExpires: number;
-    expires: number;
-    checked: number;
+  const sessionSchema = z
+    .object({
+      subject: z.string().min(1),
+      token: z.string().min(1),
+      refresh: z.string().min(1).optional(),
+      tokenExpires: z.number().finite(),
+      expires: z.number().finite(),
+      checked: z.number().finite(),
+    })
+    .strict();
+  type Session = z.infer<typeof sessionSchema> & {
     checking?: Promise<boolean>;
   };
-  // ponytail: sessions live in this single web process; a restart requires sign-in again.
   const flows = new Map<string, Flow>(),
     sessions = new Map<string, Session>();
+  const scope = createHash("sha256")
+    .update(JSON.stringify([origin, settings]))
+    .digest("hex");
+  if (sessionFile) {
+    let saved: string | undefined;
+    try {
+      saved = readFileSync(sessionFile, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (saved !== undefined) {
+      try {
+        const data = z
+          .object({
+            scope: z.string(),
+            sessions: z
+              .array(
+                z.tuple([
+                  z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+                  sessionSchema,
+                ]),
+              )
+              .max(1000),
+          })
+          .strict()
+          .parse(JSON.parse(saved));
+        if (data.scope === scope)
+          for (const [id, session] of data.sessions)
+            if (session.expires > now())
+              sessions.set(id, { ...session, checked: 0 });
+      } catch {
+        throw new Error("Stored SSO sessions are invalid");
+      }
+    }
+  }
+  // One web process owns this private file; login transactions stay ephemeral.
+  const persist = () => {
+    if (!sessionFile) return;
+    mkdirSync(dirname(sessionFile), { recursive: true, mode: 0o700 });
+    const tmp = `${sessionFile}.${randomUUID()}.tmp`;
+    const saved = [...sessions]
+      .filter(([, s]) => s.expires > now())
+      .map(([id, { checking, ...session }]) => [id, session]);
+    writeFileSync(tmp, JSON.stringify({ scope, sessions: saved }), {
+      mode: 0o600,
+      flag: "wx",
+    });
+    renameSync(tmp, sessionFile);
+  };
+  const remove = (id: string) => {
+    sessions.delete(id);
+    persist();
+  };
+  persist();
   const prune = () => {
     for (const [id, flow] of flows) if (flow.expires <= now()) flows.delete(id);
     for (const [id, session] of sessions)
@@ -141,6 +202,7 @@ export async function createOidc(
         expires: now() + settings.sessionHours * 3_600_000,
         checked: now(),
       });
+      persist();
       res.writeHead(302, {
         Location: "/",
         "Set-Cookie": [
@@ -155,7 +217,7 @@ export async function createOidc(
         session = sessions.get(id);
       if (!session) return false;
       if (session.expires <= now()) {
-        sessions.delete(id);
+        remove(id);
         return false;
       }
       if (session.checking) return session.checking;
@@ -175,6 +237,7 @@ export async function createOidc(
             session.token = tokens.access_token;
             session.refresh = tokens.refresh_token ?? session.refresh;
             session.tokenExpires = now() + (tokens.expires_in ?? 300) * 1000;
+            persist(); // Keep rotated tokens even if UserInfo is temporarily unavailable.
           }
           const info = await client.fetchUserInfo(
             provider,
@@ -183,10 +246,22 @@ export async function createOidc(
           );
           if (!allowed(info)) throw new AccessDenied();
           session.checked = now();
+          persist();
           return sessions.get(id) === session && session.expires > now();
-        } catch {
-          sessions.delete(id);
-          return false;
+        } catch (error) {
+          if (
+            error instanceof AccessDenied ||
+            error instanceof client.WWWAuthenticateChallengeError ||
+            (error instanceof client.ResponseBodyError &&
+              ["invalid_grant", "invalid_token", "access_denied"].includes(
+                error.error,
+              ))
+          ) {
+            remove(id);
+            return false;
+          }
+          // Block this request, but retain the session so a transient outage does not log the user out.
+          throw new Error("SSO verification is temporarily unavailable");
         } finally {
           session.checking = undefined;
         }
@@ -194,8 +269,8 @@ export async function createOidc(
       return session.checking;
     },
     logout(req: IncomingMessage, res: ServerResponse) {
-      sessions.delete(cookie(req, sessionCookie) ?? "");
       res.setHeader("Set-Cookie", setCookie(sessionCookie, "", 0));
+      remove(cookie(req, sessionCookie) ?? "");
     },
   };
 }

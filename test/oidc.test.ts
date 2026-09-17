@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { request, type IncomingMessage } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as client from "openid-client";
@@ -37,7 +43,9 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     time = Date.now(),
     refreshed = 0;
   let invalidClaim: "nonce" | "aud" | "iss" | "signature" | "sub" | undefined;
-  let userInfoAvailable = true;
+  let userInfoAvailable = true,
+    refreshAvailable = true,
+    refreshRevoked = false;
   const response = (value: unknown) =>
     new Response(JSON.stringify(value), {
       headers: { "Content-Type": "application/json" },
@@ -54,6 +62,12 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     assert.equal(String(url), `${issuer}/token`);
     const body = new URLSearchParams(options?.body as string);
     if (body.get("grant_type") === "refresh_token") {
+      if (!refreshAvailable) return new Response(null, { status: 503 });
+      if (refreshRevoked)
+        return new Response(JSON.stringify({ error: "invalid_grant" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
       refreshed++;
       return response({
         access_token: "refreshed",
@@ -90,18 +104,26 @@ test("SSO validates the OIDC flow and enforces group membership on every control
       id_token: `${payload}.${signature.toString("base64url")}`,
     });
   };
+  const dir = mkdtempSync(join(tmpdir(), "factory-oidc-"));
+  const sessionFile = join(dir, "web-sessions.json");
+  const settings = oidcSchema.parse({
+    issuer,
+    clientId: "factory",
+    clientSecret: "secret",
+    requiredGroup: "factory-admins",
+  });
   const auth = await createOidc(
-    oidcSchema.parse({
-      issuer,
-      clientId: "factory",
-      clientSecret: "secret",
-      requiredGroup: "factory-admins",
-    }),
+    settings,
     `${origin}/`,
     config,
     () => time,
+    sessionFile,
   );
-  const dir = mkdtempSync(join(tmpdir(), "factory-oidc-"));
+  const restart = async (next = settings) =>
+    Object.assign(
+      auth,
+      await createOidc(next, origin, config, () => time, sessionFile),
+    );
   let commands = 0;
   const server = createFactoryWeb({
     config: webConfigSchema.parse({ publicOrigin: origin }),
@@ -236,7 +258,10 @@ test("SSO validates the OIDC flow and enforces group membership on every control
       v.startsWith("__Host-factory_session="),
     )!;
     assert.match(sessionHeader, /HttpOnly; Secure; SameSite=Lax; Path=\//);
+    assert.match(sessionHeader, /Max-Age=2592000/);
+    assert.equal(statSync(sessionFile).mode & 0o777, 0o600);
     const session = sessionHeader.split(";")[0];
+    await restart();
     assert.equal((await req("/api/state", "GET", session)).status, 200);
     assert.equal(
       (
@@ -249,8 +274,16 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     time += 3_600_000;
     assert.equal((await req("/api/state", "GET", session)).status, 200);
     assert.equal(refreshed, 1);
+    assert.equal(
+      JSON.parse(readFileSync(sessionFile, "utf8")).sessions[0][1].refresh,
+      "next-refresh",
+    );
+    await restart();
+    assert.equal((await req("/api/state", "GET", session)).status, 200);
     groups = [];
     time += 60_000;
+    assert.equal((await req("/api/state", "GET", session)).status, 401);
+    await restart();
     assert.equal((await req("/api/state", "GET", session)).status, 401);
     groups = ["factory-admins"];
     const s2 = (await signIn()).headers["set-cookie"]!.find((v) =>
@@ -258,18 +291,51 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     )!.split(";")[0];
     userInfoAvailable = false;
     time += 60_000;
-    assert.equal((await req("/api/state", "GET", s2)).status, 401);
+    assert.equal((await req("/api/state", "GET", s2)).status, 503);
+    await restart();
+    assert.equal((await req("/api/state", "GET", s2)).status, 503);
     userInfoAvailable = true;
+    assert.equal((await req("/api/state", "GET", s2)).status, 200);
+    refreshAvailable = false;
+    time += 3_600_000;
+    assert.equal((await req("/api/state", "GET", s2)).status, 503);
+    refreshAvailable = true;
+    assert.equal((await req("/api/state", "GET", s2)).status, 200);
+    refreshRevoked = true;
+    time += 3_600_000;
+    assert.equal((await req("/api/state", "GET", s2)).status, 401);
+    await restart();
+    assert.equal((await req("/api/state", "GET", s2)).status, 401);
+    refreshRevoked = false;
     const s3 = (await signIn()).headers["set-cookie"]!.find((v) =>
       v.startsWith("__Host-factory_session="),
     )!.split(";")[0];
     assert.equal((await req("/api/session", "DELETE", s3)).status, 200);
+    await restart();
     assert.equal((await req("/api/state", "GET", s3)).status, 401);
     const s4 = (await signIn()).headers["set-cookie"]!.find((v) =>
       v.startsWith("__Host-factory_session="),
     )!.split(";")[0];
-    time += 86_400_000;
+    time += 30 * 86_400_000;
     assert.equal((await req("/api/state", "GET", s4)).status, 401);
+    const revokedOnRestart = (await signIn()).headers["set-cookie"]!.find(v => v.startsWith("__Host-factory_session="))!.split(";")[0];
+    groups = [];
+    await restart();
+    assert.equal((await req("/api/state", "GET", revokedOnRestart)).status, 401, "restored sessions must recheck membership immediately");
+    groups = ["factory-admins"];
+    const s5 = (await signIn()).headers["set-cookie"]!.find((v) =>
+      v.startsWith("__Host-factory_session="),
+    )!.split(";")[0];
+    await restart({ ...settings, requiredGroup: "other-group" });
+    assert.equal((await req("/api/state", "GET", s5)).status, 401);
+    await restart();
+    assert.equal(
+      (await req("/api/state", "GET", s5)).status,
+      401,
+      "restoring settings must not resurrect invalidated sessions",
+    );
+    writeFileSync(sessionFile, "invalid json");
+    await assert.rejects(restart(), /Stored SSO sessions are invalid/);
     assert.equal(commands, 0);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

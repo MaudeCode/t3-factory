@@ -61,3 +61,16 @@ test('clicking the model backdrop closes the dialog; clicking its content does n
   await fire('#model-dialog:click', dialog, { clientX: 50, clientY: 50 });
   assert.equal(dialog.open, false);
 });
+
+
+test('provider limit inputs retain zero as a numeric setting', async () => {
+  const { context, document, fire } = ui();
+  runInContext('state.config.concurrency = { claude: 1, codex: 1 }; state.base = clone(state.config);', context);
+  await fire('input', { dataset: { path: '["concurrency","claude"]', kind: 'number' }, value: '0' });
+  assert.equal(runInContext('state.config.concurrency.claude', context), 0);
+  assert.equal(runInContext('state.config.concurrency.codex', context), 1);
+  assert.equal(document.querySelector('#save-bar').hidden, false);
+  const html = runInContext('field("Claude run limit", ["concurrency", "claude"], "integer")', context);
+  assert.match(html, /min="0" step="1"/);
+  assert.match(html, /value="0"/);
+});

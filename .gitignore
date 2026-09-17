@@ -18,3 +18,6 @@ build/
 *.sqlite-shm
 *.sqlite-wal
 *.review.json
+
+web-sessions.json
+web-sessions.json.*.tmp

@@ -22,7 +22,7 @@ const configPath = process.env.T3_FACTORY_CONFIG ?? defaultConfigPath;
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath);
-  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin) : undefined, dataDir: c.stateDir, readState: () => {
+  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, readState: () => {
     const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
     const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
     const jobs = status.jobs ?? [];

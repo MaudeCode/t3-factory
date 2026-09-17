@@ -293,7 +293,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const busy = options.manual ? new Set<string>() : busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
     const streams = ['claudeAgent', 'codex'].map(driver => ({
       driver, provider: driver === 'codex' ? 'Codex' : 'Claude',
-      reason: busy.has(driver) ? 'provider-running' : 'no-eligible-model',
+      reason: !options.manual && c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : busy.has(driver) ? 'provider-running' : 'no-eligible-model',
       active: jobs.filter(j => ['running', 'dispatching'].includes(j.state) && (j.providerDriver ?? instances.get(j.modelSelection?.instanceId ?? 'claudeAgent')) === driver).map(j => j.ticketKey ?? 'Discovery'),
       planned: [] as string[], models: [] as { id: string; name: string; reason: string }[], quota: undefined as Awaited<ReturnType<typeof readModelQuota>> | undefined,
     }));
