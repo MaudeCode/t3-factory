@@ -27,7 +27,7 @@ t3-factory dispatch --override-limits
 
 Use your own ticket key and configured model ID. Omitting the ticket selects the next eligible one. `--model auto` selects from eligible automatic presets; an explicit model ID can select a manual-only preset. Manual dispatch starts ticket work, never discovery.
 
-Manual jobs can overlap other runs and can start while automatic dispatch is paused. `--override-limits` skips the scheduler's idle and quota thresholds for that run. It does not bypass provider-enforced limits, difficulty ceilings, readiness, dependencies, duplicate ownership, or merge gates. Manual Codex runs already omit the scheduler's idle and reserve checks; they still require valid provider quota information.
+Manual jobs can overlap other runs and can start while automatic dispatch is paused. `--override-limits` skips the scheduler's idle and quota thresholds for that run. It cannot select a model whose applicable allowance is exhausted, even when the override is enabled. Automatic model selection skips exhausted presets and tries the next eligible model. It does not bypass provider-enforced limits, difficulty ceilings, readiness, dependencies, duplicate ownership, or merge gates. Manual Codex runs already omit the scheduler's idle and reserve checks; they still require valid provider quota information.
 
 ## Automatic scheduling
 
@@ -46,6 +46,8 @@ A ticket is complete only after its report, Kaneo Done status, and merged PR evi
 Completed jobs retain history but release their live ticket claim. Reopened tickets can run again when historical tasks are inactive and unchanged, and historical branch tips still match verified merged PRs. New work and open PRs continue to block duplicates.
 
 The scheduler records a dispatch before submitting it to T3. Restarting reconciles the recorded task IDs. Uncertain submissions are not replaced with new tasks automatically. Web dispatches also use persistent request IDs, so repeated taps cannot create a second accepted request.
+
+Explicitly settling an inactive factory task in T3 dismisses it from the factory view and releases its ticket claim. A later launch creates a fresh task and worktree. The old worktree is preserved; open PRs, changed branches, or uncommitted changes still block duplicate work. Automatic T3 settled status alone is not a dismissal.
 
 Stopping the service does not stop T3 work. Preserve the ledger, reports, tasks, and worktrees when investigating an uncertain run. T3 remains the place for notifications, human questions, and manual resumption.
 

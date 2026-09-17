@@ -36,6 +36,7 @@ const STREAM_REASONS = {
   "provider-running": "Working",
   "provider-disabled": "Automatic starts off",
   "waiting-for-idle": "Waiting for idle time",
+  "quota-exhausted": "Allowance exhausted",
   "quota-budget": "Waiting for budget",
   "no-eligible-model": "No automatic model available",
   "difficulty-limit": "No tickets within difficulty limits",

@@ -107,6 +107,7 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         case "provider-running": return "Run limit reached"
         case "dispatched": return "Work dispatched"
         case "waiting-for-idle": return "Waiting for idle time"
+        case "quota-exhausted": return "Allowance exhausted"
         case "quota-budget": return "Waiting for available budget"
         case "no-eligible-model": return "No automatic model available"
         case "no-eligible-ticket", "watching-streams": return "No eligible classified ticket"
@@ -230,6 +231,7 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         let reason = object?["reason"] as? String ?? ""
         let friendly: String
         switch reason {
+        case "quota-exhausted": friendly = "The selected model has no allowance left. Choose another model or wait for its quota to reset."
         case "codex-quota-exhausted": friendly = "Codex has reached its usage limit. Wait for its quota to reset or choose a Claude model."
         case "autonomous-job-running", "job-resumed-before-dispatch": friendly = "A factory run is already executing. Wait for it to finish or pause for input."
         case "personal-Claude-running", "personal-Claude-recently-active", "personal-provider-running", "personal-provider-recently-active": friendly = "The selected provider is active or has not been idle long enough. Enable the one-run override to start now."
