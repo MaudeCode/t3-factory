@@ -10,7 +10,7 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -29,7 +29,9 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
       discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'), projects: [project('FIX'), project('NEXT')],
     });
+    const manualQuota = scenario.startsWith('manual-fable') || scenario === 'manual-five-hour-empty';
     const parallel = scenario.startsWith('parallel');
+    if (manualQuota) { c.models = c.models.filter(m => m.model.instanceId === 'claudeAgent'); c.models[0].quotaWindowId = 'seven_day_fable'; c.quota.claude.fable.minRemainingPercent = 15; }
     if (parallel) c.concurrency = { claude: 2, codex: scenario === 'parallel-lowered' ? 1 : 3 };
     if (scenario === 'parallel-claude-zero' || scenario === 'parallel-both-zero') c.concurrency.claude = 0;
     if (scenario === 'parallel-codex-zero' || scenario === 'parallel-both-zero') c.concurrency.codex = 0;
@@ -48,7 +50,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     t.mock.method(T3.prototype, 'provider', async (instanceId: string, refresh: boolean) => {
       const p = providers.find(p => p.instanceId === instanceId)!;
       const window = (id: string, minutes: number, usedPercent = 0) => ({ id, usedPercent, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
-      return { ...p, status: instanceId === 'codex' && scenario === 'codex-offline' ? 'error' : 'ready', usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [window('primary', 10080, scenario === 'codex-exhausted' || (refresh && scenario === 'refresh-exhausted') || (scenario === 'parallel-quota' && attempts.some(a => a.modelSelection.instanceId === 'codex')) ? 100 : 0)] : [window('five_hour', 300), window('seven_day', 10080), window('seven_day_fable', 10080)] } };
+      return { ...p, status: instanceId === 'codex' && scenario === 'codex-offline' ? 'error' : 'ready', usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [window('primary', 10080, scenario === 'codex-exhausted' || (refresh && scenario === 'refresh-exhausted') || (scenario === 'parallel-quota' && attempts.some(a => a.modelSelection.instanceId === 'codex')) ? 100 : 0)] : [window('five_hour', 300, scenario === 'manual-five-hour-empty' ? 100 : 0), window('seven_day', 10080), window('seven_day_fable', 10080, scenario === 'manual-fable-empty' || (scenario === 'manual-fable-refresh-empty' && refresh) ? 100 : scenario === 'manual-fable-reserve' ? 99 : 0)] } };
     });
     t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
     t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
@@ -80,7 +82,16 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       }
     }
     try {
-      const result = await cycle(c, store, scenario === 'parallel-dry-run' ? { dryRun: true } : {});
+      const result = await cycle(c, store, manualQuota ? { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true } : scenario === 'parallel-dry-run' ? { dryRun: true } : {});
+      if (manualQuota) {
+        assert.equal(attempts.length, scenario === 'manual-five-hour-empty' ? 0 : 1);
+        if (attempts.length) assert.equal(attempts[0].modelSelection.model, scenario === 'manual-fable-reserve' ? 'claude-fable-5-1' : 'claude-opus-5');
+        if (scenario === 'manual-fable-empty') {
+          assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', model: 'fable', overrideLimits: true })).reason, 'quota-exhausted');
+          assert.equal(attempts.length, 1);
+        }
+        return;
+      }
       if (parallel) {
         if (scenario === 'parallel-dry-run') {
           assert.equal(attempts.length, 0);

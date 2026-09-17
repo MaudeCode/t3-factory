@@ -46,8 +46,17 @@ async function verifyMerged(project: Project, urls: string[]) {
   }
 }
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
-  for (const job of store.jobs().filter(j => j.state !== 'complete')) {
+  for (const job of store.jobs().filter(j => j.state !== 'dismissed')) {
     const t = threads.find(t => t.id === job.threadId);
+    if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
+      job.state = 'dismissed'; job.reason = 'Dismissed by settling the task in T3'; job.dismissedAt = new Date().toISOString();
+      job.dismissedBranch = t.branch ?? undefined; job.dismissedWorktreePath = t.worktreePath ?? undefined;
+      if (t.worktreePath && existsSync(t.worktreePath)) {
+        try { job.dismissedHead = await git(t.worktreePath, ['rev-parse', 'HEAD']); } catch { /* Keep unknown artifacts protected. */ }
+      }
+      store.save(job); log('job-dismissed', { jobId: job.id, threadId: job.threadId }); continue;
+    }
+    if (job.state === 'complete') continue;
     if (!t) {
       if (Date.now() - Date.parse(job.createdAt) > 5 * 60_000) {
         job.state = 'dispatching'; job.reason = 'Dispatch outcome unknown; retain the execution slot until T3 can be reconciled';
@@ -116,6 +125,7 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   for (const t of threads) {
     if (t.session?.providerName !== driver && t.modelSelection.instanceId !== driver) continue;
     const job = owned.get(t.id);
+    if (job?.state === 'dismissed' && t.settledOverride === 'settled' && !executing(t, monitoringTimeoutMinutes)) continue;
     if (job) {
       // T3 responses resume directly. Count replies even in already-completed factory threads.
       if (store.get(`seenOwned:${t.id}`) !== t.updatedAt) {
@@ -127,8 +137,8 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
         store.set(`seenOwned:${t.id}`, t.updatedAt);
       }
       if (job.lastPersonalActivity && job.lastPersonalActivity > last) last = job.lastPersonalActivity;
-      if (job.state === 'complete' && job.lastPersonalActivity && t.latestTurn?.completedAt && t.latestTurn.completedAt > last) last = t.latestTurn.completedAt;
-      if (job.state === 'complete' && executing(t, monitoringTimeoutMinutes, false)) { active = true; last = new Date().toISOString(); }
+      if (['complete', 'dismissed'].includes(job.state) && job.lastPersonalActivity && t.latestTurn?.completedAt && t.latestTurn.completedAt > last) last = t.latestTurn.completedAt;
+      if (['complete', 'dismissed'].includes(job.state) && executing(t, monitoringTimeoutMinutes, false)) { active = true; last = new Date().toISOString(); }
       continue;
     }
     // A personal CI/test watcher consumes no Claude turn and must not renew idle time.
@@ -148,13 +158,23 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   return { active, last, idleMinutes: Math.max(0, (Date.now() - Date.parse(last)) / 60_000) };
 }
 
-async function completedArtifacts(project: Project, history: Job[], threads: Thread[]) {
+async function historicalArtifacts(project: Project, history: Job[], threads: Thread[]) {
   const branches = new Map<string, string>(), inactiveThreads = new Set<string>();
   for (const job of history) {
     const thread = threads.find(t => t.id === job.threadId);
     const command = z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).safeParse(job.command);
-    const branch = command.success ? command.data.bootstrap.prepareWorktree.branch : thread?.branch;
+    const branch = job.dismissedBranch ?? (command.success ? command.data.bootstrap.prepareWorktree.branch : thread?.branch);
     if (!branch) continue;
+    if (job.state === 'dismissed') {
+      if (!job.dismissedAt || !job.dismissedHead) continue;
+      if (thread && (thread.settledOverride !== 'settled' || executing(thread) || thread.branch !== branch || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestTurn?.completedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
+      const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath;
+      if (worktreePath && existsSync(worktreePath)) {
+        const [head, changes] = await Promise.all([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
+        if (head !== job.dismissedHead || changes) continue;
+      }
+      branches.set(branch, job.dismissedHead); if (thread) inactiveThreads.add(thread.id); continue;
+    }
     for (const url of job.prUrls) {
       const u = new URL(url), prefix = `/${project.githubRepo}/pull/`;
       if (u.origin !== 'https://github.com' || !u.pathname.startsWith(prefix) || !/^\d+$/.test(u.pathname.slice(prefix.length))) continue;
@@ -181,7 +201,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   const projects = c.projects.filter(p => p.enabled);
   const all = new Map<string, Task>();
   for (const p of projects) for (const t of await listTasks(kaneo, p.kaneoId)) all.set(t.id, t);
-  const owned = new Map(jobs.filter(j => j.state !== 'complete').map(j => [j.taskId, j]));
+  const owned = new Map(jobs.filter(j => !['complete', 'dismissed'].includes(j.state)).map(j => [j.taskId, j]));
   const ready: Candidate[] = [], skipped: { key: string; reason: string }[] = [];
   const potential = [...all.values()].filter(t => {
     const p = projects.find(p => p.kaneoId === t.projectId)!;
@@ -235,11 +255,11 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
     for (const r of relations) {
       if (r.relationType === 'subtask' && r.sourceTaskId === t.id && !await isDone(r.targetTaskId)) reason = 'Umbrella has unfinished children; select leaves instead';
     }
-    const history = jobs.filter(j => j.taskId === t.id && j.state === 'complete');
+    const history = jobs.filter(j => j.taskId === t.id && ['complete', 'dismissed'].includes(j.state));
     let artifacts = { branches: new Map<string, string>(), inactiveThreads: new Set<string>() };
     if (!reason && history.length) {
-      try { artifacts = await completedArtifacts(p, history, threads); }
-      catch { reason = 'Previous completed work could not be verified; inspect its PR and worktree before restarting'; }
+      try { artifacts = await historicalArtifacts(p, history, threads); }
+      catch { reason = 'Previous work could not be verified; inspect its PR and worktree before restarting'; }
     }
     if (!reason && threads.some(s => !artifacts.inactiveThreads.has(s.id) && mentionsTicket(`${s.title}\n${s.branch ?? ''}`, key))) reason = 'Existing T3 thread or branch references this ticket';
     if (!reason) {
@@ -262,7 +282,7 @@ export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boo
 
 export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>()): Set<string> {
   const counts = new Map(planned);
-  for (const job of jobs.filter(j => j.state !== 'complete')) {
+  for (const job of jobs.filter(j => !['complete', 'dismissed'].includes(j.state))) {
     const thread = threads.find(t => t.id === job.threadId);
     if (!['running', 'dispatching'].includes(job.state) && !(thread && executing(thread, timeout))) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
@@ -308,7 +328,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
         const quota = await readModelQuota(t3, c, jobs, preset.id, !!options.manual);
         stream.quota ??= quota;
         const manualCodex = options.manual && driver === 'codex';
-        if (!quota.allowed && (manualCodex || !override)) reason = 'quota-budget';
+        if (!quota.hasAllowance) reason = 'quota-exhausted';
+        else if (!quota.allowed && (manualCodex || !override)) reason = 'quota-budget';
         else if (!manualCodex && !override) {
           if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver));
           const activity = activityCache.get(driver!)!;
@@ -404,18 +425,18 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (plan && quota.driver !== plan.driver) return decision('provider-mapping-changed');
     const isManualCodex = options.manual && quota.provider === 'Codex';
     const activity = await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, quota.provider === 'Codex' ? 'codex' : 'claudeAgent');
-    const gate = isManualCodex && !quota.allowed ? 'codex-quota-exhausted'
+    const gate = !quota.hasAllowance ? isManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted'
       : !override && !quota.allowed ? discovery ? 'discovery-quota-reserve' : 'quota-reserve'
       : c.maxWaitingPRs !== null && parked.length >= c.maxWaitingPRs ? 'waiting-cap'
       : !isManualCodex && !override && activity.active ? 'personal-provider-running'
       : !isManualCodex && !override && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
     queue.selected = selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
     if (options.doctor) return decision('doctor', { quota, activity, running: running.length, waiting: parked.length, gate: running.length ? 'autonomous-job-running' : gate, eligible: queue.ready.length, next: queue.selected, skipped: queue.skipped });
-    if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length });
+    if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length, ...(!quota.hasAllowance ? { message: 'The selected model has no allowance left. Choose another model or wait for its quota to reset.' } : {}) });
     let project: Project | undefined;
     if (queue.selected) project = c.projects.find(p => p.kaneoId === queue.selected!.projectId);
     else {
-      project = c.projects.filter(p => p.enabled && !plan?.skipProjects.has(p.kaneoId) && !jobs.some(j => j.projectId === p.kaneoId && j.kind === 'discovery' && j.state !== 'complete') && Number(store.get(`discoveryAfter:${p.kaneoId}`) ?? 0) <= Date.now())
+      project = c.projects.filter(p => p.enabled && !plan?.skipProjects.has(p.kaneoId) && !jobs.some(j => j.projectId === p.kaneoId && j.kind === 'discovery' && !['complete', 'dismissed'].includes(j.state)) && Number(store.get(`discoveryAfter:${p.kaneoId}`) ?? 0) <= Date.now())
         .toSorted((a, b) => Number(store.get(`discoveryLast:${a.kaneoId}`) ?? 0) - Number(store.get(`discoveryLast:${b.kaneoId}`) ?? 0))[0];
     }
     if (!project) return decision('no-eligible-work', { skipped: queue.skipped });
@@ -431,7 +452,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
     const currentManualCodex = options.manual && currentQuota.provider === 'Codex';
     const currentActivity = await personalActivity(t3, fresh.threads, store.jobs(), store, c.monitoringTimeoutMinutes, currentQuota.provider === 'Codex' ? 'codex' : 'claudeAgent');
-    if (currentManualCodex && !currentQuota.allowed) return decision('codex-quota-exhausted', { quota: currentQuota });
+    if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
     if (!override && ((!currentManualCodex && (currentActivity.active || currentActivity.idleMinutes < c.idleMinutes)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
@@ -456,7 +477,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
 }
 
 export function writeStatus(c: Config, store: Store) {
-  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().map(({ command, ...job }) => job) };
+  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => job) };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
   return result;
 }

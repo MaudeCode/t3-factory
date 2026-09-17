@@ -25,7 +25,7 @@ if (command === 'web') {
   const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, readState: () => {
     const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
     const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
-    const jobs = status.jobs ?? [];
+    const jobs = (status.jobs ?? []).filter((j: any) => j.state !== 'dismissed');
     status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map((j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, threadId: j.threadId, prUrls: j.prUrls, modelSelection: j.modelSelection, providerDriver: j.providerDriver, difficulty: j.difficulty }));
     return { config, status };
   } });

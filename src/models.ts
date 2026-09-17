@@ -54,7 +54,7 @@ export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: st
       }
     }
     return {
-      provider: name, driver: provider.driver, allowed: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > w.reserved) && (specificRemaining === null || specificRemaining > specificRequired),
+      provider: name, driver: provider.driver, hasAllowance: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > 0) && (specificRemaining === null || specificRemaining > 0), allowed: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > w.reserved) && (specificRemaining === null || specificRemaining > specificRequired),
       capturedAt: limits.checkedAt, windows,
       weeklyReserveApplied: provider.driver === 'codex' ? !manual : specificRemaining === null,
       factoryRouting: { model: preset.model, modelId: preset.id, reason: `Assigned model: ${preset.name}`, fableRemainingPercent: displayedRemaining },

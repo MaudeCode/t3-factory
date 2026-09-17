@@ -6,11 +6,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { Store, type Job } from '../src/store.ts';
-import { Kaneo } from '../src/clients.ts';
-import { inventory } from '../src/scheduler.ts';
+import { Kaneo, T3 } from '../src/clients.ts';
+import { inventory, reconcile, writeStatus } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 
-test('reopened tickets retain history while releasing completed claims and verified merged artifacts', async t => {
+for (const settled of [false, true]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-reopened-')), repo = join(dir, 'repo'), tree = join(dir, 'old-tree'); mkdirSync(repo);
   const git = (...args: string[]) => execFileSync('/usr/bin/git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
   git('init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'old work\n'); git('add', 'file');
@@ -34,12 +34,29 @@ test('reopened tickets retain history while releasing completed claims and verif
   });
   const job: Job = { id: 'old-job', kind: 'ticket', projectId: 'p', taskId: 'task', ticketKey: 'FIX-1', threadId: 'old-thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Merged', lastPersonalActivity: null, reportPath: join(dir, 'report'), prUrls: ['https://github.com/fixture/repo/pull/1'], command: { bootstrap: { prepareWorktree: { branch } } } };
   const thread: Thread = { id: job.threadId, title: 'Factory: FIX-1', projectId: 'tp', branch, worktreePath: tree, modelSelection: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, archivedAt: null, hasPendingApprovals: false, hasPendingUserInput: false, session: { status: 'stopped', providerName: 'claudeAgent', updatedAt: job.createdAt }, latestTurn: { state: 'completed', completedAt: job.createdAt } };
+  if (settled) { job.state = 'waiting'; job.completedAt = null; job.prUrls = []; thread.settledOverride = 'settled'; thread.latestTurn!.state = 'error'; }
   let store = new Store(c.stateDir); store.save(job);
   store.db.prepare('UPDATE jobs SET task_id=? WHERE id=?').run(job.taskId, job.id); store.close(); // Old schema claimed completed tickets forever.
   store = new Store(c.stateDir); const kaneo = new Kaneo(c.kaneo);
-  const inspect = () => inventory(c, kaneo, [thread], store.jobs(), store, 'FIX-1');
+  let visible = true;
+  const inspect = () => inventory(c, kaneo, visible ? [thread] : [], store.jobs(), store, 'FIX-1');
   try {
+    if (settled) {
+      const t3 = { dispatch: async () => { throw new Error('Settling must not send a turn'); } } as unknown as T3;
+      thread.latestTurn!.state = 'running'; thread.session!.status = 'running';
+      await reconcile(c, store, t3, kaneo, [thread]);
+      assert.notEqual(store.jobs()[0].state, 'dismissed', 'still-executing work must remain protected');
+      thread.latestTurn!.state = 'error'; thread.session!.status = 'stopped';
+      await reconcile(c, store, t3, kaneo, [thread]);
+      assert.equal(store.jobs()[0].state, 'dismissed');
+      assert.equal(writeStatus(c, store).jobs.length, 0, 'settled runs disappear from factory status');
+      assert.equal(store.db.prepare('SELECT task_id FROM jobs WHERE id=?').get(job.id)!.task_id, null);
+      thread.settledOverride = null;
+      assert.match((await inspect()).skipped[0].reason, /T3 thread/);
+      thread.settledOverride = 'settled';
+    }
     assert.equal((await inspect()).selected?.key, 'FIX-1');
+    if (settled) { visible = false; assert.equal((await inspect()).selected?.key, 'FIX-1', 'an archived settled task does not reclaim its ticket'); visible = true; }
     thread.session!.status = 'running'; thread.latestTurn!.state = 'running';
     assert.match((await inspect()).skipped[0].reason, /T3 thread/);
     thread.session!.status = 'stopped'; thread.latestTurn!.state = 'completed';
@@ -50,7 +67,7 @@ test('reopened tickets retain history while releasing completed claims and verif
     writeFileSync(join(tree, 'file'), 'new commit\n');
     execFileSync('/usr/bin/git', ['-C', tree, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'new work']);
     thread.worktreePath = null;
-    assert.match((await inspect()).skipped[0].reason, /Git branch/, 'a reused historical branch with new commits remains protected');
+    assert.match((await inspect()).skipped[0].reason, /Git branch|T3 thread/, 'a reused historical branch with new commits remains protected');
     execFileSync('/usr/bin/git', ['-C', tree, 'reset', '--hard', head]);
     const reopened = { ...job, id: 'new-job', threadId: 'new-thread', state: 'dispatching' as const, completedAt: null };
     store.save(reopened);

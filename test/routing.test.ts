@@ -24,9 +24,15 @@ test('budgets are independent pools shared by every model that uses them', async
   fableUsed = 85;
   assert.equal((await readModelQuota(t3, c, [], 'fable')).allowed, false);
   assert.equal((await readModelQuota(t3, c, [], 'opus')).allowed, true, 'Opus does not use the Fable pool');
+  fableUsed = 100;
+  assert.equal((await readModelQuota(t3, c, [], 'fable', true)).hasAllowance, false);
+  assert.equal((await readModelQuota(t3, c, [], 'opus', true)).hasAllowance, true);
   fableUsed = 0; weeklyUsed = 99;
   assert.equal((await readModelQuota(t3, c, [], 'fable')).allowed, true);
   assert.equal((await readModelQuota(t3, c, [], 'opus')).allowed, false);
+  weeklyUsed = 100;
+  assert.equal((await readModelQuota(t3, c, [], 'fable', true)).hasAllowance, true, 'dedicated allowance does not use the general weekly pool');
+  assert.equal((await readModelQuota(t3, c, [], 'opus', true)).hasAllowance, false);
   fiveUsed = 90;
   assert.equal((await readModelQuota(t3, c, [], 'fable')).allowed, false);
   assert.equal((await readModelQuota(t3, c, [], 'opus')).allowed, false, 'shared five-hour budget constrains both');
