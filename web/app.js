@@ -22,6 +22,7 @@ const state = {
   editModel: 0,
   project: 0,
   liveEnabled: false,
+  liveConcurrency: { claude: 1, codex: 1 },
 };
 const titles = {
   overview: "Overview",
@@ -56,7 +57,7 @@ function set(path, value) {
 const saveBar = () => ($("#save-bar").hidden = !dirty());
 const pathAttr = (path) => esc(JSON.stringify(path));
 const field = (title, path, type = "text", extra = "") =>
-  `<label class="field"><span>${esc(title)}</span><input data-path="${pathAttr(path)}" data-kind="${type}" type="${type === "number" ? "number" : "text"}" value="${esc(at(path))}" ${type === "number" ? 'min="0" step="any"' : ""} ${extra}></label>`;
+  `<label class="field"><span>${esc(title)}</span><input data-path="${pathAttr(path)}" data-kind="${type === "integer" ? "number" : type}" type="${["number", "integer"].includes(type) ? "number" : "text"}" value="${esc(at(path))}" ${type === "integer" ? 'min="1" step="1"' : type === "number" ? 'min="0" step="any"' : ""} ${extra}></label>`;
 const check = (title, path) =>
   `<label class="check"><input type="checkbox" data-path="${pathAttr(path)}" data-kind="boolean" ${at(path) ? "checked" : ""}><span>${esc(title)}</span></label>`;
 const select = (title, path, options) =>
@@ -120,6 +121,7 @@ async function load(reset = false) {
       state.base = clone(data.config);
     }
     state.liveEnabled = data.config.enabled;
+    state.liveConcurrency = data.config.concurrency;
     $("#login").hidden = true;
     $("#app").hidden = false;
     connection("Connected", "online");
@@ -209,12 +211,13 @@ function renderLive() {
       const active = jobs.filter(
         (j) => providerOf(j) === driver && ["running", "dispatching"].includes(j.state),
       );
+      const limit = state.liveConcurrency?.[driver === "codex" ? "codex" : "claude"] ?? 1;
       const direct = state.status.decision?.quota;
       const quota = direct?.driver === driver ? direct : stream.quota;
       const fable = quota?.factoryRouting?.fableRemainingPercent;
       return `<div>
   <div class="section-head"><h2>${driver === "codex" ? "Codex" : "Claude"}</h2><span class="hint">${esc(!enabled ? "Paused" : STREAM_REASONS[stream.reason] || "Watching the queue")}</span></div>
-  <div class="stat-num">${active.length}<small>running</small></div>
+  <div class="stat-num">${active.length}<small>running · automatic limit ${limit}</small></div>
   <p class="hint mono">${active.length ? active.map((j) => esc(j.ticketKey || "Discovery")).join(", ") : "Slot free"}</p>
   ${fable != null ? meter("Fable allowance", fable) : ""}
   ${(quota?.windows || []).map((w) => meter(w.name === "fiveHour" ? "Five-hour window" : "Weekly window", w.remaining)).join("")}
@@ -394,7 +397,12 @@ function automation() {
   </table>
 </section>`;
   return `
-<p class="lead">Each provider has one automatic slot. Reserves decline as the window resets. The minimum to start stays fixed. Running jobs always finish.</p>
+<p class="lead">Choose how much work each provider can run at once. Running jobs always finish.</p>
+<section class="section">
+  <div class="section-head"><h2>Simultaneous runs</h2></div>
+  <div class="form-grid">${field("Claude run limit", ["concurrency", "claude"], "integer")}${field("Codex run limit", ["concurrency", "codex"], "integer")}</div>
+  <p class="hint">Limits apply to automatic starts. Runs waiting for your input free a slot. Manual runs can exceed the limit and count toward it while active. Lowering a limit does not stop running work.</p>
+</section>
 <section class="section">
   <div class="section-head"><h2>Timing</h2></div>
   <div class="form-grid">${field("Provider idle time (minutes)", ["idleMinutes"], "number")}${field("Check interval (seconds)", ["pollSeconds"], "number")}</div>

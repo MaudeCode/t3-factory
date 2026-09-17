@@ -7,7 +7,7 @@ Control the queue from the command line, a macOS menu-bar app, or a web page. Au
 ## What it does
 
 - Ranks models and limits each one to a maximum ticket difficulty.
-- Runs one automatic job per provider, with independent Claude and Codex streams.
+- Sets independent simultaneous-run limits for Claude and Codex.
 - Reserves subscription quota according to the time remaining before reset.
 - Skips blocked, unclassified, or already-owned tickets.
 - Releases a provider's slot when a job needs human input, while preserving its task and worktree.

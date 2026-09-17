@@ -99,7 +99,9 @@ struct FactorySettingsView: View {
     private var automation: some View {
         Form {
             Section("Work streams") {
-                Text("Claude and Codex can each run one automatic job. Both draw from the same ticket queue; a paused or budget-limited provider does not block the other.").font(.callout).foregroundStyle(.secondary)
+                Text("Set independent limits for automatic starts. Waiting runs free a slot. Manual runs can exceed the limit and count toward it while active. Lowering a limit does not stop running work.").font(.callout).foregroundStyle(.secondary)
+                numberField("Claude run limit", path: ["concurrency", "claude"], unit: "runs")
+                numberField("Codex run limit", path: ["concurrency", "codex"], unit: "runs")
                 Button("Set model priority and difficulty limits") { page = "models" }
             }
             Section("When to start") {
