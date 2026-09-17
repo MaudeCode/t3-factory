@@ -11,7 +11,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | `enabled` | Allows new automatic work; explicit manual runs remain available while paused. |
 | `pollSeconds` | Time between cycles, at least 15 seconds. |
 | `idleMinutes` | Required inactivity for the relevant provider in T3. |
-| `concurrency.claude` / `concurrency.codex` | Positive integer limits for simultaneous runs per provider, default 1 each. They gate automatic starts; manual runs may exceed them. |
+| `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts; manual runs may exceed them. |
 | `maxWaitingPRs` | Maximum parked jobs before further dispatches are held; `null` means unlimited. |
 | `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. |
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |

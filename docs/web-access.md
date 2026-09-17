@@ -16,14 +16,14 @@ Set `FACTORY_AUTH_MODE=oidc` in `.env`. Register a confidential authorization-co
 | `OIDC_ISSUER` | Provider's HTTPS issuer URL |
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Client credentials |
 | `OIDC_REQUIRED_GROUP` | Exact group name required in UserInfo's `groups` array |
-| `OIDC_SESSION_HOURS` | Absolute factory session lifetime, default 24 hours |
+| `OIDC_SESSION_HOURS` | Absolute factory session lifetime, default 720 hours / 30 days |
 | `OIDC_RECHECK_SECONDS` | Membership recheck interval while in use, default 60, maximum 300 seconds |
 
 Pocket ID is a supported deployment option. Other OIDC providers must supply the same group claim and required protocol features; compatibility with every provider is not established.
 
-Sign-in uses state, nonce, PKCE, token validation, and a browser-bound transaction cookie. The app checks group membership itself, in addition to the provider's client restrictions. Missing membership or a failed identity recheck invalidates the session. Tokens stay on the server; the browser receives a Secure, HttpOnly session cookie. Access tokens can be refreshed within the absolute session lifetime.
+Sign-in uses state, nonce, PKCE, token validation, and a browser-bound transaction cookie. The app checks group membership itself, in addition to the provider's client restrictions. Missing membership or revoked credentials invalidate the session. A temporary identity-provider failure blocks the request with a retryable error but keeps the session for recovery. Tokens stay on the server; the browser receives a Secure, HttpOnly session cookie. Access tokens can be refreshed within the absolute session lifetime.
 
-OIDC mode disables pairing endpoints and rejects old pairing cookies. An incomplete configuration stops startup. Signing out removes the factory session without signing the user out of other applications. A web-service restart clears all factory sessions.
+OIDC mode disables pairing endpoints and rejects old pairing cookies. An incomplete configuration stops startup. Signing out removes the factory session without signing the user out of other applications. Sessions survive web-service restarts in `<stateDir>/web-sessions.json`, a private mode-0600 file containing session credentials. Restored sessions recheck membership before granting access. Changing the OIDC settings or public origin invalidates stored sessions. Set the provider client's refresh-token lifetime to at least the desired factory session lifetime; a short provider lifetime can require earlier sign-in.
 
 ## Device pairing
 

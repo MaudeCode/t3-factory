@@ -10,7 +10,7 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -31,6 +31,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     });
     const parallel = scenario.startsWith('parallel');
     if (parallel) c.concurrency = { claude: 2, codex: scenario === 'parallel-lowered' ? 1 : 3 };
+    if (scenario === 'parallel-claude-zero' || scenario === 'parallel-both-zero') c.concurrency.claude = 0;
+    if (scenario === 'parallel-codex-zero' || scenario === 'parallel-both-zero') c.concurrency.codex = 0;
     if (scenario === 'ceiling') c.models.forEach(m => { m.maxDifficulty = 'low'; });
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
     const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
@@ -90,12 +92,17 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         } else {
           const codex = attempts.filter(a => a.modelSelection.instanceId === 'codex');
           const claude = attempts.filter(a => a.modelSelection.instanceId === 'claudeAgent');
-          const expectedCounts: Record<string, number[]> = { parallel: [3, 2], 'parallel-partial': [2, 2], 'parallel-quota': [1, 2], 'parallel-resumed': [0, 2], 'parallel-lowered': [0, 2], 'parallel-discovery': [2, 0] };
+          const expectedCounts: Record<string, number[]> = { parallel: [3, 2], 'parallel-partial': [2, 2], 'parallel-quota': [1, 2], 'parallel-resumed': [0, 2], 'parallel-lowered': [0, 2], 'parallel-discovery': [2, 0], 'parallel-claude-zero': [3, 0], 'parallel-codex-zero': [0, 2], 'parallel-both-zero': [0, 0] };
           const expected = expectedCounts[scenario];
           assert.deepEqual([codex.length, claude.length], expected);
           assert.equal(new Set(attempts.map(a => a.threadId)).size, attempts.length);
           assert.equal(new Set(attempts.map(a => a.bootstrap.prepareWorktree.branch)).size, attempts.length);
           assert.ok(attempts.every(a => a.type === 'thread.turn.start'), 'lowering limits must never stop work');
+          if (scenario === 'parallel-both-zero') {
+            assert.ok((result as any).streams.every((s: any) => s.reason === 'provider-disabled'));
+            assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-1', model: 'astra', overrideLimits: true })).reason, 'dispatched');
+            assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', model: 'fable', overrideLimits: true })).reason, 'dispatched');
+          }
           if (scenario === 'parallel-discovery') assert.equal(new Set(attempts.map(a => a.bootstrap.createThread.projectId)).size, attempts.length);
           if (scenario === 'parallel') {
             await cycle(c, store);

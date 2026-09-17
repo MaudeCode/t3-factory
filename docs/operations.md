@@ -33,7 +33,7 @@ Manual jobs can overlap other runs and can start while automatic dispatch is pau
 
 Tickets are considered in priority order: urgent, high, medium, low, then no priority. Within a priority, the highest-ranked available model with a sufficient difficulty ceiling gets first choice. Project ticket counts, rotating ties, and oldest-ticket order break remaining ties.
 
-Claude and Codex have separate simultaneous-run limits, configured under Automation. Each defaults to one. Active factory runs, including manual runs, count toward the limit for new automatic starts. Waiting runs free capacity. Lowering a limit holds new starts until there is room; it does not stop running work. Each stream checks that provider's personal activity in T3. Scheduler prompts do not count as personal activity; user replies do. Inactive personal CI watchers do not keep extending the idle timer. The factory does not track usage outside T3.
+Claude and Codex have separate simultaneous-run limits, configured under Automation. Each defaults to one. Set either limit to zero to turn off automatic starts for that provider, including discovery; manual starts remain available. Active factory runs, including manual runs, count toward the limit for new automatic starts. Waiting runs free capacity. Lowering a limit holds new starts until there is room; it does not stop running work. Each stream checks that provider's personal activity in T3. Scheduler prompts do not count as personal activity; user replies do. Inactive personal CI watchers do not keep extending the idle timer. The factory does not track usage outside T3.
 
 A job waiting for human input releases its provider slot. Active turns and background workers keep it. Parked jobs are unlimited unless `maxWaitingPRs` sets a cap. A factory-owned passive monitor that exceeds the configured timeout is stopped and confirmed inactive before being parked. Personal sessions are never stopped by this rule.
 
@@ -85,4 +85,4 @@ The standard installer uses these paths:
 | `<stateDir>/reports` | Agent reports |
 | `<stateDir>/web-requests` | Web dispatch request records |
 
-Re-run the relevant installer after source or environment changes. Existing configuration, credentials, and state are preserved. The web service holds login sessions in memory, so restarting it requires another sign-in. Caddy is operated separately; see [web access](web-access.md).
+Re-run the relevant installer after source or environment changes. Existing configuration, credentials, and state are preserved. OIDC login sessions are stored privately under `stateDir` and survive web-service restarts. Caddy is operated separately; see [web access](web-access.md).

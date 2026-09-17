@@ -56,7 +56,7 @@ export const configSchema = z.preprocess(input => {
 }, z.object({
   enabled: z.boolean(), pollSeconds: positive.min(15), idleMinutes: positive,
   maxWaitingPRs: z.number().int().positive().nullable(),
-  concurrency: z.object({ claude: positive.int().default(1), codex: positive.int().default(1) }).strict().default({ claude: 1, codex: 1 }),
+  concurrency: z.object({ claude: z.number().int().min(0).default(1), codex: z.number().int().min(0).default(1) }).strict().default({ claude: 1, codex: 1 }),
   models: z.array(preset).min(1),
   monitoringTimeoutMinutes: positive.default(DEFAULT_MONITORING_TIMEOUT_MINUTES),
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
