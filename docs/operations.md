@@ -29,6 +29,8 @@ Use your own ticket key and configured model ID. Omitting the ticket selects the
 
 Manual jobs can overlap other runs and can start while automatic dispatch is paused. `--override-limits` skips the scheduler's idle and quota thresholds for that run. It cannot select a model whose applicable allowance is exhausted, even when the override is enabled. Automatic model selection skips exhausted presets and tries the next eligible model. It does not bypass provider-enforced limits, difficulty ceilings, readiness, dependencies, duplicate ownership, or merge gates. Manual Codex runs already omit the scheduler's idle and reserve checks; they still require valid provider quota information.
 
+If a specific manual ticket lacks the configured readiness label, the web page offers **Cancel** or **Run anyway**. Confirmation skips only that label requirement for that ticket and request; it does not add a label or change automatic scheduling. Status, classification, dependencies, model limits, quota availability, duplicate ownership, and merge gates remain enforced. CLI users can make the same explicit choice with `dispatch --ticket APP-123 --allow-missing-ready-label`.
+
 ## Automatic scheduling
 
 Tickets are considered in priority order: urgent, high, medium, low, then no priority. Within a priority, the highest-ranked available model with a sufficient difficulty ceiling gets first choice. Project ticket counts, rotating ties, and oldest-ticket order break remaining ties.

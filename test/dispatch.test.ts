@@ -10,7 +10,7 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -38,6 +38,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     if (scenario === 'ceiling') c.models.forEach(m => { m.maxDifficulty = 'low'; });
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
     const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
+    if (scenario === 'truncated-labels') tasks.forEach(task => { task.labels = ['app', 'web', 'contracts', 'sec', 'med', 'sf'].map(name => ({ name })); });
+    if (scenario === 'missing-sf-confirmation') tasks.forEach(task => { task.labels = [{ name: 'high' }]; });
     const threads: Thread[] = [], store = new Store(c.stateDir), attempts: Record<string, any>[] = [];
     const providers = ['codex', 'claudeAgent'].map(instanceId => ({ instanceId, driver: instanceId, status: 'ready', installed: true, enabled: true, models: c.models.filter(m => m.model.instanceId === instanceId).map(m => ({ slug: m.model.model })) }));
     t.mock.method(T3.prototype, 'providers', async () => providers);
@@ -54,9 +56,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     });
     t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
     t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-      if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId) }] }, pagination: { total: tasks.length, totalPages: 1 } };
+      if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
+    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId).map(task => scenario === 'truncated-labels' ? { ...task, labels: task.labels.slice(0, 3) } : task) }] }, pagination: { total: tasks.length, totalPages: 1 } };
       if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
-      if (name === 'get_task_relations') return [];
+      if (name === 'get_task_relations') return scenario === 'missing-sf-confirmation' && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
       throw new Error(name);
     });
     t.mock.method(T3.prototype, 'dispatch', async (command: Record<string, any>) => {
@@ -82,6 +85,31 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       }
     }
     try {
+      if (scenario === 'missing-sf-confirmation') {
+        const options = { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true };
+        const warning = await cycle(c, store, options);
+        assert.equal(warning.reason, 'ready-label-confirmation-required');
+        assert.equal((warning as any).requiredLabel, 'sf');
+        assert.equal((await cycle(c, store, { ...options, model: 'opus' })).reason, 'ready-label-confirmation-required');
+        assert.equal(attempts.length, 0);
+        await assert.rejects(cycle(c, store, { allowMissingReadyLabel: true, ticket: 'FIX-1' }), /specific manual ticket/);
+        await assert.rejects(cycle(c, store, { manual: true, allowMissingReadyLabel: true }), /specific manual ticket/);
+        const confirmed = { ...options, allowMissingReadyLabel: true };
+        assert.equal((await cycle(c, store, confirmed)).reason, 'dispatched');
+        assert.equal(attempts.length, 1);
+        assert.match(attempts[0].message.text, /explicitly confirmed this run without the sf readiness label/);
+        assert.match(attempts[0].message.text, /Merge authorization/);
+        assert.equal((await cycle(c, store, confirmed)).reason, 'no-eligible-ticket', 'confirmation cannot bypass ownership');
+        const blocked = await cycle(c, store, { ...confirmed, ticket: 'FIX-2' });
+        assert.equal(blocked.reason, 'no-eligible-ticket');
+        assert.match((blocked as any).skipped[0].reason, /blocker/);
+        tasks[2].labels = [];
+        assert.equal((await cycle(c, store, { ...confirmed, ticket: 'FIX-3' })).reason, 'no-eligible-ticket', 'classification remains required');
+        tasks[2].labels = [{ name: 'high' }]; tasks[2].status = 'done';
+        assert.equal((await cycle(c, store, { ...confirmed, ticket: 'FIX-3' })).reason, 'no-eligible-ticket', 'status remains required');
+        assert.equal(attempts.length, 1);
+        return;
+      }
       const result = await cycle(c, store, manualQuota ? { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true } : scenario === 'parallel-dry-run' ? { dryRun: true } : {});
       if (manualQuota) {
         assert.equal(attempts.length, scenario === 'manual-five-hour-empty' ? 0 : 1);

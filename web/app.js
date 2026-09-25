@@ -19,6 +19,7 @@ const state = {
   page: "overview",
   busy: false,
   operation: null,
+  readinessConfirmation: null,
   editModel: 0,
   project: 0,
   liveEnabled: false,
@@ -479,7 +480,7 @@ function renderOperation() {
     : d?.reason === "dispatched"
       ? `Started ${d.ticket || "ticket"} with ${d.model}.`
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
-  el.innerHTML = `<div class="operation" role="status">${esc(text)}${op.state === "uncertain" ? '<p class="hint">This request will not be resent automatically.</p>' : ""}${op.notReceived ? '<button class="btn btn-sm" data-action="retry-request">Retry saved request</button>' : ""}</div>`;
+  el.innerHTML = `<div class="operation" role="status">${esc(text)}${d?.reason === "ready-label-confirmation-required" ? '<button class="btn btn-sm" data-action="review-ready-label">Review and run anyway</button>' : ""}${op.state === "uncertain" ? '<p class="hint">This request will not be resent automatically.</p>' : ""}${op.notReceived ? '<button class="btn btn-sm" data-action="retry-request">Retry saved request</button>' : ""}</div>`;
 }
 function restoreOperation() {
   try {
@@ -494,7 +495,10 @@ async function pollOperation() {
     state.operation = await api("/api/operations/" + state.operation.id);
     saveOperation();
     renderOperation();
-    if (state.operation.state !== "running") await load();
+    if (state.operation.state !== "running") {
+      await load();
+      showReadinessConfirmation();
+    }
   } catch (error) {
     if ($("#app").hidden) return;
     if (error.status === 404) {
@@ -523,6 +527,32 @@ async function dispatch(id, input) {
   });
   saveOperation();
 }
+function showReadinessConfirmation() {
+  const op = state.operation;
+  if (op?.result?.data?.reason !== "ready-label-confirmation-required" || !op.input?.ticket || op.input.allowMissingReadyLabel) return;
+  const label = op.result.data.requiredLabel;
+  state.readinessConfirmation = { id: op.id, input: clone(op.input) };
+  $("#readiness-title").textContent = `Run ${op.input.ticket.toUpperCase()} without ${label}?`;
+  $("#readiness-description").textContent = `This ticket is not marked ${label}. Run it anyway? This skips only the readiness-label requirement for this run. Dependency, difficulty, quota, and duplicate-run checks still apply.`;
+  if (!$("#readiness-dialog").open) $("#readiness-dialog").showModal();
+}
+async function startRun(input) {
+  if (state.busy || state.operation?.state === "running") return;
+  state.busy = true;
+  const id = uuid();
+  state.operation = { id, input, state: "running" };
+  saveOperation();
+  renderOperation();
+  try {
+    await dispatch(id, input);
+  } catch (error) {
+    message(error.message, true);
+  } finally {
+    state.busy = false;
+    renderOperation();
+    pollOperation();
+  }
+}
 async function catalog() {
   state.providers = (await api("/api/models")).providers;
 }
@@ -532,6 +562,17 @@ async function action(name, button) {
   if (state.busy) return;
   try {
     switch (name) {
+      case "review-ready-label":
+        showReadinessConfirmation();
+        break;
+      case "run-without-ready-label": {
+        const confirmation = state.readinessConfirmation;
+        if (!confirmation || confirmation.id !== state.operation?.id) return;
+        $("#readiness-dialog").close();
+        state.readinessConfirmation = null;
+        await startRun({ ...confirmation.input, allowMissingReadyLabel: true });
+        break;
+      }
       case "retry-request":
         state.busy = true;
         await dispatch(state.operation.id, state.operation.input);
@@ -694,7 +735,7 @@ document.addEventListener("change", (event) => {
     message(error.message, true);
   }
 });
-$("#model-dialog").addEventListener("click", (event) => {
+for (const selector of ["#model-dialog", "#readiness-dialog"]) $(selector).addEventListener("click", (event) => {
   const dialog = event.currentTarget;
   if (event.target !== dialog) return;
   const bounds = dialog.getBoundingClientRect();
@@ -702,6 +743,7 @@ $("#model-dialog").addEventListener("click", (event) => {
       event.clientY < bounds.top || event.clientY > bounds.bottom)
     dialog.close();
 });
+$("#readiness-dialog").addEventListener("close", () => { state.readinessConfirmation = null; });
 $("#model-dialog").addEventListener("close", () => {
   if (state.page === "models") render();
 });
@@ -719,25 +761,11 @@ document.addEventListener("submit", async (event) => {
   }
   if (event.target.id === "run-form") {
     if (state.busy || state.operation?.state === "running") return;
-    state.busy = true;
-    const id = uuid(),
-      input = {
-        ticket: $("#run-ticket").value.trim(),
-        model: $("#run-model").value,
-        overrideLimits: $("#run-override").checked,
-      };
-    state.operation = { id, input, state: "running" };
-    saveOperation();
-    renderOperation();
-    try {
-      await dispatch(id, input);
-    } catch (error) {
-      message(error.message, true);
-    } finally {
-      state.busy = false;
-      renderOperation();
-      pollOperation();
-    }
+    await startRun({
+      ticket: $("#run-ticket").value.trim(),
+      model: $("#run-model").value,
+      overrideLimits: $("#run-override").checked,
+    });
   }
 });
 

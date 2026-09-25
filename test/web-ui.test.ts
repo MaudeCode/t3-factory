@@ -19,6 +19,7 @@ function ui() {
         },
         getBoundingClientRect: () => ({ left: 100, right: 500, top: 100, bottom: 600 }),
         close() { this.open = false; },
+        showModal() { this.open = true; },
       });
       return nodes.get(selector);
     },
@@ -73,4 +74,28 @@ test('provider limit inputs retain zero as a numeric setting', async () => {
   const html = runInContext('field("Claude run limit", ["concurrency", "claude"], "integer")', context);
   assert.match(html, /min="0" step="1"/);
   assert.match(html, /value="0"/);
+});
+
+
+test('missing-label confirmation cancels safely and binds Run anyway to the original ticket', async () => {
+  const { context, document, fire } = ui();
+  runInContext(`
+    state.operation = { id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'ready-label-confirmation-required', requiredLabel: 'sf' } } };
+    startRun = async input => { globalThis.started = input; };
+    showReadinessConfirmation();
+  `, context);
+  assert.equal(document.querySelector('#readiness-dialog').open, true);
+  assert.match(document.querySelector('#readiness-description').textContent, /skips only/);
+  await fire('#readiness-dialog:close', document.querySelector('#readiness-dialog'));
+  await runInContext('action("run-without-ready-label")', context);
+  assert.equal(runInContext('globalThis.started', context), undefined, 'Cancel cannot dispatch');
+  runInContext('showReadinessConfirmation(); state.operation.id = "different";', context);
+  await runInContext('action("run-without-ready-label")', context);
+  assert.equal(runInContext('globalThis.started', context), undefined, 'stale confirmation cannot dispatch');
+  runInContext('state.operation.id = "original"; showReadinessConfirmation();', context);
+  await runInContext('action("run-without-ready-label")', context);
+  assert.equal(runInContext('globalThis.started.ticket', context), 'APP-1');
+  assert.equal(runInContext('globalThis.started.model', context), 'opus');
+  assert.equal(runInContext('globalThis.started.allowMissingReadyLabel', context), true);
+  assert.equal(document.querySelector('#readiness-dialog').open, false);
 });

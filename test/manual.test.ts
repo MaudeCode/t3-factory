@@ -56,6 +56,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
   t.mock.method(T3.prototype, 'dispatch', async (command: Record<string, any>) => { dispatches.push(command); return { sequence: 1 }; });
   t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
   t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
+    if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks }] }, pagination: { total: tasks.length, totalPages: 1 } };
     if (name === 'get_task') return tasks.find(t => t.id === args.taskId);
     if (name === 'get_task_relations') return blocked && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];

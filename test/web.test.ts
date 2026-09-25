@@ -195,12 +195,27 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
       ).status,
       400,
     );
+    assert.equal((await request("/api/dispatch", {
+      method: "POST", headers: { Cookie: cookie, "Idempotency-Key": id },
+      body: JSON.stringify({ ...input, allowMissingReadyLabel: true }),
+    })).status, 409, "confirmation is a new request, not an idempotency replay");
+    assert.equal((await request("/api/dispatch", {
+      method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() },
+      body: JSON.stringify({ model: "astra", allowMissingReadyLabel: true }),
+    })).status, 400, "confirmation requires a ticket");
     finish({ code: 0, data: { reason: "dispatched", ticket: "APP-8" } });
     const result = await (
       await request(`/api/operations/${id}`, { headers: { Cookie: cookie } })
     ).json();
     assert.equal(result.state, "done");
     assert.equal(result.result.data.ticket, "APP-8");
+    const confirmedId = randomUUID();
+    assert.equal((await request("/api/dispatch", {
+      method: "POST", headers: { Cookie: cookie, "Idempotency-Key": confirmedId },
+      body: JSON.stringify({ ...input, allowMissingReadyLabel: true }),
+    })).status, 202);
+    assert.ok(calls.at(-1)!.args.includes("--allow-missing-ready-label"));
+    finish({ code: 0, data: { reason: "dispatched", ticket: "APP-8" } });
     assert.equal(
       (
         await request("/api/operations/not-a-uuid", {
