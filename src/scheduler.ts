@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { T3, Kaneo, listTasks, taskSchema, type Task } from './clients.ts';
+import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
 import { executing, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
 import { Store, type Job } from './store.ts';
 import { promptFor } from './prompts.ts';
@@ -197,20 +197,22 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
   return { branches, inactiveThreads };
 }
 
-export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string) {
+export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, allowMissingReadyLabel = false) {
   const projects = c.projects.filter(p => p.enabled);
   const all = new Map<string, Task>();
-  for (const p of projects) for (const t of await listTasks(kaneo, p.kaneoId)) all.set(t.id, t);
+  const labels = await listTaskLabels(kaneo);
+  for (const p of projects) for (const t of await listTasks(kaneo, p.kaneoId, labels)) all.set(t.id, t);
   const owned = new Map(jobs.filter(j => !['complete', 'dismissed'].includes(j.state)).map(j => [j.taskId, j]));
-  const ready: Candidate[] = [], skipped: { key: string; reason: string }[] = [];
+  const ready: Candidate[] = [], skipped: { key: string; reason: string; missingReadyLabel?: boolean }[] = [];
   const potential = [...all.values()].filter(t => {
     const p = projects.find(p => p.kaneoId === t.projectId)!;
     const key = `${p.key}-${t.number}`;
     if (ticketKey && key !== ticketKey) return false;
+    const missingReadyLabel = !t.labels?.some(l => l.name === c.kaneo.readyLabel) && !(ticketKey === key && allowMissingReadyLabel);
     const reason = !p.readyStatuses.includes(t.status) ? `Ticket is ${t.status}; it must be in ${p.readyStatuses.join(' or ')}`
-      : !t.labels?.some(l => l.name === c.kaneo.readyLabel) ? `Ticket is missing the ${c.kaneo.readyLabel} label`
-      : owned.has(t.id) ? `Ticket already has a ${owned.get(t.id)!.state} factory run` : '';
-    if (reason && ticketKey) skipped.push({ key, reason });
+      : owned.has(t.id) ? `Ticket already has a ${owned.get(t.id)!.state} factory run`
+      : missingReadyLabel ? `Ticket is missing the ${c.kaneo.readyLabel} label` : '';
+    if (reason && ticketKey) skipped.push({ key, reason, ...(missingReadyLabel && p.readyStatuses.includes(t.status) && !owned.has(t.id) ? { missingReadyLabel: true } : {}) });
     return !reason;
   });
   if (ticketKey && ![...all.values()].some(t => `${projects.find(p => p.kaneoId === t.projectId)!.key}-${t.number}` === ticketKey)) skipped.push({ key: ticketKey, reason: 'Ticket was not found in the enabled project' });
@@ -278,7 +280,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kaneoId)) };
 }
 
-export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; ticket?: string; model?: string; }
+export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; ticket?: string; model?: string; }
 
 export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>()): Set<string> {
   const counts = new Map(planned);
@@ -295,6 +297,7 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}) {
+  if (options.allowMissingReadyLabel && (!options.manual || !options.ticket?.trim())) throw new Error('The readiness-label override requires a specific manual ticket');
   if (options.manual && options.model && options.model !== 'auto') return dispatchOne(c, store, options);
   if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
@@ -342,7 +345,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     }
     // Paused: provider status and quota stay fresh, nothing is dispatched.
     if (!c.enabled && !options.manual && !options.doctor) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams }); }
-    const queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
+    const queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel);
+    if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     const candidates = [...queue.ready];
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
@@ -415,7 +419,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
     if (plan && !options.manual && busyProviders(jobs, shell.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('provider-running', { driver: plan.driver });
-    const queue = await inventory(c, kaneo, shell.threads, jobs, store, ticketKey);
+    const queue = await inventory(c, kaneo, shell.threads, jobs, store, ticketKey, !!options.manual && !!options.allowMissingReadyLabel);
+    if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: ticketKey, requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     const discovery = !ticketKey && !options.manual;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
@@ -444,7 +449,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (queue.selected) {
       const task = taskSchema.parse(await kaneo.call('get_task', { taskId: queue.selected.id }));
       if (task.projectId !== project.kaneoId || !project.readyStatuses.includes(task.status)) return decision('ticket-changed-before-dispatch');
-      const recheck = await inventory(c, kaneo, (await t3.shell()).threads, store.jobs(), store, ticketKey);
+      const recheck = await inventory(c, kaneo, (await t3.shell()).threads, store.jobs(), store, ticketKey, !!options.manual && !!options.allowMissingReadyLabel);
       if (recheck.selected?.id !== task.id || !acceptsDifficulty(preset, recheck.selected)) return decision('ticket-order-or-eligibility-changed');
     }
     const fresh = await t3.shell();
@@ -457,7 +462,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
-    const modelReason = (options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason;
+    const modelReason = (options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kaneo.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');
     const now = new Date().toISOString(), id = randomUUID();
     const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: queue.selected ? 'ticket' : 'discovery', projectId: project.kaneoId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
     const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : `Factory discovery: ${project.name}`;

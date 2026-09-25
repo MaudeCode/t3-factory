@@ -81,15 +81,29 @@ export const taskSchema = z.object({
   status: z.string(), createdAt: z.string(), labels: z.array(z.object({ name: z.string() }).passthrough()).optional(),
 }).passthrough();
 export type Task = z.infer<typeof taskSchema>;
-export async function listTasks(kaneo: Kaneo, projectId: string): Promise<Task[]> {
+type TaskLabels = Map<string, { name: string }[]>;
+export async function listTaskLabels(kaneo: Kaneo): Promise<TaskLabels> {
+  const rows = z.array(z.object({ name: z.string().min(1), taskId: z.string().nullable(), workspaceId: z.string(), deletionStartedAt: z.string().nullish() }).passthrough())
+    .parse(await kaneo.call('list_workspace_labels', { workspaceId: kaneo.config.workspaceId }));
+  const labels: TaskLabels = new Map();
+  for (const row of rows) {
+    if (row.workspaceId !== kaneo.config.workspaceId) throw new Error('Kaneo label workspace mismatch');
+    if (!row.taskId || row.deletionStartedAt) continue;
+    if (!labels.has(row.taskId)) labels.set(row.taskId, []);
+    labels.get(row.taskId)!.push({ name: row.name });
+  }
+  return labels;
+}
+export async function listTasks(kaneo: Kaneo, projectId: string, labels?: TaskLabels): Promise<Task[]> {
+  // Task-list labels are only a capped display preview. Use complete task associations.
+  const taskLabels = labels ?? await listTaskLabels(kaneo);
   const tasks = new Map<string, Task>();
   for (let page = 1; ; page++) {
-    const listedTask = taskSchema.extend({ labels: z.array(z.object({ name: z.string() }).passthrough()) });
-    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(listedTask) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await kaneo.call('list_tasks', { projectId, page, limit: 100 }));
+    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(taskSchema) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await kaneo.call('list_tasks', { projectId, page, limit: 100 }));
     if (r.data.workspaceId !== kaneo.config.workspaceId) throw new Error('Kaneo workspace mismatch');
     for (const col of r.data.columns) for (const task of col.tasks) {
       if (task.projectId !== projectId) throw new Error('Kaneo project mismatch');
-      tasks.set(task.id, task);
+      tasks.set(task.id, { ...task, labels: taskLabels.get(task.id) ?? [] });
     }
     if (page >= r.pagination.totalPages) break;
     if (page > 100) throw new Error('Kaneo pagination exceeded 100 pages');

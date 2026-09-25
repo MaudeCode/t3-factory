@@ -66,7 +66,7 @@ if (command === 'web') {
   const c = loadConfig(configPath), store = new Store(c.stateDir);
   console.log(JSON.stringify(writeStatus(c, store), null, 2)); store.close();
 } else if (['doctor', 'once', 'run', 'dispatch'].includes(command)) {
-  const options: CycleOptions = { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor', manual: command === 'dispatch', overrideLimits: process.argv.includes('--override-limits') };
+  const options: CycleOptions = { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor', manual: command === 'dispatch', overrideLimits: process.argv.includes('--override-limits'), allowMissingReadyLabel: process.argv.includes('--allow-missing-ready-label') };
   if (command === 'dispatch') {
     const args = process.argv.slice(3);
     for (let i = 0; i < args.length; i++) {
@@ -75,7 +75,7 @@ if (command === 'web') {
         const value = args[++i];
         if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
         options.model = value as CycleOptions['model'];
-      } else if (!['--override-limits', '--dry-run'].includes(args[i])) throw new Error(`Unknown dispatch argument: ${args[i]}`);
+      } else if (!['--override-limits', '--dry-run', '--allow-missing-ready-label'].includes(args[i])) throw new Error(`Unknown dispatch argument: ${args[i]}`);
     }
     if (args.includes('--ticket') && !options.ticket) throw new Error('--ticket requires a ticket key');
   }
@@ -112,6 +112,6 @@ if (command === 'web') {
     await delay(seconds * 1000, undefined, { signal: signal.signal }).catch(() => {});
   } while (!stop);
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | config-get | config-save | model-catalog | web | web-pair | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | config-get | config-save | model-catalog | web | web-pair | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--dry-run]');
   process.exitCode = 2;
 }

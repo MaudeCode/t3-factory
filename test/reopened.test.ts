@@ -28,6 +28,7 @@ for (const settled of [false, true]) test(`historical ownership releases safely:
   });
   const task = { id: 'task', projectId: 'p', number: 1, title: 'Reopened work', status: 'to-do', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'med' }] };
   t.mock.method(Kaneo.prototype, 'call', async (name: string) => {
+    if (name === 'list_workspace_labels') return [task].flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: [task] }] }, pagination: { total: 1, totalPages: 1 } };
     if (name === 'get_task_relations') return [];
     throw new Error(name);

@@ -67,8 +67,10 @@ const dispatchSchema = z
       .regex(/^[a-z][a-z0-9-]*$/)
       .default("auto"),
     overrideLimits: z.boolean().default(true),
+    allowMissingReadyLabel: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .refine(input => !input.allowMissingReadyLabel || !!input.ticket, "The readiness-label override requires a specific ticket");
 const requestId = z.string().uuid();
 
 export function runFactory(args: string[], input?: unknown): Promise<Result> {
@@ -384,7 +386,7 @@ export function createFactoryWeb(options: {
             const previous = JSON.parse(
               readFileSync(file, "utf8"),
             ) as Operation;
-            if (JSON.stringify(previous.input) !== JSON.stringify(input))
+            if (JSON.stringify(dispatchSchema.parse(previous.input)) !== JSON.stringify(input))
               return json(res, 409, {
                 message: "Request ID already belongs to another dispatch",
               });
@@ -406,6 +408,7 @@ export function createFactoryWeb(options: {
             input.model,
             ...(input.ticket ? ["--ticket", input.ticket.toUpperCase()] : []),
             ...(input.overrideLimits ? ["--override-limits"] : []),
+            ...(input.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
           ];
           void run(args)
             .then((result) =>
