@@ -57,12 +57,16 @@ enum FactoryIcon {
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: ""); windowItem.submenu = windowMenu; menu.addItem(windowItem)
         NSApp.mainMenu = menu
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        // Keep this identity stable so menu-bar managers can restore the saved placement.
+        item.autosaveName = "T3 Factory"
         item.button?.image = FactoryIcon.image
+        item.button?.setAccessibilityIdentifier("T3 Factory")
         item.button?.setAccessibilityLabel("T3 Factory")
         item.button?.toolTip = "T3 Factory · Right-click for Settings"
         item.button?.target = self
         item.button?.action = #selector(openFromStatusBar(_:))
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        item.button?.window?.title = "T3 Factory"
         statusItem = item
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: FactoryMenuView(model: FactoryModel.shared).frame(height: 600))
