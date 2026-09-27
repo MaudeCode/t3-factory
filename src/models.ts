@@ -5,6 +5,7 @@ import { providerQuotaSnapshot, quotaDecision, reserveAt } from './policy.ts';
 import type { Job } from './store.ts';
 
 type ModelConfig = Pick<Config, 'models' | 'quota'>;
+class QuotaRefreshError extends Error {}
 
 export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false, refresh = false) {
   const preset = configuredModel(c, id);
@@ -17,9 +18,9 @@ export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: st
     if (!['codex', 'claudeAgent'].includes(provider.driver) || !provider.enabled || !provider.installed || provider.status !== 'ready') throw new Error(`Configured ${name} provider is not ready in T3`);
     if (!provider.models.some(m => m.slug === preset.model.model || m.aliases?.includes(preset.model.model))) throw new Error(`T3 does not advertise model ${preset.model.model}`);
     const limits = provider.usageLimits;
-    if (!limits || limits.unavailable) throw new Error(`T3 could not read ${name} subscription quota`);
+    if (!limits || limits.unavailable) throw new QuotaRefreshError(`T3 could not read ${name} subscription quota`);
     const now = Date.now(), checked = Date.parse(limits.checkedAt);
-    if (!Number.isFinite(checked) || checked <= consumedAfter || checked > now + 60_000 || now - checked > c.quota.maxAgeSeconds * 1000 || (force && checked < requestedAt - 1000)) throw new Error(`${name} quota snapshot is stale; refresh required`);
+    if (!Number.isFinite(checked) || checked <= consumedAfter || checked > now + 60_000 || now - checked > c.quota.maxAgeSeconds * 1000 || (force && checked < requestedAt - 1000)) throw new QuotaRefreshError(`${name} quota snapshot is stale`);
     let windows: { name: string; remaining: number; reserved: number; resetsAt: string }[];
     let specificRemaining: number | null = null;
     let specificRequired = 0;
@@ -60,6 +61,13 @@ export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: st
       factoryRouting: { model: preset.model, modelId: preset.id, reason: `Assigned model: ${preset.name}`, fableRemainingPercent: displayedRemaining },
     };
   };
-  try { return await read(refresh); }
-  catch (error) { if (refresh) throw error; return read(true); }
+  for (let attempt = 0; ; attempt++) {
+    const force = refresh || attempt > 0;
+    try { return await read(force); }
+    catch (error) {
+      if (attempt < (refresh ? 1 : 2) && (!force || error instanceof QuotaRefreshError)) continue;
+      if (error instanceof QuotaRefreshError) throw new Error(`Quota automatic refresh failed: ${error.message}. No run was started.`, { cause: error });
+      throw error;
+    }
+  }
 }
