@@ -41,6 +41,8 @@ The integration uses application APIs that can change between T3 builds. Matchin
 
 Dispatch goes through RPC because T3's plain HTTP dispatcher does not perform the required worktree preparation. The scheduler validates the fields it consumes and stops affected dispatches when the contract is incompatible. It does not edit T3's database or fall back to driving its UI.
 
+Quota refreshes target the selected provider with `server.refreshProviders({ instanceId, refreshModels: true })`. Despite its name, `refreshModels` also invalidates T3's cached capability and usage probe. A refresh without that flag can return the old quota snapshot. Factory retries stale reads once with cache invalidation and still rejects quota that remains stale.
+
 Run `doctor` against your actual T3 build before enabling automatic work. Live verification requires your own credentials and configured projects; keep those outside tracked files.
 
 ## Changes and review
