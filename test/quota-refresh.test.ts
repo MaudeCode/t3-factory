@@ -6,7 +6,7 @@ import type { Config } from '../src/config.ts';
 
 test('stale quota automatically bypasses the T3 probe cache over RPC', async t => {
   const old = new Date(Date.now() - 600_000).toISOString();
-  let checkedAt = old, refreshFails = false;
+  let checkedAt = old, failedRefreshes = 0;
   const requests: { tag: string; payload: Record<string, unknown> }[] = [];
   const provider = () => ({
     instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', enabled: true, installed: true,
@@ -22,7 +22,10 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
       const message = JSON.parse(data);
       if (message._tag !== 'Request') return;
       requests.push(message);
-      if (message.tag === 'server.refreshProviders' && message.payload.refreshModels === true && !refreshFails) checkedAt = new Date().toISOString();
+      if (message.tag === 'server.refreshProviders' && message.payload.refreshModels === true) {
+        if (failedRefreshes > 0) failedRefreshes--;
+        else checkedAt = new Date().toISOString();
+      }
       queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
         _tag: 'Exit', requestId: message.id, exit: { _tag: 'Success', value: { providers: [provider()] } },
       }) })));
@@ -47,7 +50,15 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
   await readModelQuota(t3, c, [], 'opus');
   assert.equal(requests.some(r => r.tag === 'server.refreshProviders'), false, 'fresh quota avoids unnecessary probes');
 
-  checkedAt = old; refreshFails = true; requests.length = 0;
-  await assert.rejects(readModelQuota(t3, c, [], 'opus'), /snapshot is stale/);
-  assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 1, 'failed refresh stays bounded and never permits stale quota');
+  checkedAt = old; failedRefreshes = 1; requests.length = 0;
+  assert.equal((await readModelQuota(t3, c, [], 'opus')).hasAllowance, true, 'retry a transient probe failure automatically');
+  assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2);
+
+  checkedAt = old; failedRefreshes = 1; requests.length = 0;
+  assert.equal((await readModelQuota(t3, c, [], 'opus', true, true)).hasAllowance, true, 'dispatch-boundary refresh also retries a transient failure');
+  assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2);
+
+  checkedAt = old; failedRefreshes = 5; requests.length = 0;
+  await assert.rejects(readModelQuota(t3, c, [], 'opus'), /automatic refresh failed.*snapshot is stale/);
+  assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2, 'failed refresh stays bounded and never permits stale quota');
 });
