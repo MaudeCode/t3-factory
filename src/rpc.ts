@@ -10,7 +10,7 @@ import * as Socket from 'effect/unstable/socket/Socket';
 // Same transport and method contracts as T3. Validate the fields we consume at the caller.
 const group = RpcGroup.make(
   Rpc.make('server.getConfig', { payload: Schema.Struct({}), success: Schema.Unknown, error: Schema.Unknown }),
-  Rpc.make('server.refreshProviders', { payload: Schema.Struct({ instanceId: Schema.String }), success: Schema.Unknown, error: Schema.Unknown }),
+  Rpc.make('server.refreshProviders', { payload: Schema.Struct({ instanceId: Schema.String, refreshModels: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('orchestration.dispatchCommand', { payload: Schema.Unknown, success: Schema.Unknown, error: Schema.Unknown }),
 );
 export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown }): Promise<unknown> {
@@ -21,7 +21,8 @@ export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; r
   return Effect.runPromise(Effect.gen(function* () {
     const client = yield* RpcClient.make(group);
     if (action.type === 'dispatch') return yield* client['orchestration.dispatchCommand'](action.command);
-    if (action.refreshInstance) yield* client['server.refreshProviders']({ instanceId: action.refreshInstance });
+    // T3 only invalidates its cached capability/usage probe when refreshModels is set.
+    if (action.refreshInstance) yield* client['server.refreshProviders']({ instanceId: action.refreshInstance, refreshModels: true });
     return yield* client['server.getConfig']({});
   }).pipe(Effect.provide(protocol), Effect.scoped, Effect.timeout('60 seconds')));
 }
