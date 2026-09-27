@@ -2,5 +2,10 @@
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 	}
-	reverse_proxy {$FACTORY_WEB_UPSTREAM}
+	reverse_proxy {$FACTORY_WEB_UPSTREAM} {
+		transport http {
+			# Retire idle connections before the Node server's default five-second timeout.
+			keepalive 2s
+		}
+	}
 }

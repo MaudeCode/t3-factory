@@ -40,6 +40,33 @@ function ui() {
   return { context, document, fire };
 }
 
+test('API recovers a transient empty proxy response on reads without resending writes', async () => {
+  const { context, document } = ui();
+  let calls = 0;
+  context.fetch = async () => ++calls === 1 ? new Response('', { status: 502 }) : Response.json({ state: 'done' });
+  const result = await runInContext('api("/api/operations/saved-request")', context);
+  assert.equal(result.state, 'done');
+  assert.equal(calls, 2);
+
+  calls = 0;
+  context.fetch = async () => { calls++; return new Response('<html>Unavailable</html>', { status: 503 }); };
+  await assert.rejects(runInContext('api("/api/dispatch", { method: "POST", body: "{}" })', context), { status: 503, message: /HTTP 503/ });
+  assert.equal(calls, 1, 'a lost dispatch response must be reconciled using its saved ID, never resent by the API helper');
+
+  calls = 0;
+  context.fetch = async () => { calls++; return new Response('', { status: 502 }); };
+  await assert.rejects(runInContext('api("/api/state")', context), { status: 502, message: /HTTP 502/ });
+  assert.equal(calls, 2, 'persistent gateway failures do not cause an unbounded retry loop');
+
+  context.fetch = async () => new Response('', { status: 401 });
+  document.querySelector('#login').hidden = true;
+  await assert.rejects(runInContext('api("/api/state")', context), { status: 401 });
+  assert.equal(document.querySelector('#login').hidden, false, 'empty auth responses still open sign-in');
+
+  context.fetch = async () => new Response('');
+  await assert.rejects(runInContext('api("/api/state")', context), /empty or invalid response/);
+});
+
 test('Done keeps native dialog submission available before and after model edits', async () => {
   const { context, document, fire } = ui();
   assert.equal((await fire('submit', { id: '', method: 'dialog' })).defaultPrevented, false);

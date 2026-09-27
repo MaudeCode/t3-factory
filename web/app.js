@@ -76,21 +76,25 @@ function message(text, error = false) {
   el.hidden = false;
 }
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers,
-    },
-  });
-  const data = await response.json();
-  if (!response.ok) {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(path, {
+      ...options,
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
+      },
+    });
+    const data = await response.json().catch(() => null);
+    if (response.ok && data !== null) return data;
+    // A proxy can return an empty/HTML error. Retry reads only; dispatches keep their saved request ID.
+    if (attempt === 0 && (options.method || "GET").toUpperCase() === "GET" && [502, 503, 504].includes(response.status)) continue;
     if (response.status === 401) showLogin();
-    const error = new Error(data.message || data.reason || `Request failed (${response.status})`);
+    const error = new Error(data?.message || data?.reason || (response.ok
+      ? "Factory returned an empty or invalid response. Check request status before retrying."
+      : `Factory request failed (HTTP ${response.status}).`));
     error.status = response.status;
     throw error;
   }
-  return data;
 }
 function showLogin() {
   $("#login").hidden = false;

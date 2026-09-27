@@ -67,3 +67,5 @@ node scripts/install-web.ts
 Visit `FACTORY_PUBLIC_ORIGIN` and sign in or pair. Verify that an unauthenticated browser cannot read `/api/state`, that the intended group can sign in, and that a user outside that group is denied. In OIDC mode, `/api/pair` and pairing exchanges return 403.
 
 The page saves settings through the CLI's validation and stale-edit checks. Manual runs retain the [dispatch guards](operations.md#manual-runs). Web dispatches have persistent request IDs; a lost response should be investigated in status before trying a different request.
+
+The page retries a status read once after HTTP 502, 503, or 504, and handles empty or HTML proxy errors without losing the HTTP status. It never automatically resends a dispatch POST. Keep the proxy's upstream idle timeout shorter than the backend's keep-alive timeout; the Caddy template uses two seconds, below Node's five-second default.
