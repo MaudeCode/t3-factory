@@ -27,6 +27,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'Fixture', enabled: true, key: 'FIX', kaneoId: 'kp', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
   });
+  writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
   c.models.forEach(m => { m.automatic = false; });
   const file = join(dir, 'config.jsonc'); process.env.T3_FACTORY_CONFIG = file;
   writeFileSync(file, '// preserve this comment\n' + JSON.stringify(c));
@@ -103,7 +104,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
       assert.deepEqual(sent.bootstrap.createThread.modelSelection, c.models.find(p => p.id === model)!.model);
       assert.match(sent.message.text, new RegExp(c.models.find(p => p.id === model)!.model.model));
       assert.doesNotMatch(sent.message.text, /Fable-first|this Claude runtime/);
-      assert.match(sent.message.text, /Merge authorization/);
+      assert.match(sent.message.text, /\$software-factory/);
     }
     assert.equal(new Set(dispatches.map(d => d.threadId)).size, 4);
     assert.ok(providerCalls.every(id => id === 'codex'), 'Codex dispatch only queries Codex quota');

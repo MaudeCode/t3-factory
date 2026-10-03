@@ -53,18 +53,22 @@ Explicitly settling an inactive factory task in T3 dismisses it from the factory
 
 Stopping the service does not stop T3 work. Preserve the ledger, reports, tasks, and worktrees when investigating an uncertain run. T3 remains the place for notifications, human questions, and manual resumption.
 
-## Merge authorization
+## Review and merge
 
-The agent records a baseline immediately after opening a PR and after each new head, before waiting for Codex review:
+The configured `factorySkill` is the delivery workflow. For every ticket dispatch, Factory reads that file and includes its complete current text in the prompt, along with its source path for resolving references. Skill edits apply to the next dispatch without restarting Factory. A missing or empty skill blocks dispatch.
+
+Factory authorizes merges when the supplied skill's current gates pass. The skill controls local review, Codex review, CI, regression proof, device validation, and holds. Factory adds no separate human merge-confirmation requirement. Existing threads retain the prompt they received until given updated instructions.
+
+When the supplied skill calls for Codex clean-review evidence, these helpers record the review baseline and check for a fresh reaction:
 
 ```sh
 t3-factory approval-record OWNER/REPOSITORY PR_NUMBER /absolute/path/to/review-proof.json
 t3-factory approval-check OWNER/REPOSITORY PR_NUMBER /absolute/path/to/review-proof.json
 ```
 
-Only a fresh PR-body `+1` reaction from the verified Codex account, with an unchanged recorded head, satisfies this authorization route. Old reactions, another actor, or a changed head do not. Otherwise, the workflow requires explicit structured user approval.
+Only a fresh PR-body `+1` reaction from the verified Codex account, with an unchanged recorded head, satisfies the helper's clean-review evidence check. Old reactions, another actor, or a changed head do not. The skill also handles Codex reviews that contain findings and determines when a correction head needs another review.
 
-The helper checks authorization evidence only. The delivery workflow must also finish CI, resolve review findings, and satisfy required human validation. Explicit holds remain binding. Recheck the head and approval immediately before merging and use `gh pr merge --match-head-commit` to guard the approved SHA.
+The helper supplies review evidence, not the whole merge gate. Follow the supplied skill and use its expected-head guard when merging.
 
 ## macOS services and files
 

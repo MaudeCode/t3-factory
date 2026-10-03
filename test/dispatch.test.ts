@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
       discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'), projects: [project('FIX'), project('NEXT')],
     });
+    writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
     const manualQuota = scenario.startsWith('manual-fable') || scenario === 'manual-five-hour-empty';
     const parallel = scenario.startsWith('parallel');
     if (manualQuota) { c.models = c.models.filter(m => m.model.instanceId === 'claudeAgent'); c.models[0].quotaWindowId = 'seven_day_fable'; c.quota.claude.fable.minRemainingPercent = 15; }
@@ -98,7 +99,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         assert.equal((await cycle(c, store, confirmed)).reason, 'dispatched');
         assert.equal(attempts.length, 1);
         assert.match(attempts[0].message.text, /explicitly confirmed this run without the sf readiness label/);
-        assert.match(attempts[0].message.text, /Merge authorization/);
+        assert.match(attempts[0].message.text, /\$software-factory/);
         assert.equal((await cycle(c, store, confirmed)).reason, 'no-eligible-ticket', 'confirmation cannot bypass ownership');
         const blocked = await cycle(c, store, { ...confirmed, ticket: 'FIX-2' });
         assert.equal(blocked.reason, 'no-eligible-ticket');
@@ -169,7 +170,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       for (const command of attempts) {
         assert.deepEqual(command.modelSelection, command.bootstrap.createThread.modelSelection);
         assert.ok(command.message.text.includes(`The user selected ${command.modelSelection.model};`));
-        if (scenario !== 'discovery') assert.match(command.message.text, /approval-check/);
+        if (scenario !== 'discovery') assert.ok(command.message.text.includes(readFileSync(c.factorySkill, 'utf8').trim()), 'T3 receives the current configured skill');
       }
       if (scenario === 'claude-waiting') assert.equal(store.jobs().find(j => j.id === 'old')!.state, 'waiting');
       if (scenario === 'unclassified') assert.equal((result as any).skipped.length, 3);
