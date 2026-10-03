@@ -26,6 +26,7 @@ for (const settled of [false, true]) test(`historical ownership releases safely:
     quota: { maxAgeSeconds: 300, fiveHourReservePercent: 40, weeklyReservePercent: 70 }, discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kaneoId: 'p', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
   });
+  writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
   const task = { id: 'task', projectId: 'p', number: 1, title: 'Reopened work', status: 'to-do', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'med' }] };
   t.mock.method(Kaneo.prototype, 'call', async (name: string) => {
     if (name === 'list_workspace_labels') return [task].flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
