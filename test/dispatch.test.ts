@@ -100,6 +100,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         assert.equal(attempts.length, 1);
         assert.match(attempts[0].message.text, /explicitly confirmed this run without the sf readiness label/);
         assert.match(attempts[0].message.text, /\$software-factory/);
+        assert.match(attempts[0].message.text, /Manual run validation/);
         assert.equal((await cycle(c, store, confirmed)).reason, 'no-eligible-ticket', 'confirmation cannot bypass ownership');
         const blocked = await cycle(c, store, { ...confirmed, ticket: 'FIX-2' });
         assert.equal(blocked.reason, 'no-eligible-ticket');
@@ -114,7 +115,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       const result = await cycle(c, store, manualQuota ? { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true } : scenario === 'parallel-dry-run' ? { dryRun: true } : {});
       if (manualQuota) {
         assert.equal(attempts.length, scenario === 'manual-five-hour-empty' ? 0 : 1);
-        if (attempts.length) assert.equal(attempts[0].modelSelection.model, scenario === 'manual-fable-reserve' ? 'claude-fable-5-1' : 'claude-opus-5');
+        if (attempts.length) {
+          assert.equal(attempts[0].modelSelection.model, scenario === 'manual-fable-reserve' ? 'claude-fable-5-1' : 'claude-opus-5');
+          assert.match(attempts[0].message.text, /Manual run validation/, 'automatic model selection does not turn a manual launch into an automatic run');
+        }
         if (scenario === 'manual-fable-empty') {
           assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', model: 'fable', overrideLimits: true })).reason, 'quota-exhausted');
           assert.equal(attempts.length, 1);
@@ -170,7 +174,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       for (const command of attempts) {
         assert.deepEqual(command.modelSelection, command.bootstrap.createThread.modelSelection);
         assert.ok(command.message.text.includes(`The user selected ${command.modelSelection.model};`));
-        if (scenario !== 'discovery') assert.ok(command.message.text.includes(readFileSync(c.factorySkill, 'utf8').trim()), 'T3 receives the current configured skill');
+        if (scenario !== 'discovery') {
+          assert.ok(command.message.text.includes(readFileSync(c.factorySkill, 'utf8').trim()), 'T3 receives the current configured skill');
+          assert.match(command.message.text, /Automatic run visual validation/);
+        }
       }
       if (scenario === 'claude-waiting') assert.equal(store.jobs().find(j => j.id === 'old')!.state, 'waiting');
       if (scenario === 'unclassified') assert.equal((result as any).skipped.length, 3);

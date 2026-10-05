@@ -59,6 +59,8 @@ The configured `factorySkill` is the delivery workflow. For every ticket dispatc
 
 Factory authorizes merges when the supplied skill's current gates pass. The skill controls local review, Codex review, CI, regression proof, device validation, and holds. Factory adds no separate human merge-confirmation requirement. Existing threads retain the prompt they received until given updated instructions.
 
+Automatic ticket runs replace the routine physical-phone checkpoint with agent-owned visual validation. The agent runs the changed build in the existing browser or simulator workflow, exercises the acceptance criteria, captures and inspects screenshots, and records and inspects video when static images cannot prove the interaction. Visual defects must be fixed and the evidence attached to the PR. Missing essential validation remains a concrete blocker; CI, review, regression proof, and holds still apply. Automatic runs do not request a user phone check. Manual runs keep the supplied skill's phone/device workflow, even when their model selection is `auto`.
+
 When the supplied skill calls for Codex clean-review evidence, these helpers record the review baseline and check for a fresh reaction:
 
 ```sh

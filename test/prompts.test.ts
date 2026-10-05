@@ -15,7 +15,7 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
   c.discovery.promptFile = join(dir, 'discovery.md');
   const project = c.projects[0];
   const job: Job = { id: 'job', kind: 'ticket', projectId: project.kaneoId, taskId: 'task', ticketKey: 'APP-1', threadId: 'thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', state: 'dispatching', reason: '', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), command: null, prUrls: [], completedAt: null };
-  const skill = '# Software factory\n\nMerge without asking after local review, Codex review, and green CI.\nPreserve human validation and Hold.\n';
+  const skill = '# Software factory\n\nMerge without asking after local review, Codex review, and green CI.\nInvoke $ios-phone-validation and wait for the user device verdict.\nPreserve human validation and Hold.\n';
   try {
     writeFileSync(c.factorySkill, skill);
     for (const instanceId of ['claudeAgent', 'codex']) {
@@ -26,6 +26,14 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
       assert.doesNotMatch(prompt, /Only approved=true|normal structured user merge prompt|safe merged-work cleanup/);
       assert.match(prompt, /human-only gates still require user input/);
       assert.match(prompt, /reuse them; do not create another worktree/);
+      assert.match(prompt, /Automatic run visual validation/);
+      assert.match(prompt, /capture and inspect screenshots of the actual changed build/i);
+      assert.match(prompt, /record and inspect a video/i);
+      assert.match(prompt, /declined the physical-phone checkpoint/i);
+      assert.ok(prompt.indexOf('Automatic run visual validation') > prompt.indexOf('</software-factory-skill>'), 'the automatic-run exception follows the supplied skill so its phone gate cannot override it');
+      const manualPrompt = promptFor(job, project, c, true);
+      assert.match(manualPrompt, /Manual run validation/);
+      assert.doesNotMatch(manualPrompt, /declined the physical-phone checkpoint/);
     }
     const updated = skill.replace('green CI', 'green CI on the exact current head');
     writeFileSync(c.factorySkill, updated);

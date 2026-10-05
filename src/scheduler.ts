@@ -468,7 +468,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : `Factory discovery: ${project.name}`;
     const branch = job.kind === 'ticket' ? `chore/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-discovery-${id.slice(0, 8)}`;
     job.command = { type: 'thread.turn.start', commandId: randomUUID(), threadId: job.threadId,
-      message: { messageId: job.messageId, role: 'user', text: promptFor(job, project, c), attachments: [] },
+      message: { messageId: job.messageId, role: 'user', text: promptFor(job, project, c, !!options.manual), attachments: [] },
       modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default', createdAt: now,
       bootstrap: { createThread: { projectId: project.t3Id, title, modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default', branch: null, worktreePath: null, createdAt: now }, prepareWorktree: { projectCwd: project.repoPath, baseBranch: project.baseBranch, branch, startFromOrigin: true }, runSetupScript: job.kind === 'ticket' },
     };
