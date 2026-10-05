@@ -105,6 +105,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
       assert.match(sent.message.text, new RegExp(c.models.find(p => p.id === model)!.model.model));
       assert.doesNotMatch(sent.message.text, /Fable-first|this Claude runtime/);
       assert.match(sent.message.text, /\$software-factory/);
+      assert.match(sent.message.text, /Manual run validation/);
     }
     assert.equal(new Set(dispatches.map(d => d.threadId)).size, 4);
     assert.ok(providerCalls.every(id => id === 'codex'), 'Codex dispatch only queries Codex quota');
