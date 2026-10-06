@@ -1,31 +1,40 @@
 import { z } from 'zod';
 import type { ModelPreset } from './config.ts';
 
+// T3 orchestration protocol v2 thread shell. `status` is the latest run's status, or idle before any run.
+const activeStatuses = ['preparing', 'queued', 'starting', 'running'] as const;
+const stoppedStatuses = ['failed', 'interrupted', 'cancelled', 'rolled_back'] as const;
+const at = z.iso.datetime({ offset: true });
 export const threadSchema = z.object({
-  id: z.string(), projectId: z.string(), title: z.string(),
+  id: z.string(), projectId: z.string(), title: z.string(), providerInstanceId: z.string(),
   modelSelection: z.object({ instanceId: z.string(), model: z.string() }).passthrough(),
   branch: z.string().nullable(), worktreePath: z.string().nullable(),
-  updatedAt: z.iso.datetime({ offset: true }), latestUserMessageAt: z.iso.datetime({ offset: true }).nullable(),
-  archivedAt: z.string().nullable(), hasPendingApprovals: z.boolean(), hasPendingUserInput: z.boolean(),
-  latestTurn: z.object({ state: z.string(), completedAt: z.string().nullable() }).passthrough().nullable(),
-  session: z.object({ status: z.string(), providerName: z.string().nullable(), updatedAt: z.string() }).passthrough().nullable(),
-  backgroundLiveness: z.enum(['working', 'monitoring']).nullish(),
+  updatedAt: at, latestUserMessageAt: at.nullable(), archivedAt: z.string().nullable(),
+  status: z.enum(['idle', ...activeStatuses, 'waiting', 'completed', ...stoppedStatuses]),
+  activeRunId: z.string().nullable(), latestRunCompletedAt: at.nullish(),
+  pendingRuntimeRequest: z.object({ kind: z.string(), createdAt: z.string() }).passthrough().nullable(),
+  // T3 lists background work only once the latest run settles. Monitors include pull request watches.
+  pendingBackgroundTasks: z.array(z.object({ taskId: z.string(), kind: z.string() }).passthrough()).default([]),
+  settledOverride: z.enum(['settled', 'active']).nullable(),
 }).passthrough();
 export type Thread = z.infer<typeof threadSchema>;
 export const DEFAULT_MONITORING_TIMEOUT_MINUTES = 30;
-export function waiting(t: Thread): boolean { return (t.hasPendingApprovals || t.hasPendingUserInput) && t.backgroundLiveness !== 'working'; }
+function background(t: Thread): 'working' | 'monitoring' | null {
+  const tasks = t.pendingBackgroundTasks ?? [];
+  return tasks.some(task => task.kind !== 'monitor') ? 'working' : tasks.length ? 'monitoring' : null;
+}
+export function waiting(t: Thread): boolean { return (t.pendingRuntimeRequest != null || t.status === 'waiting') && background(t) !== 'working'; }
 export function stalledMonitor(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES): boolean {
-  if (t.backgroundLiveness !== 'monitoring' || waiting(t) || !['ready', 'idle'].includes(t.session?.status ?? '') || t.latestTurn?.state === 'running') return false;
-  const lastActivity = Math.max(Date.parse(t.updatedAt), Date.parse(t.session!.updatedAt), Date.parse(t.latestTurn?.completedAt ?? t.updatedAt));
+  if (background(t) !== 'monitoring' || waiting(t) || t.activeRunId != null || !['idle', 'completed'].includes(t.status)) return false;
+  const lastActivity = Math.max(Date.parse(t.updatedAt), Date.parse(t.latestRunCompletedAt ?? t.updatedAt));
   return Number.isFinite(lastActivity) && Date.now() - lastActivity >= timeoutMinutes * 60_000;
 }
 export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, includeMonitoring = true): boolean {
-  if (t.backgroundLiveness === 'working') return true;
+  if (background(t) === 'working') return true;
   if (waiting(t)) return false;
-  if (['error', 'stopped', 'interrupted'].includes(t.session?.status ?? '')) return false;
-  if (includeMonitoring && t.backgroundLiveness === 'monitoring') return !stalledMonitor(t, timeoutMinutes);
-  if (['error', 'stopped', 'interrupted', 'idle', 'ready'].includes(t.session?.status ?? '')) return false;
-  return ['starting', 'running'].includes(t.session?.status ?? '') || t.latestTurn?.state === 'running';
+  if (t.activeRunId != null || (activeStatuses as readonly string[]).includes(t.status)) return true;
+  if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
+  return includeMonitoring && background(t) === 'monitoring' && !stalledMonitor(t, timeoutMinutes);
 }
 export function reserveAt(start: number, resetMs: number, durationMs: number, now: number): number {
   return start * Math.max(0, Math.min(1, (resetMs - now) / durationMs));

@@ -10,6 +10,7 @@ import { Store } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import { saveSettings } from '../src/settings.ts';
 import type { Thread } from '../src/policy.ts';
+import { v2Thread } from './v2-fixture.ts';
 
 test('manual override runs the specified ticket/model while paused, but retains dependency and duplicate guards', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-manual-')), repo = join(dir, 'repo'); mkdirSync(repo);
@@ -36,10 +37,10 @@ test('manual override runs the specified ticket/model while paused, but retains 
   const owned: Thread[] = [];
   let claudeAvailable = true, codexUsed = 20, codexReady = true, codexAdvertised = true, codexStale = false, exhaustOnRefresh = false;
   const providerCalls: string[] = [];
-  const personal: Thread = { id: 'personal', projectId: 'tp', title: 'Personal work', branch: null, worktreePath: null, archivedAt: null, modelSelection: configuredModel(c, 'opus').model, session: { status: 'running', providerName: 'claudeAgent', updatedAt: new Date().toISOString() }, latestTurn: { state: 'running', completedAt: null }, latestUserMessageAt: new Date().toISOString(), updatedAt: new Date().toISOString(), hasPendingApprovals: false, hasPendingUserInput: false };
+  const personal = v2Thread({ id: 'personal', projectId: 'tp', title: 'Personal work', modelSelection: configuredModel(c, 'opus').model, status: 'running', activeRunId: 'run', latestRunCompletedAt: null, latestUserMessageAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   t.mock.method(T3.prototype, 'providers', async () => ['codex', 'claudeAgent'].map(instanceId => ({ instanceId, driver: instanceId, status: 'ready', enabled: true, installed: true, models: [] })));
   t.mock.method(T3.prototype, 'shell', async () => ({ projects: [{ id: 'tp', title: 'Fixture', workspaceRoot: repo }], threads: [personal, ...owned] }));
-  t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], activities: [] }));
+  t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
   t.mock.method(T3.prototype, 'provider', async (instanceId: string, refresh: boolean) => {
     providerCalls.push(instanceId);
     if (instanceId === 'codex') return { driver: 'codex', status: codexReady ? 'ready' : 'error', enabled: true, installed: true,
@@ -54,7 +55,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     { id: 'seven_day_fable', usedPercent, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
   ] } };
   });
-  t.mock.method(T3.prototype, 'dispatch', async (command: Record<string, any>) => { dispatches.push(command); return { sequence: 1 }; });
+  t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => { dispatches.push(command); return { threadId: command.threadId }; });
   t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
   t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
@@ -78,7 +79,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     assert.equal((await cycle(c, store, { manual: true, overrideLimits: true, ticket: 'FIX-1', model: 'opus' })).reason, 'dispatched', 'a different ticket can start while the first is executing');
     assert.equal(dispatches.length, 2);
     assert.equal(new Set(dispatches.map(d => d.threadId)).size, 2);
-    assert.equal(new Set(dispatches.map(d => d.bootstrap.prepareWorktree.branch)).size, 2);
+    assert.equal(new Set(dispatches.map(d => d.workspaceStrategy.branch)).size, 2);
     usedPercent = 0;
     assert.equal((await cycle({ ...c, enabled: true }, store)).reason, 'watching-streams');
 
@@ -101,11 +102,11 @@ test('manual override runs the specified ticket/model while paused, but retains 
       assert.equal((await cycle(c, store, { manual: true, model, ticket })).reason, 'dispatched', 'manual Codex does not require Claude quota or inactivity');
       const sent = dispatches.at(-1)!;
       assert.deepEqual(sent.modelSelection, c.models.find(p => p.id === model)!.model);
-      assert.deepEqual(sent.bootstrap.createThread.modelSelection, c.models.find(p => p.id === model)!.model);
-      assert.match(sent.message.text, new RegExp(c.models.find(p => p.id === model)!.model.model));
-      assert.doesNotMatch(sent.message.text, /Fable-first|this Claude runtime/);
-      assert.match(sent.message.text, /\$software-factory/);
-      assert.match(sent.message.text, /Manual run validation/);
+      assert.deepEqual(sent.modelSelection, c.models.find(p => p.id === model)!.model);
+      assert.match(sent.initialMessage.text, new RegExp(c.models.find(p => p.id === model)!.model.model));
+      assert.doesNotMatch(sent.initialMessage.text, /Fable-first|this Claude runtime/);
+      assert.match(sent.initialMessage.text, /\$software-factory/);
+      assert.match(sent.initialMessage.text, /Manual run validation/);
     }
     assert.equal(new Set(dispatches.map(d => d.threadId)).size, 4);
     assert.ok(providerCalls.every(id => id === 'codex'), 'Codex dispatch only queries Codex quota');

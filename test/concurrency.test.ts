@@ -8,7 +8,7 @@ import { configSchema, loadConfig } from '../src/config.ts';
 import { saveSettings } from '../src/settings.ts';
 import { busyProviders } from '../src/scheduler.ts';
 import type { Job } from '../src/store.ts';
-import type { Thread } from '../src/policy.ts';
+import { v2Thread } from './v2-fixture.ts';
 
 test('run limits default safely for old settings and persist independent edits', () => {
   const { concurrency, ...legacy } = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
@@ -34,7 +34,7 @@ test('capacity counts active, resumed and uncertain runs but releases waiting an
   const limits = { claude: 2, codex: 3 }, instances = new Map<string, string>();
   const jobs = [job('a', 'running'), job('b', 'dispatching'), job('wait', 'waiting'), job('done', 'complete')];
   assert.equal(busyProviders(jobs, [], instances, 30, limits).has('codex'), false);
-  const resumed = { id: 'wait', modelSelection: { instanceId: 'codex', model: 'fixture' }, session: { status: 'running' }, latestTurn: { state: 'running' } } as Thread;
+  const resumed = v2Thread({ id: 'wait', providerInstanceId: 'codex', modelSelection: { instanceId: 'codex', model: 'fixture' }, status: 'running', activeRunId: 'run' });
   assert.equal(busyProviders(jobs, [resumed], instances, 30, limits).has('codex'), true);
   assert.equal(busyProviders(jobs, [], instances, 30, limits, new Map([['codex', 1]])).has('codex'), true);
   assert.deepEqual([...busyProviders([...jobs, job('unknown', 'dispatching', 'unknown')], [], instances, 30, limits)].sort(), ['claudeAgent', 'codex']);

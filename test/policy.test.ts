@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, waiting, mentionsTicket, type Thread } from '../src/policy.ts';
+import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, waiting, stalledMonitor, mentionsTicket, threadSchema } from '../src/policy.ts';
+import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { configSchema } from '../src/config.ts';
 
@@ -44,23 +45,55 @@ test('global priority wins, then largest eligible project, then rotation and old
   assert.equal(selectTicket([...tasks.slice(0, 2), task('B-2', 'B', 'high')], 'A', ['A', 'B'])?.projectId, 'A');
   assert.equal(selectTicket([tasks[0], task('B-2', 'B', 'high')], 'A', ['A', 'B'])?.projectId, 'B');
 });
-test('a running session awaiting input releases the slot; a manual resume takes it', () => {
-  const t = { session: { status: 'running' }, latestTurn: { state: 'running' }, hasPendingApprovals: false, hasPendingUserInput: true } as Thread;
+test('v2 thread status classifies every run state', () => {
+  const executingStatuses = ['preparing', 'queued', 'starting', 'running'];
+  const terminalStatuses = ['idle', 'completed', 'failed', 'interrupted', 'cancelled', 'rolled_back'];
+  for (const status of executingStatuses) {
+    const t = v2Thread({ status });
+    assert.equal(executing(t), true, status); assert.equal(waiting(t), false, status); assert.equal(stalledMonitor(t), false, status);
+  }
+  for (const status of terminalStatuses) {
+    const t = v2Thread({ status });
+    assert.equal(executing(t), false, status); assert.equal(waiting(t), false, status); assert.equal(stalledMonitor(t), false, status);
+  }
+  const t = v2Thread({ status: 'waiting' });
+  assert.equal(waiting(t), true); assert.equal(executing(t), false); assert.equal(stalledMonitor(t), false);
+  assert.equal(executing(v2Thread({ status: 'completed', activeRunId: 'run-2' })), true, 'an active run executes whatever the latest run reports');
+  assert.throws(() => threadSchema.parse(v2Thread({ status: 'paused' })), 'an unknown status is an incompatible contract');
+  assert.equal(threadSchema.parse(v2Thread()).status, 'completed');
+});
+test('a pending runtime request releases the slot; a resume or background worker takes it', () => {
+  const request = { id: 'request-1', kind: 'user_input', createdAt: '2026-01-01T00:00:00.000Z' };
+  const t = v2Thread({ status: 'running', activeRunId: 'run-1', pendingRuntimeRequest: request });
   assert.equal(waiting(t), true); assert.equal(executing(t), false);
-  t.hasPendingUserInput = false; assert.equal(executing(t), true);
-  t.hasPendingUserInput = true; t.backgroundLiveness = 'working';
+  t.pendingRuntimeRequest = null; assert.equal(executing(t), true);
+  t.pendingRuntimeRequest = request; t.status = 'completed'; t.activeRunId = null;
+  t.pendingBackgroundTasks = [{ taskId: 'bash-1', kind: 'command' }];
   assert.equal(waiting(t), false); assert.equal(executing(t), true);
-  t.backgroundLiveness = null; t.hasPendingUserInput = false; t.session!.status = 'error';
+  for (const kind of ['subagent', 'background_task', 'future_kind']) {
+    assert.equal(executing(v2Thread({ pendingBackgroundTasks: [{ taskId: 'task-1', kind }] })), true, kind);
+  }
+  t.pendingBackgroundTasks = []; t.pendingRuntimeRequest = null; t.status = 'failed';
   assert.equal(executing(t), false);
 });
-test('an old passive monitor is not execution, but a live turn or background worker is', () => {
+test('an old passive monitor is not execution, but a live run or background worker is', () => {
   const old = new Date(Date.now() - 2 * 3_600_000).toISOString();
-  const t = { session: { status: 'ready', updatedAt: old }, latestTurn: { state: 'completed', completedAt: old }, updatedAt: old, hasPendingApprovals: false, hasPendingUserInput: false, backgroundLiveness: 'monitoring' } as Thread;
+  const monitor = [{ taskId: 'pull-request-watch:1', description: 'Watching pull request #1', kind: 'monitor' }];
+  const t = v2Thread({ status: 'completed', updatedAt: old, latestRunCompletedAt: old, pendingBackgroundTasks: monitor });
+  assert.equal(stalledMonitor(t), true);
   assert.equal(executing(t), false, 'the overnight monitor must not hold the slot forever');
+  assert.equal(executing(t, 30, false), false, 'a passive watcher never counts as personal execution');
   t.updatedAt = new Date().toISOString(); assert.equal(executing(t), true, 'fresh CI monitoring retains the slot');
-  t.updatedAt = old; t.session!.status = 'running'; assert.equal(executing(t), true);
-  t.session!.status = 'ready'; t.backgroundLiveness = 'working'; assert.equal(executing(t), true);
-  t.session!.status = 'stopped'; t.backgroundLiveness = 'monitoring'; assert.equal(executing(t), false);
+  assert.equal(stalledMonitor(t), false);
+  t.updatedAt = old; t.latestRunCompletedAt = new Date().toISOString();
+  assert.equal(stalledMonitor(t), false, 'a recently completed run renews the monitor');
+  t.latestRunCompletedAt = old; t.status = 'running'; t.activeRunId = 'run-2';
+  assert.equal(executing(t), true); assert.equal(stalledMonitor(t), false);
+  t.status = 'completed'; t.activeRunId = null; t.pendingBackgroundTasks = [...monitor, { taskId: 'bash-1', kind: 'command' }];
+  assert.equal(executing(t), true); assert.equal(stalledMonitor(t), false);
+  t.status = 'interrupted'; t.pendingBackgroundTasks = monitor;
+  assert.equal(executing(t), false); assert.equal(stalledMonitor(t), false, 'a stopped thread has nothing left to stop');
+  t.status = 'idle'; assert.equal(stalledMonitor(t), true, 'a watch on a thread without runs can stall too');
 });
 test('ticket ownership matches exact numbers in branches and titles', () => {
   assert.equal(mentionsTicket('fix/APP-13-bug', 'APP-13'), true);

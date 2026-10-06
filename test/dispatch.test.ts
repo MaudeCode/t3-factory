@@ -9,6 +9,7 @@ import { T3, Kaneo } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
+import { v2Thread } from './v2-fixture.ts';
 
 for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation'] as const) {
   test(`provider streams: ${scenario}`, async t => {
@@ -46,10 +47,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     t.mock.method(T3.prototype, 'providers', async () => providers);
     let shellReads = 0;
     t.mock.method(T3.prototype, 'shell', async () => {
-      if (scenario === 'parallel-resumed' && ++shellReads >= 3) threads.forEach(thread => { thread.hasPendingUserInput = false; });
+      if (scenario === 'parallel-resumed' && ++shellReads >= 3) threads.forEach(thread => { thread.status = 'running'; thread.pendingRuntimeRequest = null; });
       return { threads, projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) };
     });
-    t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], activities: [] }));
+    t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
     t.mock.method(T3.prototype, 'provider', async (instanceId: string, refresh: boolean) => {
       const p = providers.find(p => p.instanceId === instanceId)!;
       const window = (id: string, minutes: number, usedPercent = 0) => ({ id, usedPercent, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
@@ -63,7 +64,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       if (name === 'get_task_relations') return scenario === 'missing-sf-confirmation' && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
       throw new Error(name);
     });
-    t.mock.method(T3.prototype, 'dispatch', async (command: Record<string, any>) => {
+    t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
       assert.ok(store.jobs().some(j => j.threadId === command.threadId && j.state === 'dispatching'), 'ownership is durable before RPC');
       attempts.push(command);
       if (scenario === 'ambiguous' && command.modelSelection.instanceId === 'codex') throw new Error('RPC outcome unknown');
@@ -74,7 +75,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       const selected = c.models.find(m => m.model.instanceId === driver)!.model;
       const job: Job = { id: 'old', kind: 'ticket', projectId: 'FIX', taskId: 'old-task', ticketKey: 'FIX-99', threadId: 'old-thread', messageId: 'old-message', createdAt: new Date().toISOString(), state: 'running', reason: '', lastPersonalActivity: null, reportPath: join(dir, 'old-report'), command: null, modelSelection: selected, providerDriver: driver, prUrls: [], completedAt: null };
       store.save(job);
-      threads.push({ id: job.threadId, title: 'Old factory', projectId: 'FIX', branch: null, worktreePath: null, modelSelection: selected, updatedAt: new Date().toISOString(), latestUserMessageAt: job.createdAt, archivedAt: null, hasPendingApprovals: false, hasPendingUserInput: scenario === 'claude-waiting', session: { status: 'running', providerName: driver, updatedAt: job.createdAt }, latestTurn: { state: 'running', completedAt: null } });
+      threads.push(v2Thread({ id: job.threadId, title: 'Old factory', projectId: 'FIX', providerInstanceId: driver, modelSelection: selected, updatedAt: new Date().toISOString(), latestUserMessageAt: job.createdAt, status: scenario === 'claude-waiting' ? 'waiting' : 'running', activeRunId: scenario === 'claude-waiting' ? null : 'run', latestRunCompletedAt: null }));
     }
     if (['parallel-partial', 'parallel-resumed', 'parallel-lowered'].includes(scenario)) {
       const selected = c.models[0].model;
@@ -82,7 +83,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       for (let n = 0; n < count; n++) {
         const job: Job = { id: `existing-${n}`, kind: 'ticket', projectId: 'FIX', taskId: `existing-task-${n}`, ticketKey: `FIX-${90+n}`, threadId: `existing-thread-${n}`, messageId: 'initial', createdAt: new Date().toISOString(), state: 'running', reason: '', lastPersonalActivity: null, reportPath: join(dir, `report-${n}`), command: null, modelSelection: selected, providerDriver: 'codex', prUrls: [], completedAt: null };
         store.save(job);
-        threads.push({ id: job.threadId, title: 'Existing run', projectId: 'FIX', branch: null, worktreePath: null, modelSelection: selected, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, archivedAt: null, hasPendingApprovals: false, hasPendingUserInput: scenario === 'parallel-resumed', session: { status: 'running', providerName: 'codex', updatedAt: job.createdAt }, latestTurn: { state: 'running', completedAt: null } });
+        threads.push(v2Thread({ id: job.threadId, title: 'Existing run', projectId: 'FIX', providerInstanceId: 'codex', modelSelection: selected, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, status: scenario === 'parallel-resumed' ? 'waiting' : 'running', activeRunId: scenario === 'parallel-resumed' ? null : 'run', latestRunCompletedAt: null }));
       }
     }
     try {
@@ -98,9 +99,9 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         const confirmed = { ...options, allowMissingReadyLabel: true };
         assert.equal((await cycle(c, store, confirmed)).reason, 'dispatched');
         assert.equal(attempts.length, 1);
-        assert.match(attempts[0].message.text, /explicitly confirmed this run without the sf readiness label/);
-        assert.match(attempts[0].message.text, /\$software-factory/);
-        assert.match(attempts[0].message.text, /Manual run validation/);
+        assert.match(attempts[0].initialMessage.text, /explicitly confirmed this run without the sf readiness label/);
+        assert.match(attempts[0].initialMessage.text, /\$software-factory/);
+        assert.match(attempts[0].initialMessage.text, /Manual run validation/);
         assert.equal((await cycle(c, store, confirmed)).reason, 'no-eligible-ticket', 'confirmation cannot bypass ownership');
         const blocked = await cycle(c, store, { ...confirmed, ticket: 'FIX-2' });
         assert.equal(blocked.reason, 'no-eligible-ticket');
@@ -117,7 +118,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         assert.equal(attempts.length, scenario === 'manual-five-hour-empty' ? 0 : 1);
         if (attempts.length) {
           assert.equal(attempts[0].modelSelection.model, scenario === 'manual-fable-reserve' ? 'claude-fable-5-1' : 'claude-opus-5');
-          assert.match(attempts[0].message.text, /Manual run validation/, 'automatic model selection does not turn a manual launch into an automatic run');
+          assert.match(attempts[0].initialMessage.text, /Manual run validation/, 'automatic model selection does not turn a manual launch into an automatic run');
         }
         if (scenario === 'manual-fable-empty') {
           assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', model: 'fable', overrideLimits: true })).reason, 'quota-exhausted');
@@ -140,14 +141,14 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
           const expected = expectedCounts[scenario];
           assert.deepEqual([codex.length, claude.length], expected);
           assert.equal(new Set(attempts.map(a => a.threadId)).size, attempts.length);
-          assert.equal(new Set(attempts.map(a => a.bootstrap.prepareWorktree.branch)).size, attempts.length);
-          assert.ok(attempts.every(a => a.type === 'thread.turn.start'), 'lowering limits must never stop work');
+          assert.equal(new Set(attempts.map(a => a.workspaceStrategy.branch)).size, attempts.length);
+          assert.ok(attempts.every(a => a.workspaceStrategy.type === 'worktree' && a.initialMessage.text), 'lowering limits must never stop work');
           if (scenario === 'parallel-both-zero') {
             assert.ok((result as any).streams.every((s: any) => s.reason === 'provider-disabled'));
             assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-1', model: 'astra', overrideLimits: true })).reason, 'dispatched');
             assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', model: 'fable', overrideLimits: true })).reason, 'dispatched');
           }
-          if (scenario === 'parallel-discovery') assert.equal(new Set(attempts.map(a => a.bootstrap.createThread.projectId)).size, attempts.length);
+          if (scenario === 'parallel-discovery') assert.equal(new Set(attempts.map(a => a.projectId)).size, attempts.length);
           if (scenario === 'parallel') {
             await cycle(c, store);
             assert.equal(attempts.length, 5, 'existing claims fill capacity on the next cycle');
@@ -167,16 +168,18 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         assert.equal(attempts[0].modelSelection.model, 'gpt-6-astra', 'highest-ranked model gets first choice');
         assert.equal(attempts[1].modelSelection.instanceId, 'claudeAgent');
         assert.notEqual(attempts[0].threadId, attempts[1].threadId);
-        assert.notEqual(attempts[0].bootstrap.prepareWorktree.branch, attempts[1].bootstrap.prepareWorktree.branch);
-        if (scenario === 'discovery') assert.notEqual(attempts[0].bootstrap.createThread.projectId, attempts[1].bootstrap.createThread.projectId);
-        else { assert.match(attempts[0].message.text, /Deliver FIX-1:/); assert.match(attempts[1].message.text, /Deliver FIX-2:/); }
+        assert.notEqual(attempts[0].workspaceStrategy.branch, attempts[1].workspaceStrategy.branch);
+        if (scenario === 'discovery') assert.notEqual(attempts[0].projectId, attempts[1].projectId);
+        else { assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/); assert.match(attempts[1].initialMessage.text, /Deliver FIX-2:/); }
       }
       for (const command of attempts) {
-        assert.deepEqual(command.modelSelection, command.bootstrap.createThread.modelSelection);
-        assert.ok(command.message.text.includes(`The user selected ${command.modelSelection.model};`));
+        const project = c.projects.find(p => p.t3Id === command.projectId)!;
+        assert.deepEqual(command.workspaceStrategy, { type: 'worktree', baseRef: project.baseBranch, branch: command.workspaceStrategy.branch, startFromOrigin: true });
+        assert.equal(command.initialMessage.messageId, store.jobs().find(j => j.threadId === command.threadId)!.messageId);
+        assert.ok(command.initialMessage.text.includes(`The user selected ${command.modelSelection.model};`));
         if (scenario !== 'discovery') {
-          assert.ok(command.message.text.includes(readFileSync(c.factorySkill, 'utf8').trim()), 'T3 receives the current configured skill');
-          assert.match(command.message.text, /Automatic run visual validation/);
+          assert.ok(command.initialMessage.text.includes(readFileSync(c.factorySkill, 'utf8').trim()), 'T3 receives the current configured skill');
+          assert.match(command.initialMessage.text, /Automatic run visual validation/);
         }
       }
       if (scenario === 'claude-waiting') assert.equal(store.jobs().find(j => j.id === 'old')!.state, 'waiting');

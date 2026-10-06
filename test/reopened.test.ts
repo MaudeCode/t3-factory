@@ -8,9 +8,9 @@ import { configSchema } from '../src/config.ts';
 import { Store, type Job } from '../src/store.ts';
 import { Kaneo, T3 } from '../src/clients.ts';
 import { inventory, reconcile, writeStatus } from '../src/scheduler.ts';
-import type { Thread } from '../src/policy.ts';
+import { v2Thread } from './v2-fixture.ts';
 
-for (const settled of [false, true]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}`, async t => {
+for (const [settled, launched] of [[false, false], [true, false], [false, true]]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}${launched ? ' v2 launch' : ''}`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-reopened-')), repo = join(dir, 'repo'), tree = join(dir, 'old-tree'); mkdirSync(repo);
   const git = (...args: string[]) => execFileSync('/usr/bin/git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
   git('init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'old work\n'); git('add', 'file');
@@ -34,9 +34,9 @@ for (const settled of [false, true]) test(`historical ownership releases safely:
     if (name === 'get_task_relations') return [];
     throw new Error(name);
   });
-  const job: Job = { id: 'old-job', kind: 'ticket', projectId: 'p', taskId: 'task', ticketKey: 'FIX-1', threadId: 'old-thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Merged', lastPersonalActivity: null, reportPath: join(dir, 'report'), prUrls: ['https://github.com/fixture/repo/pull/1'], command: { bootstrap: { prepareWorktree: { branch } } } };
-  const thread: Thread = { id: job.threadId, title: 'Factory: FIX-1', projectId: 'tp', branch, worktreePath: tree, modelSelection: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, archivedAt: null, hasPendingApprovals: false, hasPendingUserInput: false, session: { status: 'stopped', providerName: 'claudeAgent', updatedAt: job.createdAt }, latestTurn: { state: 'completed', completedAt: job.createdAt } };
-  if (settled) { job.state = 'waiting'; job.completedAt = null; job.prUrls = []; thread.settledOverride = 'settled'; thread.latestTurn!.state = 'error'; }
+  const job: Job = { id: 'old-job', kind: 'ticket', projectId: 'p', taskId: 'task', ticketKey: 'FIX-1', threadId: 'old-thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Merged', lastPersonalActivity: null, reportPath: join(dir, 'report'), prUrls: ['https://github.com/fixture/repo/pull/1'], command: launched ? { workspaceStrategy: { type: 'worktree', baseRef: 'main', branch, startFromOrigin: true } } : { bootstrap: { prepareWorktree: { branch } } } };
+  const thread = v2Thread({ id: job.threadId, title: 'Factory: FIX-1', projectId: 'tp', branch, worktreePath: tree, modelSelection: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, status: 'completed', latestRunCompletedAt: job.createdAt });
+  if (settled) { job.state = 'waiting'; job.completedAt = null; job.prUrls = []; thread.settledOverride = 'settled'; thread.status = 'failed'; }
   let store = new Store(c.stateDir); store.save(job);
   store.db.prepare('UPDATE jobs SET task_id=? WHERE id=?').run(job.taskId, job.id); store.close(); // Old schema claimed completed tickets forever.
   store = new Store(c.stateDir); const kaneo = new Kaneo(c.kaneo);
@@ -45,10 +45,10 @@ for (const settled of [false, true]) test(`historical ownership releases safely:
   try {
     if (settled) {
       const t3 = { dispatch: async () => { throw new Error('Settling must not send a turn'); } } as unknown as T3;
-      thread.latestTurn!.state = 'running'; thread.session!.status = 'running';
+      thread.status = 'running'; thread.activeRunId = 'run-2';
       await reconcile(c, store, t3, kaneo, [thread]);
       assert.notEqual(store.jobs()[0].state, 'dismissed', 'still-executing work must remain protected');
-      thread.latestTurn!.state = 'error'; thread.session!.status = 'stopped';
+      thread.status = 'failed'; thread.activeRunId = null;
       await reconcile(c, store, t3, kaneo, [thread]);
       assert.equal(store.jobs()[0].state, 'dismissed');
       assert.equal(writeStatus(c, store).jobs.length, 0, 'settled runs disappear from factory status');
@@ -58,10 +58,10 @@ for (const settled of [false, true]) test(`historical ownership releases safely:
       thread.settledOverride = 'settled';
     }
     assert.equal((await inspect()).selected?.key, 'FIX-1');
-    if (settled) { visible = false; assert.equal((await inspect()).selected?.key, 'FIX-1', 'an archived settled task does not reclaim its ticket'); visible = true; }
-    thread.session!.status = 'running'; thread.latestTurn!.state = 'running';
+    visible = false; assert.equal((await inspect()).selected?.key, 'FIX-1', 'an archived task does not reclaim its ticket; its stored command names the branch'); visible = true;
+    thread.status = 'running'; thread.activeRunId = 'run-2';
     assert.match((await inspect()).skipped[0].reason, /T3 thread/);
-    thread.session!.status = 'stopped'; thread.latestTurn!.state = 'completed';
+    thread.status = 'completed'; thread.activeRunId = null;
     writeFileSync(join(tree, 'file'), 'uncommitted new work\n');
     assert.match((await inspect()).skipped[0].reason, /T3 thread/);
     execFileSync('/usr/bin/git', ['-C', tree, 'checkout', '--', 'file']);

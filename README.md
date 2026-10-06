@@ -20,7 +20,7 @@ Ticket delivery follows a configured software-factory skill. Merging requires ve
 
 The supported deployment is macOS 14 or later with Node.js 24.13 or later, Git, and the GitHub CLI. You also need a compatible T3 Code server running locally, authenticated model providers, a Kaneo workspace, and local Git repositories registered in both applications.
 
-This is an early integration with T3's application APIs. Compatibility depends on the HTTP and RPC contracts in [the integration guide](docs/development.md#t3-compatibility), including provider usage reporting and worktree bootstrap. It is not a standalone model runner or an official T3 Code product.
+This is an early integration with T3's application APIs. Compatibility depends on the HTTP and RPC contracts in [the integration guide](docs/development.md#t3-compatibility), including orchestration protocol v2, provider usage reporting, and worktree launch. T3 builds from before orchestration protocol negotiation are not supported. It is not a standalone model runner or an official T3 Code product.
 
 Delivery and discovery skills are supplied by the operator; they are not bundled in this repository. See [the workflow requirements](docs/configuration.md#workflow-skills).
 
