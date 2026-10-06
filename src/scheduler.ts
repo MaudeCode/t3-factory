@@ -72,7 +72,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
       // must not wake the agent in parallel with the next autonomous job.
       const fresh = (await t3.shell()).threads.find(x => x.id === job.threadId);
       if (fresh && stalledMonitor(fresh, c.monitoringTimeoutMinutes)) {
-        await t3.dispatch({ type: 'thread.session.stop', commandId: randomUUID(), threadId: job.threadId, createdAt: new Date().toISOString() });
+        await t3.dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: job.threadId, reason: 'Stalled background monitor' });
         job.state = 'running'; job.reason = 'Stopping stalled background monitor; awaiting T3 confirmation';
         if (!existsSync(job.reportPath)) {
           writeFileSync(`${job.reportPath}.tmp`, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: `Background monitor made no turn progress for ${c.monitoringTimeoutMinutes} minutes. Session stopped; inspect review results and resume this thread. Merge authorization and required human validation still apply.`, prUrls: job.prUrls, createdTaskIds: [] }) + '\n', { mode: 0o600 });
@@ -115,7 +115,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
   }
 }
 
-export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], store: Store, monitoringTimeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, driver = 'claudeAgent') {
+export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], store: Store, monitoringTimeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, driver = 'claudeAgent', instances = new Map<string, string>()) {
   // Old polling-based timestamps can be inflated by passive monitors. Rebuild once
   // from T3's actual events, then retain this corrected clock across archiving/restarts.
   const clockKey = driver === 'claudeAgent' ? 'lastPersonalActivity.v2' : `lastPersonalActivity.${driver}.v2`;
@@ -123,7 +123,7 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   const owned = new Map(jobs.map(j => [j.threadId, j]));
   let active = false;
   for (const t of threads) {
-    if (t.session?.providerName !== driver && t.modelSelection.instanceId !== driver) continue;
+    if ((instances.get(t.providerInstanceId) ?? t.providerInstanceId) !== driver && t.modelSelection.instanceId !== driver) continue;
     const job = owned.get(t.id);
     if (job?.state === 'dismissed' && t.settledOverride === 'settled' && !executing(t, monitoringTimeoutMinutes)) continue;
     if (job) {
@@ -131,25 +131,24 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
       if (store.get(`seenOwned:${t.id}`) !== t.updatedAt) {
         const detail = await t3.detail(t.id);
         const personal = detail.messages.filter(m => m.role === 'user' && m.id !== job.messageId && !job.automationMessageIds?.includes(m.id));
-        const responses = detail.activities.filter(a => /^(?:approval|user-input)\.resolved$/.test(a.kind));
-        const latest = [...personal.map(m => m.createdAt), ...responses.map(a => a.createdAt)].sort().at(-1);
+        const latest = [...personal.map(m => m.createdAt), ...detail.responses.map(a => a.createdAt)].sort().at(-1);
         if (latest && latest > (job.lastPersonalActivity ?? '')) { job.lastPersonalActivity = latest; store.save(job); }
         store.set(`seenOwned:${t.id}`, t.updatedAt);
       }
       if (job.lastPersonalActivity && job.lastPersonalActivity > last) last = job.lastPersonalActivity;
-      if (['complete', 'dismissed'].includes(job.state) && job.lastPersonalActivity && t.latestTurn?.completedAt && t.latestTurn.completedAt > last) last = t.latestTurn.completedAt;
+      if (['complete', 'dismissed'].includes(job.state) && job.lastPersonalActivity && t.latestRunCompletedAt && t.latestRunCompletedAt > last) last = t.latestRunCompletedAt;
       if (['complete', 'dismissed'].includes(job.state) && executing(t, monitoringTimeoutMinutes, false)) { active = true; last = new Date().toISOString(); }
       continue;
     }
     // A personal CI/test watcher consumes no Claude turn and must not renew idle time.
     if (executing(t, monitoringTimeoutMinutes, false)) { active = true; last = new Date().toISOString(); }
-    if (t.latestTurn?.completedAt && t.latestTurn.completedAt > last) last = t.latestTurn.completedAt;
+    if (t.latestRunCompletedAt && t.latestRunCompletedAt > last) last = t.latestRunCompletedAt;
     if (t.latestUserMessageAt && t.latestUserMessageAt > last) last = t.latestUserMessageAt;
     // An approval response can resume a turn without updating latestUserMessageAt.
     const seen = store.get(`seenPersonal:${t.id}`);
     if (t.updatedAt !== seen && Date.parse(t.updatedAt) > Date.now() - 86_400_000) {
       const detail = await t3.detail(t.id);
-      for (const a of detail.activities) if (/^(?:approval|user-input)\.resolved$/.test(a.kind) && a.createdAt > last) last = a.createdAt;
+      for (const a of detail.responses) if (a.createdAt > last) last = a.createdAt;
       store.set(`seenPersonal:${t.id}`, t.updatedAt);
     }
   }
@@ -162,12 +161,16 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
   const branches = new Map<string, string>(), inactiveThreads = new Set<string>();
   for (const job of history) {
     const thread = threads.find(t => t.id === job.threadId);
-    const command = z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).safeParse(job.command);
-    const branch = job.dismissedBranch ?? (command.success ? command.data.bootstrap.prepareWorktree.branch : thread?.branch);
+    // Jobs dispatched before protocol v2 stored a turn-start bootstrap; newer ones store the launch input.
+    const command = z.union([
+      z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).transform(c => c.bootstrap.prepareWorktree.branch),
+      z.object({ workspaceStrategy: z.object({ branch: z.string() }) }).transform(c => c.workspaceStrategy.branch),
+    ]).safeParse(job.command);
+    const branch = job.dismissedBranch ?? (command.success ? command.data : thread?.branch);
     if (!branch) continue;
     if (job.state === 'dismissed') {
       if (!job.dismissedAt || !job.dismissedHead) continue;
-      if (thread && (thread.settledOverride !== 'settled' || executing(thread) || thread.branch !== branch || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestTurn?.completedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
+      if (thread && (thread.settledOverride !== 'settled' || executing(thread) || thread.branch !== branch || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
       const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath;
       if (worktreePath && existsSync(worktreePath)) {
         const [head, changes] = await Promise.all([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
@@ -183,7 +186,7 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       branches.set(branch, pr.headRefOid);
       if (thread && !executing(thread) && !waiting(thread) && thread.branch === branch && job.completedAt &&
           Date.parse(thread.latestUserMessageAt ?? job.createdAt) <= Date.parse(job.completedAt) &&
-          Date.parse(thread.latestTurn?.completedAt ?? job.createdAt) <= Date.parse(job.completedAt)) {
+          Date.parse(thread.latestRunCompletedAt ?? job.createdAt) <= Date.parse(job.completedAt)) {
         let clean = true;
         if (thread.worktreePath && existsSync(thread.worktreePath)) {
           const [head, changes] = await Promise.all([git(thread.worktreePath, ['rev-parse', 'HEAD']), git(thread.worktreePath, ['status', '--porcelain'])]);
@@ -288,7 +291,7 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
     const thread = threads.find(t => t.id === job.threadId);
     if (!['running', 'dispatching'].includes(job.state) && !(thread && executing(thread, timeout))) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
-    const driver = job.providerDriver ?? instances.get(instance) ?? thread?.session?.providerName ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
+    const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
     // Unknown ownership must be reconciled before any further automatic starts.
     if (driver !== 'codex' && driver !== 'claudeAgent') return new Set(['codex', 'claudeAgent']);
     counts.set(driver, (counts.get(driver) ?? 0) + 1);
@@ -334,7 +337,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
         if (!quota.hasAllowance) reason = 'quota-exhausted';
         else if (!quota.allowed && (manualCodex || !override)) reason = 'quota-budget';
         else if (!manualCodex && !override) {
-          if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver));
+          if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver, instances));
           const activity = activityCache.get(driver!)!;
           if (activity.active || activity.idleMinutes < c.idleMinutes) reason = 'waiting-for-idle';
         }
@@ -407,6 +410,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect) return decision('disabled');
   const t3 = new T3(c.t3);
   const shell = await t3.shell();
+  const instances = plan?.instanceDrivers ?? new Map((await t3.providers()).map(p => [p.instanceId, p.driver]));
   for (const p of c.projects.filter(p => p.enabled)) {
     const live = shell.projects.find(x => x.id === p.t3Id);
     if (!live || live.workspaceRoot !== p.repoPath) throw new Error(`T3 project mapping mismatch for ${p.name}`);
@@ -429,7 +433,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const quota = await readSelectedQuota();
     if (plan && quota.driver !== plan.driver) return decision('provider-mapping-changed');
     const isManualCodex = options.manual && quota.provider === 'Codex';
-    const activity = await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, quota.provider === 'Codex' ? 'codex' : 'claudeAgent');
+    const activity = await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, quota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
     const gate = !quota.hasAllowance ? isManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted'
       : !override && !quota.allowed ? discovery ? 'discovery-quota-reserve' : 'quota-reserve'
       : c.maxWaitingPRs !== null && parked.length >= c.maxWaitingPRs ? 'waiting-cap'
@@ -456,7 +460,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const currentQuota = await readSelectedQuota(true);
     if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
     const currentManualCodex = options.manual && currentQuota.provider === 'Codex';
-    const currentActivity = await personalActivity(t3, fresh.threads, store.jobs(), store, c.monitoringTimeoutMinutes, currentQuota.provider === 'Codex' ? 'codex' : 'claudeAgent');
+    const currentActivity = await personalActivity(t3, fresh.threads, store.jobs(), store, c.monitoringTimeoutMinutes, currentQuota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
     if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
     if (!override && ((!currentManualCodex && (currentActivity.active || currentActivity.idleMinutes < c.idleMinutes)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
@@ -467,15 +471,16 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: queue.selected ? 'ticket' : 'discovery', projectId: project.kaneoId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
     const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : `Factory discovery: ${project.name}`;
     const branch = job.kind === 'ticket' ? `chore/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-discovery-${id.slice(0, 8)}`;
-    job.command = { type: 'thread.turn.start', commandId: randomUUID(), threadId: job.threadId,
-      message: { messageId: job.messageId, role: 'user', text: promptFor(job, project, c, !!options.manual), attachments: [] },
-      modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default', createdAt: now,
-      bootstrap: { createThread: { projectId: project.t3Id, title, modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default', branch: null, worktreePath: null, createdAt: now }, prepareWorktree: { projectCwd: project.repoPath, baseBranch: project.baseBranch, branch, startFromOrigin: true }, runSetupScript: job.kind === 'ticket' },
+    // T3 creates the worktree from the project's workspace root, which must match project.repoPath (checked above).
+    job.command = { commandId: randomUUID(), threadId: job.threadId, projectId: project.t3Id, title,
+      modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default',
+      workspaceStrategy: { type: 'worktree', baseRef: project.baseBranch, branch, startFromOrigin: true },
+      initialMessage: { messageId: job.messageId, text: promptFor(job, project, c, !!options.manual), attachments: [] },
     };
     store.save(job); // Durable ownership precedes the external write, including ambiguous timeouts.
     store.set('lastProject', project.kaneoId);
     if (job.kind === 'discovery') store.set(`discoveryLast:${project.kaneoId}`, String(Date.now()));
-    await t3.dispatch(job.command);
+    await t3.launch(job.command);
     job.reason = 'T3 accepted dispatch'; store.save(job);
     return decision('dispatched', { jobId: job.id, threadId: job.threadId, project: project.name, projectId: project.kaneoId, ticket: job.ticketKey, model: selectedModel.model, modelReason, difficulty: job.difficulty, quota: currentQuota });
   } finally { await kaneo.close(); }

@@ -31,15 +31,20 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 
 ## T3 compatibility
 
-The integration uses application APIs that can change between T3 builds. Matching the T3 product name or having a provider signed in is not enough. The current client requires:
+The integration uses application APIs that can change between T3 builds. Matching the T3 product name or having a provider signed in is not enough. The current client speaks T3 orchestration protocol v2 and requires:
 
-- Authenticated HTTP snapshots from `/api/orchestration/shell` and `/api/orchestration/threads/<id>`.
+- The `x-t3-orchestration-protocol: 2` header on every HTTP request, and `orchestrationProtocol=2` on the WebSocket URL.
+- Authenticated HTTP snapshots from `/api/orchestration/shell` and `/api/orchestration/threads/<id>/bounded`.
 - WebSocket tickets from `/api/auth/websocket-ticket` and the `/ws` endpoint.
-- Effect RPC methods `server.getConfig`, `server.refreshProviders`, and `orchestration.dispatchCommand`.
+- Effect RPC methods `server.getConfig`, `server.refreshProviders`, `orchestration.launchThread`, and `orchestration.dispatchCommand`.
 - Provider model metadata and usage windows with timestamps, remaining-window information, and reset times.
-- Worktree bootstrap and dispatch commands compatible with the payloads in `src/scheduler.ts`.
+- Thread launch input and the `thread.stop` command compatible with the payloads in `src/scheduler.ts`.
 
-Dispatch goes through RPC because T3's plain HTTP dispatcher does not perform the required worktree preparation. The scheduler validates the fields it consumes and stops affected dispatches when the contract is incompatible. It does not edit T3's database or fall back to driving its UI.
+T3 hosts that predate protocol negotiation (v1) are not supported. When T3 rejects the protocol header, the client reads `/.well-known/t3/environment` and reports `T3 orchestration protocol mismatch` with the version the server requires.
+
+Liveness comes from each v2 thread's `status` (its latest run), `activeRunId`, `pendingRuntimeRequest`, and `pendingBackgroundTasks`. A pending request means the thread is waiting for a person. Background tasks of kind `monitor`, including pull request watches, are passive monitoring; any other kind is active work.
+
+Dispatch launches a thread over RPC with a `worktree` workspace strategy. T3 creates the worktree from the project's workspace root, which must match the configured `repoPath`, and runs the project's setup script. The plain HTTP dispatcher does not prepare worktrees. The scheduler validates the fields it consumes and stops affected dispatches when the contract is incompatible. It does not edit T3's database or fall back to driving its UI.
 
 Quota refreshes target the selected provider with `server.refreshProviders({ instanceId, refreshModels: true })`. Despite its name, `refreshModels` also invalidates T3's cached capability and usage probe. A refresh without that flag can return the old quota snapshot. Factory refreshes stale reads with cache invalidation and retries once if the probe still returns stale or unavailable quota. Two failed probes block the run and report that automatic refresh failed.
 
