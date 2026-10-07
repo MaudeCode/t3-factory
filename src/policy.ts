@@ -36,6 +36,28 @@ export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT
   if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
   return includeMonitoring && background(t) === 'monitoring' && !stalledMonitor(t, timeoutMinutes);
 }
+/** Provider usage excludes local commands and resolves stale child-task markers through the live shell. */
+export function providerExecuting(t: Thread, threads: ReadonlyMap<string, Thread>, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, seen = new Set<string>()): boolean {
+  if (seen.has(t.id)) return false;
+  seen.add(t.id);
+  if (t.pendingRuntimeRequest == null && t.status !== 'waiting' &&
+      (t.activeRunId != null || (activeStatuses as readonly string[]).includes(t.status))) return true;
+  for (const task of t.pendingBackgroundTasks) {
+    if (task.kind === 'monitor' || task.kind === 'command') continue;
+    if (task.kind === 'subagent' && typeof task.childThreadId === 'string') {
+      const child = threads.get(task.childThreadId);
+      if (child) {
+        // ponytail: native idle children lack a run lifecycle; protect fresh markers until T3 exposes terminal task state.
+        const lastActivity = Math.max(Date.parse(t.updatedAt), Date.parse(child.updatedAt));
+        if (child.status === 'idle' && Date.now() - lastActivity < timeoutMinutes * 60_000) return true;
+        if (providerExecuting(child, threads, timeoutMinutes, seen)) return true;
+        continue;
+      }
+    }
+    return true; // Unknown workers remain protected until their activity can be established.
+  }
+  return false;
+}
 export function reserveAt(start: number, resetMs: number, durationMs: number, now: number): number {
   return start * Math.max(0, Math.min(1, (resetMs - now) / durationMs));
 }
