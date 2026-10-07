@@ -61,7 +61,7 @@ export const configSchema = z.preprocess(input => {
   monitoringTimeoutMinutes: positive.default(DEFAULT_MONITORING_TIMEOUT_MINUTES),
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
   stateDir: absolute,
-  t3: z.object({ url: z.url(), credentialFile: absolute }).strict(),
+  t3: z.object({ url: z.url(), credentialFile: absolute, autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
   kaneo: z.object({ url: z.url(), workspaceId: z.string().min(1), readyLabel: z.string().min(1) }).strict(),
   quota: z.object({
     maxAgeSeconds: positive,
