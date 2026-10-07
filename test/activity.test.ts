@@ -49,6 +49,37 @@ test('passive personal monitoring uses actual completion time, not polling time 
     thread.status = 'running'; thread.activeRunId = 'run-2';
     assert.equal((await personalActivity(t3, [thread], [], store)).active, true);
     thread.status = 'completed'; thread.activeRunId = null; thread.pendingBackgroundTasks = [{ taskId: 'bash-1', kind: 'command' }];
-    assert.equal((await personalActivity(t3, [thread], [], store)).active, true);
+    assert.equal((await personalActivity(t3, [thread], [], store)).active, false, 'local commands do not consume a provider turn');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('finished child agents and local wait commands cannot keep renewing personal provider activity', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 't3-factory-stale-children-')), store = new Store(dir);
+  const completed = new Date(Date.now() - 3_600_000).toISOString();
+  const parent = v2Thread({ id: 'parent', status: 'completed', activeRunId: null, updatedAt: completed, latestUserMessageAt: completed, latestRunCompletedAt: completed, pendingBackgroundTasks: [{ taskId: 'task-child', kind: 'subagent', childThreadId: 'child' }] });
+  const child = v2Thread({ id: 'child', status: 'idle', activeRunId: null, updatedAt: completed, latestUserMessageAt: completed });
+  const command = v2Thread({ id: 'wait', status: 'completed', activeRunId: null, updatedAt: completed, latestUserMessageAt: completed, latestRunCompletedAt: completed, pendingBackgroundTasks: [{ taskId: 'command', kind: 'command', description: 'Wait for the suite or PR' }] });
+  let response: string | null = null;
+  const t3 = { detail: async () => ({ messages: [], responses: response ? [{ createdAt: response }] : [] }) } as unknown as T3;
+  try {
+    store.set('lastPersonalActivity.v2', new Date().toISOString());
+    for (let poll = 0; poll < 2; poll++) {
+      const result = await personalActivity(t3, [parent, child, command], [], store);
+      assert.equal(result.active, false, 'completed child records and local commands are not active Claude usage');
+      assert.equal(result.last, completed, 'discard the old clock inflated by polling and retain actual activity');
+      assert.ok(result.idleMinutes >= 60);
+    }
+    response = new Date(Date.now() - 60_000).toISOString();
+    const answered = v2Thread({ id: 'answered', status: 'waiting', activeRunId: null, updatedAt: response, latestUserMessageAt: completed, latestRunCompletedAt: completed, pendingRuntimeRequest: { kind: 'user_input', createdAt: response } });
+    store.set('seenPersonal:answered', response);
+    assert.equal((await personalActivity(t3, [answered], [], store)).last, response, 'clock migration rereads human answers even when the old cache saw that thread');
+    response = null;
+    child.updatedAt = new Date().toISOString();
+    assert.equal((await personalActivity(t3, [parent, child], [], store)).active, true, 'a fresh native child without a managed run stays protected');
+    child.updatedAt = completed;
+    child.status = 'running'; child.activeRunId = 'run';
+    assert.equal((await personalActivity(t3, [parent, child], [], store)).active, true, 'a child with a live provider run must still block');
+    parent.pendingBackgroundTasks = [{ taskId: 'unknown-child', kind: 'subagent', childThreadId: 'missing' }];
+    assert.equal((await personalActivity(t3, [parent], [], store)).active, true, 'unresolved child activity stays protected');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

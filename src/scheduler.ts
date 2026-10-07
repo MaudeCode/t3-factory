@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
-import { executing, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
+import { executing, providerExecuting, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
 import { Store, type Job } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
@@ -116,16 +116,20 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
 }
 
 export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], store: Store, monitoringTimeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, driver = 'claudeAgent', instances = new Map<string, string>()) {
-  // Old polling-based timestamps can be inflated by passive monitors. Rebuild once
+  // Old polling-based timestamps can be inflated by passive commands and stale child markers. Rebuild once
   // from T3's actual events, then retain this corrected clock across archiving/restarts.
-  const clockKey = driver === 'claudeAgent' ? 'lastPersonalActivity.v2' : `lastPersonalActivity.${driver}.v2`;
+  const clockKey = driver === 'claudeAgent' ? 'lastPersonalActivity.v3' : `lastPersonalActivity.${driver}.v3`;
   let last = store.get(clockKey) ?? '1970-01-01T00:00:00.000Z';
   const owned = new Map(jobs.map(j => [j.threadId, j]));
+  const threadsById = new Map(threads.map(t => [t.id, t]));
   let active = false;
   for (const t of threads) {
     if ((instances.get(t.providerInstanceId) ?? t.providerInstanceId) !== driver && t.modelSelection.instanceId !== driver) continue;
     const job = owned.get(t.id);
     if (job?.state === 'dismissed' && t.settledOverride === 'settled' && !executing(t, monitoringTimeoutMinutes)) continue;
+    if ((!job || ['complete', 'dismissed'].includes(job.state)) && providerExecuting(t, threadsById, monitoringTimeoutMinutes)) {
+      active = true; last = new Date().toISOString();
+    }
     if (job) {
       // T3 responses resume directly. Count replies even in already-completed factory threads.
       if (store.get(`seenOwned:${t.id}`) !== t.updatedAt) {
@@ -137,19 +141,18 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
       }
       if (job.lastPersonalActivity && job.lastPersonalActivity > last) last = job.lastPersonalActivity;
       if (['complete', 'dismissed'].includes(job.state) && job.lastPersonalActivity && t.latestRunCompletedAt && t.latestRunCompletedAt > last) last = t.latestRunCompletedAt;
-      if (['complete', 'dismissed'].includes(job.state) && executing(t, monitoringTimeoutMinutes, false)) { active = true; last = new Date().toISOString(); }
       continue;
     }
     // A personal CI/test watcher consumes no Claude turn and must not renew idle time.
-    if (executing(t, monitoringTimeoutMinutes, false)) { active = true; last = new Date().toISOString(); }
     if (t.latestRunCompletedAt && t.latestRunCompletedAt > last) last = t.latestRunCompletedAt;
     if (t.latestUserMessageAt && t.latestUserMessageAt > last) last = t.latestUserMessageAt;
     // An approval response can resume a turn without updating latestUserMessageAt.
-    const seen = store.get(`seenPersonal:${t.id}`);
+    const seenKey = `seenPersonal.v3:${t.id}`;
+    const seen = store.get(seenKey);
     if (t.updatedAt !== seen && Date.parse(t.updatedAt) > Date.now() - 86_400_000) {
       const detail = await t3.detail(t.id);
       for (const a of detail.responses) if (a.createdAt > last) last = a.createdAt;
-      store.set(`seenPersonal:${t.id}`, t.updatedAt);
+      store.set(seenKey, t.updatedAt);
     }
   }
   store.set('lastPersonalActivity', last);
