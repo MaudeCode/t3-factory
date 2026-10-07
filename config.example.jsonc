@@ -10,7 +10,9 @@
   "stateDir": "/absolute/path/to/factory-state",
   "t3": {
     "url": "http://127.0.0.1:3773",
-    "credentialFile": "/absolute/path/to/t3-session.json"
+    "credentialFile": "/absolute/path/to/t3-session.json",
+    // Non-Factory autonomous workflows that should not block personal idle.
+    "autonomousThreadIds": []
   },
   "kaneo": {
     "url": "https://kaneo.example.com",

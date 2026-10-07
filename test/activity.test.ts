@@ -83,3 +83,32 @@ test('finished child agents and local wait commands cannot keep renewing persona
     assert.equal((await personalActivity(t3, [parent], [], store)).active, true, 'unresolved child activity stays protected');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('designated autonomous workflows and their child runs do not block personal idle', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 't3-factory-autonomous-')), store = new Store(dir);
+  const old = new Date(Date.now() - 3_600_000).toISOString(), now = new Date().toISOString();
+  const workflow = v2Thread({ id: 'workflow', status: 'running', activeRunId: 'auto-run', updatedAt: now, latestUserMessageAt: now, pendingBackgroundTasks: [{ taskId: 'child-task', kind: 'subagent', childThreadId: 'child' }] });
+  const child = v2Thread({ id: 'child', status: 'running', activeRunId: 'child-run', updatedAt: now, latestUserMessageAt: now });
+  const lineageChild = v2Thread({ ...child, id: 'lineage-child', lineage: { parentThreadId: 'workflow', relationshipToParent: 'subagent', rootThreadId: 'workflow' } });
+  const personal = v2Thread({ id: 'personal', status: 'completed', activeRunId: null, updatedAt: old, latestUserMessageAt: old, latestRunCompletedAt: old });
+  const config = { url: 'http://localhost', credentialFile: '/unused', autonomousThreadIds: [] as string[] };
+  const details: string[] = [];
+  const t3 = { config, detail: async (id: string) => { details.push(id); return { messages: [], responses: [] }; } } as unknown as T3;
+  try {
+    const threads = [workflow, child, lineageChild, personal];
+    assert.equal((await personalActivity(t3, threads, [], store)).active, true);
+    config.autonomousThreadIds = ['workflow']; details.length = 0;
+    for (let poll = 0; poll < 2; poll++) {
+      const result = await personalActivity(t3, threads, [], store);
+      assert.equal(result.active, false, 'autonomous workflow execution is not personal activity');
+      assert.equal(result.last, old, 'changing the designation discards its previously inflated clock');
+    }
+    assert.ok(!details.includes('workflow') && !details.includes('child') && !details.includes('lineage-child'), 'autonomous messages and responses cannot restart the idle timer');
+    const fork = v2Thread({ ...lineageChild, id: 'personal-fork', lineage: { parentThreadId: 'workflow', relationshipToParent: 'fork', rootThreadId: 'workflow' } });
+    assert.equal((await personalActivity(t3, [...threads, fork], [], store)).active, true, 'a separate personal fork is not an autonomous child');
+    personal.status = 'running'; personal.activeRunId = 'personal-run';
+    assert.equal((await personalActivity(t3, [workflow, child, personal], [], store)).active, true, 'interactive work still blocks');
+    personal.status = 'completed'; personal.activeRunId = null; config.autonomousThreadIds = [];
+    assert.equal((await personalActivity(t3, [workflow, child, personal], [], store)).active, true, 'removing the designation restores normal activity checks');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

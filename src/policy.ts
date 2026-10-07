@@ -15,6 +15,7 @@ export const threadSchema = z.object({
   pendingRuntimeRequest: z.object({ kind: z.string(), createdAt: z.string() }).passthrough().nullable(),
   // T3 lists background work only once the latest run settles. Monitors include pull request watches.
   pendingBackgroundTasks: z.array(z.object({ taskId: z.string(), kind: z.string() }).passthrough()).default([]),
+  lineage: z.object({ parentThreadId: z.string().nullish(), relationshipToParent: z.string().nullish() }).passthrough().nullish(),
   settledOverride: z.enum(['settled', 'active']).nullable(),
 }).passthrough();
 export type Thread = z.infer<typeof threadSchema>;

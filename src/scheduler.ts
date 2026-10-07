@@ -119,11 +119,29 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   // Old polling-based timestamps can be inflated by passive commands and stale child markers. Rebuild once
   // from T3's actual events, then retain this corrected clock across archiving/restarts.
   const clockKey = driver === 'claudeAgent' ? 'lastPersonalActivity.v3' : `lastPersonalActivity.${driver}.v3`;
-  let last = store.get(clockKey) ?? '1970-01-01T00:00:00.000Z';
+  const autonomousRoots = t3.config?.autonomousThreadIds ?? [];
+  const scopeKey = `personalActivityScope.${driver}`, scope = JSON.stringify([...new Set(autonomousRoots)].sort());
+  const rebuild = store.get(scopeKey) !== scope;
+  let last = (!rebuild && store.get(clockKey)) || '1970-01-01T00:00:00.000Z';
   const owned = new Map(jobs.map(j => [j.threadId, j]));
   const threadsById = new Map(threads.map(t => [t.id, t]));
+  const autonomous = new Set(autonomousRoots);
+  const children = new Map<string, string[]>();
+  for (const t of threads) {
+    if (t.lineage?.relationshipToParent !== 'subagent' || !t.lineage.parentThreadId) continue;
+    const parent = t.lineage.parentThreadId;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent)!.push(t.id);
+  }
+  for (const id of autonomous) {
+    for (const child of children.get(id) ?? []) autonomous.add(child);
+    for (const task of threadsById.get(id)?.pendingBackgroundTasks ?? []) {
+      if (typeof task.childThreadId === 'string') autonomous.add(task.childThreadId);
+    }
+  }
   let active = false;
   for (const t of threads) {
+    if (autonomous.has(t.id)) continue;
     if ((instances.get(t.providerInstanceId) ?? t.providerInstanceId) !== driver && t.modelSelection.instanceId !== driver) continue;
     const job = owned.get(t.id);
     if (job?.state === 'dismissed' && t.settledOverride === 'settled' && !executing(t, monitoringTimeoutMinutes)) continue;
@@ -148,7 +166,7 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
     if (t.latestUserMessageAt && t.latestUserMessageAt > last) last = t.latestUserMessageAt;
     // An approval response can resume a turn without updating latestUserMessageAt.
     const seenKey = `seenPersonal.v3:${t.id}`;
-    const seen = store.get(seenKey);
+    const seen = rebuild ? undefined : store.get(seenKey);
     if (t.updatedAt !== seen && Date.parse(t.updatedAt) > Date.now() - 86_400_000) {
       const detail = await t3.detail(t.id);
       for (const a of detail.responses) if (a.createdAt > last) last = a.createdAt;
@@ -157,6 +175,7 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   }
   store.set('lastPersonalActivity', last);
   store.set(clockKey, last);
+  store.set(scopeKey, scope);
   return { active, last, idleMinutes: Math.max(0, (Date.now() - Date.parse(last)) / 60_000) };
 }
 
