@@ -48,7 +48,7 @@ async function verifyMerged(project: Project, urls: string[]) {
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
   for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
     const t = threads.find(t => t.id === job.threadId);
-    if (allowMonitorStop && (job.state === 'complete' || job.workspaceCleanup) && !job.workspaceCleanedAt) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
+    if (t && allowMonitorStop && (job.state === 'complete' || job.workspaceCleanup) && !job.workspaceCleanedAt) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
     if (job.state === 'dismissed') continue;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
       job.state = 'dismissed'; job.reason = 'Dismissed by settling the task in T3'; job.dismissedAt = new Date().toISOString();
@@ -131,15 +131,17 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (!job.completedAt) return;
     const project = projectFor(c, job), fresh = await t3.shell(), thread = fresh.threads.find(t => t.id === job.threadId);
     if (!thread) return;
+    if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');
     const snapshotAt = thread.updatedAt;
     if (executing(thread, c.monitoringTimeoutMinutes, false) || waiting(thread) || thread.pendingBackgroundTasks.some(t => t.kind !== 'monitor')) throw new Error('Workspace still has active or pending work');
     if (Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.completedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.completedAt)) throw new Error('Completed thread has resumed since completion');
     const pending = job.workspaceCleanup, workspace = pending?.path ?? thread.worktreePath;
     if (!workspace) { job.workspaceCleanedAt = new Date().toISOString(); store.save(job); return; }
     const path = canonicalPath(workspace);
-    const branch = assignedBranch(job);
-    if (!branch || (pending ? pending.branch !== branch : thread.branch !== branch)) throw new Error('Workspace is not the assigned Factory branch');
-    if (thread.worktreePath && thread.branch !== branch) throw new Error('Thread branch changed during cleanup');
+    const assigned = assignedBranch(job);
+    if (!assigned) throw new Error('Workspace was not assigned by a Factory launch');
+    const checkoutBranch = existsSync(path) ? await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : null;
+    const branch = pending?.branch ?? (checkoutBranch && checkoutBranch !== 'HEAD' ? checkoutBranch : thread.branch ?? assigned);
     if (thread.worktreePath && canonicalPath(thread.worktreePath) !== path) throw new Error('Thread workspace changed during cleanup');
     if (path === canonicalPath(project.repoPath)) throw new Error('Preserve the primary checkout');
     const shared = (threads: Thread[]) => threads.some(t => t.id !== thread.id && t.worktreePath && (canonicalPath(t.worktreePath) === path || canonicalPath(t.worktreePath).startsWith(path + sep)));
@@ -148,7 +150,7 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (job.kind === 'ticket') {
       const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
       if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
-      const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], fresh.threads);
+      const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], fresh.threads, branch);
       if (!history.branches.has(branch)) throw new Error('Workspace head is not verified merged');
       head = history.branches.get(branch)!;
     } else {
@@ -157,7 +159,7 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     }
     if (pending && pending.head !== head) throw new Error('Verified workspace head changed');
     if (existsSync(path)) {
-      if (await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== branch) throw new Error('Preserve dirty or changed workspace');
+      if (await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || (checkoutBranch !== branch && checkoutBranch !== 'HEAD')) throw new Error('Preserve dirty or changed workspace');
     }
     if (thread.pendingBackgroundTasks.length) {
       await t3.dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: thread.id, reason: 'Verified Factory completion; close passive monitors before workspace cleanup' });
@@ -248,12 +250,12 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   return { active, last, idleMinutes: Math.max(0, (Date.now() - Date.parse(last)) / 60_000) };
 }
 
-async function historicalArtifacts(project: Project, history: Job[], threads: Thread[]) {
+async function historicalArtifacts(project: Project, history: Job[], threads: Thread[], expectedBranch?: string) {
   const branches = new Map<string, string>(), inactiveThreads = new Set<string>();
   for (const job of history) {
     const thread = threads.find(t => t.id === job.threadId);
     // Jobs dispatched before protocol v2 stored a turn-start bootstrap; newer ones store the launch input.
-    const branch = job.dismissedBranch ?? assignedBranch(job) ?? thread?.branch;
+    const branch = expectedBranch ?? job.workspaceCleanup?.branch ?? job.dismissedBranch ?? assignedBranch(job) ?? thread?.branch;
     if (!branch) continue;
     if (job.state === 'dismissed') {
       if (!job.dismissedAt || !job.dismissedHead) continue;
