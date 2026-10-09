@@ -47,6 +47,8 @@ Discovery runs only when there are no eligible tickets and no otherwise-ready ti
 
 A ticket is complete only after its report, Kaneo Done status, and merged PR evidence agree. A model turn ending or a PR opening is not completion. Failed starts and unexplained endings park for inspection instead of triggering blind retries.
 
+After verified completion, the scheduler automatically removes the assigned workspace. It closes passive monitors, detaches the idle T3 workspace binding, and removes the clean Git worktree through T3 without force. It rechecks the assigned workspace, merged branch and head, ticket status, thread activity, shared workspace references, and running process working directories. Dirty, unmerged, resumed, shared, or active work is preserved. Cleanup retries safely after a failure, retains the conversation and completion history, and never runs during diagnostics or dry runs. Discovery workspaces are eligible only when their clean head is already part of the release branch.
+
 Completed jobs retain history but release their live ticket claim. Reopened tickets can run again when historical tasks are inactive and unchanged, and historical branch tips still match verified merged PRs. New work and open PRs continue to block duplicates.
 
 The scheduler records a dispatch before submitting it to T3. Restarting reconciles the recorded task IDs. Uncertain submissions are not replaced with new tasks automatically. Web dispatches also use persistent request IDs, so repeated taps cannot create a second accepted request.
