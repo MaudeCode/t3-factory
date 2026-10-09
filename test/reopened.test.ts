@@ -71,6 +71,10 @@ for (const [settled, launched] of [[false, false], [true, false], [false, true]]
     thread.worktreePath = null;
     assert.match((await inspect()).skipped[0].reason, /Git branch|T3 thread/, 'a reused historical branch with new commits remains protected');
     execFileSync('/usr/bin/git', ['-C', tree, 'reset', '--hard', head]);
+    git('worktree', 'remove', tree);
+    thread.branch = null; thread.worktreePath = null;
+    store.save({ ...store.jobs()[0], completedAt: '2026-01-02T00:00:00Z', workspaceCleanedAt: '2026-01-02T00:01:00Z' });
+    assert.equal((await inspect()).selected?.key, 'FIX-1', 'workspace cleanup does not let the old thread reclaim a reopened ticket');
     const reopened = { ...job, id: 'new-job', threadId: 'new-thread', state: 'dispatching' as const, completedAt: null };
     store.save(reopened);
     assert.equal(store.jobs().length, 2); assert.equal(store.jobs()[0].taskId, 'task', 'history keeps its original ticket identity');

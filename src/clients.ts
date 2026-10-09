@@ -64,6 +64,9 @@ export class T3 {
     // Thread launch prepares the worktree and runs the project setup script; plain dispatch does not.
     return callT3Rpc(await this.socketUrl(), { type: 'launch', input });
   }
+  async removeWorktree(cwd: string, path: string) {
+    return callT3Rpc(await this.socketUrl(), { type: 'remove-worktree', cwd, path });
+  }
   async providers(refreshInstance?: string) {
     const data = z.object({ providers: z.array(z.object({
       instanceId: z.string(), driver: z.string(), status: z.string(), installed: z.boolean(), enabled: z.boolean(),

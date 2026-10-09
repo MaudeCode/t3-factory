@@ -36,7 +36,7 @@ The integration uses application APIs that can change between T3 builds. Matchin
 - The `x-t3-orchestration-protocol: 2` header on every HTTP request, and `orchestrationProtocol=2` on the WebSocket URL.
 - Authenticated HTTP snapshots from `/api/orchestration/shell` and `/api/orchestration/threads/<id>/bounded`.
 - WebSocket tickets from `/api/auth/websocket-ticket` and the `/ws` endpoint.
-- Effect RPC methods `server.getConfig`, `server.refreshProviders`, `orchestration.launchThread`, and `orchestration.dispatchCommand`.
+- Effect RPC methods `server.getConfig`, `server.refreshProviders`, `orchestration.launchThread`, `orchestration.dispatchCommand`, and `vcs.removeWorktree`.
 - Provider model metadata and usage windows with timestamps, remaining-window information, and reset times.
 - Thread launch input and the `thread.stop` command compatible with the payloads in `src/scheduler.ts`.
 
@@ -49,6 +49,8 @@ Dispatch launches a thread over RPC with a `worktree` workspace strategy. T3 cre
 Quota refreshes target the selected provider with `server.refreshProviders({ instanceId, refreshModels: true })`. Despite its name, `refreshModels` also invalidates T3's cached capability and usage probe. A refresh without that flag can return the old quota snapshot. Factory refreshes stale reads with cache invalidation and retries once if the probe still returns stale or unavailable quota. Two failed probes block the run and report that automatic refresh failed.
 
 Run `doctor` against your actual T3 build before enabling automatic work. Live verification requires your own credentials and configured projects; keep those outside tracked files.
+
+Completed-workspace cleanup requires `lsof` to verify process working directories. If that check is unavailable or fails, the workspace is preserved. Removal uses `force: false`; workspace metadata updates use the expected worktree path to prevent changing a different binding.
 
 ## Changes and review
 

@@ -1,6 +1,6 @@
-import { readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
@@ -28,7 +28,7 @@ export function log(event: string, fields: Record<string, unknown> = {}) {
 }
 export function safeError(error: unknown): string {
   // Never log HTTP headers, credentials, prompts, or complete SDK error objects.
-  return (error instanceof Error ? error.message : String(error)).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
+  return String(error instanceof Error ? error.message ?? error.name : error).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
 }
 async function git(path: string, args: string[]): Promise<string> {
   return (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000 })).stdout.trim();
@@ -46,8 +46,10 @@ async function verifyMerged(project: Project, urls: string[]) {
   }
 }
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
-  for (const job of store.jobs().filter(j => j.state !== 'dismissed')) {
+  for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
     const t = threads.find(t => t.id === job.threadId);
+    if (allowMonitorStop && (job.state === 'complete' || job.workspaceCleanup) && !job.workspaceCleanedAt) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
+    if (job.state === 'dismissed') continue;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
       job.state = 'dismissed'; job.reason = 'Dismissed by settling the task in T3'; job.dismissedAt = new Date().toISOString();
       job.dismissedBranch = t.branch ?? undefined; job.dismissedWorktreePath = t.worktreePath ?? undefined;
@@ -112,6 +114,73 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
       } catch (e) { job.state = 'waiting'; job.reason = safeError(e); }
     }
     store.save(job);
+  }
+}
+
+function assignedBranch(job: Job): string | undefined {
+  const command = z.union([
+    z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).transform(c => c.bootstrap.prepareWorktree.branch),
+    z.object({ workspaceStrategy: z.object({ branch: z.string() }) }).transform(c => c.workspaceStrategy.branch),
+  ]).safeParse(job.command);
+  return command.success ? command.data : undefined;
+}
+function canonicalPath(path: string): string { return existsSync(path) ? realpathSync(path) : resolve(path); }
+
+async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, job: Job) {
+  try {
+    if (!job.completedAt) return;
+    const project = projectFor(c, job), fresh = await t3.shell(), thread = fresh.threads.find(t => t.id === job.threadId);
+    if (!thread) return;
+    const snapshotAt = thread.updatedAt;
+    if (executing(thread, c.monitoringTimeoutMinutes, false) || waiting(thread) || thread.pendingBackgroundTasks.some(t => t.kind !== 'monitor')) throw new Error('Workspace still has active or pending work');
+    if (Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.completedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.completedAt)) throw new Error('Completed thread has resumed since completion');
+    const pending = job.workspaceCleanup, workspace = pending?.path ?? thread.worktreePath;
+    if (!workspace) { job.workspaceCleanedAt = new Date().toISOString(); store.save(job); return; }
+    const path = canonicalPath(workspace);
+    const branch = assignedBranch(job);
+    if (!branch || (pending ? pending.branch !== branch : thread.branch !== branch)) throw new Error('Workspace is not the assigned Factory branch');
+    if (thread.worktreePath && thread.branch !== branch) throw new Error('Thread branch changed during cleanup');
+    if (thread.worktreePath && canonicalPath(thread.worktreePath) !== path) throw new Error('Thread workspace changed during cleanup');
+    if (path === canonicalPath(project.repoPath)) throw new Error('Preserve the primary checkout');
+    const shared = (threads: Thread[]) => threads.some(t => t.id !== thread.id && t.worktreePath && (canonicalPath(t.worktreePath) === path || canonicalPath(t.worktreePath).startsWith(path + sep)));
+    if (shared(fresh.threads)) throw new Error('Workspace is shared with another thread');
+    let head: string;
+    if (job.kind === 'ticket') {
+      const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
+      if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
+      const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], fresh.threads);
+      if (!history.branches.has(branch)) throw new Error('Workspace head is not verified merged');
+      head = history.branches.get(branch)!;
+    } else {
+      head = pending?.head ?? await git(path, ['rev-parse', 'HEAD']);
+      await git(project.repoPath, ['merge-base', '--is-ancestor', head, `refs/remotes/origin/${project.baseBranch}`]);
+    }
+    if (pending && pending.head !== head) throw new Error('Verified workspace head changed');
+    if (existsSync(path)) {
+      if (await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== branch) throw new Error('Preserve dirty or changed workspace');
+    }
+    if (thread.pendingBackgroundTasks.length) {
+      await t3.dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: thread.id, reason: 'Verified Factory completion; close passive monitors before workspace cleanup' });
+      return;
+    }
+    if (thread.worktreePath) {
+      job.workspaceCleanup = { path, branch, head }; job.workspaceCleanupError = undefined; store.save(job);
+      await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: thread.id, expectedWorktreePath: thread.worktreePath, worktreePath: null, branch: null });
+      return; // Let T3 detach the idle provider session before removing its directory.
+    }
+    const cwds = (await exec('lsof', ['-b', '-n', '-d', 'cwd', '-Fn'], { timeout: 20_000, maxBuffer: 4_000_000 })).stdout.split('\n').filter(l => l.startsWith('n')).map(l => l.slice(1));
+    if (!cwds.length) throw new Error('Cannot verify running process workspaces');
+    if (cwds.some(cwd => cwd === path || cwd.startsWith(path + sep))) throw new Error('A running process is still using the workspace');
+    const latest = await t3.shell(), confirmed = latest.threads.find(t => t.id === thread.id);
+    if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.worktreePath !== null || executing(confirmed, c.monitoringTimeoutMinutes) || waiting(confirmed) || confirmed.pendingBackgroundTasks.length || shared(latest.threads)) throw new Error('Thread or workspace changed before removal');
+    await t3.removeWorktree(project.repoPath, path);
+    if (existsSync(path) || (await git(project.repoPath, ['worktree', 'list', '--porcelain'])).split('\n').includes(`worktree ${path}`)) throw new Error('Workspace removal is not confirmed');
+    job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = undefined; store.save(job);
+    log('job-workspace-cleaned', { jobId: job.id, threadId: job.threadId, path });
+  } catch (error) {
+    const reason = safeError(error);
+    if (job.workspaceCleanupError !== reason) log('job-workspace-cleanup-blocked', { jobId: job.id, reason });
+    job.workspaceCleanupError = reason; store.save(job);
   }
 }
 
@@ -184,15 +253,12 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
   for (const job of history) {
     const thread = threads.find(t => t.id === job.threadId);
     // Jobs dispatched before protocol v2 stored a turn-start bootstrap; newer ones store the launch input.
-    const command = z.union([
-      z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).transform(c => c.bootstrap.prepareWorktree.branch),
-      z.object({ workspaceStrategy: z.object({ branch: z.string() }) }).transform(c => c.workspaceStrategy.branch),
-    ]).safeParse(job.command);
-    const branch = job.dismissedBranch ?? (command.success ? command.data : thread?.branch);
+    const branch = job.dismissedBranch ?? assignedBranch(job) ?? thread?.branch;
     if (!branch) continue;
     if (job.state === 'dismissed') {
       if (!job.dismissedAt || !job.dismissedHead) continue;
-      if (thread && (thread.settledOverride !== 'settled' || executing(thread) || thread.branch !== branch || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
+      const cleanedBinding = job.workspaceCleanedAt && thread?.branch === null && thread.worktreePath === null;
+      if (thread && (thread.settledOverride !== 'settled' || executing(thread) || (thread.branch !== branch && !cleanedBinding) || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
       const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath;
       if (worktreePath && existsSync(worktreePath)) {
         const [head, changes] = await Promise.all([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
@@ -206,7 +272,7 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       const pr = z.object({ state: z.string(), headRefName: z.string(), headRefOid: z.string().regex(/^[0-9a-f]{40,64}$/) }).parse(await gh(['pr', 'view', url, '--repo', project.githubRepo, '--json', 'state,headRefName,headRefOid']));
       if (pr.state !== 'MERGED' || pr.headRefName !== branch) continue;
       branches.set(branch, pr.headRefOid);
-      if (thread && !executing(thread) && !waiting(thread) && thread.branch === branch && job.completedAt &&
+      if (thread && !executing(thread) && !waiting(thread) && (thread.branch === branch || (thread.branch === null && thread.worktreePath === null)) && job.completedAt &&
           Date.parse(thread.latestUserMessageAt ?? job.createdAt) <= Date.parse(job.completedAt) &&
           Date.parse(thread.latestRunCompletedAt ?? job.createdAt) <= Date.parse(job.completedAt)) {
         let clean = true;

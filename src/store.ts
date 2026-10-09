@@ -20,6 +20,9 @@ export interface Job {
   modelReason?: string;
   difficulty?: Difficulty;
   prUrls: string[]; completedAt: string | null;
+  workspaceCleanup?: { path: string; branch: string; head: string };
+  workspaceCleanedAt?: string;
+  workspaceCleanupError?: string;
 }
 export class Store {
   db: DatabaseSync;

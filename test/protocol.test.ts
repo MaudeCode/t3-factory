@@ -68,3 +68,24 @@ test('thread detail reads user messages and answered runtime requests from the b
   assert.deepEqual(detail.messages.map(m => m.id), ['m1']);
   assert.deepEqual(detail.responses.map(r => r.createdAt), ['2026-01-01T00:02:00.000Z', '2026-01-01T00:04:00.000Z'], 'only human answers count, not tool calls or pending requests');
 });
+
+test('workspace removal uses the native T3 RPC without force', async t => {
+  const requests: { tag: string; payload: unknown }[] = [];
+  class FixtureSocket extends EventTarget {
+    readyState = 1;
+    send(data: string) {
+      const message = JSON.parse(data);
+      if (message._tag !== 'Request') return;
+      requests.push(message);
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ _tag: 'Exit', requestId: message.id, exit: { _tag: 'Success', value: null } }) })));
+    }
+    close() { this.readyState = 3; }
+  }
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = FixtureSocket as unknown as typeof WebSocket;
+  t.after(() => { globalThis.WebSocket = original; });
+  const t3 = new T3({ url: 'http://localhost', credentialFile: '/unused' });
+  t.mock.method(t3, 'socketUrl', async () => 'ws://fixture');
+  await t3.removeWorktree('/repo', '/worktree');
+  assert.deepEqual(requests.map(r => ({ tag: r.tag, payload: r.payload })), [{ tag: 'vcs.removeWorktree', payload: { cwd: '/repo', path: '/worktree', force: false } }]);
+});

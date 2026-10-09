@@ -13,8 +13,9 @@ const group = RpcGroup.make(
   Rpc.make('server.refreshProviders', { payload: Schema.Struct({ instanceId: Schema.String, refreshModels: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('orchestration.dispatchCommand', { payload: Schema.Unknown, success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('orchestration.launchThread', { payload: Schema.Unknown, success: Schema.Unknown, error: Schema.Unknown }),
+  Rpc.make('vcs.removeWorktree', { payload: Schema.Struct({ cwd: Schema.String, path: Schema.String, force: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
 );
-export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown }): Promise<unknown> {
+export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string }): Promise<unknown> {
   const protocol = RpcClient.layerProtocolSocket({ retryTransientErrors: false }).pipe(
     Layer.provide(Socket.layerWebSocket(socketUrl).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, (url, protocols) => new WebSocket(url, protocols))))),
     Layer.provide(RpcSerialization.layerJson),
@@ -23,6 +24,7 @@ export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; r
     const client = yield* RpcClient.make(group);
     if (action.type === 'dispatch') return yield* client['orchestration.dispatchCommand'](action.command);
     if (action.type === 'launch') return yield* client['orchestration.launchThread'](action.input);
+    if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: false });
     // T3 only invalidates its cached capability/usage probe when refreshModels is set.
     if (action.refreshInstance) yield* client['server.refreshProviders']({ instanceId: action.refreshInstance, refreshModels: true });
     return yield* client['server.getConfig']({});
