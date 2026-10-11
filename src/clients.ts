@@ -67,6 +67,15 @@ export class T3 {
   async removeWorktree(cwd: string, path: string) {
     return callT3Rpc(await this.socketUrl(), { type: 'remove-worktree', cwd, path });
   }
+  async terminals() {
+    return z.object({ type: z.literal('snapshot'), terminals: z.array(z.object({
+      threadId: z.string().min(1), terminalId: z.string().min(1), cwd: z.string(), worktreePath: z.string().nullable(),
+      status: z.enum(['starting', 'running', 'exited', 'error']), pid: z.number().int().nullable(), hasRunningSubprocess: z.boolean(), label: z.string(), updatedAt: z.string(),
+    }).passthrough()) }).passthrough().parse(await callT3Rpc(await this.socketUrl(), { type: 'terminals' })).terminals;
+  }
+  async closeTerminal(threadId: string, terminalId: string) {
+    return callT3Rpc(await this.socketUrl(), { type: 'close-terminal', threadId, terminalId });
+  }
   async providers(refreshInstance?: string) {
     const data = z.object({ providers: z.array(z.object({
       instanceId: z.string(), driver: z.string(), status: z.string(), installed: z.boolean(), enabled: z.boolean(),
