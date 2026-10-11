@@ -37,6 +37,17 @@ export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT
   if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
   return includeMonitoring && background(t) === 'monitoring' && !stalledMonitor(t, timeoutMinutes);
 }
+/** Threads reachable from `rootId` through subagent lineage, transitively. Lineage cycles cannot repeat or include the root. */
+export function subagentDescendants(threads: readonly Thread[], rootId: string): Thread[] {
+  const found = new Map<string, Thread>(), queue = [rootId];
+  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+    for (const t of threads) {
+      if (t.lineage?.relationshipToParent !== 'subagent' || t.lineage.parentThreadId !== id || t.id === rootId || found.has(t.id)) continue;
+      found.set(t.id, t); queue.push(t.id);
+    }
+  }
+  return [...found.values()];
+}
 /** Provider usage excludes local commands and resolves stale child-task markers through the live shell. */
 export function providerExecuting(t: Thread, threads: ReadonlyMap<string, Thread>, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, seen = new Set<string>()): boolean {
   if (seen.has(t.id)) return false;
