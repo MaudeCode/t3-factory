@@ -62,7 +62,9 @@ async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: K
     heads.push(await git(thread.worktreePath, ['rev-parse', 'HEAD']));
   }
   if (branch) heads.push(await branchTip(project, branch));
-  for (const head of heads) if (head && !await released(project, head)) throw unmerged;
+  const verifiable = heads.filter(Boolean);
+  if (!verifiable.length) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
+  for (const head of verifiable) if (!await released(project, head)) throw unmerged;
 }
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
   for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
