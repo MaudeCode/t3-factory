@@ -13,6 +13,10 @@ import { loadConfig, type Config, type Project } from './config.ts';
 import { readModelQuota } from './models.ts';
 
 const exec = promisify(execFile);
+// Blocked cleanups wait for something outside the scheduler to change, so retrying every cycle only repeats their cost.
+const CLEANUP_RETRY_MINUTES = 15;
+// An unrecorded or unreadable block time retries now.
+const cleanupDue = (job: Job) => !(Date.now() - Date.parse(job.workspaceCleanupBlockedAt ?? '') < CLEANUP_RETRY_MINUTES * 60_000);
 const reportSchema = z.object({
   jobId: z.string(), status: z.enum(['complete', 'awaiting-human', 'no-work']), reason: z.string(),
   prUrls: z.array(z.url()).default([]), createdTaskIds: z.array(z.string()).default([]),
@@ -77,7 +81,7 @@ async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: K
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
   for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
     const t = threads.find(t => t.id === job.threadId);
-    if (t && allowMonitorStop && (job.state === 'complete' || job.workspaceCleanup) && !job.workspaceCleanedAt) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
+    if (t && allowMonitorStop && (job.state === 'complete' || job.workspaceCleanup) && !job.workspaceCleanedAt && cleanupDue(job)) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
     if (job.state === 'dismissed') continue;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
       job.state = 'dismissed'; job.reason = 'Dismissed by settling the task in T3'; job.dismissedAt = new Date().toISOString();
@@ -215,7 +219,7 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
       return; // Detach owned subagents before the job thread, one step per cycle.
     }
     if (thread.worktreePath) {
-      job.workspaceCleanup = { path, branch, head }; job.workspaceCleanupError = undefined; store.save(job);
+      job.workspaceCleanup = { path, branch, head }; job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
       await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: thread.id, expectedWorktreePath: thread.worktreePath, worktreePath: null, branch: null });
       return; // Let T3 detach the idle provider session before removing its directory.
     }
@@ -234,12 +238,12 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     const present = async () => existsSync(path) || (await git(project.repoPath, ['worktree', 'list', '--porcelain'])).split('\n').includes(`worktree ${path}`);
     if (await present()) await t3.removeWorktree(project.repoPath, path); // A directory Git no longer registers has nothing left to remove.
     if (await present()) throw new Error('Workspace removal is not confirmed');
-    job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = undefined; store.save(job);
+    job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
     log('job-workspace-cleaned', { jobId: job.id, threadId: job.threadId, path });
   } catch (error) {
     const reason = safeError(error);
     if (job.workspaceCleanupError !== reason) log('job-workspace-cleanup-blocked', { jobId: job.id, reason });
-    job.workspaceCleanupError = reason; store.save(job);
+    job.workspaceCleanupError = reason; job.workspaceCleanupBlockedAt = new Date().toISOString(); store.save(job);
   }
 }
 
