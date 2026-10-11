@@ -69,6 +69,7 @@ export const configSchema = z.preprocess(input => {
     codex: z.object({ weekly: budget }).strict(),
   }).strict(),
   discovery: z.object({ promptFile: absolute, emptyCooldownHours: positive }).strict(),
+  upstream: z.object({ promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),
@@ -76,6 +77,10 @@ export const configSchema = z.preprocess(input => {
     githubRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), baseBranch: z.string().min(1),
     readyStatuses: z.array(z.string()).min(1), doneStatuses: z.array(z.string()).min(1),
     discoveryPromptFile: absolute.optional(),
+    upstreams: z.array(z.object({
+      name: z.string().min(1), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+      prereleases: z.boolean().default(false), firstBase: z.string().min(1),
+    }).strict()).default([]),
   }).strict()).min(1),
 }).strict().superRefine((c, ctx) => {
   const ids = c.models.map(p => p.id);
@@ -85,6 +90,9 @@ export const configSchema = z.preprocess(input => {
   for (const key of ['kaneoId', 't3Id', 'key'] as const) {
     if (new Set(c.projects.map(p => p[key])).size !== c.projects.length) ctx.addIssue({ code: 'custom', message: `Duplicate project ${key}` });
   }
+  const upstreams = c.projects.flatMap(p => p.upstreams.map(u => u.repo));
+  if (new Set(upstreams).size !== upstreams.length) ctx.addIssue({ code: 'custom', message: 'Each upstream repository can be watched by only one project' });
+  if (upstreams.length && !c.upstream) ctx.addIssue({ code: 'custom', path: ['upstream'], message: 'Watched upstreams need upstream.promptFile' });
   const u = new URL(c.t3.url);
   if (!['http:', 'https:'].includes(u.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) {
     ctx.addIssue({ code: 'custom', message: 'T3 must be a loopback HTTP(S) endpoint on this Mac' });

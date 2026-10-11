@@ -60,4 +60,8 @@ The repository supplies scheduling and report handling. The operator supplies th
 
 Projects may override `discoveryPromptFile`. `discovery.emptyCooldownHours` controls how long a project waits after a no-work discovery result. The scheduler appends the required JSON report path and format to each job prompt; the agent must use that contract to report completion or a human-input pause.
 
+### Upstream release reviews
+
+A project's `upstreams` list names GitHub repositories whose releases the project should review: `name`, `repo` (`OWNER/REPOSITORY`), `prereleases` (default `false`), and `firstBase`, the tag or commit the first review starts from. Each repository belongs to one project. `upstream.promptFile` is the review invocation; the scheduler replaces `{{name}}`, `{{repo}}`, `{{base}}` and `{{candidate}}` in it. [`prompts/upstream-review.md`](../prompts/upstream-review.md) is a starting point. `upstream.checkMinutes` (default 360) limits how often each repository's releases are read.
+
 Keep actual skill paths and deployment-specific prompt variants in your private configuration. These skills are not downloaded by the installer.
