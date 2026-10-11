@@ -41,8 +41,9 @@ export class T3 {
   async shell() {
     const shell = z.object({ threads: z.array(threadSchema), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
     const candidates = new Set<string>();
-    for (const t of shell.threads) {
-      if (t.activeRunId == null || t.pendingRuntimeRequest != null || t.status === 'waiting' || Date.now() - Date.parse(t.updatedAt) < ORPHANED_RUN_GRACE_MINUTES * 60_000) continue;
+    // Probe concurrently so slow reads cost one request timeout, not one per stale thread.
+    await Promise.all(shell.threads.map(async t => {
+      if (t.activeRunId == null || t.pendingRuntimeRequest != null || t.status === 'waiting' || Date.now() - Date.parse(t.updatedAt) < ORPHANED_RUN_GRACE_MINUTES * 60_000) return;
       const key = `${t.id}:${t.updatedAt}`;
       candidates.add(key);
       if (!this.orphanVerdicts.has(key)) {
@@ -50,7 +51,7 @@ export class T3 {
         if (verdict !== undefined) this.orphanVerdicts.set(key, verdict); // Retry failed reads next cycle.
       }
       if (this.orphanVerdicts.get(key)) t.orphanedRun = true;
-    }
+    }));
     for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) this.orphanVerdicts.delete(key);
     return shell;
   }
