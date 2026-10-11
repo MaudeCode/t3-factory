@@ -70,7 +70,7 @@ async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: K
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
   const branch = assignedBranch(job), worktree = thread.worktreePath && existsSync(thread.worktreePath) ? thread.worktreePath : null;
-  if (worktree && await git(worktree, ['status', '--porcelain'])) throw unmerged;
+  if (worktree && (await git(worktree, ['status', '--porcelain']) || await git(worktree, ['rev-parse', '--abbrev-ref', 'HEAD']) !== branch)) throw unmerged;
   if (!branch || !await branchTip(project, branch)) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
   if (!await untouchedHead(project, branch, worktree)) throw unmerged;
 }
