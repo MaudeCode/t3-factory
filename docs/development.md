@@ -36,7 +36,8 @@ The integration uses application APIs that can change between T3 builds. Matchin
 - The `x-t3-orchestration-protocol: 2` header on every HTTP request, and `orchestrationProtocol=2` on the WebSocket URL.
 - Authenticated HTTP snapshots from `/api/orchestration/shell` and `/api/orchestration/threads/<id>/bounded`.
 - WebSocket tickets from `/api/auth/websocket-ticket` and the `/ws` endpoint.
-- Effect RPC methods `server.getConfig`, `server.refreshProviders`, `orchestration.launchThread`, `orchestration.dispatchCommand`, and `vcs.removeWorktree`.
+- Effect RPC methods `server.getConfig`, `server.refreshProviders`, `orchestration.launchThread`, `orchestration.dispatchCommand`, `vcs.removeWorktree`, `subscribeTerminalMetadata` (stream; the first event is a terminal snapshot), and `terminal.close`.
+- The `terminal:operate` scope on the scheduler credential, for the two terminal methods.
 - Provider model metadata and usage windows with timestamps, remaining-window information, and reset times.
 - Thread launch input and the `thread.stop` command compatible with the payloads in `src/scheduler.ts`.
 
@@ -50,7 +51,7 @@ Quota refreshes target the selected provider with `server.refreshProviders({ ins
 
 Run `doctor` against your actual T3 build before enabling automatic work. Live verification requires your own credentials and configured projects; keep those outside tracked files.
 
-Completed-workspace cleanup requires `lsof` to verify process working directories. If that check is unavailable or fails, the workspace is preserved. Removal uses `force: false`; workspace metadata updates use the expected worktree path to prevent changing a different binding.
+Completed-workspace cleanup closes the completed thread's idle T3 terminals with `terminal.close`, always passing `terminalId` and `deleteHistory: false`. It never closes a terminal that is starting or running a command, or one owned by another thread. It also requires `lsof` to verify process working directories. If the terminal snapshot or that check is unavailable or fails, the workspace is preserved. Removal uses `force: false`; workspace metadata updates use the expected worktree path to prevent changing a different binding.
 
 ## Changes and review
 

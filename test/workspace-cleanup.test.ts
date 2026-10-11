@@ -11,7 +11,7 @@ import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree'] as const) {
+for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure'] as const) {
   test(`completed workspace cleanup: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -29,13 +29,21 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
     const job: Job = { id: 'job', kind: scenario === 'discovery' ? 'discovery' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Verified complete', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: ['https://github.com/fixture/repo/pull/1'], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, latestRunCompletedAt: job.createdAt, status: 'completed', activeRunId: null });
     let threads = [thread], attempts = 0, detachAttempts = 0, shellReads = 0;
-    const commands: any[] = [];
+    const commands: any[] = [], closes: any[] = [];
+    let terminalReads = 0, terminalProcess: ReturnType<typeof spawn> | undefined;
+    const terminal = (threadId: string, status: string, hasRunningSubprocess: boolean) => ({ threadId, terminalId: 'setup-install-dependencies', cwd: tree, worktreePath: tree, status, pid: terminalProcess?.pid ?? 1, exitCode: null, exitSignal: null, hasRunningSubprocess, label: 'fish', updatedAt: job.createdAt });
+    const terminals = () => closes.length ? [] : ({
+      'idle-terminal': [terminal('thread', 'running', false), terminal('thread', 'exited', false)],
+      'busy-terminal': [terminal('thread', 'running', true)], 'starting-terminal': [terminal('thread', 'starting', false)],
+      'other-thread-terminal': [terminal('another-thread', 'running', false)], 'dry-run': [terminal('thread', 'running', false)],
+    } as Record<string, unknown[]>)[scenario] ?? [];
     const t3 = { shell: async () => { if (scenario === 'race-before-remove' && ++shellReads === 3) thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.stop') { thread.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); thread.worktreePath = null; thread.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
       attempts++; assert.equal(cwd, repo); assert.equal(path, realTree);
       if (scenario === 'retry' && attempts === 1) throw new Error('temporary removal failure');
       if (scenario === 'retry-unusual-error' && attempts === 1) { const error = new Error(); Object.defineProperty(error, 'message', { value: undefined }); throw error; }
       git('worktree', 'remove', path);
-    } } as unknown as T3;
+    }, terminals: async () => { terminalReads++; if (scenario === 'terminal-snapshot-failure') throw new Error('T3 terminal snapshot unavailable'); return terminals(); },
+    closeTerminal: async (threadId: string, terminalId: string) => { closes.push({ threadId, terminalId }); if (terminalProcess) { const exited = once(terminalProcess, 'exit'); terminalProcess.kill(); await exited; } } } as unknown as T3;
     const kaneo = { call: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status: scenario === 'not-done' ? 'to-do' : 'done' }) } as unknown as Kaneo;
     let childProcess: ReturnType<typeof spawn> | undefined;
     try {
@@ -53,6 +61,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'missing-unregistered-worktree') git('worktree', 'remove', tree);
       if (scenario === 'missing-registered-worktree') rmSync(tree, { recursive: true });
       if (scenario === 'process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
+      if (scenario.endsWith('-terminal')) { terminalProcess = spawn('sleep', ['60'], { cwd: tree }); await once(terminalProcess, 'spawn'); }
       store.save(job);
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
       if (scenario === 'resumed-after-detach') thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
@@ -61,8 +70,15 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'path-change-after-detach') thread.worktreePath = repo;
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
       if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); await reconcile(c, store, t3, kaneo, threads); }
-      if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor') await reconcile(c, store, t3, kaneo, threads);
-      const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree'].includes(scenario);
+      if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal')) await reconcile(c, store, t3, kaneo, threads);
+      const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal'].includes(scenario);
+      if (removed) assert.equal(store.jobs()[0].workspaceCleanupError, undefined, 'cleanup completes without a recorded error');
+      if (scenario === 'idle-terminal') assert.deepEqual(closes, [{ threadId: 'thread', terminalId: 'setup-install-dependencies' }], 'close only the thread\'s idle live terminal, once');
+      else assert.deepEqual(closes, [], 'never close a busy, starting, or foreign terminal');
+      if (scenario === 'busy-terminal' || scenario === 'starting-terminal') assert.equal(store.jobs()[0].workspaceCleanupError, 'A T3 terminal for this thread is still running a command');
+      if (scenario === 'other-thread-terminal') assert.equal(store.jobs()[0].workspaceCleanupError, 'A running process is still using the workspace');
+      if (scenario === 'terminal-snapshot-failure') assert.equal(store.jobs()[0].workspaceCleanupError, 'T3 terminal snapshot unavailable');
+      if (scenario === 'dry-run') assert.equal(terminalReads, 0, 'dry runs send no terminal RPCs');
       assert.equal(existsSync(tree), !removed, 'remove only a verified complete, clean, unchanged and inactive worktree');
       assert.equal(store.jobs()[0].state, scenario === 'settled' ? 'dismissed' : 'complete', 'cleanup preserves completion history and explicit settling');
       if (removed) {
@@ -73,7 +89,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       }
       assert.ok(existsSync(repo), 'preserve the primary checkout');
     } finally {
-      if (childProcess) { childProcess.kill(); await once(childProcess, 'exit'); }
+      for (const child of [childProcess, terminalProcess]) if (child && child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
       store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true });
     }
   });

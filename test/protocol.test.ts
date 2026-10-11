@@ -69,7 +69,7 @@ test('thread detail reads user messages and answered runtime requests from the b
   assert.deepEqual(detail.responses.map(r => r.createdAt), ['2026-01-01T00:02:00.000Z', '2026-01-01T00:04:00.000Z'], 'only human answers count, not tool calls or pending requests');
 });
 
-test('workspace removal uses the native T3 RPC without force', async t => {
+function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string }) => unknown[]) {
   const requests: { tag: string; payload: unknown }[] = [];
   class FixtureSocket extends EventTarget {
     readyState = 1;
@@ -77,7 +77,7 @@ test('workspace removal uses the native T3 RPC without force', async t => {
       const message = JSON.parse(data);
       if (message._tag !== 'Request') return;
       requests.push(message);
-      queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ _tag: 'Exit', requestId: message.id, exit: { _tag: 'Success', value: null } }) })));
+      queueMicrotask(() => { for (const response of reply(message)) this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(response) })); });
     }
     close() { this.readyState = 3; }
   }
@@ -86,6 +86,32 @@ test('workspace removal uses the native T3 RPC without force', async t => {
   t.after(() => { globalThis.WebSocket = original; });
   const t3 = new T3({ url: 'http://localhost', credentialFile: '/unused' });
   t.mock.method(t3, 'socketUrl', async () => 'ws://fixture');
+  return { t3, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })) };
+}
+const success = (request: { id: string }) => ({ _tag: 'Exit', requestId: request.id, exit: { _tag: 'Success', value: null } });
+
+test('workspace removal uses the native T3 RPC without force', async t => {
+  const { t3, requests } = fixtureRpc(t, request => [success(request)]);
   await t3.removeWorktree('/repo', '/worktree');
-  assert.deepEqual(requests.map(r => ({ tag: r.tag, payload: r.payload })), [{ tag: 'vcs.removeWorktree', payload: { cwd: '/repo', path: '/worktree', force: false } }]);
+  assert.deepEqual(requests(), [{ tag: 'vcs.removeWorktree', payload: { cwd: '/repo', path: '/worktree', force: false } }]);
+});
+
+const summary = { threadId: 'thread-1', terminalId: 'setup-install-dependencies', cwd: '/worktree', worktreePath: '/worktree', status: 'running', pid: 42, exitCode: null, exitSignal: null, hasRunningSubprocess: false, label: 'fish', updatedAt: '2026-01-01T00:00:00.000Z' };
+const snapshot = (terminals: unknown[]) => (request: { id: string }) => [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', terminals }] }];
+
+test('terminal cleanup reads the metadata snapshot and closes one terminal without deleting history', async t => {
+  const { t3, requests } = fixtureRpc(t, request => request.tag === 'terminal.close' ? [success(request)] : snapshot([summary])(request));
+  assert.deepEqual(await t3.terminals(), [summary]);
+  await t3.closeTerminal('thread-1', 'setup-install-dependencies');
+  assert.deepEqual(requests(), [
+    { tag: 'subscribeTerminalMetadata', payload: {} },
+    { tag: 'terminal.close', payload: { threadId: 'thread-1', terminalId: 'setup-install-dependencies', deleteHistory: false } },
+  ]);
+});
+
+test('a malformed terminal snapshot is rejected', async t => {
+  for (const reply of [snapshot([{ ...summary, hasRunningSubprocess: undefined }]), snapshot([{ ...summary, status: 'busy' }]), (request: { id: string }) => [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'upsert', terminal: summary }] }], (request: { id: string }) => [{ _tag: 'Exit', requestId: request.id, exit: { _tag: 'Success', value: null } }]]) {
+    const { t3 } = fixtureRpc(t, reply);
+    await assert.rejects(t3.terminals(), { name: 'ZodError' });
+  }
 });

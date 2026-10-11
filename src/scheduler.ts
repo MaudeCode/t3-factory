@@ -171,6 +171,13 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
       await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: thread.id, expectedWorktreePath: thread.worktreePath, worktreePath: null, branch: null });
       return; // Let T3 detach the idle provider session before removing its directory.
     }
+    // T3 can leave this thread's idle setup shell open in the workspace. Close only its idle terminals; the process check stays authoritative.
+    const terminals = (await t3.terminals()).filter(t => t.threadId === thread.id && (t.status === 'starting' || t.status === 'running'));
+    if (terminals.some(t => t.status === 'starting' || t.hasRunningSubprocess)) throw new Error('A T3 terminal for this thread is still running a command');
+    if (terminals.length) {
+      for (const t of terminals) await t3.closeTerminal(thread.id, t.terminalId);
+      return; // Let the shells exit before checking running processes.
+    }
     const cwds = (await exec('lsof', ['-b', '-n', '-d', 'cwd', '-Fn'], { timeout: 20_000, maxBuffer: 4_000_000 })).stdout.split('\n').filter(l => l.startsWith('n')).map(l => l.slice(1));
     if (!cwds.length) throw new Error('Cannot verify running process workspaces');
     if (cwds.some(cwd => cwd === path || cwd.startsWith(path + sep))) throw new Error('A running process is still using the workspace');
