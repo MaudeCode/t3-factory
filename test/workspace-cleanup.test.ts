@@ -11,7 +11,7 @@ import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty'] as const) {
+for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent'] as const) {
   test(`completed workspace cleanup: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -54,6 +54,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario.endsWith('dirty')) writeFileSync(join(tree, 'untracked'), 'keep me');
       if (scenario.endsWith('extra-commit')) { writeFileSync(join(tree, 'file'), 'new work'); execFileSync('git', ['-C', tree, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'unmerged']); }
       if (scenario === 'active') { thread.status = 'running'; thread.activeRunId = 'live-run'; }
+      if (scenario === 'orphaned-run') Object.assign(thread, { status: 'queued', activeRunId: 'orphaned-run', orphanedRun: true });
       if (scenario === 'waiting') { thread.status = 'waiting'; thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: job.createdAt }; }
       if (scenario === 'shared') threads.push(v2Thread({ ...thread, id: 'another-thread' }));
       if (scenario === 'resumed') thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
@@ -67,6 +68,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'resumed-subagent') threads.push(subagent('subagent', thread.id, { latestRunCompletedAt: '2026-01-03T00:00:00Z' }));
       if (scenario === 'foreign-subagent') threads.push(v2Thread({ ...thread, id: 'other-parent', worktreePath: null }), subagent('subagent', 'other-parent'));
       if (scenario === 'grandchild-subagent') threads.push(subagent('subagent', thread.id), subagent('grandchild', 'subagent'));
+      if (scenario === 'orphaned-run-subagent') threads.push(subagent('subagent', thread.id, { status: 'running', activeRunId: 'subagent-run', orphanedRun: true }));
       if (scenario === 'monitor-subagent') threads.push(subagent('subagent', thread.id, { pendingBackgroundTasks: [{ taskId: 'pr-watch', kind: 'monitor' }] }));
       if (scenario === 'process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
       if (scenario.endsWith('-terminal')) { terminalProcess = spawn('sleep', ['60'], { cwd: tree }); await once(terminalProcess, 'spawn'); }
@@ -87,6 +89,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'busy-terminal' || scenario === 'starting-terminal') assert.equal(store.jobs()[0].workspaceCleanupError, 'A T3 terminal for this thread is still running a command');
       if (scenario === 'other-thread-terminal') assert.equal(store.jobs()[0].workspaceCleanupError, 'A running process is still using the workspace');
       if (scenario === 'terminal-snapshot-failure') assert.equal(store.jobs()[0].workspaceCleanupError, 'T3 terminal snapshot unavailable');
+      if (scenario === 'orphaned-run') assert.deepEqual([store.jobs()[0].workspaceCleanupError, commands], ['Thread has an orphaned T3 run; settle it in T3 before workspace cleanup', []], 'hold the workspace without mutating the run');
       if (scenario === 'dry-run') assert.equal(terminalReads, 0, 'dry runs send no terminal RPCs');
       assert.equal(existsSync(tree), !removed, 'remove only a verified complete, clean, unchanged and inactive worktree');
       assert.equal(store.jobs()[0].state, scenario === 'settled' ? 'dismissed' : 'complete', 'cleanup preserves completion history and explicit settling');

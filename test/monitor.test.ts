@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { reconcile } from '../src/scheduler.ts';
+import { reconcile, busyProviders } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
@@ -34,5 +34,25 @@ test('stalled monitor is stopped and confirmed before parking; dry runs and acti
     thread.status = 'running'; thread.activeRunId = 'run-2'; thread.pendingBackgroundTasks = [{ taskId: 'pull-request-watch:1', kind: 'monitor' }];
     await reconcile(c, store, t3, {} as Kaneo, [thread]);
     assert.equal(store.jobs()[0].state, 'running'); assert.equal(commands.length, 1, 'never stop a resumed active turn');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a run orphaned by a stopped provider session releases its slot through the report path', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-orphan-')), store = new Store(dir);
+  const old = new Date(Date.now() - 3_600_000).toISOString();
+  const base = { kind: 'ticket', projectId: 'project', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: old, prUrls: [], lastExecutionAt: old, lastPersonalActivity: null, command: null, completedAt: null, modelSelection: { instanceId: 'claudeAgent', model: 'claude-fixture' } } as const;
+  const discovery: Job = { ...base, id: 'discovery', kind: 'discovery', taskId: null, ticketKey: null, threadId: 'discovery-thread', reportPath: join(dir, 'discovery.json') } as unknown as Job;
+  const ticket: Job = { ...base, id: 'ticket', taskId: 'ticket', ticketKey: 'FIX-2', threadId: 'ticket-thread', reportPath: join(dir, 'ticket.json') } as unknown as Job;
+  writeFileSync(discovery.reportPath, JSON.stringify({ jobId: 'discovery', status: 'complete', reason: 'Filed nothing new', prUrls: [], createdTaskIds: [] }));
+  const orphaned = (id: string) => v2Thread({ id, status: 'queued', activeRunId: 'run-1', updatedAt: old, orphanedRun: true });
+  const threads = [orphaned(discovery.threadId), orphaned(ticket.threadId)];
+  const c = { monitoringTimeoutMinutes: 30, projects: [{ kaneoId: 'project' }], discovery: { emptyCooldownHours: 1 } } as unknown as Config;
+  try {
+    store.save(discovery); store.save(ticket);
+    await reconcile(c, store, {} as T3, {} as Kaneo, threads, false);
+    const jobs = new Map(store.jobs().map(j => [j.id, j]));
+    assert.deepEqual([jobs.get('ticket')!.state, jobs.get('ticket')!.reason], ['waiting', 'Turn ended without a completion report; inspect in T3']);
+    assert.equal(jobs.get('discovery')!.state, 'complete');
+    assert.equal(busyProviders(store.jobs(), threads, new Map(), 30).size, 0, 'neither orphaned run holds a slot');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

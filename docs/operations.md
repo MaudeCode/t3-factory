@@ -45,7 +45,7 @@ Discovery runs only when there are no eligible tickets and no otherwise-ready ti
 
 ## Completion and recovery
 
-A delivered ticket is complete only after its report, Kaneo Done status, and merged PR evidence agree. A model turn ending or a PR opening is not completion. Failed starts and unexplained endings park for inspection instead of triggering blind retries.
+A delivered ticket is complete only after its report, Kaneo Done status, and merged PR evidence agree. A model turn ending or a PR opening is not completion. Failed starts and unexplained endings park for inspection instead of triggering blind retries. T3 can leave a run active after its provider sessions stopped. When every session has been `stopped` or `error` and the thread is unchanged for 30 minutes, the scheduler treats the run as ended: it reads the report, or parks the job, and releases the execution slot. It never stops that run, and it preserves the workspace while T3 still reports the run active.
 
 A ticket run can also verify that no change is needed: the ticket is already delivered, superseded, a duplicate, or not ready. It records the evidence on the ticket, moves the ticket out of the ready queue, and reports `no-work` (or `complete`) with no PR URLs. The scheduler accepts this closed-without-delivery outcome only when both conditions hold:
 

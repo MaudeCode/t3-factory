@@ -79,6 +79,10 @@ test('finished child agents and local wait commands cannot keep renewing persona
     child.updatedAt = completed;
     child.status = 'running'; child.activeRunId = 'run';
     assert.equal((await personalActivity(t3, [parent, child], [], store)).active, true, 'a child with a live provider run must still block');
+    const live = v2Thread({ id: 'live', status: 'running', activeRunId: 'run', updatedAt: completed, latestUserMessageAt: completed });
+    assert.equal((await personalActivity(t3, [live], [], store)).active, true, 'a live personal run blocks');
+    live.orphanedRun = true;
+    assert.equal((await personalActivity(t3, [live], [], store)).active, false, 'a run orphaned by stopped provider sessions does not');
     parent.pendingBackgroundTasks = [{ taskId: 'unknown-child', kind: 'subagent', childThreadId: 'missing' }];
     assert.equal((await personalActivity(t3, [parent], [], store)).active, true, 'unresolved child activity stays protected');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
