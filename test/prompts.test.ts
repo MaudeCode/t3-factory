@@ -26,6 +26,8 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
       assert.doesNotMatch(prompt, /Only approved=true|normal structured user merge prompt|safe merged-work cleanup/);
       assert.match(prompt, /human-only gates still require user input/);
       assert.match(prompt, /reuse them; do not create another worktree/);
+      assert.match(prompt, /no change is needed.*record the evidence on the ticket.*move it out of the ready queue.*detach the sf readiness label.*clean with no commits.*"no-work" with "prUrls":\[\]/);
+      assert.match(prompt, /Never report complete based merely on finishing a turn or opening a PR/);
       assert.match(prompt, /Automatic run visual validation/);
       assert.match(prompt, /capture and inspect screenshots of the actual changed build/i);
       assert.match(prompt, /record and inspect a video/i);

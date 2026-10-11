@@ -86,3 +86,35 @@ for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true
     assert.equal(store.jobs().length, 3);
   } finally { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a ticket closed without delivery can be dispatched again once ready', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-reopened-')), repo = join(dir, 'repo'), tree = join(dir, 'old-tree'); mkdirSync(repo);
+  const git = (path: string, ...args: string[]) => execFileSync('/usr/bin/git', ['-C', path, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', ...args], { encoding: 'utf8' }).trim();
+  git(repo, 'init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'released\n'); git(repo, 'add', 'file'); git(repo, 'commit', '-qm', 'released');
+  const branch = 'chore/FIX-1-old';
+  git(repo, 'update-ref', 'refs/remotes/origin/main', git(repo, 'rev-parse', 'HEAD')); git(repo, 'worktree', 'add', '-qb', branch, tree);
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh\necho '[]'\n`, { mode: 0o755 });
+  const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
+  const c = configSchema.parse({ enabled: false, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,
+    model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, runtimeMode: 'full-access', stateDir: join(dir, 'state'),
+    t3: { url: 'http://127.0.0.1', credentialFile: join(dir, 'token') }, kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    quota: { maxAgeSeconds: 300, fiveHourReservePercent: 40, weeklyReservePercent: 70 }, discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
+    projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kaneoId: 'p', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+  });
+  const task = { id: 'task', projectId: 'p', number: 1, title: 'Reopened work', status: 'to-do', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'med' }] };
+  t.mock.method(Kaneo.prototype, 'call', async (name: string) => {
+    if (name === 'list_workspace_labels') return task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' }));
+    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: [task] }] }, pagination: { total: 1, totalPages: 1 } };
+    if (name === 'get_task_relations') return [];
+    throw new Error(name);
+  });
+  const job: Job = { id: 'old-job', kind: 'ticket', projectId: 'p', taskId: 'task', ticketKey: 'FIX-1', threadId: 'old-thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Superseded', lastPersonalActivity: null, reportPath: join(dir, 'report'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', baseRef: 'main', branch, startFromOrigin: true } } };
+  const thread = v2Thread({ id: job.threadId, title: 'Factory: FIX-1', projectId: 'tp', branch, worktreePath: tree, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, status: 'completed', latestRunCompletedAt: job.createdAt });
+  const store = new Store(c.stateDir); store.save(job);
+  const inspect = () => inventory(c, new Kaneo(c.kaneo), [thread], store.jobs(), store, 'FIX-1');
+  try {
+    assert.equal((await inspect()).selected?.key, 'FIX-1', 'a released, idle, clean history does not block the ready ticket');
+    writeFileSync(join(tree, 'file'), 'new work\n'); git(tree, 'commit', '-qam', 'new work');
+    assert.match((await inspect()).skipped[0].reason, /T3 thread|Git branch/, 'a new commit on the old branch still blocks');
+  } finally { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
+});
