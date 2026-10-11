@@ -121,15 +121,15 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run'] as const) tes
   assert.deepEqual([saved.kind, saved.ticketKey, saved.upstream], ['upstream', null, { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' }]);
 });
 
-for (const status of ['complete', 'no-work', 'awaiting-human', 'complete-empty'] as const) {
-  const holds = status === 'awaiting-human' || status === 'complete-empty';
+for (const status of ['complete', 'no-work', 'awaiting-human', 'complete-empty', 'complete-old'] as const) {
+  const holds = !['complete', 'no-work'].includes(status);
   test(`upstream completion: a ${status} report ${holds ? 'keeps' : 'advances'} the watermark`, async t => {
     const { dir, c, store } = fixture(t, [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1' }]);
     const review = job({ id: 'review', threadId: 'review-thread', reportPath: join(dir, 'report.json'), upstream: { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' } });
     store.save(review);
-    writeFileSync(review.reportPath, JSON.stringify({ jobId: review.id, status: status === 'complete-empty' ? 'complete' : status, reason: 'Reviewed', prUrls: [], createdTaskIds: status === 'complete' ? ['filed'] : [] }));
+    writeFileSync(review.reportPath, JSON.stringify({ jobId: review.id, status: status.startsWith('complete') ? 'complete' : status, reason: 'Reviewed', prUrls: [], createdTaskIds: ['complete', 'complete-old'].includes(status) ? ['filed'] : [] }));
     const kaneo = { call: async (name: string, args: Record<string, unknown>) => {
-      if (name === 'get_task') return { id: args.taskId, projectId: 'FIX', number: 2, title: 'Filed', createdAt: review.createdAt, priority: 'low', status: 'to-do' };
+      if (name === 'get_task') return { id: args.taskId, projectId: 'FIX', number: 2, title: 'Filed', createdAt: status === 'complete-old' ? '2026-02-01T00:00:00Z' : review.createdAt, priority: 'low', status: 'to-do' };
       throw new Error(name);
     } } as unknown as Kaneo;
     const threads = [v2Thread({ id: review.threadId, projectId: 'FIX', status: 'completed' })];
@@ -137,6 +137,7 @@ for (const status of ['complete', 'no-work', 'awaiting-human', 'complete-empty']
     const [saved] = store.jobs();
     assert.equal(saved.state, holds ? 'waiting' : 'complete');
     if (status === 'complete-empty') assert.match(saved.reason, /without created tickets/);
+    if (status === 'complete-old') assert.match(saved.reason, /created before the review started/);
     assert.equal(store.get('upstreamReviewed:up/stable'), holds ? null : 'v2');
     assert.equal(store.get('discoveryAfter:FIX'), null, 'a review never starts the discovery cooldown');
   });
@@ -148,4 +149,6 @@ test('upstream config: watched repositories need a prompt and a single owner', (
   assert.throws(() => configSchema.parse({ ...base, upstream: undefined, projects: [project] }), /upstream\.promptFile/);
   assert.throws(() => configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project, { ...project, key: 'TWO', kaneoId: 'two', t3Id: 'two' }] }), /only one project/);
   assert.equal(configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project] }).upstream?.checkMinutes, 360);
+  const aliased = { ...project, key: 'TWO', kaneoId: 'two', t3Id: 'two', upstreams: [{ name: 'Up', repo: 'Up/Stable', firstBase: 'v1' }] };
+  assert.throws(() => configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project, aliased] }), /only one project/, 'repository names compare case-insensitively');
 });

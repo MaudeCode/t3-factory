@@ -158,7 +158,7 @@ struct FactoryMenuView: View {
                         Text("\(active.count) running · \(jobs.filter { $0["state"] as? String == "waiting" }.count) waiting").font(.caption).foregroundStyle(.secondary)
                     }
                     Text(model.streamReason(driver)).font(.caption).foregroundStyle(.secondary)
-                    ForEach(Array(active.enumerated()), id: \.offset) { _, job in Text(job["ticketKey"] as? String ?? "Discovery").font(.caption.monospaced()) }
+                    ForEach(Array(active.enumerated()), id: \.offset) { _, job in Text(job["label"] as? String ?? job["ticketKey"] as? String ?? "Discovery").font(.caption.monospaced()) }
                     let directQuota = model.decision["quota"] as? [String: Any] ?? [:]
                     let providerName = driver == "codex" ? "Codex" : "Claude"
                     let quota = directQuota["provider"] as? String == providerName ? directQuota : model.streams.first { $0["driver"] as? String == driver }?["quota"] as? [String: Any] ?? [:]

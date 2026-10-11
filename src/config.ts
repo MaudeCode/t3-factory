@@ -78,7 +78,8 @@ export const configSchema = z.preprocess(input => {
     readyStatuses: z.array(z.string()).min(1), doneStatuses: z.array(z.string()).min(1),
     discoveryPromptFile: absolute.optional(),
     upstreams: z.array(z.object({
-      name: z.string().min(1), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+      // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
+      name: z.string().min(1), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()),
       prereleases: z.boolean().default(false), firstBase: z.string().min(1),
     }).strict()).default([]),
   }).strict()).min(1),

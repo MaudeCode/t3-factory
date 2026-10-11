@@ -170,6 +170,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
             for (const id of report.createdTaskIds) {
               const task = taskSchema.parse(await kaneo.call('get_task', { taskId: id }));
               if (task.projectId !== project.kaneoId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : 'Discovery'} report includes another project`);
+              if (job.kind === 'upstream' && Date.parse(task.createdAt) < Date.parse(job.createdAt)) throw new Error('Upstream review report lists a ticket created before the review started');
             }
             if (job.kind === 'upstream') store.set(`upstreamReviewed:${job.upstream!.repo}`, job.upstream!.candidate);
             else if (!report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
@@ -687,7 +688,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
 }
 
 export function writeStatus(c: Config, store: Store) {
-  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => job) };
+  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })) };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
   return result;
 }
