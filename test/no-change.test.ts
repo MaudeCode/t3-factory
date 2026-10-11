@@ -18,6 +18,8 @@ const rejected = {
   'missing-worktree-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'switched-branch-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'no-work-with-pr': 'Ticket cannot finish as no-work',
+  'pushed-to-release': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
+  'pushed-to-release-then-reset': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'missing-worktree-and-branch': 'Workspace head cannot be verified; inspect the work in T3 or report awaiting-human',
 } as const;
 
@@ -50,6 +52,10 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
       if (scenario.endsWith('extra-commit')) { writeFileSync(join(tree, 'file'), 'new work\n'); git(tree, 'commit', '-qam', 'unmerged'); }
       if (scenario === 'switched-branch-extra-commit') git(tree, 'switch', '-qc', 'other', 'main');
       if (scenario.startsWith('missing-worktree')) { git(repo, 'worktree', 'remove', tree); thread.worktreePath = null; }
+      if (scenario.startsWith('pushed-to-release')) {
+        writeFileSync(join(tree, 'file'), 'unreviewed\n'); git(tree, 'commit', '-qam', 'unreviewed'); git(repo, 'update-ref', 'refs/remotes/origin/main', git(tree, 'rev-parse', 'HEAD'));
+        if (scenario.endsWith('reset')) git(tree, 'reset', '-q', '--hard', 'HEAD~1');
+      }
       if (scenario === 'missing-worktree-and-branch') git(repo, 'branch', '-D', branch);
       store.save(job);
       await reconcile(c, store, t3, kaneo, threads);

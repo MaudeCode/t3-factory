@@ -50,21 +50,29 @@ async function released(project: Project, head: string): Promise<boolean> {
 async function branchTip(project: Project, branch: string): Promise<string> {
   return git(project.repoPath, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).catch(() => '');
 }
-// A ticket closed without delivery must have left the ready queue and abandon no unreleased work.
+// Every commit a ref has pointed at, newest first; empty when Git keeps no reflog for it.
+async function refHistory(path: string, ref: string): Promise<string[]> {
+  return (await git(path, ['reflog', 'show', '--format=%H', ref]).catch(() => '')).split('\n').filter(Boolean);
+}
+// A Factory branch that never moved from its released creation commit, in a checkout that never left it, holds no work of its run.
+// A commit pushed straight to the release branch would pass an ancestry check alone.
+async function untouchedHead(project: Project, branch: string, worktreePath?: string | null): Promise<string> {
+  const history = await refHistory(project.repoPath, `refs/heads/${branch}`), created = history.at(-1);
+  if (!created) return '';
+  history.push(await branchTip(project, branch));
+  if (worktreePath && existsSync(worktreePath)) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
+  return history.every(head => head === created) && await released(project, created) ? created : '';
+}
+// A ticket closed without delivery must have left the ready queue and abandon no work.
 async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: Kaneo, task: Task, job: Job, thread: Thread) {
   if (!project.doneStatuses.includes(task.status) && project.readyStatuses.includes(task.status) && (await listTaskLabels(kaneo)).get(task.id)?.some(l => l.name === c.kaneo.readyLabel)) {
     throw new Error('Ticket is still ready; record why no change is needed and remove it from the ready queue');
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
-  const heads: string[] = [], branch = assignedBranch(job);
-  if (thread.worktreePath && existsSync(thread.worktreePath)) {
-    if (await git(thread.worktreePath, ['status', '--porcelain'])) throw unmerged;
-    heads.push(await git(thread.worktreePath, ['rev-parse', 'HEAD']));
-  }
-  if (branch) heads.push(await branchTip(project, branch));
-  const verifiable = heads.filter(Boolean);
-  if (!verifiable.length) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
-  for (const head of verifiable) if (!await released(project, head)) throw unmerged;
+  const branch = assignedBranch(job), worktree = thread.worktreePath && existsSync(thread.worktreePath) ? thread.worktreePath : null;
+  if (worktree && await git(worktree, ['status', '--porcelain'])) throw unmerged;
+  if (!branch || !await branchTip(project, branch)) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
+  if (!await untouchedHead(project, branch, worktree)) throw unmerged;
 }
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
   for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
@@ -327,9 +335,9 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       inactiveThreads.add(thread.id);
     };
     if (!job.prUrls.length) {
-      // Closed without delivery: the branch tip must already be part of the release branch.
-      const tip = await branchTip(project, branch);
-      if (tip && await released(project, tip)) { branches.set(branch, tip); await release(tip); }
+      // Closed without delivery: the branch must still be untouched at its released creation commit.
+      const tip = await untouchedHead(project, branch, thread?.worktreePath);
+      if (tip) { branches.set(branch, tip); await release(tip); }
       continue;
     }
     for (const url of job.prUrls) {
