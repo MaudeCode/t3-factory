@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, waiting, stalledMonitor, mentionsTicket, threadSchema } from '../src/policy.ts';
+import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, waiting, stalledMonitor, mentionsTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { configSchema } from '../src/config.ts';
@@ -111,4 +111,10 @@ test('job ownership survives reopen and prohibits duplicate ticket jobs', () => 
 });
 test('unknown settings are rejected instead of silently weakening policy', () => {
   assert.throws(() => configSchema.parse({ enabled: true, typo: 1 }));
+});
+test('subagent descendants are transitive, exclude other relationships, and tolerate cycles', () => {
+  const child = (id: string, parentThreadId: string, relationshipToParent = 'subagent') => v2Thread({ id, lineage: { rootThreadId: 'root', parentThreadId, relationshipToParent } });
+  const threads = [child('root', 'grandchild'), child('child', 'root'), child('grandchild', 'child'), child('fork', 'root', 'fork'), child('fork-child', 'fork'), child('foreign', 'other'), v2Thread({ id: 'plain' })];
+  assert.deepEqual(subagentDescendants(threads, 'root').map(t => t.id), ['child', 'grandchild']);
+  assert.deepEqual(subagentDescendants(threads, 'plain'), []);
 });
