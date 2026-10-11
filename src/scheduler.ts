@@ -44,19 +44,20 @@ const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedA
 export interface PendingReview { project: Project; upstream: NonNullable<Job['upstream']> }
 // Each watched repository yields at most one review: from its last reviewed release to its newest one.
 // GitHub is read at most every upstream.checkMinutes; a repository with an unfinished review is not read at all.
-export async function pendingReviews(c: Config, store: Store, jobs: Job[], now = Date.now()): Promise<PendingReview[]> {
+// refresh=false (dry runs and doctor) reads only the cached releases and writes nothing.
+export async function pendingReviews(c: Config, store: Store, jobs: Job[], now = Date.now(), refresh = true): Promise<PendingReview[]> {
   const pending: PendingReview[] = [];
   for (const project of c.projects.filter(p => p.enabled)) for (const watched of project.upstreams) {
     const owned = jobs.filter(j => j.upstream?.repo === watched.repo);
     if (owned.some(j => !['complete', 'dismissed'].includes(j.state))) continue;
     const latestKey = `upstreamLatest:${watched.repo}`, checkedKey = `upstreamCheckedAt:${watched.repo}`;
-    if (now - Number(store.get(checkedKey) ?? 0) >= c.upstream!.checkMinutes * 60_000) {
+    if (refresh && now - Number(store.get(checkedKey) ?? 0) >= c.upstream!.checkMinutes * 60_000) {
+      store.set(checkedKey, String(now)); // A failed read also waits checkMinutes before retrying.
       try {
         // gh excludes drafts (which have no publish date) and skipped pre-releases before its limit, so they cannot hide a release.
         const latest = releasesSchema.parse(await gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--exclude-drafts', ...watched.prereleases ? [] : ['--exclude-pre-releases'], '--json', 'tagName,publishedAt']))
           .toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
         if (latest) store.set(latestKey, latest.tagName);
-        store.set(checkedKey, String(now));
       } catch (error) { log('upstream-check-failed', { repo: watched.repo, reason: safeError(error) }); }
     }
     const candidate = store.get(latestKey), base = store.get(`upstreamReviewed:${watched.repo}`) ?? watched.firstBase;
@@ -541,7 +542,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel);
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
-    const reviews = options.manual ? [] : await pendingReviews(c, store, store.jobs());
+    const reviews = options.manual ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
     const candidates = [...queue.ready];
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
@@ -576,6 +577,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
       } catch (error) {
         stream.reason = safeError(error); busy.add(selected.driver);
         if (assignment && store.jobs().some(j => j.taskId === assignment.ticket.id)) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
+        // An ambiguous launch still owns its review; another provider must not start the same range.
+        if (review && store.jobs().some(j => j.upstream?.repo === review.upstream.repo && j.upstream.candidate === review.upstream.candidate)) reviews.shift();
         results.push({ reason: 'error', driver: selected.driver, message: stream.reason });
       }
     }

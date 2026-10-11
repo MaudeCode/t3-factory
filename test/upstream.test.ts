@@ -72,17 +72,21 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   assert.deepEqual((await pendingReviews(c, store, [], now + 61 * 60_000)).map(p => p.upstream.repo), ['up/exp'], 'a reviewed candidate is the new base');
 });
 
-test('upstream dispatch: a pending review goes ahead of a ready ticket with a filled prompt', async t => {
-  const { c, store } = fixture(t, [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1' }]);
+for (const scenario of ['priority', 'ambiguous-launch', 'dry-run'] as const) test(`upstream dispatch: ${scenario}`, async t => {
+  const { c, store, ghCalls } = fixture(t, [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1' }]);
+  if (scenario === 'ambiguous-launch') {
+    c.models.push({ id: 'astra', name: 'Astra', model: { instanceId: 'codex', model: 'gpt-6-astra', options: [] }, automatic: true, maxDifficulty: 'high' });
+    writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  }
   const tasks = [{ id: 'task-1', projectId: 'FIX', title: 'Ready work', number: 1, status: 'to-do', priority: 'urgent', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }];
-  const providers = [{ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'claude-opus-5' }] }];
+  const providers = [{ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'claude-opus-5' }] },
+    { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'gpt-6-astra' }] }];
   t.mock.method(T3.prototype, 'providers', async () => providers);
   t.mock.method(T3.prototype, 'shell', async () => ({ threads: [], projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) }));
   t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
-  t.mock.method(T3.prototype, 'provider', async () => ({ ...providers[0], usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: [
-    { id: 'five_hour', usedPercent: 0, windowDurationMins: 300, resetsAt: new Date(Date.now() + 300 * 60_000).toISOString() },
-    { id: 'seven_day', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 10080 * 60_000).toISOString() },
-  ] } }));
+  const window = (id: string, minutes: number) => ({ id, usedPercent: 0, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
+  t.mock.method(T3.prototype, 'provider', async (instanceId: string) => ({ ...providers.find(p => p.instanceId === instanceId)!, usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(),
+    windows: instanceId === 'codex' ? [window('primary', 10080)] : [window('five_hour', 300), window('seven_day', 10080)] } }));
   t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
   t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
@@ -92,9 +96,22 @@ test('upstream dispatch: a pending review goes ahead of a ready ticket with a fi
     throw new Error(name);
   });
   const launched: Record<string, any>[] = [];
-  t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => { launched.push(command); return { sequence: launched.length }; });
+  t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
+    launched.push(command);
+    if (scenario === 'ambiguous-launch' && launched.length === 1) throw new Error('RPC outcome unknown');
+    return { sequence: launched.length };
+  });
 
+  if (scenario === 'dry-run') {
+    const result = await cycle(c, store, { dryRun: true });
+    assert.deepEqual([result.reason, launched.length, ghCalls(), store.get('upstreamCheckedAt:up/stable')], ['would-dispatch', 0, 0, null], 'a dry run reads no releases and writes no cache');
+    return;
+  }
   const result = await cycle(c, store);
+  if (scenario === 'ambiguous-launch') {
+    assert.deepEqual(launched.map(l => l.title), ['Upstream review: Stable v1..v2', 'Factory: FIX-1'], 'the other provider takes the ticket, not the same review');
+    return;
+  }
   assert.equal(result.reason, 'dispatched');
   assert.equal(launched.length, 1, 'the only slot goes to the review');
   assert.equal(launched[0].title, 'Upstream review: Stable v1..v2');

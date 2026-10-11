@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { modify, applyEdits } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
-import { Store } from './store.ts';
+import { Store, jobLabel } from './store.ts';
 import { cycle, log, safeError, writeStatus } from './scheduler.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
 import { saveSettings } from './settings.ts';
@@ -26,7 +26,7 @@ if (command === 'web') {
     const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
     const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
     const jobs = (status.jobs ?? []).filter((j: any) => j.state !== 'dismissed');
-    status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map((j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, threadId: j.threadId, prUrls: j.prUrls, modelSelection: j.modelSelection, providerDriver: j.providerDriver, difficulty: j.difficulty }));
+    status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map((j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, threadId: j.threadId, prUrls: j.prUrls, modelSelection: j.modelSelection, providerDriver: j.providerDriver, difficulty: j.difficulty }));
     return { config, status };
   } });
   server.listen(config.port, config.host, () => console.log(`Factory web controls listening on ${config.host}:${config.port}`));
