@@ -40,7 +40,7 @@ async function git(path: string, args: string[]): Promise<string> {
 async function gh(args: string[]): Promise<unknown> {
   return JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000 })).stdout);
 }
-const releasesSchema = z.array(z.object({ tagName: z.string().min(1), isDraft: z.boolean(), isPrerelease: z.boolean(), publishedAt: z.string() }));
+const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedAt: z.string() }));
 export interface PendingReview { project: Project; upstream: NonNullable<Job['upstream']> }
 // Each watched repository yields at most one review: from its last reviewed release to its newest one.
 // GitHub is read at most every upstream.checkMinutes; a repository with an unfinished review is not read at all.
@@ -52,8 +52,9 @@ export async function pendingReviews(c: Config, store: Store, jobs: Job[], now =
     const latestKey = `upstreamLatest:${watched.repo}`, checkedKey = `upstreamCheckedAt:${watched.repo}`;
     if (now - Number(store.get(checkedKey) ?? 0) >= c.upstream!.checkMinutes * 60_000) {
       try {
-        const latest = releasesSchema.parse(await gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--json', 'tagName,isDraft,isPrerelease,publishedAt']))
-          .filter(r => !r.isDraft && (watched.prereleases || !r.isPrerelease)).toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
+        // gh excludes drafts (which have no publish date) and skipped pre-releases before its limit, so they cannot hide a release.
+        const latest = releasesSchema.parse(await gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--exclude-drafts', ...watched.prereleases ? [] : ['--exclude-pre-releases'], '--json', 'tagName,publishedAt']))
+          .toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
         if (latest) store.set(latestKey, latest.tagName);
         store.set(checkedKey, String(now));
       } catch (error) { log('upstream-check-failed', { repo: watched.repo, reason: safeError(error) }); }
@@ -163,6 +164,8 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
               await verifyMerged(project, report.prUrls);
             }
           } else {
+            // An upstream review that created nothing reports no-work, so a truncated report cannot mark a release reviewed.
+            if (job.kind === 'upstream' && report.status === 'complete' && !report.createdTaskIds.length) throw new Error('Upstream review reported complete without created tickets; report no-work if none were needed');
             for (const id of report.createdTaskIds) {
               const task = taskSchema.parse(await kaneo.call('get_task', { taskId: id }));
               if (task.projectId !== project.kaneoId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : 'Discovery'} report includes another project`);

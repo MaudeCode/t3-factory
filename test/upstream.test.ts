@@ -10,19 +10,16 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingReviews, reconcile } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-const releases = [
-  { tagName: 'v3-draft', isDraft: true, isPrerelease: false, publishedAt: '2026-03-04T00:00:00Z' },
-  { tagName: 'exp-3', isDraft: false, isPrerelease: true, publishedAt: '2026-03-03T00:00:00Z' },
-  { tagName: 'v2', isDraft: false, isPrerelease: false, publishedAt: '2026-03-02T00:00:00Z' },
-  { tagName: 'v1', isDraft: false, isPrerelease: false, publishedAt: '2026-03-01T00:00:00Z' },
-];
+// What gh returns after --exclude-drafts, with and without --exclude-pre-releases.
+const stable = [{ tagName: 'v1', publishedAt: '2026-03-01T00:00:00Z' }, { tagName: 'v2', publishedAt: '2026-03-02T00:00:00Z' }];
+const withPrereleases = [{ tagName: 'exp-3', publishedAt: '2026-03-03T00:00:00Z' }, ...stable];
 
 // Synthetic config, fake gh on PATH that counts its calls, and a disposable store.
 function fixture(t: { after: (fn: () => void) => void }, upstreams: Record<string, unknown>[]) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-upstream-')), repo = join(dir, 'repo'); mkdirSync(repo);
   execFileSync('/usr/bin/git', ['init', '-q', repo]);
-  writeFileSync(join(dir, 'releases.json'), JSON.stringify(releases));
-  writeFileSync(join(dir, 'gh'), `#!/bin/sh\necho "$@" >> "${join(dir, 'gh-calls')}"\ncase "$1" in release) cat "${join(dir, 'releases.json')}" ;; *) printf "[]\\n" ;; esac\n`, { mode: 0o755 });
+  writeFileSync(join(dir, 'stable.json'), JSON.stringify(stable)); writeFileSync(join(dir, 'all.json'), JSON.stringify(withPrereleases));
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh\necho "$@" >> "${join(dir, 'gh-calls')}"\ncase "$1 $*" in\n  release*--exclude-pre-releases*) cat "${join(dir, 'stable.json')}" ;;\n  release*) cat "${join(dir, 'all.json')}" ;;\n  *) printf "[]\\n" ;;\nesac\n`, { mode: 0o755 });
   writeFileSync(join(dir, 'upstream.md'), 'Review {{name}} ({{repo}}) from {{base}} to {{candidate}}.');
   writeFileSync(join(dir, 'discovery.md'), 'Discover.'); writeFileSync(join(dir, 'skill'), '# Software factory');
   const oldPath = process.env.PATH, oldConfig = process.env.T3_FACTORY_CONFIG;
@@ -40,14 +37,15 @@ function fixture(t: { after: (fn: () => void) => void }, upstreams: Record<strin
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
   const store = new Store(c.stateDir);
-  const ghCalls = () => existsSync(join(dir, 'gh-calls')) ? readFileSync(join(dir, 'gh-calls'), 'utf8').split('\n').filter(l => l.startsWith('release')).length : 0;
+  const releaseCalls = () => existsSync(join(dir, 'gh-calls')) ? readFileSync(join(dir, 'gh-calls'), 'utf8').split('\n').filter(l => l.startsWith('release')) : [];
+  const ghCalls = () => releaseCalls().length;
   t.after(() => { store.close(); process.env.PATH = oldPath; process.env.T3_FACTORY_CONFIG = oldConfig; rmSync(dir, { recursive: true, force: true }); });
-  return { dir, c, store, ghCalls };
+  return { dir, c, store, ghCalls, releaseCalls };
 }
 const job = (overrides: Partial<Job>): Job => ({ id: 'old', kind: 'upstream', projectId: 'FIX', taskId: null, ticketKey: null, threadId: 'old-thread', messageId: 'm', createdAt: '2026-03-01T00:00:00Z', state: 'running', reason: '', lastPersonalActivity: null, reportPath: '/nonexistent', command: null, prUrls: [], completedAt: null, ...overrides });
 
 test('upstream detection: newest counted release, throttled reads, and one review per candidate', async t => {
-  const { c, store, ghCalls } = fixture(t, [
+  const { c, store, ghCalls, releaseCalls } = fixture(t, [
     { name: 'Stable', repo: 'up/stable', firstBase: 'v1' },
     { name: 'Exp', repo: 'up/exp', prereleases: true, firstBase: 'v1' },
     { name: 'Current', repo: 'up/current', firstBase: 'v2' },
@@ -57,8 +55,10 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   assert.deepEqual(pending.map(p => p.upstream), [
     { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' },
     { name: 'Exp', repo: 'up/exp', base: 'v1', candidate: 'exp-3' },
-  ], 'drafts never count, pre-releases only when enabled, and an already-reviewed candidate yields nothing');
+  ], 'pre-releases count only when enabled, and an already-reviewed candidate yields nothing');
   assert.equal(ghCalls(), 3);
+  assert.ok(releaseCalls().every(call => call.includes('--exclude-drafts')), 'drafts are excluded before the limit');
+  assert.deepEqual(releaseCalls().map(call => call.includes('--exclude-pre-releases')), [true, false, true], 'skipped pre-releases are excluded before the limit');
 
   await pendingReviews(c, store, [], now + 59 * 60_000);
   assert.equal(ghCalls(), 3, 'GitHub is not read again within checkMinutes');
@@ -104,12 +104,13 @@ test('upstream dispatch: a pending review goes ahead of a ready ticket with a fi
   assert.deepEqual([saved.kind, saved.ticketKey, saved.upstream], ['upstream', null, { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' }]);
 });
 
-for (const status of ['complete', 'no-work', 'awaiting-human'] as const) {
-  test(`upstream completion: a ${status} report ${status === 'awaiting-human' ? 'keeps' : 'advances'} the watermark`, async t => {
+for (const status of ['complete', 'no-work', 'awaiting-human', 'complete-empty'] as const) {
+  const holds = status === 'awaiting-human' || status === 'complete-empty';
+  test(`upstream completion: a ${status} report ${holds ? 'keeps' : 'advances'} the watermark`, async t => {
     const { dir, c, store } = fixture(t, [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1' }]);
     const review = job({ id: 'review', threadId: 'review-thread', reportPath: join(dir, 'report.json'), upstream: { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' } });
     store.save(review);
-    writeFileSync(review.reportPath, JSON.stringify({ jobId: review.id, status, reason: 'Reviewed', prUrls: [], createdTaskIds: status === 'complete' ? ['filed'] : [] }));
+    writeFileSync(review.reportPath, JSON.stringify({ jobId: review.id, status: status === 'complete-empty' ? 'complete' : status, reason: 'Reviewed', prUrls: [], createdTaskIds: status === 'complete' ? ['filed'] : [] }));
     const kaneo = { call: async (name: string, args: Record<string, unknown>) => {
       if (name === 'get_task') return { id: args.taskId, projectId: 'FIX', number: 2, title: 'Filed', createdAt: review.createdAt, priority: 'low', status: 'to-do' };
       throw new Error(name);
@@ -117,8 +118,9 @@ for (const status of ['complete', 'no-work', 'awaiting-human'] as const) {
     const threads = [v2Thread({ id: review.threadId, projectId: 'FIX', status: 'completed' })];
     await reconcile(c, store, { shell: async () => ({ threads }) } as unknown as T3, kaneo, threads, false);
     const [saved] = store.jobs();
-    assert.equal(saved.state, status === 'awaiting-human' ? 'waiting' : 'complete');
-    assert.equal(store.get('upstreamReviewed:up/stable'), status === 'awaiting-human' ? null : 'v2');
+    assert.equal(saved.state, holds ? 'waiting' : 'complete');
+    if (status === 'complete-empty') assert.match(saved.reason, /without created tickets/);
+    assert.equal(store.get('upstreamReviewed:up/stable'), holds ? null : 'v2');
     assert.equal(store.get('discoveryAfter:FIX'), null, 'a review never starts the discovery cooldown');
   });
 }
