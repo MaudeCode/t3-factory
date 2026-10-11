@@ -23,6 +23,7 @@ export interface Job {
   workspaceCleanup?: { path: string; branch: string; head: string };
   workspaceCleanedAt?: string;
   workspaceCleanupError?: string;
+  workspaceCleanupBlockedAt?: string;
 }
 export class Store {
   db: DatabaseSync;

@@ -37,7 +37,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       'busy-terminal': [terminal('thread', 'running', true)], 'starting-terminal': [terminal('thread', 'starting', false)],
       'other-thread-terminal': [terminal('another-thread', 'running', false)], 'dry-run': [terminal('thread', 'running', false)],
     } as Record<string, unknown[]>)[scenario] ?? [];
-    const t3 = { shell: async () => { if (scenario === 'race-before-remove' && ++shellReads === 3) thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.stop') { threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
+    const t3 = { shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.stop') { threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
       attempts++; assert.equal(cwd, repo); assert.equal(path, realTree);
       if (scenario === 'retry' && attempts === 1) throw new Error('temporary removal failure');
       if (scenario === 'retry-unusual-error' && attempts === 1) { const error = new Error(); Object.defineProperty(error, 'message', { value: undefined }); throw error; }
@@ -72,18 +72,28 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'monitor-subagent') threads.push(subagent('subagent', thread.id, { pendingBackgroundTasks: [{ taskId: 'pr-watch', kind: 'monitor' }] }));
       if (scenario === 'process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
       if (scenario.endsWith('-terminal')) { terminalProcess = spawn('sleep', ['60'], { cwd: tree }); await once(terminalProcess, 'spawn'); }
+      // A blocked cleanup makes no T3, Kaneo, Git or process call until its retry window passes.
+      const skipsUntilRetry = async () => {
+        const reads = () => [shellReads, terminalReads, attempts, detachAttempts, commands.length];
+        const before = reads(); await reconcile(c, store, t3, kaneo, threads);
+        assert.deepEqual(reads(), before, 'skip a blocked cleanup within its retry window');
+        assert.ok(store.jobs()[0].workspaceCleanupBlockedAt, 'record when cleanup was blocked');
+        const saved = store.jobs()[0]; saved.workspaceCleanupBlockedAt = new Date(Date.now() - 16 * 60_000).toISOString(); store.save(saved);
+      };
       store.save(job);
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
+      if (scenario === 'retry-detach') await skipsUntilRetry();
       if (scenario === 'resumed-after-detach') thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
       if (scenario === 'dirty-after-detach') writeFileSync(join(tree, 'untracked'), 'new work');
       if (scenario === 'branch-change-after-detach') execFileSync('git', ['-C', tree, 'switch', '-qc', 'unrelated-work']);
       if (scenario === 'path-change-after-detach') thread.worktreePath = repo;
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
-      if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); await reconcile(c, store, t3, kaneo, threads); }
+      if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); await skipsUntilRetry(); await reconcile(c, store, t3, kaneo, threads); }
       if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await reconcile(c, store, t3, kaneo, threads);
       if (scenario === 'monitor-subagent') await reconcile(c, store, t3, kaneo, threads);
       const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done'].includes(scenario);
-      if (removed) assert.equal(store.jobs()[0].workspaceCleanupError, undefined, 'cleanup completes without a recorded error');
+      if (removed) assert.deepEqual([store.jobs()[0].workspaceCleanupError, store.jobs()[0].workspaceCleanupBlockedAt], [undefined, undefined], 'cleanup completes without a recorded error');
+      else if (store.jobs()[0].workspaceCleanupError) await skipsUntilRetry();
       if (scenario === 'idle-terminal') assert.deepEqual(closes, [{ threadId: 'thread', terminalId: 'setup-install-dependencies' }], 'close only the thread\'s idle live terminal, once');
       else assert.deepEqual(closes, [], 'never close a busy, starting, or foreign terminal');
       if (scenario === 'busy-terminal' || scenario === 'starting-terminal') assert.equal(store.jobs()[0].workspaceCleanupError, 'A T3 terminal for this thread is still running a command');
