@@ -5,7 +5,9 @@ import type { ModelSelection } from './config.ts';
 import type { Difficulty } from './policy.ts';
 
 export interface Job {
-  id: string; kind: 'ticket' | 'discovery'; projectId: string; taskId: string | null;
+  id: string; kind: 'ticket' | 'discovery' | 'upstream'; projectId: string; taskId: string | null;
+  // An upstream review covers base..candidate of one watched repository.
+  upstream?: { name: string; repo: string; base: string; candidate: string };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
   lastPersonalActivity: string | null; reportPath: string; command: unknown;
@@ -24,6 +26,9 @@ export interface Job {
   workspaceCleanedAt?: string;
   workspaceCleanupError?: string;
   workspaceCleanupBlockedAt?: string;
+}
+export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
+  return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : 'Discovery');
 }
 export class Store {
   db: DatabaseSync;

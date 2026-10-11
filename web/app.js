@@ -225,7 +225,7 @@ function renderLive() {
       return `<div>
   <div class="section-head"><h2>${driver === "codex" ? "Codex" : "Claude"}</h2><span class="hint">${esc(!enabled ? "Paused" : STREAM_REASONS[stream.reason] || "Watching the queue")}</span></div>
   <div class="stat-num">${active.length}<small>running · automatic limit ${limit}</small></div>
-  <p class="hint mono">${active.length ? active.map((j) => esc(j.ticketKey || "Discovery")).join(", ") : "Slot free"}</p>
+  <p class="hint mono">${active.length ? active.map((j) => esc(j.label)).join(", ") : "Slot free"}</p>
   ${fable != null ? meter("Fable allowance", fable) : ""}
   ${(quota?.windows || []).map((w) => meter(w.name === "fiveHour" ? "Five-hour window" : "Weekly window", w.remaining)).join("")}
   ${quota?.capturedAt ? `<p class="hint" style="margin-top:8px">Quota checked ${ago(quota.capturedAt)}</p>` : ""}
@@ -293,7 +293,7 @@ function jobRow(j) {
       )
     : "";
   return `<tr>
-  <td><strong class="mono">${esc(j.ticketKey || "Discovery")}</strong> <span class="tag ${esc(j.state)}">${esc(j.state === "dispatching" ? "starting" : j.state)}</span></td>
+  <td><strong class="mono">${esc(j.label)}</strong> <span class="tag ${esc(j.state)}">${esc(j.state === "dispatching" ? "starting" : j.state)}</span></td>
   <td><span class="mono">${esc(j.modelSelection?.model || "Factory")}</span> <span class="sub">${ago(j.createdAt)}</span></td>
   <td class="links">${ticket ? `<a href="${ticket}" target="_blank" rel="noopener noreferrer">Ticket</a>` : ""}${prs}</td>
   <td><details><summary>Details</summary><p>${esc(j.reason || "No details yet.")}</p></details></td>

@@ -48,6 +48,11 @@
     "promptFile": "/absolute/path/to/discovery.md",
     "emptyCooldownHours": 24
   },
+  // Optional: required once any project lists upstreams.
+  "upstream": {
+    "promptFile": "/absolute/path/to/upstream-review.md",
+    "checkMinutes": 360
+  },
   "factorySkill": "/absolute/path/to/software-factory/SKILL.md",
   "projects": [
     {
@@ -60,7 +65,10 @@
       "githubRepo": "OWNER/REPOSITORY",
       "baseBranch": "main",
       "readyStatuses": ["todo"],
-      "doneStatuses": ["done"]
+      "doneStatuses": ["done"],
+      "upstreams": [
+        { "name": "Example library", "repo": "OWNER/LIBRARY", "prereleases": false, "firstBase": "v1.0.0" }
+      ]
     }
   ]
 }

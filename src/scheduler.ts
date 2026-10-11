@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
 import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
-import { Store, type Job } from './store.ts';
+import { Store, jobLabel, type Job } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
 
@@ -39,6 +39,33 @@ async function git(path: string, args: string[]): Promise<string> {
 }
 async function gh(args: string[]): Promise<unknown> {
   return JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000 })).stdout);
+}
+const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedAt: z.string() }));
+export interface PendingReview { project: Project; upstream: NonNullable<Job['upstream']> }
+// Each watched repository yields at most one review: from its last reviewed release to its newest one.
+// GitHub is read at most every upstream.checkMinutes; a repository with an unfinished review is not read at all.
+// refresh=false (dry runs and doctor) reads only the cached releases and writes nothing.
+export async function pendingReviews(c: Config, store: Store, jobs: Job[], now = Date.now(), refresh = true): Promise<PendingReview[]> {
+  const pending: PendingReview[] = [];
+  for (const project of c.projects.filter(p => p.enabled)) for (const watched of project.upstreams) {
+    const owned = jobs.filter(j => j.upstream?.repo === watched.repo);
+    if (owned.some(j => !['complete', 'dismissed'].includes(j.state))) continue;
+    const latestKey = `upstreamLatest:${watched.repo}`, checkedKey = `upstreamCheckedAt:${watched.repo}`;
+    if (refresh && now - Number(store.get(checkedKey) ?? 0) >= c.upstream!.checkMinutes * 60_000) {
+      store.set(checkedKey, String(now)); // A failed read also waits checkMinutes before retrying.
+      try {
+        // gh excludes drafts (which have no publish date) and skipped pre-releases before its limit, so they cannot hide a release.
+        const latest = releasesSchema.parse(await gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--exclude-drafts', ...watched.prereleases ? [] : ['--exclude-pre-releases'], '--json', 'tagName,publishedAt']))
+          .toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
+        if (latest) store.set(latestKey, latest.tagName);
+      } catch (error) { log('upstream-check-failed', { repo: watched.repo, reason: safeError(error) }); }
+    }
+    const candidate = store.get(latestKey), base = store.get(`upstreamReviewed:${watched.repo}`) ?? watched.firstBase;
+    // A candidate that already had a review, even one dismissed by settling it, is never dispatched again.
+    if (!candidate || candidate === base || owned.some(j => j.upstream!.candidate === candidate)) continue;
+    pending.push({ project, upstream: { name: watched.name, repo: watched.repo, base, candidate } });
+  }
+  return pending;
 }
 async function verifyMerged(project: Project, urls: string[]) {
   for (const url of urls) {
@@ -138,11 +165,15 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
               await verifyMerged(project, report.prUrls);
             }
           } else {
+            // An upstream review that created nothing reports no-work, so a truncated report cannot mark a release reviewed.
+            if (job.kind === 'upstream' && report.status === 'complete' && !report.createdTaskIds.length) throw new Error('Upstream review reported complete without created tickets; report no-work if none were needed');
             for (const id of report.createdTaskIds) {
               const task = taskSchema.parse(await kaneo.call('get_task', { taskId: id }));
-              if (task.projectId !== project.kaneoId) throw new Error('Discovery report includes another project');
+              if (task.projectId !== project.kaneoId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : 'Discovery'} report includes another project`);
+              if (job.kind === 'upstream' && Date.parse(task.createdAt) < Date.parse(job.createdAt)) throw new Error('Upstream review report lists a ticket created before the review started');
             }
-            if (!report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
+            if (job.kind === 'upstream') store.set(`upstreamReviewed:${job.upstream!.repo}`, job.upstream!.candidate);
+            else if (!report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
           }
           job.state = 'complete'; job.reason = report.reason; job.completedAt = new Date().toISOString();
           log('job-complete', { jobId: job.id, ticket: job.ticketKey, prUrls: job.prUrls });
@@ -481,7 +512,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const streams = ['claudeAgent', 'codex'].map(driver => ({
       driver, provider: driver === 'codex' ? 'Codex' : 'Claude',
       reason: !options.manual && c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : busy.has(driver) ? 'provider-running' : 'no-eligible-model',
-      active: jobs.filter(j => ['running', 'dispatching'].includes(j.state) && (j.providerDriver ?? instances.get(j.modelSelection?.instanceId ?? 'claudeAgent')) === driver).map(j => j.ticketKey ?? 'Discovery'),
+      active: jobs.filter(j => ['running', 'dispatching'].includes(j.state) && (j.providerDriver ?? instances.get(j.modelSelection?.instanceId ?? 'claudeAgent')) === driver).map(jobLabel),
       planned: [] as string[], models: [] as { id: string; name: string; reason: string }[], quota: undefined as Awaited<ReturnType<typeof readModelQuota>> | undefined,
     }));
     const readyModels: { preset: Config['models'][number]; driver: string }[] = [];
@@ -511,6 +542,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     if (!c.enabled && !options.manual && !options.doctor) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams }); }
     const queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel);
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
+    // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
+    const reviews = options.manual ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
     const candidates = [...queue.ready];
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
@@ -518,13 +551,14 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const planned = new Map<string, number>();
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
     while (readyModels.some(m => !busy.has(m.driver))) {
-      const assignment = selectAssignment(candidates, readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
-      const discovery = !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
-      const selected = assignment ?? (discovery ? readyModels.find(m => !busy.has(m.driver)) : undefined);
+      const review = reviews[0];
+      const assignment = review ? undefined : selectAssignment(candidates, readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
+      const discovery = !review && !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
+      const selected = assignment ?? (review || discovery ? readyModels.find(m => !busy.has(m.driver)) : undefined);
       if (!selected) break;
       const stream = streams.find(s => s.driver === selected.driver)!;
       try {
-        const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects: claimedProjects, inspect: options.doctor });
+        const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects: claimedProjects, inspect: options.doctor, review });
         results.push(result);
         stream.reason = result.reason;
         if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
@@ -532,7 +566,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
           if (options.manual) return result;
           if (result.reason === 'would-dispatch') planned.set(selected.driver, (planned.get(selected.driver) ?? 0) + 1);
           for (const driver of busyProviders(store.jobs(), shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned)) busy.add(driver);
-          (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? 'Discovery');
+          (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: null, upstream: review?.upstream }));
+          if (review) reviews.shift();
           if ('projectId' in result && discovery) claimedProjects.add(result.projectId as string);
           if (assignment) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
         } else {
@@ -543,6 +578,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
       } catch (error) {
         stream.reason = safeError(error); busy.add(selected.driver);
         if (assignment && store.jobs().some(j => j.taskId === assignment.ticket.id)) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
+        // An ambiguous launch still owns its review; another provider must not start the same range.
+        if (review && store.jobs().some(j => j.upstream?.repo === review.upstream.repo && j.upstream.candidate === review.upstream.candidate)) reviews.shift();
         results.push({ reason: 'error', driver: selected.driver, message: stream.reason });
       }
     }
@@ -555,7 +592,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
   } finally { await kaneo.close(); }
 }
 
-async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?: { driver: string; instanceDrivers: Map<string, string>; skipProjects: Set<string>; inspect?: boolean }) {
+async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?: { driver: string; instanceDrivers: Map<string, string>; skipProjects: Set<string>; inspect?: boolean; review?: PendingReview }) {
   const preset = options.model && options.model !== 'auto' ? c.models.find(p => p.id === options.model) : undefined;
   if (options.model && options.model !== 'auto' && !preset) throw new Error('Unknown model; select a configured model');
   if (!preset) throw new Error('Select a configured model');
@@ -586,10 +623,11 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (plan && !options.manual && busyProviders(jobs, shell.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('provider-running', { driver: plan.driver });
     const queue = await inventory(c, kaneo, shell.threads, jobs, store, ticketKey, !!options.manual && !!options.allowMissingReadyLabel);
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: ticketKey, requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
-    const discovery = !ticketKey && !options.manual;
+    const review = plan?.review;
+    const discovery = !ticketKey && !options.manual && !review;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
-    if (!discovery && !queue.ready.length) return decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
+    if (!discovery && !review && !queue.ready.length) return decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
     const readSelectedQuota = (refresh = false) => readModelQuota(t3, c, store.jobs(), preset.id, !!options.manual, refresh);
     const quota = await readSelectedQuota();
     if (plan && quota.driver !== plan.driver) return decision('provider-mapping-changed');
@@ -600,17 +638,18 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       : c.maxWaitingPRs !== null && parked.length >= c.maxWaitingPRs ? 'waiting-cap'
       : !isManualCodex && !override && activity.active ? 'personal-provider-running'
       : !isManualCodex && !override && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
-    queue.selected = selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
+    queue.selected = review ? undefined : selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
     if (options.doctor) return decision('doctor', { quota, activity, running: running.length, waiting: parked.length, gate: running.length ? 'autonomous-job-running' : gate, eligible: queue.ready.length, next: queue.selected, skipped: queue.skipped });
     if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length, ...(!quota.hasAllowance ? { message: 'The selected model has no allowance left. Choose another model or wait for its quota to reset.' } : {}) });
     let project: Project | undefined;
-    if (queue.selected) project = c.projects.find(p => p.kaneoId === queue.selected!.projectId);
+    if (review) project = review.project;
+    else if (queue.selected) project = c.projects.find(p => p.kaneoId === queue.selected!.projectId);
     else {
       project = c.projects.filter(p => p.enabled && !plan?.skipProjects.has(p.kaneoId) && !jobs.some(j => j.projectId === p.kaneoId && j.kind === 'discovery' && !['complete', 'dismissed'].includes(j.state)) && Number(store.get(`discoveryAfter:${p.kaneoId}`) ?? 0) <= Date.now())
         .toSorted((a, b) => Number(store.get(`discoveryLast:${a.kaneoId}`) ?? 0) - Number(store.get(`discoveryLast:${b.kaneoId}`) ?? 0))[0];
     }
     if (!project) return decision('no-eligible-work', { skipped: queue.skipped });
-    if (options.dryRun) return decision('would-dispatch', { kind: discovery ? 'discovery' : 'ticket', project: project.name, projectId: project.kaneoId, ticket: queue.selected?.key, model: quota.factoryRouting.model, quota });
+    if (options.dryRun) return decision('would-dispatch', { kind: review ? 'upstream' : discovery ? 'discovery' : 'ticket', project: project.name, projectId: project.kaneoId, ticket: queue.selected?.key, upstream: review?.upstream, model: quota.factoryRouting.model, quota });
     if (queue.selected) {
       const task = taskSchema.parse(await kaneo.call('get_task', { taskId: queue.selected.id }));
       if (task.projectId !== project.kaneoId || !project.readyStatuses.includes(task.status)) return decision('ticket-changed-before-dispatch');
@@ -629,9 +668,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const selectedModel = currentQuota.factoryRouting.model;
     const modelReason = (options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kaneo.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');
     const now = new Date().toISOString(), id = randomUUID();
-    const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: queue.selected ? 'ticket' : 'discovery', projectId: project.kaneoId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
-    const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : `Factory discovery: ${project.name}`;
-    const branch = job.kind === 'ticket' ? `chore/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-discovery-${id.slice(0, 8)}`;
+    const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: review ? 'upstream' : queue.selected ? 'ticket' : 'discovery', ...(review ? { upstream: review.upstream } : {}), projectId: project.kaneoId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
+    const u = job.upstream;
+    const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : `Factory discovery: ${project.name}`;
+    const branch = job.kind === 'ticket' ? `chore/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-${job.kind}-${id.slice(0, 8)}`;
     // T3 creates the worktree from the project's workspace root, which must match project.repoPath (checked above).
     job.command = { commandId: randomUUID(), threadId: job.threadId, projectId: project.t3Id, title,
       modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default',
@@ -643,12 +683,12 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (job.kind === 'discovery') store.set(`discoveryLast:${project.kaneoId}`, String(Date.now()));
     await t3.launch(job.command);
     job.reason = 'T3 accepted dispatch'; store.save(job);
-    return decision('dispatched', { jobId: job.id, threadId: job.threadId, project: project.name, projectId: project.kaneoId, ticket: job.ticketKey, model: selectedModel.model, modelReason, difficulty: job.difficulty, quota: currentQuota });
+    return decision('dispatched', { jobId: job.id, threadId: job.threadId, project: project.name, projectId: project.kaneoId, ticket: job.ticketKey, upstream: job.upstream, model: selectedModel.model, modelReason, difficulty: job.difficulty, quota: currentQuota });
   } finally { await kaneo.close(); }
 }
 
 export function writeStatus(c: Config, store: Store) {
-  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => job) };
+  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })) };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
   return result;
 }
