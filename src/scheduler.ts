@@ -37,13 +37,32 @@ async function gh(args: string[]): Promise<unknown> {
   return JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000 })).stdout);
 }
 async function verifyMerged(project: Project, urls: string[]) {
-  if (!urls.length) throw new Error('Ticket completion report has no merged PR');
   for (const url of urls) {
     const u = new URL(url);
     if (u.origin !== 'https://github.com' || !new RegExp(`^/${project.githubRepo}/pull/[0-9]+$`).test(u.pathname)) throw new Error('Completion report PR belongs to the wrong repository');
     const pr = z.object({ state: z.literal('MERGED'), baseRefName: z.string(), mergeCommit: z.object({ oid: z.string().min(40) }) }).parse(await gh(['pr', 'view', u.pathname.split('/').at(-1)!, '--repo', project.githubRepo, '--json', 'state,baseRefName,mergeCommit']));
     if (pr.baseRefName !== project.baseBranch) throw new Error('Completed PR targets the wrong release branch');
   }
+}
+async function released(project: Project, head: string): Promise<boolean> {
+  return git(project.repoPath, ['merge-base', '--is-ancestor', head, `refs/remotes/origin/${project.baseBranch}`]).then(() => true, () => false);
+}
+async function branchTip(project: Project, branch: string): Promise<string> {
+  return git(project.repoPath, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).catch(() => '');
+}
+// A ticket closed without delivery must have left the ready queue and abandon no unreleased work.
+async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: Kaneo, task: Task, job: Job, thread: Thread) {
+  if (!project.doneStatuses.includes(task.status) && project.readyStatuses.includes(task.status) && (await listTaskLabels(kaneo)).get(task.id)?.some(l => l.name === c.kaneo.readyLabel)) {
+    throw new Error('Ticket is still ready; record why no change is needed and remove it from the ready queue');
+  }
+  const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
+  const heads: string[] = [], branch = assignedBranch(job);
+  if (thread.worktreePath && existsSync(thread.worktreePath)) {
+    if (await git(thread.worktreePath, ['status', '--porcelain'])) throw unmerged;
+    heads.push(await git(thread.worktreePath, ['rev-parse', 'HEAD']));
+  }
+  if (branch) heads.push(await branchTip(project, branch));
+  for (const head of heads) if (head && !await released(project, head)) throw unmerged;
 }
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
   for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
@@ -97,10 +116,13 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
         else {
           const project = projectFor(c, job);
           if (job.kind === 'ticket') {
-            if (report.status !== 'complete') throw new Error('Ticket cannot finish as no-work');
+            if (report.status !== 'complete' && report.prUrls.length) throw new Error('Ticket cannot finish as no-work');
             const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
-            if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket not yet verified Done in Kaneo');
-            await verifyMerged(project, report.prUrls);
+            if (!report.prUrls.length) await verifyClosedWithoutDelivery(c, project, kaneo, task, job, t);
+            else {
+              if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket not yet verified Done in Kaneo');
+              await verifyMerged(project, report.prUrls);
+            }
           } else {
             for (const id of report.createdTaskIds) {
               const task = taskSchema.parse(await kaneo.call('get_task', { taskId: id }));
@@ -155,15 +177,16 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (shared(fresh.threads, subagents)) throw new Error('Workspace is shared with another thread');
     if (subagents.some(t => busy(t) || resumed(t))) throw new Error('Workspace is shared with an active subagent');
     let head: string;
-    if (job.kind === 'ticket') {
+    if (job.kind === 'ticket' && job.prUrls.length) {
       const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
       if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
       const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], fresh.threads, branch);
       if (!history.branches.has(branch)) throw new Error('Workspace head is not verified merged');
       head = history.branches.get(branch)!;
     } else {
+      // Discovery and tickets closed without delivery verify their head against the release branch.
       head = pending?.head ?? await git(path, ['rev-parse', 'HEAD']);
-      await git(project.repoPath, ['merge-base', '--is-ancestor', head, `refs/remotes/origin/${project.baseBranch}`]);
+      if (!await released(project, head)) throw new Error('Workspace head is not part of the release branch');
     }
     if (pending && pending.head !== head) throw new Error('Verified workspace head changed');
     if (existsSync(path)) {
@@ -290,24 +313,32 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       }
       branches.set(branch, job.dismissedHead); if (thread) inactiveThreads.add(thread.id); continue;
     }
+    // The completed thread is inactive while idle, unresumed, and clean at its verified head.
+    const release = async (head: string) => {
+      if (!thread || executing(thread) || waiting(thread) || !(thread.branch === branch || (thread.branch === null && thread.worktreePath === null)) || !job.completedAt ||
+          Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.completedAt) ||
+          Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.completedAt)) return;
+      if (thread.worktreePath && existsSync(thread.worktreePath)) {
+        const [current, changes] = await Promise.all([git(thread.worktreePath, ['rev-parse', 'HEAD']), git(thread.worktreePath, ['status', '--porcelain'])]);
+        if (current !== head || changes) return;
+      }
+      inactiveThreads.add(thread.id);
+    };
+    if (!job.prUrls.length) {
+      // Closed without delivery: the branch tip must already be part of the release branch.
+      const tip = await branchTip(project, branch);
+      if (tip && await released(project, tip)) { branches.set(branch, tip); await release(tip); }
+      continue;
+    }
     for (const url of job.prUrls) {
       const u = new URL(url), prefix = `/${project.githubRepo}/pull/`;
       if (u.origin !== 'https://github.com' || !u.pathname.startsWith(prefix) || !/^\d+$/.test(u.pathname.slice(prefix.length))) continue;
       const pr = z.object({ state: z.string(), headRefName: z.string(), headRefOid: z.string().regex(/^[0-9a-f]{40,64}$/) }).parse(await gh(['pr', 'view', url, '--repo', project.githubRepo, '--json', 'state,headRefName,headRefOid']));
       if (pr.state !== 'MERGED') continue;
       // Agents may push the Factory branch under another name; the local branch tip then identifies the delivered PR.
-      if (pr.headRefName !== branch && await git(project.repoPath, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).catch(() => '') !== pr.headRefOid) continue;
+      if (pr.headRefName !== branch && await branchTip(project, branch) !== pr.headRefOid) continue;
       branches.set(branch, pr.headRefOid); branches.set(pr.headRefName, pr.headRefOid);
-      if (thread && !executing(thread) && !waiting(thread) && (thread.branch === branch || (thread.branch === null && thread.worktreePath === null)) && job.completedAt &&
-          Date.parse(thread.latestUserMessageAt ?? job.createdAt) <= Date.parse(job.completedAt) &&
-          Date.parse(thread.latestRunCompletedAt ?? job.createdAt) <= Date.parse(job.completedAt)) {
-        let clean = true;
-        if (thread.worktreePath && existsSync(thread.worktreePath)) {
-          const [head, changes] = await Promise.all([git(thread.worktreePath, ['rev-parse', 'HEAD']), git(thread.worktreePath, ['status', '--porcelain'])]);
-          clean = head === pr.headRefOid && !changes;
-        }
-        if (clean) inactiveThreads.add(thread.id);
-      }
+      await release(pr.headRefOid);
       break;
     }
   }
