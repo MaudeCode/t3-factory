@@ -43,7 +43,7 @@ The integration uses application APIs that can change between T3 builds. Matchin
 
 T3 hosts that predate protocol negotiation (v1) are not supported. When T3 rejects the protocol header, the client reads `/.well-known/t3/environment` and reports `T3 orchestration protocol mismatch` with the version the server requires.
 
-Liveness comes from each v2 thread's `status` (its latest run), `activeRunId`, `pendingRuntimeRequest`, and `pendingBackgroundTasks`. A pending request means the thread is waiting for a person. Background tasks of kind `monitor`, including pull request watches, are passive monitoring; any other kind is active work.
+Liveness comes from each v2 thread's `status` (its latest run), `activeRunId`, `pendingRuntimeRequest`, and `pendingBackgroundTasks`. A pending request means the thread is waiting for a person. Background tasks of kind `monitor`, including pull request watches, are passive monitoring; any other kind is active work. An active run whose provider sessions are all `stopped` or `error`, on a thread unchanged for 30 minutes, is orphaned and does not count as executing. Detection reads `runs` and `providerSessions` from `/api/orchestration/threads/<id>/bounded`; a failed or ambiguous read keeps the run executing.
 
 Dispatch launches a thread over RPC with a `worktree` workspace strategy. T3 creates the worktree from the project's workspace root, which must match the configured `repoPath`, and runs the project's setup script. The plain HTTP dispatcher does not prepare worktrees. The scheduler validates the fields it consumes and stops affected dispatches when the contract is incompatible. It does not edit T3's database or fall back to driving its UI.
 

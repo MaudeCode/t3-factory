@@ -17,9 +17,13 @@ export const threadSchema = z.object({
   pendingBackgroundTasks: z.array(z.object({ taskId: z.string(), kind: z.string() }).passthrough()).default([]),
   lineage: z.object({ parentThreadId: z.string().nullish(), relationshipToParent: z.string().nullish() }).passthrough().nullish(),
   settledOverride: z.enum(['settled', 'active']).nullable(),
+  // Set by `T3.shell()`: the active run outlived every provider session, so it can never progress.
+  orphanedRun: z.boolean().optional(),
 }).passthrough();
 export type Thread = z.infer<typeof threadSchema>;
 export const DEFAULT_MONITORING_TIMEOUT_MINUTES = 30;
+/** How long a thread must be unchanged before its active run is checked for stopped provider sessions. */
+export const ORPHANED_RUN_GRACE_MINUTES = 30;
 function background(t: Thread): 'working' | 'monitoring' | null {
   const tasks = t.pendingBackgroundTasks ?? [];
   return tasks.some(task => task.kind !== 'monitor') ? 'working' : tasks.length ? 'monitoring' : null;
@@ -32,7 +36,7 @@ export function stalledMonitor(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TI
 }
 export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, includeMonitoring = true): boolean {
   if (background(t) === 'working') return true;
-  if (waiting(t)) return false;
+  if (waiting(t) || t.orphanedRun) return false;
   if (t.activeRunId != null || (activeStatuses as readonly string[]).includes(t.status)) return true;
   if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
   return includeMonitoring && background(t) === 'monitoring' && !stalledMonitor(t, timeoutMinutes);
@@ -52,7 +56,7 @@ export function subagentDescendants(threads: readonly Thread[], rootId: string):
 export function providerExecuting(t: Thread, threads: ReadonlyMap<string, Thread>, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, seen = new Set<string>()): boolean {
   if (seen.has(t.id)) return false;
   seen.add(t.id);
-  if (t.pendingRuntimeRequest == null && t.status !== 'waiting' &&
+  if (t.pendingRuntimeRequest == null && t.status !== 'waiting' && !t.orphanedRun &&
       (t.activeRunId != null || (activeStatuses as readonly string[]).includes(t.status))) return true;
   for (const task of t.pendingBackgroundTasks) {
     if (task.kind === 'monitor' || task.kind === 'command') continue;

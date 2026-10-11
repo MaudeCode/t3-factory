@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, waiting, stalledMonitor, mentionsTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
+import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { configSchema } from '../src/config.ts';
@@ -75,6 +75,16 @@ test('a pending runtime request releases the slot; a resume or background worker
   }
   t.pendingBackgroundTasks = []; t.pendingRuntimeRequest = null; t.status = 'failed';
   assert.equal(executing(t), false);
+});
+test('an orphaned run does not execute, but its background worker still does', () => {
+  const t = v2Thread({ status: 'queued', activeRunId: 'run-1', orphanedRun: true });
+  assert.equal(threadSchema.parse(t).orphanedRun, true);
+  assert.equal(executing(t), false); assert.equal(providerExecuting(t, new Map()), false);
+  assert.equal(waiting(t), false); assert.equal(stalledMonitor(t), false);
+  t.pendingBackgroundTasks = [{ taskId: 'task-1', kind: 'background_task' }];
+  assert.equal(executing(t), true); assert.equal(providerExecuting(t, new Map()), true);
+  t.pendingBackgroundTasks = []; t.orphanedRun = false;
+  assert.equal(executing(t), true); assert.equal(providerExecuting(t, new Map()), true);
 });
 test('an old passive monitor is not execution, but a live run or background worker is', () => {
   const old = new Date(Date.now() - 2 * 3_600_000).toISOString();

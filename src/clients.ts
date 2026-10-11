@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';
-import { threadSchema } from './policy.ts';
+import { threadSchema, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
 import { callT3Rpc } from './rpc.ts';
 
@@ -13,6 +13,7 @@ const ORCHESTRATION_PROTOCOL_HEADER = 'x-t3-orchestration-protocol', ORCHESTRATI
 
 export class T3 {
   readonly config: Config['t3'];
+  private readonly orphanVerdicts = new Map<string, boolean>();
   constructor(config: Config['t3']) { this.config = config; }
   async request(path: string, body?: unknown): Promise<unknown> {
     const credential = z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8')));
@@ -38,7 +39,32 @@ export class T3 {
     if (server !== ORCHESTRATION_PROTOCOL) throw new Error(`T3 orchestration protocol mismatch (scheduler speaks v${ORCHESTRATION_PROTOCOL}, server requires v${server})`);
   }
   async shell() {
-    return z.object({ threads: z.array(threadSchema), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
+    const shell = z.object({ threads: z.array(threadSchema), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
+    const candidates = new Set<string>();
+    for (const t of shell.threads) {
+      if (t.activeRunId == null || t.pendingRuntimeRequest != null || t.status === 'waiting' || Date.now() - Date.parse(t.updatedAt) < ORPHANED_RUN_GRACE_MINUTES * 60_000) continue;
+      const key = `${t.id}:${t.updatedAt}`;
+      candidates.add(key);
+      if (!this.orphanVerdicts.has(key)) {
+        const verdict = await this.orphaned(t);
+        if (verdict !== undefined) this.orphanVerdicts.set(key, verdict); // Retry failed reads next cycle.
+      }
+      if (this.orphanVerdicts.get(key)) t.orphanedRun = true;
+    }
+    for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) this.orphanVerdicts.delete(key);
+    return shell;
+  }
+  /** T3 can leave a run active after its provider session stopped. Any doubt keeps the run executing. */
+  private async orphaned(t: Thread): Promise<boolean | undefined> {
+    try {
+      const { projection } = z.object({ projection: z.object({
+        runs: z.array(z.object({ id: z.string(), status: z.string() }).passthrough()),
+        providerSessions: z.array(z.object({ status: z.string() }).passthrough()),
+      }).passthrough() }).parse(await this.request(`/api/orchestration/threads/${encodeURIComponent(t.id)}/bounded`));
+      const run = projection.runs.find(r => r.id === t.activeRunId);
+      return !!run && ['preparing', 'starting', 'running'].includes(run.status) &&
+        projection.providerSessions.length > 0 && projection.providerSessions.every(s => ['stopped', 'error'].includes(s.status));
+    } catch { return undefined; }
   }
   async detail(id: string) {
     // The bounded snapshot keeps every runtime request and the recent conversation window.

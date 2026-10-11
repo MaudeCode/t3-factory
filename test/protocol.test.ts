@@ -69,6 +69,33 @@ test('thread detail reads user messages and answered runtime requests from the b
   assert.deepEqual(detail.responses.map(r => r.createdAt), ['2026-01-01T00:02:00.000Z', '2026-01-01T00:04:00.000Z'], 'only human answers count, not tool calls or pending requests');
 });
 
+test('the shell marks a run orphaned once every provider session stopped, and fails closed', async t => {
+  const old = new Date(Date.now() - 3_600_000).toISOString(), fresh = new Date().toISOString();
+  const active = (id: string, updatedAt = old) => v2Thread({ id, status: 'queued', activeRunId: 'run-1', updatedAt });
+  const projection = (sessions: string[], runs = [{ id: 'run-1', status: 'running' }, { id: 'run-2', status: 'queued' }]) =>
+    () => json({ projection: { runs: runs.map(r => ({ ...r, completedAt: null })), providerSessions: sessions.map(status => ({ status, updatedAt: old })) } });
+  const { t3, requests } = fixtureT3(t, {
+    '/api/orchestration/shell': () => json(v2Shell([
+      active('stopped'), active('error'), active('mixed'), active('none'), active('missing-run'), active('failure'), active('invalid'), active('fresh', fresh),
+      v2Thread({ id: 'waiting', status: 'waiting', activeRunId: 'run-1', updatedAt: old }),
+      v2Thread({ id: 'requested', status: 'running', activeRunId: 'run-1', updatedAt: old, pendingRuntimeRequest: { kind: 'user_input', createdAt: old } }),
+    ])),
+    '/api/orchestration/threads/stopped/bounded': projection(['stopped']),
+    '/api/orchestration/threads/error/bounded': projection(['error', 'stopped']),
+    '/api/orchestration/threads/mixed/bounded': projection(['stopped', 'ready']),
+    '/api/orchestration/threads/none/bounded': projection([]),
+    '/api/orchestration/threads/missing-run/bounded': projection(['stopped'], [{ id: 'run-0', status: 'running' }]),
+    '/api/orchestration/threads/failure/bounded': () => json({ error: 'unavailable' }, 500),
+    '/api/orchestration/threads/invalid/bounded': () => new Response('not json', { status: 200 }),
+  });
+  const orphaned = (shell: Awaited<ReturnType<T3['shell']>>) => shell.threads.filter(x => x.orphanedRun).map(x => x.id);
+  assert.deepEqual(orphaned(await t3.shell()), ['stopped', 'error']);
+  const bounded = () => requests.filter(r => r.path.endsWith('/bounded')).map(r => r.path.split('/')[4]);
+  assert.deepEqual(bounded(), ['stopped', 'error', 'mixed', 'none', 'missing-run', 'failure', 'invalid'], 'fresh, waiting and requested threads make no bounded request');
+  assert.deepEqual(orphaned(await t3.shell()), ['stopped', 'error']);
+  assert.deepEqual(bounded().slice(7), ['failure', 'invalid'], 'verdicts are cached per thread update; failed reads retry');
+});
+
 function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string }) => unknown[]) {
   const requests: { tag: string; payload: unknown }[] = [];
   class FixtureSocket extends EventTarget {

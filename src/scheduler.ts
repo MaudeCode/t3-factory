@@ -167,8 +167,10 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');
     const snapshotAt = thread.updatedAt;
     const completedAt = Date.parse(job.completedAt);
-    const busy = (t: Thread) => executing(t, c.monitoringTimeoutMinutes, false) || waiting(t) || t.pendingBackgroundTasks.some(t => t.kind !== 'monitor');
+    const busy = (t: Thread) => executing(t, c.monitoringTimeoutMinutes, false) || waiting(t) || !!t.orphanedRun || t.pendingBackgroundTasks.some(t => t.kind !== 'monitor');
     const resumed = (t: Thread) => Date.parse(t.latestUserMessageAt ?? job.createdAt) > completedAt || Date.parse(t.latestRunCompletedAt ?? job.createdAt) > completedAt;
+    // T3 could still recover an orphaned run, so its workspace stays until T3 ends the run.
+    if (thread.orphanedRun) throw new Error('Thread has an orphaned T3 run; settle it in T3 before workspace cleanup');
     if (busy(thread)) throw new Error('Workspace still has active or pending work');
     if (resumed(thread)) throw new Error('Completed thread has resumed since completion');
     const pending = job.workspaceCleanup, workspace = pending?.path ?? thread.worktreePath;
