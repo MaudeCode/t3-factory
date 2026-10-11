@@ -10,14 +10,15 @@ import { Kaneo, T3 } from '../src/clients.ts';
 import { inventory, reconcile, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const [settled, launched] of [[false, false], [true, false], [false, true]]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}${launched ? ' v2 launch' : ''}`, async t => {
+for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true, false, false], [false, true, false], [false, true, true]]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}${launched ? ' v2 launch' : ''}${pushedElsewhere ? ' pushed under another name' : ''}`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-reopened-')), repo = join(dir, 'repo'), tree = join(dir, 'old-tree'); mkdirSync(repo);
   const git = (...args: string[]) => execFileSync('/usr/bin/git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
   git('init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'old work\n'); git('add', 'file');
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'old work');
   const branch = 'chore/FIX-1-old', head = git('rev-parse', 'HEAD'); git('worktree', 'add', '-qb', branch, tree);
-  const metadata = join(dir, 'metadata.json');
-  const setPR = (open = false) => writeFileSync(metadata, JSON.stringify({ state: 'MERGED', headRefName: branch, headRefOid: head, open })); setPR();
+  const metadata = join(dir, 'metadata.json'), prBranch = pushedElsewhere ? 'fix/FIX-1-delivery' : branch;
+  if (pushedElsewhere) git('update-ref', `refs/remotes/origin/${prBranch}`, head);
+  const setPR = (open = false) => writeFileSync(metadata, JSON.stringify({ state: 'MERGED', headRefName: prBranch, headRefOid: head, open })); setPR();
   writeFileSync(join(dir, 'gh'), `#!${process.execPath}\nconst fs=require('node:fs');const p=JSON.parse(fs.readFileSync(${JSON.stringify(metadata)},'utf8'));console.log(JSON.stringify(process.argv.includes('view')?p:p.open?[{title:'FIX-1 follow-up',headRefName:'fix/FIX-1-new',body:''}]:[]));\n`, { mode: 0o755 });
   const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
   const c = configSchema.parse({ enabled: false, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,

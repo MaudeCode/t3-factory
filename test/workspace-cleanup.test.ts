@@ -11,7 +11,7 @@ import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery'] as const) {
+for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree'] as const) {
   test(`completed workspace cleanup: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -20,8 +20,8 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
     const head = git('rev-parse', 'HEAD'), branch = 'chore/FIX-1-factory';
     git('update-ref', 'refs/remotes/origin/main', head); git('worktree', 'add', '-qb', branch, tree);
     const realTree = realpathSync(tree);
-    const mergedBranch = scenario.startsWith('renamed') ? 'fix/FIX-1-delivery' : branch;
-    writeFileSync(join(dir, 'gh'), `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ state: scenario === 'unmerged' ? 'OPEN' : 'MERGED', headRefName: mergedBranch, headRefOid: head, baseRefName: 'main', mergeCommit: { oid: head } })}'\n`, { mode: 0o755 });
+    const mergedBranch = scenario.startsWith('renamed') || scenario.startsWith('pushed') || scenario.startsWith('missing') ? 'fix/FIX-1-delivery' : branch;
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ state: scenario.endsWith('unmerged') ? 'OPEN' : 'MERGED', headRefName: mergedBranch, headRefOid: head, baseRefName: 'main', mergeCommit: { oid: head } })}'\n`, { mode: 0o755 });
     const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
     const store = new Store(join(dir, 'state'));
     const project = { kaneoId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', doneStatuses: ['done'] };
@@ -43,13 +43,15 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'new-completion') { job.state = 'running'; job.completedAt = null; writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Merged', prUrls: job.prUrls, createdTaskIds: [] })); }
       if (scenario === 'settled') thread.settledOverride = 'settled';
       if (scenario === 'monitor') thread.pendingBackgroundTasks = [{ taskId: 'pr-watch', kind: 'monitor' }];
-      if (scenario === 'dirty') writeFileSync(join(tree, 'untracked'), 'keep me');
-      if (scenario === 'extra-commit') { writeFileSync(join(tree, 'file'), 'new work'); execFileSync('git', ['-C', tree, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'unmerged']); }
+      if (scenario.endsWith('dirty')) writeFileSync(join(tree, 'untracked'), 'keep me');
+      if (scenario.endsWith('extra-commit')) { writeFileSync(join(tree, 'file'), 'new work'); execFileSync('git', ['-C', tree, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'unmerged']); }
       if (scenario === 'active') { thread.status = 'running'; thread.activeRunId = 'live-run'; }
       if (scenario === 'waiting') { thread.status = 'waiting'; thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: job.createdAt }; }
       if (scenario === 'shared') threads.push(v2Thread({ ...thread, id: 'another-thread' }));
       if (scenario === 'resumed') thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
       if (scenario === 'primary') thread.worktreePath = repo;
+      if (scenario === 'missing-unregistered-worktree') git('worktree', 'remove', tree);
+      if (scenario === 'missing-registered-worktree') rmSync(tree, { recursive: true });
       if (scenario === 'process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
       store.save(job);
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
@@ -60,12 +62,13 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
       if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); await reconcile(c, store, t3, kaneo, threads); }
       if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor') await reconcile(c, store, t3, kaneo, threads);
-      const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery'].includes(scenario);
+      const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree'].includes(scenario);
       assert.equal(existsSync(tree), !removed, 'remove only a verified complete, clean, unchanged and inactive worktree');
       assert.equal(store.jobs()[0].state, scenario === 'settled' ? 'dismissed' : 'complete', 'cleanup preserves completion history and explicit settling');
       if (removed) {
         assert.equal(thread.worktreePath, null); assert.equal(thread.branch, null);
-        assert.ok(!git('worktree', 'list', '--porcelain').includes(tree));
+        assert.ok(!git('worktree', 'list', '--porcelain').includes(realTree)); assert.ok(store.jobs()[0].workspaceCleanedAt);
+        if (scenario.startsWith('missing')) assert.equal(attempts, scenario === 'missing-registered-worktree' ? 1 : 0, 'remove only a workspace Git still registers');
         const count = attempts; await reconcile(c, store, t3, kaneo, threads); assert.equal(attempts, count, 'successful cleanup is idempotent');
       }
       assert.ok(existsSync(repo), 'preserve the primary checkout');

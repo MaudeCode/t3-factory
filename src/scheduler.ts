@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join, resolve, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
@@ -124,7 +124,8 @@ function assignedBranch(job: Job): string | undefined {
   ]).safeParse(job.command);
   return command.success ? command.data : undefined;
 }
-function canonicalPath(path: string): string { return existsSync(path) ? realpathSync(path) : resolve(path); }
+// Resolve a removed directory through its nearest existing ancestor so it compares equal to Git's registered path.
+function canonicalPath(path: string): string { return existsSync(path) ? realpathSync(path) : join(canonicalPath(dirname(path)), basename(path)); }
 
 async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, job: Job) {
   try {
@@ -175,8 +176,9 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (cwds.some(cwd => cwd === path || cwd.startsWith(path + sep))) throw new Error('A running process is still using the workspace');
     const latest = await t3.shell(), confirmed = latest.threads.find(t => t.id === thread.id);
     if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.worktreePath !== null || executing(confirmed, c.monitoringTimeoutMinutes) || waiting(confirmed) || confirmed.pendingBackgroundTasks.length || shared(latest.threads)) throw new Error('Thread or workspace changed before removal');
-    await t3.removeWorktree(project.repoPath, path);
-    if (existsSync(path) || (await git(project.repoPath, ['worktree', 'list', '--porcelain'])).split('\n').includes(`worktree ${path}`)) throw new Error('Workspace removal is not confirmed');
+    const present = async () => existsSync(path) || (await git(project.repoPath, ['worktree', 'list', '--porcelain'])).split('\n').includes(`worktree ${path}`);
+    if (await present()) await t3.removeWorktree(project.repoPath, path); // A directory Git no longer registers has nothing left to remove.
+    if (await present()) throw new Error('Workspace removal is not confirmed');
     job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = undefined; store.save(job);
     log('job-workspace-cleaned', { jobId: job.id, threadId: job.threadId, path });
   } catch (error) {
@@ -272,8 +274,10 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       const u = new URL(url), prefix = `/${project.githubRepo}/pull/`;
       if (u.origin !== 'https://github.com' || !u.pathname.startsWith(prefix) || !/^\d+$/.test(u.pathname.slice(prefix.length))) continue;
       const pr = z.object({ state: z.string(), headRefName: z.string(), headRefOid: z.string().regex(/^[0-9a-f]{40,64}$/) }).parse(await gh(['pr', 'view', url, '--repo', project.githubRepo, '--json', 'state,headRefName,headRefOid']));
-      if (pr.state !== 'MERGED' || pr.headRefName !== branch) continue;
-      branches.set(branch, pr.headRefOid);
+      if (pr.state !== 'MERGED') continue;
+      // Agents may push the Factory branch under another name; the local branch tip then identifies the delivered PR.
+      if (pr.headRefName !== branch && await git(project.repoPath, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).catch(() => '') !== pr.headRefOid) continue;
+      branches.set(branch, pr.headRefOid); branches.set(pr.headRefName, pr.headRefOid);
       if (thread && !executing(thread) && !waiting(thread) && (thread.branch === branch || (thread.branch === null && thread.worktreePath === null)) && job.completedAt &&
           Date.parse(thread.latestUserMessageAt ?? job.createdAt) <= Date.parse(job.completedAt) &&
           Date.parse(thread.latestRunCompletedAt ?? job.createdAt) <= Date.parse(job.completedAt)) {
