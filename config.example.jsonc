@@ -66,6 +66,7 @@
       "baseBranch": "main",
       "readyStatuses": ["todo"],
       "doneStatuses": ["done"],
+      "priorityLabels": [],
       "upstreams": [
         { "name": "Example library", "repo": "OWNER/LIBRARY", "prereleases": false, "firstBase": "v1.0.0" }
       ]

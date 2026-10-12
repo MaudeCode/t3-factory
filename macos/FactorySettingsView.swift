@@ -300,6 +300,8 @@ struct FactorySettingsView: View {
                     }
                     Section("Ticket queue") {
                         settingField("Ticket prefix", path: prefix + ["key"])
+                        TextField("Priority labels", text: model.strings(prefix + ["priorityLabels"]))
+                        Text("Comma-separated, highest first. Matching tickets come before unmatched tickets, then urgency decides. Leave empty to use urgency alone.").font(.caption).foregroundStyle(.secondary)
                         DisclosureGroup("Tracker & T3 connection") {
                             settingField("Kaneo project ID", path: prefix + ["kaneoId"])
                             settingField("T3 project ID", path: prefix + ["t3Id"])

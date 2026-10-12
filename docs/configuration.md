@@ -50,6 +50,8 @@ Each entry maps a Kaneo project to a T3 project and a local Git repository. `key
 
 The readiness label is configured once at `kaneo.readyLabel`. Dependencies, parent blockers, open children, existing branches, T3 activity, and open PRs are checked separately from the label. Disable a project with `enabled: false` instead of deleting it while it owns unfinished jobs.
 
+`priorityLabels` is an ordered list of exact Kaneo label names, highest first, editable in Projects on the web or Mac app. For example, `["security", "compatibility"]` puts security tickets ahead of compatibility tickets, and both ahead of unmatched tickets. A ticket with multiple matching labels uses its highest rank. Ranks are compared across enabled projects: a first-ranked label in any project beats a second-ranked label elsewhere. Within each rank, the existing urgency, model order, project backlog size, rotation, and oldest-ticket rules apply. An empty list, the default, leaves urgency ordering unchanged. Labels never bypass readiness, blockers, classification, model capacity, or quota checks. Manual dispatch of a specific ticket remains explicit. Upstream reviews retain their existing precedence over ticket work.
+
 ## Workflow skills
 
 The repository supplies scheduling and report handling. The operator supplies the agent's delivery and discovery workflows.

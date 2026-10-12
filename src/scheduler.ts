@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
-import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
+import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
 import { Store, jobLabel, type Job } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
@@ -470,7 +470,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
       if (prs.get(p.kaneoId)!.some(pr => mentionsTicket(`${pr.title}\n${pr.headRefName}\n${pr.body}`, key))) reason = 'Existing open PR references this ticket';
     }
     if (reason) skipped.push({ key, reason });
-    else ready.push({ id: t.id, projectId: t.projectId, key, priority: t.priority, createdAt: t.createdAt, ...(difficulty ? { difficulty } : {}) });
+    else ready.push({ id: t.id, projectId: t.projectId, key, priority: t.priority, createdAt: t.createdAt, difficulty, labelRank: ticketLabelRank(t.labels ?? [], p.priorityLabels) });
   }
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kaneoId)) };
 }

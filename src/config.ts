@@ -76,6 +76,7 @@ export const configSchema = z.preprocess(input => {
     kaneoId: z.string().min(1), t3Id: z.string().min(1), repoPath: absolute,
     githubRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), baseBranch: z.string().min(1),
     readyStatuses: z.array(z.string()).min(1), doneStatuses: z.array(z.string()).min(1),
+    priorityLabels: z.array(z.string().trim().min(1)).refine(labels => new Set(labels).size === labels.length, 'Priority labels must be unique').default([]),
     discoveryPromptFile: absolute.optional(),
     upstreams: z.array(z.object({
       // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
