@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
-import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate } from './policy.ts';
+import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, compareTicketPriority, mentionsTicket, selectTicket, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, type Job } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
@@ -439,6 +439,26 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
     }
     return false;
   };
+  const priorityFor = (task: Task, project: Project): TicketPriority => ({ priority: task.priority, labelRank: ticketLabelRank(task.labels ?? [], project.priorityLabels) });
+  const inheritedPriority = async (task: Task, project: Project): Promise<TicketPriority> => {
+    let priority = priorityFor(task, project);
+    const pending = [task.id], visited = new Set<string>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      for (const relation of await relationsFor(id)) {
+        if (relation.relationType !== 'blocks' || relation.sourceTaskId !== id) continue;
+        const dependent = all.get(relation.targetTaskId);
+        const owner = dependent && projects.find(p => p.kaneoId === dependent.projectId);
+        if (!dependent || !owner || owner.doneStatuses.includes(dependent.status)) continue;
+        const downstream = priorityFor(dependent, owner);
+        if (compareTicketPriority(downstream, priority) < 0) priority = downstream;
+        pending.push(dependent.id);
+      }
+    }
+    return priority;
+  };
   for (const t of potential) {
     const p = projects.find(p => p.kaneoId === t.projectId)!;
     const key = `${p.key}-${t.number}`;
@@ -470,7 +490,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
       if (prs.get(p.kaneoId)!.some(pr => mentionsTicket(`${pr.title}\n${pr.headRefName}\n${pr.body}`, key))) reason = 'Existing open PR references this ticket';
     }
     if (reason) skipped.push({ key, reason });
-    else ready.push({ id: t.id, projectId: t.projectId, key, priority: t.priority, createdAt: t.createdAt, difficulty, labelRank: ticketLabelRank(t.labels ?? [], p.priorityLabels) });
+    else ready.push({ id: t.id, projectId: t.projectId, key, createdAt: t.createdAt, difficulty, ...await inheritedPriority(t, p) });
   }
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kaneoId)) };
 }

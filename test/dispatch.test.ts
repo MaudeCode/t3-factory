@@ -67,7 +67,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId).map(task => scenario === 'truncated-labels' ? { ...task, labels: task.labels.slice(0, 3) } : task) }] }, pagination: { total: tasks.length, totalPages: 1 } };
       if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
-      if (name === 'get_task_relations') return ['missing-sf-confirmation', 'label-blocked'].includes(scenario) && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
+      if (name === 'get_task_relations') return (scenario === 'missing-sf-confirmation' && args.taskId === 'task-2' || scenario === 'label-blocked' && ['task-1', 'task-2'].includes(String(args.taskId))) ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
       throw new Error(name);
     });
     t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
@@ -178,8 +178,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         assert.notEqual(attempts[0].workspaceStrategy.branch, attempts[1].workspaceStrategy.branch);
         if (scenario === 'discovery') assert.notEqual(attempts[0].projectId, attempts[1].projectId);
         else if (scenario.startsWith('label-')) {
-          assert.match(attempts[0].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-2:/ : /Deliver FIX-3:/);
-          assert.match(attempts[1].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-3:/ : /Deliver FIX-1:/);
+          assert.match(attempts[0].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-2:/ : /Deliver FIX-1:/);
+          assert.match(attempts[1].initialMessage.text, /Deliver FIX-3:/);
         }
         else { assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/); assert.match(attempts[1].initialMessage.text, /Deliver FIX-2:/); }
       }

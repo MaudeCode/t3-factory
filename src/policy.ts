@@ -122,13 +122,21 @@ export function ticketLabelRank(labels: { name: string }[], priorityLabels: stri
   return rank < 0 ? undefined : rank;
 }
 export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; labelRank?: number; }
+export type TicketPriority = Pick<Candidate, 'priority' | 'labelRank'>;
+export function compareTicketPriority(a: TicketPriority, b: TicketPriority): number {
+  const aRank = a.labelRank ?? Infinity, bRank = b.labelRank ?? Infinity;
+  if (aRank !== bRank) return aRank < bRank ? -1 : 1;
+  return priorities.findIndex(p => p === a.priority) - priorities.findIndex(p => p === b.priority);
+}
 // Both ticket and model selection must visit the same label-rank / urgency tiers.
 function* ticketTiers(candidates: Candidate[]) {
-  const ranks = [...new Set(candidates.map(t => t.labelRank ?? Infinity))].toSorted((a, b) => a - b);
-  for (const rank of ranks) for (const priority of priorities) {
-    const tier = candidates.filter(t => (t.labelRank ?? Infinity) === rank && t.priority === priority);
-    if (tier.length) yield tier;
+  const ordered = candidates.filter(t => priorities.some(p => p === t.priority)).toSorted(compareTicketPriority);
+  let tier: Candidate[] = [];
+  for (const candidate of ordered) {
+    if (tier.length && compareTicketPriority(tier[0], candidate) !== 0) { yield tier; tier = []; }
+    tier.push(candidate);
   }
+  if (tier.length) yield tier;
 }
 export function selectTicket(candidates: Candidate[], lastProject: string | null, projectOrder: string[]): Candidate | undefined {
   for (const at of ticketTiers(candidates)) {
