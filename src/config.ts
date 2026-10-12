@@ -69,7 +69,8 @@ export const configSchema = z.preprocess(input => {
     codex: z.object({ weekly: budget }).strict(),
   }).strict(),
   discovery: z.object({ promptFile: absolute, emptyCooldownHours: positive }).strict(),
-  upstream: z.object({ promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
+  // Reviews have their own switch so pausing ticket automation does not stop release reviews.
+  upstream: z.object({ enabled: z.boolean().default(false), promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),

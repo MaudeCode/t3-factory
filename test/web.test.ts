@@ -156,6 +156,17 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
       200,
     );
     assert.deepEqual(calls.at(-1)?.args, ["pause"]);
+    assert.equal(
+      (
+        await request("/api/upstream/enabled", {
+          method: "POST",
+          headers: { Cookie: cookie },
+          body: '{"enabled":true}',
+        })
+      ).status,
+      200,
+    );
+    assert.deepEqual(calls.at(-1)?.args, ["upstream-resume"], "the reviews switch edits only upstream.enabled");
     const id = randomUUID(),
       input = { ticket: "app-8", model: "astra", overrideLimits: true };
     const dispatch = () =>

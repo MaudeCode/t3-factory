@@ -8,7 +8,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 
 | Setting | Meaning |
 | --- | --- |
-| `enabled` | Allows new automatic work; explicit manual runs remain available while paused. |
+| `enabled` | Allows new automatic ticket and discovery work; explicit manual runs remain available while paused. Upstream reviews have their own `upstream.enabled`. |
 | `pollSeconds` | Time between cycles, at least 15 seconds. |
 | `idleMinutes` | Required inactivity for the relevant provider in T3. |
 | `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts; manual runs may exceed them. |
@@ -64,6 +64,6 @@ Projects may override `discoveryPromptFile`. `discovery.emptyCooldownHours` cont
 
 ### Upstream release reviews
 
-A project's `upstreams` list names GitHub repositories whose releases the project should review: `name`, `repo` (`OWNER/REPOSITORY`), `prereleases` (default `false`), and `firstBase`, the tag or commit the first review starts from. Each repository belongs to one project. `upstream.promptFile` is the review invocation; the scheduler replaces `{{name}}`, `{{repo}}`, `{{base}}` and `{{candidate}}` in it. [`prompts/upstream-review.md`](../prompts/upstream-review.md) is a starting point. `upstream.checkMinutes` (default 360) limits how often each repository's releases are read.
+A project's `upstreams` list names GitHub repositories whose releases the project should review: `name`, `repo` (`OWNER/REPOSITORY`), `prereleases` (default `false`), and `firstBase`, the tag or commit the first review starts from. Each repository belongs to one project. `upstream.promptFile` is the review invocation; the scheduler replaces `{{name}}`, `{{repo}}`, `{{base}}` and `{{candidate}}` in it. [`prompts/upstream-review.md`](../prompts/upstream-review.md) is a starting point. `upstream.checkMinutes` (default 360) limits how often each repository's releases are read. `upstream.enabled` (default `false`) allows new reviews, independently of the top-level `enabled`; a config written before this setting existed keeps reviews paused until it is turned on.
 
 Keep actual skill paths and deployment-specific prompt variants in your private configuration. These skills are not downloaded by the installer.

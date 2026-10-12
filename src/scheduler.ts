@@ -45,25 +45,33 @@ export interface PendingReview { project: Project; upstream: NonNullable<Job['up
 // Each watched repository yields at most one review: from its last reviewed release to its newest one.
 // GitHub is read at most every upstream.checkMinutes; a repository with an unfinished review is not read at all.
 // refresh=false (dry runs and doctor) reads only the cached releases and writes nothing.
+type Watched = Project['upstreams'][number];
+// The single reading of a watched repository's stored state; dispatch and status both use it.
+function releaseState(project: Project, watched: Watched, store: Store, jobs: Job[]) {
+  const owned = jobs.filter(j => j.upstream?.repo === watched.repo);
+  const reviewing = owned.some(j => !['complete', 'dismissed'].includes(j.state));
+  const reviewed = store.get(`upstreamReviewed:${watched.repo}`) ?? watched.firstBase, latest = store.get(`upstreamLatest:${watched.repo}`);
+  // A candidate that already had a review, even one dismissed by settling it, is never dispatched again.
+  const due = project.enabled && !reviewing && !!latest && latest !== reviewed && !owned.some(j => j.upstream!.candidate === latest);
+  return { reviewing, reviewed, latest, due };
+}
 export async function pendingReviews(c: Config, store: Store, jobs: Job[], now = Date.now(), refresh = true): Promise<PendingReview[]> {
   const pending: PendingReview[] = [];
   for (const project of c.projects.filter(p => p.enabled)) for (const watched of project.upstreams) {
-    const owned = jobs.filter(j => j.upstream?.repo === watched.repo);
-    if (owned.some(j => !['complete', 'dismissed'].includes(j.state))) continue;
-    const latestKey = `upstreamLatest:${watched.repo}`, checkedKey = `upstreamCheckedAt:${watched.repo}`;
+    if (releaseState(project, watched, store, jobs).reviewing) continue;
+    const checkedKey = `upstreamCheckedAt:${watched.repo}`, errorKey = `upstreamCheckError:${watched.repo}`;
     if (refresh && now - Number(store.get(checkedKey) ?? 0) >= c.upstream!.checkMinutes * 60_000) {
       store.set(checkedKey, String(now)); // A failed read also waits checkMinutes before retrying.
       try {
         // gh excludes drafts (which have no publish date) and skipped pre-releases before its limit, so they cannot hide a release.
         const latest = releasesSchema.parse(await gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--exclude-drafts', ...watched.prereleases ? [] : ['--exclude-pre-releases'], '--json', 'tagName,publishedAt']))
           .toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
-        if (latest) store.set(latestKey, latest.tagName);
-      } catch (error) { log('upstream-check-failed', { repo: watched.repo, reason: safeError(error) }); }
+        if (latest) store.set(`upstreamLatest:${watched.repo}`, latest.tagName);
+        store.set(errorKey, '');
+      } catch (error) { store.set(errorKey, safeError(error)); log('upstream-check-failed', { repo: watched.repo, reason: safeError(error) }); }
     }
-    const candidate = store.get(latestKey), base = store.get(`upstreamReviewed:${watched.repo}`) ?? watched.firstBase;
-    // A candidate that already had a review, even one dismissed by settling it, is never dispatched again.
-    if (!candidate || candidate === base || owned.some(j => j.upstream!.candidate === candidate)) continue;
-    pending.push({ project, upstream: { name: watched.name, repo: watched.repo, base, candidate } });
+    const { reviewed, latest, due } = releaseState(project, watched, store, jobs);
+    if (due) pending.push({ project, upstream: { name: watched.name, repo: watched.repo, base: reviewed, candidate: latest! } });
   }
   return pending;
 }
@@ -558,12 +566,13 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
       stream.models.push({ id: preset.id, name: preset.name, reason });
       if (stream.reason !== 'ready') stream.reason = reason;
     }
-    // Paused: provider status and quota stay fresh, nothing is dispatched.
-    if (!c.enabled && !options.manual && !options.doctor) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams }); }
-    const queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel);
+    // Fully paused: provider status and quota stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
+    const reviewsOn = !!c.upstream?.enabled, ticketsOn = c.enabled || !!options.manual || !!options.doctor;
+    if (!ticketsOn && !reviewsOn) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams }); }
+    const queue = !ticketsOn ? { ready: [], skipped: [], selected: undefined } as Awaited<ReturnType<typeof inventory>> : await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel);
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
-    const reviews = options.manual ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
+    const reviews = options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
     const candidates = [...queue.ready];
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
@@ -573,7 +582,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     while (readyModels.some(m => !busy.has(m.driver))) {
       const review = reviews[0];
       const assignment = review ? undefined : selectAssignment(candidates, readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
-      const discovery = !review && !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
+      const discovery = ticketsOn && !review && !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
       const selected = assignment ?? (review || discovery ? readyModels.find(m => !busy.has(m.driver)) : undefined);
       if (!selected) break;
       const stream = streams.find(s => s.driver === selected.driver)!;
@@ -606,7 +615,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     for (const stream of streams) if (stream.reason === 'ready') stream.reason = queue.ready.length ? 'difficulty-limit' : skipped.some(s => /difficulty/.test(s.reason)) ? 'needs-classification' : 'no-eligible-ticket';
     const reason = options.doctor ? 'doctor' : results.some(r => r.reason === 'dispatched') ? 'dispatched'
       : results.some(r => r.reason === 'would-dispatch') ? 'would-dispatch'
-      : options.manual ? 'no-eligible-ticket' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
+      : options.manual ? 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
     store.set('streams', JSON.stringify(streams));
     return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length });
   } finally { await kaneo.close(); }
@@ -625,7 +634,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const result = { reason, at: new Date().toISOString(), ...extra };
     store.set('lastDecision', JSON.stringify(result)); log('decision', result); return result;
   };
-  if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect) return decision('disabled');
+  if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && c.upstream?.enabled)) return decision('disabled');
   const t3 = new T3(c.t3);
   const shell = await t3.shell();
   const instances = plan?.instanceDrivers ?? new Map((await t3.providers()).map(p => [p.instanceId, p.driver]));
@@ -707,8 +716,18 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   } finally { await kaneo.close(); }
 }
 
+// One row per watched repository: the release reviewed through, the newest release seen, and whether a review runs or is due.
+export function upstreamRows(c: Config, store: Store) {
+  const jobs = store.jobs();
+  return c.projects.flatMap(p => p.upstreams.map(u => {
+    const { reviewing, reviewed, latest, due } = releaseState(p, u, store, jobs), checked = Number(store.get(`upstreamCheckedAt:${u.repo}`) ?? 0);
+    return { project: p.name, name: u.name, repo: u.repo, prereleases: u.prereleases, reviewed, latest, checkedAt: checked ? new Date(checked).toISOString() : null,
+      checkError: store.get(`upstreamCheckError:${u.repo}`) || null, reviewing, pending: due };
+  }));
+}
+
 export function writeStatus(c: Config, store: Store) {
-  const result = { enabled: c.enabled, models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })) };
+  const result = { enabled: c.enabled, upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })) };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
   return result;
 }

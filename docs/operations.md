@@ -9,7 +9,8 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | `status` | Reads the local ledger and writes a current status snapshot. |
 | `doctor` | Checks live integrations and reports a possible decision without dispatching. |
 | `once --dry-run` | Previews a cycle using the current enabled state and policy. |
-| `pause` / `resume` | Disables or enables new automatic work. |
+| `pause` / `resume` | Disables or enables new automatic ticket and discovery work. |
+| `upstream-pause` / `upstream-resume` | Disables or enables new upstream release reviews, independently of `pause` / `resume`. |
 | `run` | Runs the scheduler continuously. |
 | `model-catalog` | Reads the models and options advertised by T3. |
 | `config-get` | Prints validated scheduler configuration. |
@@ -43,7 +44,7 @@ List non-Factory workflows that run autonomously in `t3.autonomousThreadIds`. Th
 
 A job waiting for human input releases its provider slot. Active turns and background workers keep it. Parked jobs are unlimited unless `maxWaitingPRs` sets a cap. A factory-owned passive monitor that exceeds the configured timeout is stopped and confirmed inactive before being parked. Personal sessions are never stopped by this rule.
 
-Upstream release reviews run ahead of ticket work, through the same quota, idle and run-limit gates. The scheduler reads each watched repository's releases with `gh` at most every `upstream.checkMinutes`, excluding drafts, and pre-releases unless the upstream allows them, before the listing limit. When the newest counted release differs from the last reviewed one, it starts one review thread, titled `Upstream review: <name> <base>..<candidate>`, in its own worktree. Nothing else is started, and no model runs, while a repository has no new release. A verified `complete` report with created tickets, or a `no-work` report, records the candidate as reviewed in the scheduler database, and it becomes the next review's base. An awaiting-human or unverified report leaves the record unchanged, and that repository is not read again until its review finishes. A candidate is never dispatched twice, including after its review is dismissed by settling the thread.
+Upstream release reviews run ahead of ticket work, through the same quota, idle and run-limit gates. They start only while `upstream.enabled` is true, whether ticket automation is on or paused; the web app's Upstream page has the switch, each watched repository's reviewed and latest releases, and the review runs. The scheduler reads each watched repository's releases with `gh` at most every `upstream.checkMinutes`, excluding drafts, and pre-releases unless the upstream allows them, before the listing limit. When the newest counted release differs from the last reviewed one, it starts one review thread, titled `Upstream review: <name> <base>..<candidate>`, in its own worktree. Nothing else is started, and no model runs, while a repository has no new release. A verified `complete` report with created tickets, or a `no-work` report, records the candidate as reviewed in the scheduler database, and it becomes the next review's base. An awaiting-human or unverified report leaves the record unchanged, and that repository is not read again until its review finishes. A candidate is never dispatched twice, including after its review is dismissed by settling the thread.
 
 Discovery runs only when there are no eligible tickets and no otherwise-ready tickets waiting for difficulty classification. It uses an available automatic model and a separate task and worktree. A no-work result starts the project's configured discovery cooldown.
 

@@ -23,6 +23,7 @@ const state = {
   editModel: 0,
   project: 0,
   liveEnabled: false,
+  liveUpstream: false,
   liveConcurrency: { claude: 1, codex: 1 },
 };
 const titles = {
@@ -32,6 +33,7 @@ const titles = {
   automation: "Automation",
   projects: "Projects",
   discovery: "Discovery",
+  upstream: "Upstream",
 };
 const STREAM_REASONS = {
   "provider-running": "Working",
@@ -128,6 +130,7 @@ async function load(reset = false) {
       state.base = clone(data.config);
     }
     state.liveEnabled = data.config.enabled;
+    state.liveUpstream = !!data.config.upstream?.enabled;
     state.liveConcurrency = data.config.concurrency;
     $("#login").hidden = true;
     $("#app").hidden = false;
@@ -135,6 +138,7 @@ async function load(reset = false) {
     if (reset) render();
     else if (state.page === "overview") renderLive();
     else if (state.page === "runs") renderRuns();
+    else if (state.page === "upstream") renderUpstream();
     return data;
   } catch (error) {
     connection("Offline", "offline");
@@ -148,12 +152,13 @@ function render() {
   $("#page-title").textContent = titles[state.page];
   for (const el of document.querySelectorAll("nav [data-page]"))
     el.setAttribute("aria-current", el.dataset.page === state.page ? "page" : "false");
-  $("#page").innerHTML = { overview, runs, models, automation, projects, discovery }[state.page]();
+  $("#page").innerHTML = { overview, runs, models, automation, projects, discovery, upstream }[state.page]();
   saveBar();
   if (state.page === "overview") {
     renderLive();
     renderOperation();
   } else if (state.page === "runs") renderRuns();
+  else if (state.page === "upstream") renderUpstream();
 }
 const ago = (date) => {
   if (!date) return "never";
@@ -223,7 +228,7 @@ function renderLive() {
       const quota = direct?.driver === driver ? direct : stream.quota;
       const fable = quota?.factoryRouting?.fableRemainingPercent;
       return `<div>
-  <div class="section-head"><h2>${driver === "codex" ? "Codex" : "Claude"}</h2><span class="hint">${esc(!enabled ? "Paused" : STREAM_REASONS[stream.reason] || "Watching the queue")}</span></div>
+  <div class="section-head"><h2>${driver === "codex" ? "Codex" : "Claude"}</h2><span class="hint">${esc(!enabled && !active.length ? "Paused" : STREAM_REASONS[stream.reason] || "Watching the queue")}</span></div>
   <div class="stat-num">${active.length}<small>running · automatic limit ${limit}</small></div>
   <p class="hint mono">${active.length ? active.map((j) => esc(j.label)).join(", ") : "Slot free"}</p>
   ${fable != null ? meter("Fable allowance", fable) : ""}
@@ -469,6 +474,59 @@ function discovery() {
   ${field("Wait after finding no work (hours)", ["discovery", "emptyCooldownHours"], "number")}
 </section>`;
 }
+const NO_UPSTREAMS = `<p class="empty">No watched repositories. Add <code>upstream</code> and a project's <code>upstreams</code> to the config file.</p>`;
+function upstream() {
+  if (!state.config.upstream) return NO_UPSTREAMS;
+  return `
+<div class="status">
+  <span id="upstream-dot" class="dot"></span>
+  <div class="grow"><strong id="upstream-state"></strong></div>
+  <input type="checkbox" role="switch" id="upstream-toggle" class="switch" aria-labelledby="upstream-state">
+</div>
+<p class="hint">Runs independently of ticket automation. Quota and idle gates still apply.</p>
+<section class="section">
+  <div class="section-head"><h2>Watched releases</h2></div>
+  <div id="upstream-repos"></div>
+</section>
+<section class="section">
+  <div class="section-head"><h2>Reviews</h2></div>
+  <div id="upstream-jobs"></div>
+</section>
+<section class="section">
+  <div class="section-head"><h2>Settings</h2></div>
+  ${field("Prompt file on your Mac", ["upstream", "promptFile"], "text", 'class="mono"')}
+  ${field("Check interval (minutes)", ["upstream", "checkMinutes"], "number")}
+</section>`;
+}
+function renderUpstream() {
+  const toggle = $("#upstream-toggle");
+  if (!toggle) return;
+  const on = state.liveUpstream,
+    rows = state.status.upstreams || [];
+  $("#upstream-state").textContent = on ? "Reviews on" : "Reviews paused";
+  $("#upstream-dot").classList.toggle("paused", !on);
+  toggle.checked = on;
+  toggle.disabled = state.busy;
+  $("#upstream-repos").innerHTML = rows.length
+    ? `<table class="table stack"><thead><tr><th>Repository</th><th>Reviewed through</th><th>Latest release</th><th>Checked</th></tr></thead><tbody>${rows
+        .map(
+          (r) => `<tr>
+  <td><strong>${esc(r.name)}</strong> <span class="sub mono">${esc(r.repo)}${r.prereleases ? " · pre-releases" : ""}</span></td>
+  <td data-label="Reviewed through"><span class="mono">${esc(r.reviewed)}</span></td>
+  <td data-label="Latest release"><span class="mono">${esc(r.latest || "Not checked")}</span>${r.reviewing ? ' <span class="tag running">reviewing</span>' : r.pending ? ' <span class="tag waiting">review due</span>' : ""}</td>
+  <td data-label="Checked">${ago(r.checkedAt)}${r.checkError ? ` <details><summary>Failed</summary><p>${esc(r.checkError)}</p></details>` : ""}</td>
+</tr>`,
+        )
+        .join("")}</tbody></table>`
+    : NO_UPSTREAMS;
+  $("#upstream-jobs").innerHTML = jobTable(
+    (state.status.jobs || [])
+      .filter((j) => j.kind === "upstream")
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
+    "No reviews yet.",
+    10,
+  );
+}
 
 // Dispatch operations ------------------------------------------------------
 const saveOperation = () =>
@@ -593,16 +651,21 @@ async function action(name, button) {
         await api("/api/session", { method: "DELETE" });
         showLogin();
         break;
-      case "toggle-enabled": {
+      case "toggle-enabled":
+      case "toggle-upstream": {
+        // Each switch saves immediately; mirror the saved value into both copies so the save bar stays clean.
+        const upstream = name === "toggle-upstream";
         state.busy = true;
-        renderLive();
-        await api("/api/enabled", {
+        upstream ? renderUpstream() : renderLive();
+        await api(upstream ? "/api/upstream/enabled" : "/api/enabled", {
           method: "POST",
-          body: JSON.stringify({ enabled: !state.liveEnabled }),
+          body: JSON.stringify({ enabled: !(upstream ? state.liveUpstream : state.liveEnabled) }),
         });
         const latest = await load();
-        state.base.enabled = latest.config.enabled;
-        state.config.enabled = latest.config.enabled;
+        for (const copy of [state.base, state.config]) {
+          if (!upstream) copy.enabled = latest.config.enabled;
+          else if (copy.upstream) copy.upstream.enabled = latest.config.upstream?.enabled;
+        }
         saveBar();
         break;
       }
@@ -685,7 +748,7 @@ async function action(name, button) {
     if (state.page === "overview" && !$("#app").hidden) {
       renderLive();
       renderOperation();
-    }
+    } else if (state.page === "upstream" && !$("#app").hidden) renderUpstream();
   }
 }
 
@@ -721,6 +784,8 @@ document.addEventListener("change", (event) => {
   try {
     if (el.id === "enable-toggle") {
       action("toggle-enabled");
+    } else if (el.id === "upstream-toggle") {
+      action("toggle-upstream");
     } else if (el.id === "project-select") {
       state.project = Number(el.value);
       render();

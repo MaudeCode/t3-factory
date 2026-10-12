@@ -50,6 +50,7 @@
   },
   // Optional: required once any project lists upstreams.
   "upstream": {
+    "enabled": false,
     "promptFile": "/absolute/path/to/upstream-review.md",
     "checkMinutes": 360
   },

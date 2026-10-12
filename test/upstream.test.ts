@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { T3, Kaneo } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
-import { cycle, pendingReviews, reconcile } from '../src/scheduler.ts';
+import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
 
 // What gh returns after --exclude-drafts, with and without --exclude-pre-releases.
@@ -19,7 +19,7 @@ function fixture(t: { after: (fn: () => void) => void }, upstreams: Record<strin
   const dir = mkdtempSync(join(tmpdir(), 'factory-upstream-')), repo = join(dir, 'repo'); mkdirSync(repo);
   execFileSync('/usr/bin/git', ['init', '-q', repo]);
   writeFileSync(join(dir, 'stable.json'), JSON.stringify(stable)); writeFileSync(join(dir, 'all.json'), JSON.stringify(withPrereleases));
-  writeFileSync(join(dir, 'gh'), `#!/bin/sh\necho "$@" >> "${join(dir, 'gh-calls')}"\ncase "$1 $*" in\n  release*--exclude-pre-releases*) cat "${join(dir, 'stable.json')}" ;;\n  release*) cat "${join(dir, 'all.json')}" ;;\n  *) printf "[]\\n" ;;\nesac\n`, { mode: 0o755 });
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh\necho "$@" >> "${join(dir, 'gh-calls')}"\ncase "$1 $*" in\n  release*--exclude-pre-releases*) cat "${join(dir, 'stable.json')}" ;;\n  release*) cat "${join(dir, 'all.json')}" ;;\n  *) printf "[]\\n" ;;\nesac\n`.replace('case "$1 $*" in\n', 'case "$1 $*" in\n  *up/broken*) echo "HTTP 404" >&2; exit 1 ;;\n'), { mode: 0o755 });
   writeFileSync(join(dir, 'upstream.md'), 'Review {{name}} ({{repo}}) from {{base}} to {{candidate}}.');
   writeFileSync(join(dir, 'discovery.md'), 'Discover.'); writeFileSync(join(dir, 'skill'), '# Software factory');
   const oldPath = process.env.PATH, oldConfig = process.env.T3_FACTORY_CONFIG;
@@ -32,7 +32,7 @@ function fixture(t: { after: (fn: () => void) => void }, upstreams: Record<strin
     t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
     kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    upstream: { promptFile: join(dir, 'upstream.md'), checkMinutes: 60 },
+    upstream: { enabled: true, promptFile: join(dir, 'upstream.md'), checkMinutes: 60 },
     projects: [{ name: 'FIX', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/app', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'], upstreams }],
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
@@ -67,18 +67,56 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   const dismissed = job({ id: 'gone', state: 'dismissed', upstream: { name: 'Exp', repo: 'up/exp', base: 'v1', candidate: 'exp-3' } });
   assert.deepEqual(await pendingReviews(c, store, [open, dismissed], now + 61 * 60_000), [], 'an unfinished or dismissed review blocks its candidate');
   assert.equal(ghCalls(), 5, 'a repository with an unfinished review is not read');
+  store.save(open); store.save(dismissed);
+  assert.deepEqual(upstreamRows(c, store).map(r => [r.repo, r.reviewing, r.pending]), [['up/stable', true, false], ['up/exp', false, false], ['up/current', false, false]],
+    'a running review shows as reviewing, and a dismissed candidate is not due again');
+  store.save({ ...open, state: 'complete' }); store.save({ ...dismissed, upstream: { ...dismissed.upstream!, candidate: 'exp-2' } });
 
   store.set('upstreamReviewed:up/stable', 'v2');
   assert.deepEqual((await pendingReviews(c, store, [], now + 61 * 60_000)).map(p => p.upstream.repo), ['up/exp'], 'a reviewed candidate is the new base');
+  assert.deepEqual(upstreamRows(c, store).map(r => [r.repo, r.reviewed, r.latest, r.checkedAt, r.pending]), [
+    ['up/stable', 'v2', 'v2', new Date(now + 61 * 60_000).toISOString(), false],
+    ['up/exp', 'v1', 'exp-3', new Date(now + 61 * 60_000).toISOString(), true],
+    ['up/current', 'v2', 'v2', new Date(now + 61 * 60_000).toISOString(), false],
+  ], 'status rows report the watermark, the newest release seen, and whether a review is due');
+  assert.equal(writeStatus(c, store).upstreams.length, 3, 'status.json carries the rows');
+  c.projects[0].enabled = false;
+  assert.ok(upstreamRows(c, store).every(r => !r.pending), 'a disabled project has no review due');
 });
 
-for (const scenario of ['priority', 'ambiguous-launch', 'dry-run'] as const) test(`upstream dispatch: ${scenario}`, async t => {
+test('upstream detection: a failed release read is recorded on its row', async t => {
+  const { c, store } = fixture(t, [{ name: 'Broken', repo: 'up/broken', firstBase: 'v1' }]);
+  assert.deepEqual(await pendingReviews(c, store, [], Date.parse('2026-03-05T00:00:00Z')), []);
+  const [row] = upstreamRows(c, store);
+  assert.deepEqual([row.latest, row.pending, row.checkedAt], [null, false, '2026-03-05T00:00:00.000Z']);
+  assert.match(row.checkError ?? '', /404/);
+});
+
+test('upstream switch: the CLI flips only upstream.enabled and refuses configs without upstream', t => {
+  const { dir, c } = fixture(t, []);
+  const main = new URL('../src/main.ts', import.meta.url).pathname, run = (file: string) => {
+    try { return { code: 0, out: execFileSync(process.execPath, [main, 'upstream-resume'], { env: { ...process.env, NODE_NO_WARNINGS: '1', T3_FACTORY_CONFIG: file }, encoding: 'utf8', stdio: 'pipe' }) }; }
+    catch (error: any) { return { code: error.status, out: String(error.stderr) }; }
+  };
+  const file = join(dir, 'config.jsonc');
+  writeFileSync(file, JSON.stringify({ ...c, upstream: { ...c.upstream, enabled: false } }));
+  assert.equal(run(file).code, 0);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual([saved.upstream.enabled, saved.enabled], [true, true]);
+  const bare = join(dir, 'bare.jsonc'), { upstream: _, ...withoutUpstream } = c;
+  writeFileSync(bare, JSON.stringify(withoutUpstream));
+  assert.deepEqual(run(bare), { code: 1, out: 'No upstream reviews are configured\n' });
+  assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(withoutUpstream), 'the file is untouched');
+});
+
+for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused'] as const) test(`upstream dispatch: ${scenario}`, async t => {
   const { c, store, ghCalls } = fixture(t, [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1' }]);
-  if (scenario === 'ambiguous-launch') {
+  if (['ambiguous-launch', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused'].includes(scenario))
     c.models.push({ id: 'astra', name: 'Astra', model: { instanceId: 'codex', model: 'gpt-6-astra', options: [] }, automatic: true, maxDifficulty: 'high' });
-    writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
-  }
-  const tasks = [{ id: 'task-1', projectId: 'FIX', title: 'Ready work', number: 1, status: 'to-do', priority: 'urgent', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }];
+  if (scenario.startsWith('tickets-paused')) c.enabled = false;
+  if (scenario === 'reviews-paused') c.upstream!.enabled = false;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  const tasks = scenario === 'tickets-paused-empty' ? [] : [{ id: 'task-1', projectId: 'FIX', title: 'Ready work', number: 1, status: 'to-do', priority: 'urgent', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }];
   const providers = [{ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'claude-opus-5' }] },
     { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'gpt-6-astra' }] }];
   t.mock.method(T3.prototype, 'providers', async () => providers);
@@ -108,6 +146,14 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run'] as const) tes
     return;
   }
   const result = await cycle(c, store);
+  if (scenario.startsWith('tickets-paused')) {
+    assert.deepEqual([result.reason, launched.map(l => l.title)], ['dispatched', ['Upstream review: Stable v1..v2']], 'reviews run while ticket automation is paused; the free slot takes no ticket or discovery');
+    return;
+  }
+  if (scenario === 'reviews-paused') {
+    assert.deepEqual([launched.map(l => l.title), ghCalls()], [['Factory: FIX-1'], 0], 'paused reviews neither read releases nor dispatch');
+    return;
+  }
   if (scenario === 'ambiguous-launch') {
     assert.deepEqual(launched.map(l => l.title), ['Upstream review: Stable v1..v2', 'Factory: FIX-1'], 'the other provider takes the ticket, not the same review');
     return;
