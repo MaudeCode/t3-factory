@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { modify, applyEdits } from 'jsonc-parser';
+import { modify, applyEdits, parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
@@ -19,6 +19,13 @@ loadEnvironment();
 process.umask(0o077);
 const command = process.argv[2] ?? 'status';
 const configPath = process.env.T3_FACTORY_CONFIG ?? defaultConfigPath;
+// Config switches the CLI and web toggles flip.
+const switches: Record<string, { path: string[]; value: boolean; message: string }> = {
+  pause: { path: ['enabled'], value: false, message: 'New dispatches paused. Existing T3 jobs continue.' },
+  resume: { path: ['enabled'], value: true, message: 'New dispatches enabled; quota and idle gates still apply.' },
+  'upstream-pause': { path: ['upstream', 'enabled'], value: false, message: 'New upstream reviews paused. Running reviews continue.' },
+  'upstream-resume': { path: ['upstream', 'enabled'], value: true, message: 'Upstream reviews enabled; quota and idle gates still apply.' },
+};
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath);
@@ -57,11 +64,16 @@ if (command === 'web') {
     console.log(JSON.stringify(result));
     if ('approved' in result && !result.approved) process.exitCode = 1;
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
-} else if (['pause', 'resume'].includes(command)) {
+} else if (Object.hasOwn(switches, command)) {
+  const { path, value, message } = switches[command];
   const text = readFileSync(configPath, 'utf8');
-  const next = applyEdits(text, modify(text, ['enabled'], command === 'resume', { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-  writeFileSync(`${configPath}.tmp`, next, { mode: 0o600 }); renameSync(`${configPath}.tmp`, configPath);
-  console.log(command === 'pause' ? 'New dispatches paused. Existing T3 jobs continue.' : 'New dispatches enabled; quota and idle gates still apply.');
+  if (path[0] === 'upstream' && !parse(text, [], { allowTrailingComma: true })?.upstream) {
+    console.error('No upstream reviews are configured'); process.exitCode = 1;
+  } else {
+    const next = applyEdits(text, modify(text, path, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
+    writeFileSync(`${configPath}.tmp`, next, { mode: 0o600 }); renameSync(`${configPath}.tmp`, configPath);
+    console.log(message);
+  }
 } else if (command === 'status') {
   const c = loadConfig(configPath), store = new Store(c.stateDir);
   console.log(JSON.stringify(writeStatus(c, store), null, 2)); store.close();
@@ -112,6 +124,6 @@ if (command === 'web') {
     await delay(seconds * 1000, undefined, { signal: signal.signal }).catch(() => {});
   } while (!stop);
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | config-get | config-save | model-catalog | web | web-pair | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | web | web-pair | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--dry-run]');
   process.exitCode = 2;
 }

@@ -72,6 +72,11 @@ const dispatchSchema = z
   .strict()
   .refine(input => !input.allowMissingReadyLabel || !!input.ticket, "The readiness-label override requires a specific ticket");
 const requestId = z.string().uuid();
+// Toggle endpoints and the CLI commands for [off, on].
+const toggles: Record<string, [string, string]> = {
+  "/api/enabled": ["pause", "resume"],
+  "/api/upstream/enabled": ["upstream-pause", "upstream-resume"],
+};
 
 export function runFactory(args: string[], input?: unknown): Promise<Result> {
   return new Promise((resolve, reject) => {
@@ -351,7 +356,7 @@ export function createFactoryWeb(options: {
         }
         if (
           (path === "/api/config" && req.method === "POST") ||
-          (path === "/api/enabled" && req.method === "POST")
+          (Object.hasOwn(toggles, path) && req.method === "POST")
         ) {
           const input = await body(req);
           if (settingsBusy)
@@ -364,10 +369,12 @@ export function createFactoryWeb(options: {
               path === "/api/config"
                 ? await run(["config-save"], input)
                 : await run([
-                    z.object({ enabled: z.boolean() }).strict().parse(input)
-                      .enabled
-                      ? "resume"
-                      : "pause",
+                    toggles[path][
+                      z.object({ enabled: z.boolean() }).strict().parse(input)
+                        .enabled
+                        ? 1
+                        : 0
+                    ],
                   ]);
             return json(
               res,

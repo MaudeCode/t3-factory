@@ -81,6 +81,8 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         }
     }
     var enabled: Bool { config["enabled"] as? Bool ?? false }
+    var hasUpstream: Bool { config["upstream"] is [String: Any] }
+    var upstreamEnabled: Bool { (config["upstream"] as? [String: Any])?["enabled"] as? Bool ?? false }
     var configuredModels: [[String: Any]] { config["models"] as? [[String: Any]] ?? [] }
     var selectedPreset: [String: Any]? { configuredModels.first { $0["id"] as? String == selectedModel } }
     var selectedModelUsesCodex: Bool {
@@ -100,7 +102,7 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         }
     }
     func streamReason(_ driver: String) -> String {
-        guard enabled else { return "Automatic starts paused" }
+        guard enabled else { return upstreamEnabled ? "Ticket starts paused; upstream reviews on" : "Automatic starts paused" }
         let reason = streams.first { $0["driver"] as? String == driver }?["reason"] as? String ?? "Watching the queue"
         switch reason {
         case "provider-disabled": return "Automatic starts off"
@@ -118,7 +120,7 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         }
     }
     var statusTitle: String {
-        if !enabled { return "Automatic factory paused" }
+        if !enabled { return upstreamEnabled ? "Tickets paused; upstream reviews on" : "Automatic factory paused" }
         switch decision["reason"] as? String {
         case "dispatched", "autonomous-job-running": return "Factory is running"
         case "personal-Claude-running", "personal-provider-running": return "Waiting for the provider to become idle"
@@ -204,14 +206,25 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
             config = object; draft = object; editingBase = object; error = nil; validateModelSelection(); refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
-    func setEnabled(_ enabled: Bool) async {
-        guard busy == nil else { return }; busy = enabled ? "Enabling factory" : "Pausing factory"; defer { busy = nil }
+    // Both switches save immediately; the saved value is mirrored into the settings draft so it does not look edited.
+    func setEnabled(_ enabled: Bool, upstream: Bool = false) async {
+        guard busy == nil else { return }
+        busy = upstream ? (enabled ? "Enabling upstream reviews" : "Pausing upstream reviews") : (enabled ? "Enabling factory" : "Pausing factory"); defer { busy = nil }
         do {
-            let result = try await execute([enabled ? "resume" : "pause"])
+            let result = try await execute([(upstream ? "upstream-" : "") + (enabled ? "resume" : "pause")])
             guard result.code == 0 else { throw failure(result) }
             let loaded = try await execute(["config-get"])
-            if let object = jsonObject(loaded.text) { config = object; draft["enabled"] = enabled; editingBase["enabled"] = enabled }
-            error = nil; notice = enabled ? "Automatic dispatch enabled" : "Paused. Existing runs continue."; refreshStatus()
+            if let object = jsonObject(loaded.text) {
+                config = object
+                if !upstream { draft["enabled"] = enabled; editingBase["enabled"] = enabled }
+                else {
+                    if var section = draft["upstream"] as? [String: Any] { section["enabled"] = enabled; draft["upstream"] = section }
+                    if var section = editingBase["upstream"] as? [String: Any] { section["enabled"] = enabled; editingBase["upstream"] = section }
+                }
+            }
+            error = nil
+            notice = upstream ? (enabled ? "Upstream reviews enabled" : "Upstream reviews paused. Running reviews continue.") : (enabled ? "Automatic dispatch enabled" : "Paused. Existing runs continue.")
+            refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
     func dispatch() async {
