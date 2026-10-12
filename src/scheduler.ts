@@ -43,7 +43,7 @@ async function gh(args: string[]): Promise<unknown> {
 const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedAt: z.string() }));
 export interface PendingReview { project: Project; upstream: NonNullable<Job['upstream']> }
 // Each watched repository yields at most one review: from its last reviewed release to its newest one.
-// GitHub is read at most every upstream.checkMinutes; a repository with an unfinished review is not read at all.
+// GitHub is read at most every checkMinutes (the upstream's own, else upstream.checkMinutes); a repository with an unfinished review is not read at all.
 // refresh=false (dry runs and doctor) reads only the cached releases and writes nothing.
 type Watched = Project['upstreams'][number];
 // The single reading of a watched repository's stored state; dispatch and status both use it.
@@ -60,7 +60,7 @@ export async function pendingReviews(c: Config, store: Store, jobs: Job[], now =
   for (const project of c.projects.filter(p => p.enabled)) for (const watched of project.upstreams) {
     if (releaseState(project, watched, store, jobs).reviewing) continue;
     const checkedKey = `upstreamCheckedAt:${watched.repo}`, errorKey = `upstreamCheckError:${watched.repo}`;
-    if (refresh && now - Number(store.get(checkedKey) ?? 0) >= c.upstream!.checkMinutes * 60_000) {
+    if (refresh && now - Number(store.get(checkedKey) ?? 0) >= (watched.checkMinutes ?? c.upstream!.checkMinutes) * 60_000) {
       store.set(checkedKey, String(now)); // A failed read also waits checkMinutes before retrying.
       try {
         // gh excludes drafts (which have no publish date) and skipped pre-releases before its limit, so they cannot hide a release.
@@ -286,6 +286,8 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
   }
 }
 
+// The owner used this provider too recently for ticket and discovery work; reviews ignore it.
+const idleBlocked = (c: Config, activity: { active: boolean; idleMinutes: number }) => activity.active || activity.idleMinutes < c.idleMinutes;
 export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], store: Store, monitoringTimeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, driver = 'claudeAgent', instances = new Map<string, string>()) {
   // Old polling-based timestamps can be inflated by passive commands and stale child markers. Rebuild once
   // from T3's actual events, then retain this corrected clock across archiving/restarts.
@@ -544,6 +546,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
       planned: [] as string[], models: [] as { id: string; name: string; reason: string }[], quota: undefined as Awaited<ReturnType<typeof readModelQuota>> | undefined,
     }));
     const readyModels: { preset: Config['models'][number]; driver: string }[] = [];
+    // Blocked only by provider idle time: reviews may still use these, ticket and discovery work may not.
+    const idleModels: typeof readyModels = [];
     const activityCache = new Map<string, Awaited<ReturnType<typeof personalActivity>>>();
     for (const preset of c.models.filter(p => p.automatic)) {
       const driver = instances.get(preset.model.instanceId);
@@ -559,9 +563,10 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
         else if (!manualCodex && !override) {
           if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver, instances));
           const activity = activityCache.get(driver!)!;
-          if (activity.active || activity.idleMinutes < c.idleMinutes) reason = 'waiting-for-idle';
+          if (idleBlocked(c, activity)) reason = 'waiting-for-idle';
         }
         if (reason === 'ready') { readyModels.push({ preset, driver: driver! }); stream.quota = quota; }
+        else if (reason === 'waiting-for-idle') idleModels.push({ preset, driver: driver! });
       } catch (error) { reason = safeError(error); }
       stream.models.push({ id: preset.id, name: preset.name, reason });
       if (stream.reason !== 'ready') stream.reason = reason;
@@ -579,11 +584,12 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
     const claimedProjects = new Set<string>();
     const planned = new Map<string, number>();
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
-    while (readyModels.some(m => !busy.has(m.driver))) {
+    const free = (m: { driver: string }) => !busy.has(m.driver);
+    while (readyModels.some(free) || (reviews.length && idleModels.some(free))) {
       const review = reviews[0];
       const assignment = review ? undefined : selectAssignment(candidates, readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
       const discovery = ticketsOn && !review && !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
-      const selected = assignment ?? (review || discovery ? readyModels.find(m => !busy.has(m.driver)) : undefined);
+      const selected = assignment ?? (review ? readyModels.find(free) ?? idleModels.find(free) : discovery ? readyModels.find(free) : undefined);
       if (!selected) break;
       const stream = streams.find(s => s.driver === selected.driver)!;
       try {
@@ -601,7 +607,10 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
           if (assignment) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
         } else {
           // A failed final check must not loop on the same selection in this pass.
-          readyModels.splice(readyModels.findIndex(m => m.preset.id === selected.preset.id), 1);
+          for (const list of [readyModels, idleModels]) {
+            const i = list.findIndex(m => m.preset.id === selected.preset.id);
+            if (i >= 0) list.splice(i, 1);
+          }
           if (assignment && /ticket|eligib/.test(result.reason)) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
         }
       } catch (error) {
@@ -666,8 +675,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const gate = !quota.hasAllowance ? isManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted'
       : !override && !quota.allowed ? discovery ? 'discovery-quota-reserve' : 'quota-reserve'
       : c.maxWaitingPRs !== null && parked.length >= c.maxWaitingPRs ? 'waiting-cap'
-      : !isManualCodex && !override && activity.active ? 'personal-provider-running'
-      : !isManualCodex && !override && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
+      : !isManualCodex && !override && !review && activity.active ? 'personal-provider-running'
+      : !isManualCodex && !override && !review && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
     queue.selected = review ? undefined : selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
     if (options.doctor) return decision('doctor', { quota, activity, running: running.length, waiting: parked.length, gate: running.length ? 'autonomous-job-running' : gate, eligible: queue.ready.length, next: queue.selected, skipped: queue.skipped });
     if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length, ...(!quota.hasAllowance ? { message: 'The selected model has no allowance left. Choose another model or wait for its quota to reset.' } : {}) });
@@ -692,7 +701,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const currentManualCodex = options.manual && currentQuota.provider === 'Codex';
     const currentActivity = await personalActivity(t3, fresh.threads, store.jobs(), store, c.monitoringTimeoutMinutes, currentQuota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
     if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
-    if (!override && ((!currentManualCodex && (currentActivity.active || currentActivity.idleMinutes < c.idleMinutes)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
+    // Reviews start as soon as a release is found, so only ticket and discovery work wait for idle time.
+    if (!override && ((!currentManualCodex && !review && idleBlocked(c, currentActivity)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;

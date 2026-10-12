@@ -84,6 +84,16 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   assert.ok(upstreamRows(c, store).every(r => !r.pending), 'a disabled project has no review due');
 });
 
+test('upstream detection: a repository checkMinutes overrides the shared interval', async t => {
+  const { store, c, releaseCalls } = fixture(t, [{ name: 'Daily', repo: 'up/daily', firstBase: 'v1', checkMinutes: 1440 }, { name: 'Stable', repo: 'up/stable', firstBase: 'v2' }]);
+  const now = Date.parse('2026-03-05T00:00:00Z'), reads = () => releaseCalls().map(call => call.match(/--repo (\S+)/)![1]);
+  await pendingReviews(c, store, [], now);
+  await pendingReviews(c, store, [], now + 61 * 60_000);
+  assert.deepEqual(reads(), ['up/daily', 'up/stable', 'up/stable'], 'the daily repository is not read again within its own interval');
+  await pendingReviews(c, store, [], now + 1441 * 60_000);
+  assert.deepEqual(reads().slice(3), ['up/daily', 'up/stable']);
+});
+
 test('upstream detection: a failed release read is recorded on its row', async t => {
   const { c, store } = fixture(t, [{ name: 'Broken', repo: 'up/broken', firstBase: 'v1' }]);
   assert.deepEqual(await pendingReviews(c, store, [], Date.parse('2026-03-05T00:00:00Z')), []);
@@ -109,18 +119,21 @@ test('upstream switch: the CLI flips only upstream.enabled and refuses configs w
   assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(withoutUpstream), 'the file is untouched');
 });
 
-for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused'] as const) test(`upstream dispatch: ${scenario}`, async t => {
+for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused', 'owner-busy'] as const) test(`upstream dispatch: ${scenario}`, async t => {
   const { c, store, ghCalls } = fixture(t, [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1' }]);
   if (['ambiguous-launch', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused'].includes(scenario))
     c.models.push({ id: 'astra', name: 'Astra', model: { instanceId: 'codex', model: 'gpt-6-astra', options: [] }, automatic: true, maxDifficulty: 'high' });
   if (scenario.startsWith('tickets-paused')) c.enabled = false;
   if (scenario === 'reviews-paused') c.upstream!.enabled = false;
+  if (scenario === 'owner-busy') c.concurrency.claude = 2; // a free slot, so only the idle gate can hold the ticket back
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
   const tasks = scenario === 'tickets-paused-empty' ? [] : [{ id: 'task-1', projectId: 'FIX', title: 'Ready work', number: 1, status: 'to-do', priority: 'urgent', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }];
   const providers = [{ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'claude-opus-5' }] },
     { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'gpt-6-astra' }] }];
   t.mock.method(T3.prototype, 'providers', async () => providers);
-  t.mock.method(T3.prototype, 'shell', async () => ({ threads: [], projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) }));
+  // The owner's own running Claude thread closes the idle gate.
+  const personal = scenario === 'owner-busy' ? [v2Thread({ id: 'personal', projectId: 'FIX', status: 'running', activeRunId: 'run', latestUserMessageAt: new Date().toISOString(), providerInstanceId: 'claudeAgent', modelSelection: { instanceId: 'claudeAgent', model: 'claude-opus-5' } })] : [];
+  t.mock.method(T3.prototype, 'shell', async () => ({ threads: personal, projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) }));
   t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
   const window = (id: string, minutes: number) => ({ id, usedPercent: 0, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
   t.mock.method(T3.prototype, 'provider', async (instanceId: string) => ({ ...providers.find(p => p.instanceId === instanceId)!, usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(),
@@ -149,6 +162,13 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paus
   const result = await cycle(c, store);
   if (scenario.startsWith('tickets-paused')) {
     assert.deepEqual([result.reason, launched.map(l => l.title)], ['dispatched', ['Upstream review: Stable v1..v2']], 'reviews run while ticket automation is paused; the free slot takes no ticket or discovery');
+    return;
+  }
+  if (scenario === 'owner-busy') {
+    assert.deepEqual([result.reason, launched.map(l => l.title)], ['dispatched', ['Upstream review: Stable v1..v2']], 'a review does not wait for idle time; the second slot takes no ticket');
+    const next = await cycle(c, store) as Record<string, any>;
+    assert.equal(launched.length, 1, 'the ticket still waits for idle time');
+    assert.equal(next.streams.find((s: any) => s.driver === 'claudeAgent').models[0].reason, 'waiting-for-idle', 'the idle gate, not the run limit, holds the ticket');
     return;
   }
   if (scenario === 'reviews-paused') {
