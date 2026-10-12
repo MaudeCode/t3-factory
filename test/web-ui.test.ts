@@ -40,6 +40,17 @@ function ui() {
   return { context, document, fire };
 }
 
+test('project label priorities can be reordered and cleared through the actual input handler', async () => {
+  const { context, document, fire } = ui();
+  runInContext('state.config.projects = [{ name: "Fixture", kaneoId: "p", readyStatuses: ["todo"], doneStatuses: ["done"], priorityLabels: ["security", "compatibility"] }]; state.status = { jobs: [] }; state.base = clone(state.config);', context);
+  assert.match(runInContext('projects()', context), /value="security, compatibility"/);
+  await fire('input', { dataset: { list: '["projects","0","priorityLabels"]' }, value: 'compatibility, security' });
+  assert.equal(runInContext('JSON.stringify(state.config.projects[0].priorityLabels)', context), '["compatibility","security"]');
+  assert.equal(document.querySelector('#save-bar').hidden, false);
+  await fire('input', { dataset: { list: '["projects","0","priorityLabels"]' }, value: '' });
+  assert.equal(runInContext('JSON.stringify(state.config.projects[0].priorityLabels)', context), '[]');
+});
+
 test('API recovers a transient empty proxy response on reads without resending writes', async () => {
   const { context, document } = ui();
   let calls = 0;

@@ -11,7 +11,7 @@ import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -38,10 +38,16 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     if (scenario === 'parallel-claude-zero' || scenario === 'parallel-both-zero') c.concurrency.claude = 0;
     if (scenario === 'parallel-codex-zero' || scenario === 'parallel-both-zero') c.concurrency.codex = 0;
     if (scenario === 'ceiling') c.models.forEach(m => { m.maxDifficulty = 'low'; });
+    if (scenario.startsWith('label-')) c.projects[0].priorityLabels = ['compatibility', 'security'];
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
     const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
     if (scenario === 'truncated-labels') tasks.forEach(task => { task.labels = ['app', 'web', 'contracts', 'sec', 'med', 'sf'].map(name => ({ name })); });
     if (scenario === 'missing-sf-confirmation') tasks.forEach(task => { task.labels = [{ name: 'high' }]; });
+    if (scenario.startsWith('label-')) {
+      tasks[1].labels.push({ name: 'compatibility' }); tasks[1].priority = 'low';
+      tasks[2].labels.push({ name: 'security' });
+      if (scenario === 'label-ineligible') { tasks[1].labels = [{ name: 'compatibility' }, { name: 'high' }]; tasks[2].labels = [{ name: 'security' }, { name: 'sf' }]; }
+    }
     const threads: Thread[] = [], store = new Store(c.stateDir), attempts: Record<string, any>[] = [];
     const providers = ['codex', 'claudeAgent'].map(instanceId => ({ instanceId, driver: instanceId, status: 'ready', installed: true, enabled: true, models: c.models.filter(m => m.model.instanceId === instanceId).map(m => ({ slug: m.model.model })) }));
     t.mock.method(T3.prototype, 'providers', async () => providers);
@@ -61,7 +67,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId).map(task => scenario === 'truncated-labels' ? { ...task, labels: task.labels.slice(0, 3) } : task) }] }, pagination: { total: tasks.length, totalPages: 1 } };
       if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
-      if (name === 'get_task_relations') return scenario === 'missing-sf-confirmation' && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
+      if (name === 'get_task_relations') return ['missing-sf-confirmation', 'label-blocked'].includes(scenario) && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
       throw new Error(name);
     });
     t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
@@ -157,19 +163,24 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         return;
       }
       const none = ['unclassified', 'ceiling'].includes(scenario);
-      const one = ['codex-busy', 'codex-exhausted', 'codex-offline', 'refresh-exhausted'].includes(scenario);
+      const one = ['codex-busy', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'label-ineligible'].includes(scenario);
       assert.equal(attempts.length, none ? 0 : one ? 1 : 2);
       if (none) {
         assert.ok(!store.jobs().some(j => j.kind === 'discovery'), 'unschedulable tickets never trigger discovery instead');
         assert.equal((await cycle(c, store, { manual: true, model: 'astra', ticket: 'FIX-1', overrideLimits: true })).reason, 'no-eligible-ticket', 'manual override cannot bypass classification or difficulty limits');
       }
-      if (one) assert.equal(attempts[0].modelSelection.instanceId, 'claudeAgent', 'Claude continues independently');
+      if (scenario === 'label-ineligible') assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/);
+      if (one && scenario !== 'label-ineligible') assert.equal(attempts[0].modelSelection.instanceId, 'claudeAgent', 'Claude continues independently');
       if (attempts.length === 2) {
         assert.equal(attempts[0].modelSelection.model, 'gpt-6-astra', 'highest-ranked model gets first choice');
         assert.equal(attempts[1].modelSelection.instanceId, 'claudeAgent');
         assert.notEqual(attempts[0].threadId, attempts[1].threadId);
         assert.notEqual(attempts[0].workspaceStrategy.branch, attempts[1].workspaceStrategy.branch);
         if (scenario === 'discovery') assert.notEqual(attempts[0].projectId, attempts[1].projectId);
+        else if (scenario.startsWith('label-')) {
+          assert.match(attempts[0].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-2:/ : /Deliver FIX-3:/);
+          assert.match(attempts[1].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-3:/ : /Deliver FIX-1:/);
+        }
         else { assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/); assert.match(attempts[1].initialMessage.text, /Deliver FIX-2:/); }
       }
       for (const command of attempts) {

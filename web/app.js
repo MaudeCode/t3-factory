@@ -447,6 +447,8 @@ function projects() {
 <section class="section">
   <div class="section-head"><h2>Tickets</h2></div>
   ${field("Ticket prefix", [...p, "key"], "text", 'class="mono"')}
+  <label class="field"><span>Priority labels</span><input data-list="${pathAttr([...p, "priorityLabels"])}" value="${esc((current.priorityLabels || []).join(", "))}" aria-describedby="priority-labels-hint"></label>
+  <p class="hint" id="priority-labels-hint">Comma-separated, highest first. Matching tickets come before unmatched tickets, then urgency decides. Leave empty to use urgency alone.</p>
   <details class="group"><summary>Tracker and T3 identifiers</summary>
     ${field("Kaneo project ID", [...p, "kaneoId"], "text", 'class="mono"')}
     ${field("T3 project ID", [...p, "t3Id"], "text", 'class="mono"')}

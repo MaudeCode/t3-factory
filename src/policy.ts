@@ -117,11 +117,21 @@ export function ticketDifficulty(labels: { name: string }[]): Difficulty | undef
   if (found.length > 1) throw new Error('Conflicting difficulty labels');
   return found[0];
 }
-export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; }
+export function ticketLabelRank(labels: { name: string }[], priorityLabels: string[]): number | undefined {
+  const rank = priorityLabels.findIndex(name => labels.some(label => label.name === name));
+  return rank < 0 ? undefined : rank;
+}
+export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; labelRank?: number; }
+// Both ticket and model selection must visit the same label-rank / urgency tiers.
+function* ticketTiers(candidates: Candidate[]) {
+  const ranks = [...new Set(candidates.map(t => t.labelRank ?? Infinity))].toSorted((a, b) => a - b);
+  for (const rank of ranks) for (const priority of priorities) {
+    const tier = candidates.filter(t => (t.labelRank ?? Infinity) === rank && t.priority === priority);
+    if (tier.length) yield tier;
+  }
+}
 export function selectTicket(candidates: Candidate[], lastProject: string | null, projectOrder: string[]): Candidate | undefined {
-  for (const priority of priorities) {
-    let at = candidates.filter(t => t.priority === priority);
-    if (!at.length) continue;
+  for (const at of ticketTiers(candidates)) {
     const count = (id: string) => at.filter(t => t.projectId === id).length;
     const start = (projectOrder.indexOf(lastProject ?? '') + 1) % projectOrder.length;
     const rotated = [...projectOrder.slice(start), ...projectOrder.slice(0, start)];
@@ -138,10 +148,10 @@ export function acceptsDifficulty(model: Pick<ModelPreset, 'maxDifficulty'>, tic
   return ticket.difficulty !== undefined && levels.indexOf(ticket.difficulty) <= levels.indexOf(model.maxDifficulty);
 }
 export function selectAssignment(candidates: Candidate[], models: { preset: ModelPreset; driver: string }[], busy: Set<string>, lastProject: string | null, projectOrder: string[]) {
-  for (const priority of priorities) {
+  for (const tier of ticketTiers(candidates)) {
     for (const model of models) {
       if (busy.has(model.driver)) continue;
-      const ticket = selectTicket(candidates.filter(t => t.priority === priority && acceptsDifficulty(model.preset, t)), lastProject, projectOrder);
+      const ticket = selectTicket(tier.filter(t => acceptsDifficulty(model.preset, t)), lastProject, projectOrder);
       if (ticket) return { ...model, ticket };
     }
   }
