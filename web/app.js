@@ -483,7 +483,6 @@ function upstream() {
   <div class="grow"><strong id="upstream-state"></strong></div>
   <input type="checkbox" role="switch" id="upstream-toggle" class="switch" aria-labelledby="upstream-state">
 </div>
-<p class="hint">Runs independently of ticket automation. Quota and idle gates still apply.</p>
 <section class="section">
   <div class="section-head"><h2>Watched releases</h2></div>
   <div id="upstream-repos"></div>

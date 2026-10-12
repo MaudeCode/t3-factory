@@ -24,7 +24,7 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
   pause: { path: ['enabled'], value: false, message: 'New dispatches paused. Existing T3 jobs continue.' },
   resume: { path: ['enabled'], value: true, message: 'New dispatches enabled; quota and idle gates still apply.' },
   'upstream-pause': { path: ['upstream', 'enabled'], value: false, message: 'New upstream reviews paused. Running reviews continue.' },
-  'upstream-resume': { path: ['upstream', 'enabled'], value: true, message: 'Upstream reviews enabled; quota and idle gates still apply.' },
+  'upstream-resume': { path: ['upstream', 'enabled'], value: true, message: 'Upstream reviews enabled; quota and run limits still apply.' },
 };
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();

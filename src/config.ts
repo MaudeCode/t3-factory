@@ -83,6 +83,8 @@ export const configSchema = z.preprocess(input => {
       // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
       name: z.string().min(1), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()),
       prereleases: z.boolean().default(false), firstBase: z.string().min(1),
+      // Overrides upstream.checkMinutes for a repository that publishes too often to review on every release.
+      checkMinutes: positive.optional(),
     }).strict()).default([]),
   }).strict()).min(1),
 }).strict().superRefine((c, ctx) => {
