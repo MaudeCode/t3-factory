@@ -561,9 +561,11 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
         if (!quota.hasAllowance) reason = 'quota-exhausted';
         else if (!quota.allowed && (manualCodex || !override)) reason = 'quota-budget';
         else if (!manualCodex && !override) {
-          if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver, instances));
-          const activity = activityCache.get(driver!)!;
-          if (idleBlocked(c, activity)) reason = 'waiting-for-idle';
+          // An unreadable activity state holds ticket work back but, like idle time, never a review.
+          try {
+            if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver, instances));
+            if (idleBlocked(c, activityCache.get(driver!)!)) reason = 'waiting-for-idle';
+          } catch (error) { reason = safeError(error); idleModels.push({ preset, driver: driver! }); }
         }
         if (reason === 'ready') { readyModels.push({ preset, driver: driver! }); stream.quota = quota; }
         else if (reason === 'waiting-for-idle') idleModels.push({ preset, driver: driver! });
@@ -671,12 +673,15 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const quota = await readSelectedQuota();
     if (plan && quota.driver !== plan.driver) return decision('provider-mapping-changed');
     const isManualCodex = options.manual && quota.provider === 'Codex';
-    const activity = await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, quota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
+    // Reviews do not wait for idle time, so they never read (or fail on) personal activity.
+    const readActivity = async (threads: Thread[]) => review ? { active: false, last: '', idleMinutes: Infinity }
+      : personalActivity(t3, threads, store.jobs(), store, c.monitoringTimeoutMinutes, quota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
+    const activity = await readActivity(shell.threads);
     const gate = !quota.hasAllowance ? isManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted'
       : !override && !quota.allowed ? discovery ? 'discovery-quota-reserve' : 'quota-reserve'
       : c.maxWaitingPRs !== null && parked.length >= c.maxWaitingPRs ? 'waiting-cap'
-      : !isManualCodex && !override && !review && activity.active ? 'personal-provider-running'
-      : !isManualCodex && !override && !review && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
+      : !isManualCodex && !override && activity.active ? 'personal-provider-running'
+      : !isManualCodex && !override && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
     queue.selected = review ? undefined : selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
     if (options.doctor) return decision('doctor', { quota, activity, running: running.length, waiting: parked.length, gate: running.length ? 'autonomous-job-running' : gate, eligible: queue.ready.length, next: queue.selected, skipped: queue.skipped });
     if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length, ...(!quota.hasAllowance ? { message: 'The selected model has no allowance left. Choose another model or wait for its quota to reset.' } : {}) });
@@ -699,10 +704,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const currentQuota = await readSelectedQuota(true);
     if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
     const currentManualCodex = options.manual && currentQuota.provider === 'Codex';
-    const currentActivity = await personalActivity(t3, fresh.threads, store.jobs(), store, c.monitoringTimeoutMinutes, currentQuota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
+    const currentActivity = await readActivity(fresh.threads);
     if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
     // Reviews start as soon as a release is found, so only ticket and discovery work wait for idle time.
-    if (!override && ((!currentManualCodex && !review && idleBlocked(c, currentActivity)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
+    if (!override && ((!currentManualCodex && idleBlocked(c, currentActivity)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
