@@ -142,7 +142,10 @@ struct FactoryMenuView: View {
     }
     private var status: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Toggle("Automatic factory", isOn: Binding(get: { model.enabled }, set: { value in Task { await model.setEnabled(value) } })).toggleStyle(.switch)
+            Toggle("Ticket automation", isOn: Binding(get: { model.enabled }, set: { value in Task { await model.setEnabled(value) } })).toggleStyle(.switch)
+            if model.hasUpstream {
+                Toggle("Upstream reviews", isOn: Binding(get: { model.upstreamEnabled }, set: { value in Task { await model.setEnabled(value, upstream: true) } })).toggleStyle(.switch)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.statusTitle).font(.subheadline.weight(.medium))
                 Text(model.lastCheck).font(.caption).foregroundStyle(.secondary)

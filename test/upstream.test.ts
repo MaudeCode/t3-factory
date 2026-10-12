@@ -127,6 +127,7 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paus
     windows: instanceId === 'codex' ? [window('primary', 10080)] : [window('five_hour', 300), window('seven_day', 10080)] } }));
   t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
   t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
+    if (scenario.startsWith('tickets-paused')) throw new Error(`ticket read ${name} must not block a review`);
     if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId) }] }, pagination: { total: tasks.length, totalPages: 1 } };
     if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
