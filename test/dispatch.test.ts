@@ -11,7 +11,7 @@ import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -77,12 +77,13 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       if (scenario === 'ambiguous' && command.modelSelection.instanceId === 'codex') throw new Error('RPC outcome unknown');
       return { sequence: attempts.length };
     });
-    if (scenario === 'codex-busy' || scenario === 'claude-waiting') {
+    if (scenario === 'codex-busy' || scenario.startsWith('claude-')) {
       const driver = scenario === 'codex-busy' ? 'codex' : 'claudeAgent';
       const selected = c.models.find(m => m.model.instanceId === driver)!.model;
       const job: Job = { id: 'old', kind: 'ticket', projectId: 'FIX', taskId: 'old-task', ticketKey: 'FIX-99', threadId: 'old-thread', messageId: 'old-message', createdAt: new Date().toISOString(), state: 'running', reason: '', lastPersonalActivity: null, reportPath: join(dir, 'old-report'), command: null, modelSelection: selected, providerDriver: driver, prUrls: [], completedAt: null };
       store.save(job);
-      threads.push(v2Thread({ id: job.threadId, title: 'Old factory', projectId: 'FIX', providerInstanceId: driver, modelSelection: selected, updatedAt: new Date().toISOString(), latestUserMessageAt: job.createdAt, status: scenario === 'claude-waiting' ? 'waiting' : 'running', activeRunId: scenario === 'claude-waiting' ? null : 'run', latestRunCompletedAt: null }));
+      const kind = scenario === 'claude-waiting' ? 'user_input' : scenario === 'claude-tool-call' ? 'dynamic_tool_call' : null;
+      threads.push(v2Thread({ id: job.threadId, title: 'Old factory', projectId: 'FIX', providerInstanceId: driver, modelSelection: selected, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, status: scenario.startsWith('claude-') ? 'waiting' : 'running', activeRunId: scenario.startsWith('claude-') ? null : 'run', pendingRuntimeRequest: kind ? { kind, createdAt: job.createdAt } : null, latestRunCompletedAt: null }));
     }
     if (['parallel-partial', 'parallel-resumed', 'parallel-lowered'].includes(scenario)) {
       const selected = c.models[0].model;
@@ -90,7 +91,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
       for (let n = 0; n < count; n++) {
         const job: Job = { id: `existing-${n}`, kind: 'ticket', projectId: 'FIX', taskId: `existing-task-${n}`, ticketKey: `FIX-${90+n}`, threadId: `existing-thread-${n}`, messageId: 'initial', createdAt: new Date().toISOString(), state: 'running', reason: '', lastPersonalActivity: null, reportPath: join(dir, `report-${n}`), command: null, modelSelection: selected, providerDriver: 'codex', prUrls: [], completedAt: null };
         store.save(job);
-        threads.push(v2Thread({ id: job.threadId, title: 'Existing run', projectId: 'FIX', providerInstanceId: 'codex', modelSelection: selected, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, status: scenario === 'parallel-resumed' ? 'waiting' : 'running', activeRunId: scenario === 'parallel-resumed' ? null : 'run', latestRunCompletedAt: null }));
+        threads.push(v2Thread({ id: job.threadId, title: 'Existing run', projectId: 'FIX', providerInstanceId: 'codex', modelSelection: selected, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, status: scenario === 'parallel-resumed' ? 'waiting' : 'running', activeRunId: scenario === 'parallel-resumed' ? null : 'run', pendingRuntimeRequest: scenario === 'parallel-resumed' ? { kind: 'user_input', createdAt: job.createdAt } : null, latestRunCompletedAt: null }));
       }
     }
     try {
@@ -164,14 +165,14 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         return;
       }
       const none = ['unclassified', 'ceiling'].includes(scenario);
-      const one = ['codex-busy', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'label-ineligible'].includes(scenario);
+      const one = ['codex-busy', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'label-ineligible'].includes(scenario);
       assert.equal(attempts.length, none ? 0 : one ? 1 : 2);
       if (none) {
         assert.ok(!store.jobs().some(j => j.kind === 'discovery'), 'unschedulable tickets never trigger discovery instead');
         assert.equal((await cycle(c, store, { manual: true, model: 'astra', ticket: 'FIX-1', overrideLimits: true })).reason, 'no-eligible-ticket', 'manual override cannot bypass classification or difficulty limits');
       }
       if (scenario === 'label-ineligible') assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/);
-      if (one && scenario !== 'label-ineligible') assert.equal(attempts[0].modelSelection.instanceId, 'claudeAgent', 'Claude continues independently');
+      if (one && scenario !== 'label-ineligible') assert.equal(attempts[0].modelSelection.instanceId, scenario.startsWith('claude-') ? 'codex' : 'claudeAgent', 'the other provider continues independently');
       if (attempts.length === 2) {
         assert.equal(attempts[0].modelSelection.model, 'gpt-6-astra', 'highest-ranked model gets first choice');
         assert.equal(attempts[1].modelSelection.instanceId, 'claudeAgent');
