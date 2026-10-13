@@ -1,28 +1,48 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2f7a5e"/>
-      <stop offset="1" stop-color="#143428"/>
+      <stop offset="0" stop-color="#2b7a5f"/>
+      <stop offset="1" stop-color="#0c2219"/>
     </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
-      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    <radialGradient id="glow" cx="0.5" cy="0.92" r="0.62">
+      <stop offset="0" stop-color="#9ee2b8" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#9ee2b8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.2"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
     <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f4f9f5"/>
-      <stop offset="1" stop-color="#d6e6da"/>
+      <stop offset="0" stop-color="#f7fbf8"/>
+      <stop offset="1" stop-color="#cfe2d6"/>
+    </linearGradient>
+    <linearGradient id="roof" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e3efe7"/>
     </linearGradient>
   </defs>
   <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <rect width="64" height="64" rx="15" fill="url(#glow)"/>
   <rect width="64" height="64" rx="15" fill="url(#sheen)"/>
-  <circle cx="47.5" cy="13.5" r="2.4" fill="#eaf3ec" opacity="0.5"/>
-  <circle cx="51.5" cy="8.5" r="1.7" fill="#eaf3ec" opacity="0.3"/>
-  <rect x="10" y="52" width="46" height="3" rx="1.5" fill="#0b1f18" opacity="0.55"/>
-  <path d="M11 51V30l13-8v8l13-8v8h4V17h10v34H11z" fill="url(#wall)"/>
-  <rect x="17" y="38" width="6" height="6" rx="1" fill="#1f5a45"/>
-  <rect x="30" y="38" width="6" height="6" rx="1" fill="#1f5a45"/>
-  <rect x="43" y="38" width="6" height="6" rx="1" fill="#1f5a45"/>
-  <rect x="18.5" y="39.5" width="3" height="3" rx="0.6" fill="#9ee2b8" opacity="0.9"/>
-  <rect x="31.5" y="39.5" width="3" height="3" rx="0.6" fill="#9ee2b8" opacity="0.9"/>
-  <rect x="44.5" y="39.5" width="3" height="3" rx="0.6" fill="#9ee2b8" opacity="0.9"/>
+  <!-- chimney and smoke -->
+  <rect x="44" y="12" width="7" height="24" rx="1.5" fill="#d9e8de"/>
+  <rect x="43" y="12" width="9" height="3" rx="1.2" fill="#f2f8f4"/>
+  <circle cx="49" cy="8.2" r="2.1" fill="#eaf3ec" opacity="0.5"/>
+  <circle cx="53.6" cy="4.6" r="1.4" fill="#eaf3ec" opacity="0.28"/>
+  <!-- walls and sawtooth roof -->
+  <path d="M10 48V25.5l12.5 7V25.5l12.5 7V25.5l12.5 7H52v15.5H10z" fill="url(#wall)"/>
+  <path d="M10 25.5l12.5 7V25.5l12.5 7V25.5l12.5 7V35H10z" fill="url(#roof)"/>
+  <path d="M22.5 32.5V25.5l-1.6 0.9v6.1zM35 32.5V25.5l-1.6 0.9v6.1z" fill="#0c2219" opacity="0.14"/>
+  <!-- windows -->
+  <rect x="14.5" y="38" width="7" height="5.5" rx="1" fill="#1a4a3a"/>
+  <rect x="27" y="38" width="7" height="5.5" rx="1" fill="#1a4a3a"/>
+  <rect x="39.5" y="38" width="7" height="5.5" rx="1" fill="#1a4a3a"/>
+  <rect x="16" y="39.4" width="4" height="2.7" rx="0.6" fill="#9ee2b8"/>
+  <rect x="28.5" y="39.4" width="4" height="2.7" rx="0.6" fill="#9ee2b8"/>
+  <rect x="41" y="39.4" width="4" height="2.7" rx="0.6" fill="#9ee2b8"/>
+  <!-- conveyor with tickets rolling out -->
+  <rect x="9" y="50.5" width="46" height="3.2" rx="1.6" fill="#07160f" opacity="0.7"/>
+  <circle cx="17" cy="52.1" r="2.3" fill="#9ee2b8"/>
+  <circle cx="31" cy="52.1" r="2.3" fill="#9ee2b8" opacity="0.72"/>
+  <circle cx="45" cy="52.1" r="2.3" fill="#9ee2b8" opacity="0.45"/>
 </svg>
