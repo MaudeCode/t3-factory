@@ -1,4 +1,4 @@
-import { bootstrap } from "./launchd.ts";
+import { bootout, bootstrap } from "./launchd.ts";
 import { cpSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -40,11 +40,7 @@ chmodSync(join(app, ".env"), 0o600);
 // Dependencies are copied in place rather than rebuilt with npm: the scheduler runs from the same
 // directory, and an npm install there removes modules it is loading.
 cpSync(join(root, "node_modules"), join(app, "node_modules"), { recursive: true });
-try {
-  execFileSync("launchctl", ["bootout", `${domain}/${label}`], {
-    stdio: "ignore",
-  });
-} catch {}
+await bootout(domain, label);
 const escape = (value: string) =>
   value
     .replaceAll("&", "&amp;")

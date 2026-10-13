@@ -1,4 +1,4 @@
-import { bootstrap } from './launchd.ts';
+import { bootout, bootstrap } from './launchd.ts';
 import { cpSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -14,7 +14,7 @@ const home = homedir(), app = join(home, '.local/share/t3-factory/app');
 const label = process.env.T3_FACTORY_SERVICE_LABEL ?? 'local.t3-factory', domain = `gui/${process.getuid!()}`;
 if (!/^[A-Za-z0-9.-]+$/.test(label)) throw new Error('Invalid service label');
 const plist = join(home, 'Library/LaunchAgents', `${label}.plist`);
-try { execFileSync('launchctl', ['bootout', `${domain}/${label}`], { stdio: 'ignore' }); } catch { /* First install. */ }
+await bootout(domain, label);
 mkdirSync(app, { recursive: true, mode: 0o700 });
 for (const entry of ['src', 'web', 'scripts', 'deploy', 'node_modules', 'package.json', 'package-lock.json', 'README.md', 'docs', 'LICENSE', 'SECURITY.md', 'config.example.jsonc', '.env.example']) {
   cpSync(join(root, entry), join(app, entry), { recursive: true });
