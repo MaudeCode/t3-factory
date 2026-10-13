@@ -28,16 +28,22 @@ function background(t: Thread): 'working' | 'monitoring' | null {
   const tasks = t.pendingBackgroundTasks ?? [];
   return tasks.some(task => task.kind !== 'monitor') ? 'working' : tasks.length ? 'monitoring' : null;
 }
-export function waiting(t: Thread): boolean { return (t.pendingRuntimeRequest != null || t.status === 'waiting') && background(t) !== 'working'; }
+export function humanRequest(kind: string): boolean { return !['dynamic_tool_call', 'auth_refresh'].includes(kind); }
+function awaitingInput(t: Thread): boolean { return t.pendingRuntimeRequest != null && humanRequest(t.pendingRuntimeRequest.kind); }
+function active(t: Thread): boolean {
+  // A waiting shell without a human request is a runtime handoff; keep its slot until T3 settles it.
+  return t.pendingRuntimeRequest != null || t.activeRunId != null || t.status === 'waiting' || (activeStatuses as readonly string[]).includes(t.status);
+}
+export function waiting(t: Thread): boolean { return awaitingInput(t) && background(t) !== 'working'; }
 export function stalledMonitor(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES): boolean {
-  if (background(t) !== 'monitoring' || waiting(t) || t.activeRunId != null || !['idle', 'completed'].includes(t.status)) return false;
+  if (background(t) !== 'monitoring' || active(t) || !['idle', 'completed'].includes(t.status)) return false;
   const lastActivity = Math.max(Date.parse(t.updatedAt), Date.parse(t.latestRunCompletedAt ?? t.updatedAt));
   return Number.isFinite(lastActivity) && Date.now() - lastActivity >= timeoutMinutes * 60_000;
 }
 export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, includeMonitoring = true): boolean {
   if (background(t) === 'working') return true;
   if (waiting(t) || t.orphanedRun) return false;
-  if (t.activeRunId != null || (activeStatuses as readonly string[]).includes(t.status)) return true;
+  if (active(t)) return true;
   if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
   return includeMonitoring && background(t) === 'monitoring' && !stalledMonitor(t, timeoutMinutes);
 }
@@ -56,8 +62,7 @@ export function subagentDescendants(threads: readonly Thread[], rootId: string):
 export function providerExecuting(t: Thread, threads: ReadonlyMap<string, Thread>, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, seen = new Set<string>()): boolean {
   if (seen.has(t.id)) return false;
   seen.add(t.id);
-  if (t.pendingRuntimeRequest == null && t.status !== 'waiting' && !t.orphanedRun &&
-      (t.activeRunId != null || (activeStatuses as readonly string[]).includes(t.status))) return true;
+  if (!awaitingInput(t) && !t.orphanedRun && active(t)) return true;
   for (const task of t.pendingBackgroundTasks) {
     if (task.kind === 'monitor' || task.kind === 'command') continue;
     if (task.kind === 'subagent' && typeof task.childThreadId === 'string') {

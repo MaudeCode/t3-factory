@@ -56,3 +56,33 @@ test('a run orphaned by a stopped provider session releases its slot through the
     assert.equal(busyProviders(store.jobs(), threads, new Map(), 30).size, 0, 'neither orphaned run holds a slot');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('runtime handoffs and a waiting snapshot without a human request never journal needs you', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-handoff-')), store = new Store(dir);
+  const now = new Date().toISOString();
+  const job: Job = { id: 'job', taskId: 'ticket', kind: 'ticket', projectId: 'project', ticketKey: 'FIX-1', threadId: 'owned-thread', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: now, reportPath: join(dir, 'job.json'), prUrls: [], lastPersonalActivity: null, command: null, completedAt: null };
+  const c = { monitoringTimeoutMinutes: 30 } as Config;
+  const thread = v2Thread({ id: job.threadId, status: 'running', activeRunId: 'run-1', updatedAt: now });
+  try {
+    store.save(job);
+    for (const kind of [null, 'dynamic_tool_call', 'auth_refresh']) {
+      thread.status = 'waiting'; thread.activeRunId = null;
+      thread.pendingRuntimeRequest = kind ? { kind, createdAt: now } : null;
+      await reconcile(c, store, {} as T3, {} as Kaneo, [thread], false);
+      assert.equal(store.job(job.id)!.state, 'running', String(kind));
+      assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).has('claudeAgent'), true, 'handoffs keep the execution slot');
+    }
+    thread.status = 'completed'; thread.pendingRuntimeRequest = null;
+    thread.pendingBackgroundTasks = [{ taskId: 'pull-request-watch:1', kind: 'monitor' }];
+    await reconcile(c, store, {} as T3, {} as Kaneo, [thread], false);
+    assert.equal(store.events().some(e => e.text === 'FIX-1 needs you'), false);
+    for (const kind of ['user_input', 'exec_command_approval', 'future_request']) {
+      thread.pendingRuntimeRequest = { kind, createdAt: now };
+      await reconcile(c, store, {} as T3, {} as Kaneo, [thread], false);
+      assert.equal(store.job(job.id)!.state, 'waiting', kind);
+      assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, 0);
+      thread.pendingRuntimeRequest = null;
+      await reconcile(c, store, {} as T3, {} as Kaneo, [thread], false);
+    }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

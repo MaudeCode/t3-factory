@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';
-import { threadSchema, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
+import { threadSchema, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
 import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
 
@@ -77,7 +77,7 @@ export class T3 {
       runtimeRequests: z.array(z.object({ kind: z.string(), status: z.string(), resolvedAt: z.string().nullable() }).passthrough()),
     }).passthrough() }).parse(await this.request(`/api/orchestration/threads/${encodeURIComponent(id)}/bounded`));
     // Tool calls and auth refreshes resolve without a person; approvals and questions need one.
-    const responses = projection.runtimeRequests.filter(r => r.status === 'resolved' && r.resolvedAt && !['dynamic_tool_call', 'auth_refresh'].includes(r.kind)).map(r => ({ createdAt: r.resolvedAt! }));
+    const responses = projection.runtimeRequests.filter(r => r.status === 'resolved' && r.resolvedAt && humanRequest(r.kind)).map(r => ({ createdAt: r.resolvedAt! }));
     return { messages: projection.messages, responses };
   }
   async socketUrl() {

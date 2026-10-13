@@ -58,10 +58,25 @@ test('v2 thread status classifies every run state', () => {
     assert.equal(executing(t), false, status); assert.equal(waiting(t), false, status); assert.equal(stalledMonitor(t), false, status);
   }
   const t = v2Thread({ status: 'waiting' });
-  assert.equal(waiting(t), true); assert.equal(executing(t), false); assert.equal(stalledMonitor(t), false);
+  assert.equal(waiting(t), false); assert.equal(executing(t), true); assert.equal(stalledMonitor(t), false);
   assert.equal(executing(v2Thread({ status: 'completed', activeRunId: 'run-2' })), true, 'an active run executes whatever the latest run reports');
   assert.throws(() => threadSchema.parse(v2Thread({ status: 'paused' })), 'an unknown status is an incompatible contract');
   assert.equal(threadSchema.parse(v2Thread()).status, 'completed');
+});
+test('internal requests hold execution capacity; only human requests wait for a person', () => {
+  for (const status of ['running', 'waiting', 'completed']) {
+    for (const kind of ['dynamic_tool_call', 'auth_refresh', 'user_input', 'exec_command_approval', 'future_request']) {
+      const t = v2Thread({ status, pendingRuntimeRequest: { kind, createdAt: new Date().toISOString() }, pendingBackgroundTasks: [{ taskId: 'watch', kind: 'monitor' }] });
+      const human = !['dynamic_tool_call', 'auth_refresh'].includes(kind);
+      assert.equal(waiting(t), human, `${status}/${kind}`);
+      assert.equal(executing(t), !human, `${status}/${kind}`);
+      assert.equal(providerExecuting(t, new Map()), !human, `${status}/${kind}`);
+      assert.equal(stalledMonitor(t), false, 'pending requests cannot be stopped as stalled monitors');
+    }
+  }
+  const localCommand = v2Thread({ status: 'waiting', pendingRuntimeRequest: { kind: 'user_input', createdAt: new Date().toISOString() }, pendingBackgroundTasks: [{ taskId: 'local', kind: 'command' }] });
+  assert.equal(executing(localCommand), true);
+  assert.equal(providerExecuting(localCommand, new Map()), false, 'local commands never count as provider execution');
 });
 test('a pending runtime request releases the slot; a resume or background worker takes it', () => {
   const request = { id: 'request-1', kind: 'user_input', createdAt: '2026-01-01T00:00:00.000Z' };
