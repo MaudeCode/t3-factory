@@ -419,7 +419,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   // Only ready columns can yield work; a named ticket is read from every column so its real status can be reported.
   for (const tasks of await Promise.all(projects.map(p => listTasks(kaneo, p.kaneoId, labels, ticketKey?.startsWith(`${p.key}-`) ? undefined : p.readyStatuses)))) for (const t of tasks) all.set(t.id, t);
   const owned = new Map(jobs.filter(j => !['complete', 'dismissed'].includes(j.state)).map(j => [j.taskId, j]));
-  const ready: Candidate[] = [], skipped: { key: string; reason: string; id?: string; missingReadyLabel?: boolean }[] = [];
+  const ready: Candidate[] = [], skipped: Skipped[] = [];
   const potential = [...all.values()].filter(t => {
     const p = projects.find(p => p.kaneoId === t.projectId)!;
     const key = `${p.key}-${t.number}`;
@@ -456,14 +456,19 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   const refs = new Map(needed.map(p => [p.kaneoId, git(p.repoPath, ['for-each-ref', '--format=%(refname)\t%(objectname)', 'refs/heads', 'refs/remotes'])]));
   const prs = new Map(needed.map(p => [p.kaneoId, gh(['pr', 'list', '--repo', p.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']).then(r => z.array(z.object({ title: z.string(), headRefName: z.string(), body: z.string() })).parse(r))]));
   for (const pending of [...refs.values(), ...prs.values()]) pending.catch(() => {}); // Surfaced where a ticket needs them.
-  const incomingBlocker = async (id: string, ancestors = new Set<string>()): Promise<boolean> => {
-    if (ancestors.has(id)) return true;
-    const visited = new Set([...ancestors, id]);
+  // Unfinished tickets that must finish first: direct blockers and, through subtask parents, theirs. 'cycle' when the relations loop.
+  const blockersOf = async (id: string, ancestors = new Set<string>()): Promise<string[] | 'cycle'> => {
+    if (ancestors.has(id)) return 'cycle';
+    const visited = new Set([...ancestors, id]), found: string[] = [];
     for (const r of await relationsFor(id)) {
-      if (r.relationType === 'blocks' && r.targetTaskId === id && !await isDone(r.sourceTaskId)) return true;
-      if (r.relationType === 'subtask' && r.targetTaskId === id && await incomingBlocker(r.sourceTaskId, visited)) return true;
+      if (r.relationType === 'blocks' && r.targetTaskId === id && !await isDone(r.sourceTaskId)) found.push(r.sourceTaskId);
+      if (r.relationType === 'subtask' && r.targetTaskId === id) {
+        const parent = await blockersOf(r.sourceTaskId, visited);
+        if (parent === 'cycle') return 'cycle';
+        found.push(...parent);
+      }
     }
-    return false;
+    return [...new Set(found)];
   };
   const priorityFor = (task: Task, project: Project): TicketPriority => ({ priority: task.priority, labelRank: ticketLabelRank(task.labels ?? [], project.priorityLabels) });
   const inheritedPriority = async (task: Task, project: Project): Promise<TicketPriority> => {
@@ -486,7 +491,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
     return priority;
   };
   // Tickets are examined concurrently (bounded) and recorded in their original order.
-  type Verdict = { key: string; id?: string; reason: string } | { candidate: Candidate };
+  type Verdict = Skipped | { candidate: Candidate };
   const examine = async (t: Task): Promise<Verdict> => {
     const p = projects.find(p => p.kaneoId === t.projectId)!;
     const key = `${p.key}-${t.number}`;
@@ -495,11 +500,13 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
     catch { return { key, id: t.id, reason: 'Conflicting difficulty labels' }; }
     if (!difficulty) return { key, id: t.id, reason: 'Ticket needs a difficulty label before dispatch' };
     let reason = '';
-    const relations = await relationsFor(t.id);
-    if (await incomingBlocker(t.id)) reason = 'Ticket or ancestor has an unfinished blocker or relation cycle';
+    const relations = await relationsFor(t.id), blockers = await blockersOf(t.id), blockedBy: string[] = blockers === 'cycle' ? [] : blockers;
+    if (blockers === 'cycle' || blockers.length) reason = 'Ticket or ancestor has an unfinished blocker or relation cycle';
     for (const r of relations) {
-      if (r.relationType === 'subtask' && r.sourceTaskId === t.id && !await isDone(r.targetTaskId)) reason = 'Umbrella has unfinished children; select leaves instead';
+      if (r.relationType === 'subtask' && r.sourceTaskId === t.id && !await isDone(r.targetTaskId)) { reason = 'Umbrella has unfinished children; select leaves instead'; blockedBy.push(r.targetTaskId); }
     }
+    // A blocked ticket keeps what the queue needs to place it behind its blockers.
+    if (reason && blockedBy.length) return { key, id: t.id, reason, blockedBy, ticket: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, ...await inheritedPriority(t, p) } };
     const history = jobs.filter(j => j.taskId === t.id && ['complete', 'dismissed'].includes(j.state));
     let artifacts = { branches: new Map<string, string>(), inactiveThreads: new Set<string>() };
     if (!reason && history.length) {
@@ -525,6 +532,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kaneoId)) };
 }
 
+export interface Skipped { key: string; reason: string; id?: string; missingReadyLabel?: boolean; blockedBy?: string[]; ticket?: Candidate }
 export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; ticket?: string; model?: string; chain?: 'first' | 'all'; }
 // A long-lived caller (the service) keeps one T3 client and one connected Kaneo client across passes;
 // a one-shot caller leaves these out and the pass opens and closes its own.
@@ -903,12 +911,23 @@ export function cancelPlan(store: Store, id: string) {
 }
 
 // What the factory would start next, in order, and which automatic model would take each ticket.
+// A blocked ticket whose blockers are all queued ahead of it or already running joins the queue behind them.
 export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'skipped'>) {
-  const order = queueOrder(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
+  const order: (Candidate & { after?: string[] })[] = queueOrder(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
+  const placed = new Map(order.map(t => [t.id, t.key]));
+  for (const j of store.jobs()) if (j.taskId && !['complete', 'dismissed'].includes(j.state)) placed.set(j.taskId, j.ticketKey ?? j.taskId);
+  const blocked = queue.skipped.filter((s): s is Skipped & { ticket: Candidate; blockedBy: string[] } => !!s.ticket && !!s.blockedBy?.length);
+  const projected = new Set<string>();
+  for (let round = blocked.filter(s => !placed.has(s.ticket.id) && s.blockedBy.every(id => placed.has(id))); round.length; round = blocked.filter(s => !placed.has(s.ticket.id) && s.blockedBy.every(id => placed.has(id)))) {
+    for (const s of round.toSorted((a, b) => compareTicketPriority(a.ticket, b.ticket) || a.ticket.createdAt.localeCompare(b.ticket.createdAt))) {
+      order.push({ ...s.ticket, after: s.blockedBy.map(id => placed.get(id)!) });
+      placed.set(s.ticket.id, s.ticket.key); projected.add(s.ticket.id);
+    }
+  }
   return {
     at: new Date().toISOString(),
-    tickets: order.map(t => ({ id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labelRank: t.labelRank, model: c.models.find(m => m.automatic && acceptsDifficulty(m, t))?.name ?? null })),
-    held: queue.skipped.map(s => ({ key: s.key, reason: s.reason })),
+    tickets: order.map(t => ({ id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labelRank: t.labelRank, after: t.after ?? [], model: c.models.find(m => m.automatic && acceptsDifficulty(m, t))?.name ?? null })),
+    held: queue.skipped.filter(s => !s.id || !projected.has(s.id)).map(s => ({ key: s.key, reason: s.reason })),
   };
 }
 

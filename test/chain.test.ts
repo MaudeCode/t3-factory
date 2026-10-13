@@ -60,6 +60,11 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
   const store = new Store(c.stateDir);
   const finish = (key: string) => { tasks.find(x => `FIX-${x.number}` === key)!.status = 'done'; const job = store.jobs().find(j => j.ticketKey === key)!; job.state = 'complete'; store.save(job); threads.splice(threads.findIndex(x => x.id === job.threadId), 1); };
   try {
+    // Paused, the queue still projects: FIX-13 and FIX-49 are ready, FIX-48 follows FIX-13, FIX-50 stays held because FIX-47 lacks the ready label.
+    assert.equal((await cycle(c, store)).reason, 'disabled');
+    const projected = JSON.parse(store.get('upNext')!);
+    assert.deepEqual(projected.tickets.map((x: any) => [x.key, x.after]), [['FIX-13', []], ['FIX-49', []], ['FIX-48', ['FIX-13']]]);
+    assert.deepEqual(projected.held.map((x: any) => x.key), ['FIX-50']);
     const ask = await cycle(c, store, { manual: true, ticket: 'FIX-50', model: 'auto', overrideLimits: true });
     assert.equal(ask.reason, 'blocked-ticket-plan-required');
     const tree = ask.tree as any;
