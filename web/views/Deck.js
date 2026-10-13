@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import {
   ago,
@@ -14,7 +14,7 @@ import {
   providerOf,
   providerName,
   providerIcon,
-  modelIcon,
+  presetFor,
   isActive,
   stateLabel,
   toneOf,
@@ -180,7 +180,7 @@ export function UpNext({ limit = 5, children }) {
                   ${t.labelRank != null && html`<${Tag} tone="on">${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}<//>`}
                 </small>
               </span>
-              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${modelIcon(c, t.model)} /> ${t.model}` : "no automatic model fits"}</span>
+              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(presetFor(c, t)?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
             </a>`,
           )
         : html`<${Empty}>Nothing is ready to start.<//>`}
