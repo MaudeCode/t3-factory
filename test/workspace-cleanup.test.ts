@@ -39,7 +39,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
     } as Record<string, unknown[]>)[scenario] ?? [];
     const t3 = { shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.stop') { threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
       attempts++; assert.equal(cwd, repo); assert.equal(path, realTree);
-      if (scenario === 'retry' && attempts === 1) throw new Error('temporary removal failure');
+      if (scenario === 'retry' && attempts === 1) throw { _tag: 'GitCommandError', operation: 'removeWorktree', command: 'git worktree remove', cwd, detail: 'temporary removal failure' }; // T3's RPC error, decoded as a plain object
       if (scenario === 'retry-unusual-error' && attempts === 1) { const error = new Error(); Object.defineProperty(error, 'message', { value: undefined }); throw error; }
       git('worktree', 'remove', path);
     }, terminals: async () => { terminalReads++; if (scenario === 'terminal-snapshot-failure') throw new Error('T3 terminal snapshot unavailable'); return terminals(); },
@@ -88,7 +88,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       if (scenario === 'branch-change-after-detach') execFileSync('git', ['-C', tree, 'switch', '-qc', 'unrelated-work']);
       if (scenario === 'path-change-after-detach') thread.worktreePath = repo;
       await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
-      if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); await skipsUntilRetry(); await reconcile(c, store, t3, kaneo, threads); }
+      if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); if (scenario === 'retry') assert.equal(store.jobs()[0].workspaceCleanupError, 'GitCommandError: temporary removal failure'); await skipsUntilRetry(); await reconcile(c, store, t3, kaneo, threads); }
       if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await reconcile(c, store, t3, kaneo, threads);
       if (scenario === 'monitor-subagent') await reconcile(c, store, t3, kaneo, threads);
       const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done'].includes(scenario);
