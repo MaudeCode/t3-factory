@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { T3 } from '../src/clients.ts';
+import { executing, providerExecuting } from '../src/policy.ts';
 import { v2Shell, v2Thread } from './v2-fixture.ts';
 
 function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestInit) => Response>) {
@@ -77,7 +78,7 @@ test('the shell marks a run orphaned once every provider session stopped, and fa
   const { t3, requests } = fixtureT3(t, {
     '/api/orchestration/shell': () => json(v2Shell([
       active('stopped'), active('error'), active('mixed'), active('none'), active('missing-run'), active('failure'), active('invalid'), active('fresh', fresh),
-      v2Thread({ id: 'waiting', status: 'waiting', activeRunId: 'run-1', updatedAt: old }),
+      v2Thread({ id: 'waiting', status: 'waiting', activeRunId: 'run-1', updatedAt: old, pendingRuntimeRequest: { kind: 'user_input', createdAt: old } }),
       v2Thread({ id: 'requested', status: 'running', activeRunId: 'run-1', updatedAt: old, pendingRuntimeRequest: { kind: 'user_input', createdAt: old } }),
     ])),
     '/api/orchestration/threads/stopped/bounded': projection(['stopped']),
@@ -94,6 +95,31 @@ test('the shell marks a run orphaned once every provider session stopped, and fa
   assert.deepEqual(bounded(), ['stopped', 'error', 'mixed', 'none', 'missing-run', 'failure', 'invalid'], 'fresh, waiting and requested threads make no bounded request');
   assert.deepEqual(orphaned(await t3.shell()), ['stopped', 'error']);
   assert.deepEqual(bounded().slice(7), ['failure', 'invalid'], 'verdicts are cached per thread update; failed reads retry');
+});
+
+test('old internal requests undergo orphan probing without exposing human requests or releasing live work', async t => {
+  const old = new Date(Date.now() - 3_600_000).toISOString(), fresh = new Date().toISOString();
+  for (const kind of ['dynamic_tool_call', 'auth_refresh']) {
+    const thread = (id: string, status = 'running', updatedAt = old, requestKind = kind) => v2Thread({ id, status, activeRunId: 'run-1', updatedAt, pendingRuntimeRequest: { kind: requestKind, createdAt: updatedAt } });
+    const projection = (status: string, sessions: string[]) => () => json({ projection: { runs: [{ id: 'run-1', status }], providerSessions: sessions.map(status => ({ status })) } });
+    const { t3, requests } = fixtureT3(t, {
+      '/api/orchestration/shell': () => json(v2Shell([thread('stopped'), thread('waiting', 'waiting'), { ...thread('handoff', 'waiting'), pendingRuntimeRequest: null }, thread('live'), thread('failed-read'), thread('fresh', 'running', fresh), thread('human', 'waiting', old, 'user_input'), thread('unknown', 'running', old, 'future_request')])),
+      '/api/orchestration/threads/stopped/bounded': projection('running', ['stopped', 'error']),
+      '/api/orchestration/threads/waiting/bounded': projection('waiting', ['stopped']),
+      '/api/orchestration/threads/handoff/bounded': projection('waiting', ['stopped']),
+      '/api/orchestration/threads/live/bounded': projection('running', ['stopped', 'ready']),
+      '/api/orchestration/threads/failed-read/bounded': () => json({ error: 'unavailable' }, 500),
+    });
+    const shell = await t3.shell();
+    assert.deepEqual(shell.threads.filter(t => t.orphanedRun).map(t => t.id), ['stopped', 'waiting', 'handoff'], kind);
+    for (const id of ['stopped', 'waiting', 'handoff']) {
+      const orphan = shell.threads.find(t => t.id === id)!;
+      assert.equal(executing(orphan), false, 'a stopped internal handoff releases execution');
+      assert.equal(providerExecuting(orphan, new Map()), false);
+    }
+    for (const id of ['live', 'failed-read', 'fresh']) assert.equal(executing(shell.threads.find(t => t.id === id)!), true, id);
+    assert.deepEqual(requests.filter(r => r.path.endsWith('/bounded')).map(r => r.path.split('/')[4]), ['stopped', 'waiting', 'handoff', 'live', 'failed-read'], 'human and fresh requests are not probed');
+  }
 });
 
 function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string }) => unknown[]) {

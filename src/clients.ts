@@ -46,7 +46,7 @@ export class T3 {
     const candidates = new Set<string>();
     // Probe concurrently so slow reads cost one request timeout, not one per stale thread.
     await Promise.all(shell.threads.map(async t => {
-      if (t.activeRunId == null || t.pendingRuntimeRequest != null || t.status === 'waiting' || Date.now() - Date.parse(t.updatedAt) < ORPHANED_RUN_GRACE_MINUTES * 60_000) return;
+      if (t.activeRunId == null || (t.pendingRuntimeRequest != null && humanRequest(t.pendingRuntimeRequest.kind)) || Date.now() - Date.parse(t.updatedAt) < ORPHANED_RUN_GRACE_MINUTES * 60_000) return;
       const key = `${t.id}:${t.updatedAt}`;
       candidates.add(key);
       if (!this.orphanVerdicts.has(key)) {
@@ -66,7 +66,7 @@ export class T3 {
         providerSessions: z.array(z.object({ status: z.string() }).passthrough()),
       }).passthrough() }).parse(await this.request(`/api/orchestration/threads/${encodeURIComponent(t.id)}/bounded`));
       const run = projection.runs.find(r => r.id === t.activeRunId);
-      return !!run && ['preparing', 'starting', 'running'].includes(run.status) &&
+      return !!run && ['preparing', 'starting', 'running', 'waiting'].includes(run.status) &&
         projection.providerSessions.length > 0 && projection.providerSessions.every(s => ['stopped', 'error'].includes(s.status));
     } catch { return undefined; }
   }

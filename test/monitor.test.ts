@@ -44,7 +44,7 @@ test('a run orphaned by a stopped provider session releases its slot through the
   const discovery: Job = { ...base, id: 'discovery', kind: 'discovery', taskId: null, ticketKey: null, threadId: 'discovery-thread', reportPath: join(dir, 'discovery.json') } as unknown as Job;
   const ticket: Job = { ...base, id: 'ticket', taskId: 'ticket', ticketKey: 'FIX-2', threadId: 'ticket-thread', reportPath: join(dir, 'ticket.json') } as unknown as Job;
   writeFileSync(discovery.reportPath, JSON.stringify({ jobId: 'discovery', status: 'complete', reason: 'Filed nothing new', prUrls: [], createdTaskIds: [] }));
-  const orphaned = (id: string) => v2Thread({ id, status: 'queued', activeRunId: 'run-1', updatedAt: old, orphanedRun: true });
+  const orphaned = (id: string) => v2Thread({ id, status: 'queued', activeRunId: 'run-1', updatedAt: old, orphanedRun: true, pendingRuntimeRequest: { kind: 'dynamic_tool_call', createdAt: old } });
   const threads = [orphaned(discovery.threadId), orphaned(ticket.threadId)];
   const c = { monitoringTimeoutMinutes: 30, projects: [{ kaneoId: 'project' }], discovery: { emptyCooldownHours: 1 } } as unknown as Config;
   try {
