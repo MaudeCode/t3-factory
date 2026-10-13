@@ -71,3 +71,10 @@ test('bootout returns at once for a service that was never installed', async t =
   assert.equal(calls.length, 2);
   assert.ok(elapsed < 1_000);
 });
+
+test('bootout fails rather than returning while the old service is still loaded', async t => {
+  stubLaunchctl(t, () => undefined);
+  const { result, elapsed } = await withClock(t, () => launchd.bootout('gui/501', 'local.t3-factory'));
+  await assert.rejects(result, { message: 'launchd did not unload gui/501/local.t3-factory within 15 seconds' });
+  assert.ok(elapsed >= 15_000 && elapsed <= 16_000, `gave up after ${elapsed} ms`);
+});

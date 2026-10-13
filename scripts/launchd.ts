@@ -28,6 +28,8 @@ export async function bootout(domain: string, label: string) {
       return;
     }
   }
+  // Installing over a service that is still running would replace its files under it.
+  throw new Error(`launchd did not unload ${service} within ${settleMs / 1000} seconds`);
 }
 
 export async function bootstrap(domain: string, plist: string) {
