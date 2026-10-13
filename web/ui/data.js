@@ -29,6 +29,10 @@ export const Meter = ({ label, value, marker, note, lowBelow }) => {
   </div>`;
 };
 
+// Four-stop track of a run; the first `n` stops are lit.
+export const Stops = ({ n, tone, label }) =>
+  html`<span class=${`stops ${tone ? `stops-${tone}` : ""}`} data-n=${n} role="img" aria-label=${label} title=${label}><i></i><i></i><i></i><i></i></span>`;
+
 export const Tag = ({ tone, children, title }) => html`<span class=${`tag ${tone ? `tag-${tone}` : ""}`} title=${title}>${children}</span>`;
 
 export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;

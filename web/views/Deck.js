@@ -27,8 +27,10 @@ import {
   byFinished,
   isFinished,
   isOpen,
+  STOPS,
+  stopOf,
 } from "../lib/format.js";
-import { Button, Switch, Check, Select, Meter, Tag, Link, Empty, Timeline } from "../ui/index.js";
+import { Button, Switch, Check, Select, Meter, Stops, Tag, Link, Empty, Timeline, Help } from "../ui/index.js";
 
 function Status() {
   const on = live.value.enabled,
@@ -205,30 +207,35 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
     <span class="run-key">
       ${ticket ? html`<span onClick=${(e) => e.stopPropagation()}><${Link} href=${ticket} class="key">${job.label}<//></span>` : html`<b class="key">${job.label}</b>`}
       ${job.kind && job.kind !== "ticket" && html`<${Tag}>${job.kind === "upstream" ? "review" : "discovery"}<//>`}
+      ${note && html`<span onClick=${(e) => e.stopPropagation()}><${Help} text=${note} glyph=${waiting ? "!" : "i"} tone=${waiting ? "attention" : ""} /></span>`}
     </span>
     <span class="run-meta">
       ${showProject && project && html`<span>${project.name}</span>`}
       <span>${modelName(c, job)} <span class="muted">(${providerName(providerOf(job))})</span></span>
       ${job.difficulty && html`<span class="muted">${difficultyLabel(job.difficulty).toLowerCase()}</span>`}
     </span>
-    <span class="run-state">
-      <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>
-      <span class="muted">${timing}</span>
-    </span>
+    <${Stops} n=${stopOf(job.state)} tone=${toneOf(job.state)} label=${stateLabel(job.state)} />
+    <span class="run-state muted"><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
     <span class="run-links" onClick=${(e) => e.stopPropagation()}>
       ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
     </span>
-    ${note && html`<span class="run-note">${note}</span>`}
   </a>`;
 }
 
+// Rows share one grid so the track column lines up under its legend.
+export function RunList({ list, now = serverNow() }) {
+  return html`<div class="runs">
+    <div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>
+    ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} />`)}
+  </div>`;
+}
+
 export function RunGroup({ title, list, limit = 8, empty, children }) {
-  const now = serverNow();
   const [all, setAll] = useState(false);
   const visible = all ? list : list.slice(0, limit);
   return html`<section class="group">
     <header><h2>${title} ${list.length > 0 && html`<small>${list.length}</small>`}</h2>${children}</header>
-    ${list.length ? visible.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} />`) : empty && html`<${Empty}>${empty}<//>`}
+    ${list.length ? html`<${RunList} list=${visible} />` : empty && html`<${Empty}>${empty}<//>`}
     ${!all && list.length > limit && html`<${Button} variant="ghost" size="sm" onClick=${() => setAll(true)}>Show all ${list.length}<//>`}
   </section>`;
 }

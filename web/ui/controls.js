@@ -23,8 +23,9 @@ export const Switch = ({ checked, onChange, disabled, label }) =>
     onChange=${onChange}
   />`;
 
-// A small question mark that explains its heading on hover or keyboard focus.
-export const Help = ({ text }) => (text ? html`<span class="help" tabindex="0" role="note" aria-label=${text} data-tip=${text} onClick=${(e) => e.preventDefault()}>?</span>` : null);
+// A small mark that explains its heading on hover or keyboard focus; a question mark unless another glyph is given.
+export const Help = ({ text, glyph = "?", tone }) =>
+  text ? html`<span class=${`help ${tone ? `help-${tone}` : ""}`} tabindex="0" role="note" aria-label=${text} data-tip=${text} onClick=${(e) => e.preventDefault()}>${glyph}</span>` : null;
 
 // `group` renders a div instead of a label, for controls made of several buttons.
 export const Field = ({ label, hint, children, group }) =>
