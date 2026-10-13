@@ -352,6 +352,7 @@ struct FactorySettingsView: View {
                     }.buttonStyle(.plain)
                 }
                 if let error = model.sourcesError { Text("Catalogs unavailable: \(error)").font(.system(size: 11)).foregroundStyle(Theme.attention).padding(.top, 6) }
+                else if model.sources == nil { HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Reading the T3 and Kaneo catalogs").font(.system(size: 11)).foregroundStyle(Theme.muted) }.padding(.top, 6) }
             }.frame(width: 280).padding(.leading, 24).padding(.bottom, 24)
             ScrollView { if entries.indices.contains(i) { projectEditor(i, entries: entries) } }.padding(.trailing, 24).padding(.bottom, 24)
         }

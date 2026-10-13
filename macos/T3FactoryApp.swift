@@ -80,7 +80,11 @@ enum FactoryIcon {
         // `--render DIR` draws the panel and every window page to PNG files and quits, for review without screen recording.
         if let at = ProcessInfo.processInfo.arguments.firstIndex(of: "--render"), ProcessInfo.processInfo.arguments.indices.contains(at + 1) {
             let dir = ProcessInfo.processInfo.arguments[at + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { FactoryRender.all(to: dir); NSApp.terminate(nil) }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await FactoryModel.shared.refreshSources()
+                FactoryRender.all(to: dir); NSApp.terminate(nil)
+            }
             return
         }
         if ProcessInfo.processInfo.arguments.contains("--panel"), let button = item.button {
