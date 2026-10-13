@@ -1072,6 +1072,7 @@ dialog::backdrop {
 }
 
 .runs {
+  container-type: inline-size;
   display: grid;
   grid-template-columns: minmax(110px, max-content) minmax(0, 1fr) minmax(200px, 260px) max-content auto;
   column-gap: var(--space-4);
@@ -1179,6 +1180,41 @@ a.key:hover {
 .run-state {
   font-size: 12px;
   white-space: nowrap;
+}
+.run-stop {
+  display: none;
+  font-weight: 600;
+  color: var(--ink);
+  margin-right: var(--space-2);
+}
+.run.waiting .run-stop {
+  color: var(--attention);
+}
+/* Narrow pane, not just a narrow screen: the deck's run pane beside the activity column is one. */
+@container (width < 640px) {
+  .runs {
+    grid-template-columns: 1fr auto;
+  }
+  .run-legend {
+    display: none;
+  }
+  .run-stop {
+    display: inline;
+  }
+  .run-meta {
+    grid-column: 1 / -1;
+  }
+  .run .stops {
+    grid-column: 1 / -1;
+    margin: var(--space-1) 0;
+  }
+  .run-state {
+    grid-column: 1 / -1;
+  }
+  .run-links {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 .run-links {
   display: flex;
@@ -1292,14 +1328,12 @@ dialog .chain {
   color: var(--ink);
   white-space: nowrap;
 }
-.run-note {
-  grid-column: 1 / -1;
-  font-size: 12px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
+.run-key .help {
+  margin-left: 0;
 }
-.run.waiting .run-note {
+.help-attention {
   color: var(--attention);
+  border-color: var(--attention);
 }
 .deck-side .timeline {
   font-size: 12.5px;
@@ -1976,26 +2010,6 @@ dialog .chain {
   }
   .composer .btn {
     margin-left: auto;
-  }
-  .runs {
-    grid-template-columns: 1fr auto;
-  }
-  .run-legend {
-    display: none;
-  }
-  .run-meta {
-    grid-column: 1 / -1;
-  }
-  .run .stops {
-    grid-column: 1 / -1;
-    margin: var(--space-1) 0;
-  }
-  .run-state {
-    grid-column: 1;
-  }
-  .run-links {
-    grid-column: 2;
-    grid-row: 1;
   }
   .page-head {
     flex-wrap: wrap;

@@ -30,7 +30,7 @@ import {
   STOPS,
   stopOf,
 } from "../lib/format.js";
-import { Button, Switch, Check, Select, Meter, Stops, Tag, Link, Empty, Timeline } from "../ui/index.js";
+import { Button, Switch, Check, Select, Meter, Stops, Tag, Link, Empty, Timeline, Help } from "../ui/index.js";
 
 function Status() {
   const on = live.value.enabled,
@@ -207,6 +207,7 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
     <span class="run-key">
       ${ticket ? html`<span onClick=${(e) => e.stopPropagation()}><${Link} href=${ticket} class="key">${job.label}<//></span>` : html`<b class="key">${job.label}</b>`}
       ${job.kind && job.kind !== "ticket" && html`<${Tag}>${job.kind === "upstream" ? "review" : "discovery"}<//>`}
+      ${note && html`<span onClick=${(e) => e.stopPropagation()}><${Help} text=${note} glyph=${waiting ? "!" : "i"} tone=${waiting ? "attention" : ""} /></span>`}
     </span>
     <span class="run-meta">
       ${showProject && project && html`<span>${project.name}</span>`}
@@ -214,11 +215,10 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
       ${job.difficulty && html`<span class="muted">${difficultyLabel(job.difficulty).toLowerCase()}</span>`}
     </span>
     <${Stops} n=${stopOf(job.state)} tone=${toneOf(job.state)} label=${stateLabel(job.state)} />
-    <span class="run-state muted">${timing}</span>
+    <span class="run-state muted"><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
     <span class="run-links" onClick=${(e) => e.stopPropagation()}>
       ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
     </span>
-    ${note && html`<span class="run-note">${note}</span>`}
   </a>`;
 }
 
