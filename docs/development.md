@@ -44,7 +44,7 @@ Pages are real paths (`/runs`, `/runs/<id>`, `/models`, and so on) handled by `w
 
 Web confirmations for cancelling a chain, stopping a run, and discarding edits on sign-out share the themed `Confirmation` overlay and `web/lib/confirmation.js`. The action runs only after confirmation; Cancel, Escape, and backdrop clicks dismiss it. The browser's tab-close warning for unsaved edits remains browser-managed.
 
-On a phone the page never scrolls sideways or rubber-bands. Help tips exist only while shown, and below 900 px they sit above the bottom edge. Touch screens get 16 px inputs so iOS does not zoom on focus. The root element disables overscroll. Pulling down from the top of any page reloads state with `actions.refresh`, except from dialogs, drag handles, and sideways swipes.
+On a phone the page never scrolls sideways or rubber-bands. Help tips exist only while shown, and below 900 px they sit above the bottom edge. Touch screens get 16 px inputs so iOS does not zoom on focus. The root element disables overscroll. Pulling down from the top of any page reloads state with `actions.refresh`, except from dialogs, drag handles, scrolled lists, and sideways swipes.
 
 ### Scheduler service
 

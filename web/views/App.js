@@ -50,10 +50,16 @@ function usePullToRefresh(onRefresh) {
       el.style.height = d + "px";
       el.textContent = d >= PULL ? "Release to refresh" : "Pull to refresh";
     };
+    // scrollY dips below zero while a bounce settles; that still counts as the top.
+    // A scrolled list under the finger, such as an open dropdown, scrolls back up instead.
+    const atTop = (target) => {
+      if (window.scrollY > 0 || target.closest?.("dialog, .grip")) return false;
+      for (let n = target; n && n !== document.body; n = n.parentElement) if (n.scrollTop > 0) return false;
+      return true;
+    };
     const begin = (e) => {
       const t = e.touches[0];
-      // scrollY dips below zero while a bounce settles; that still counts as the top.
-      start = window.scrollY <= 0 && !e.target.closest?.("dialog, .grip") ? { x: t.clientX, y: t.clientY } : null;
+      start = atTop(e.target) ? { x: t.clientX, y: t.clientY } : null;
       el.classList.remove("settle");
     };
     const end = async () => {
