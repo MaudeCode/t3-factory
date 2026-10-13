@@ -8,11 +8,11 @@ npm run check
 npm test
 ```
 
-Tests use fixtures and temporary state. They cover quota policy, provider routing, ownership, manual dispatch, monitoring, reopened tickets, merge approval, and web authentication. They do not require production credentials or prove compatibility with a live T3 build.
+Tests use fixtures and temporary state. They cover quota policy, provider routing, ownership, manual dispatch, monitoring, reopened tickets, merge approval, the journal, web authentication, and the web app's live stream. They do not require production credentials or prove compatibility with a live T3 build.
 
 `package.json` keeps `private: true` to prevent accidental npm publication. This is a source-installed application.
 
-For the native app, install Xcode Command Line Tools and run `npm run build:menu`. Building does not replace a running app. Use the [setup guide](setup.md#optional-interfaces) to install it after quitting the previous version.
+For the native app, install Xcode Command Line Tools and run `npm run build:menu`. Building does not replace a running app. Use the [setup guide](setup.md#optional-interfaces) to install it after quitting the previous version. The app reads `status.json` and talks to the scheduler through the CLI; `T3Factory --render <dir>` draws the panel and every window page to PNG files from the current state and quits, which is how its views are checked without screen recording.
 
 ## Source layout
 
@@ -20,6 +20,7 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | --- | --- |
 | `src/main.ts` | CLI entry point and process lifecycle |
 | `src/scheduler.ts` | Inventory, reconciliation, and dispatch |
+| `src/service.ts`, `src/control.ts` | The long-lived scheduler, its triggers, and the control socket |
 | `src/config.ts`, `src/settings.ts` | Configuration validation and edits |
 | `src/models.ts`, `src/policy.ts` | Quota and eligibility decisions |
 | `src/clients.ts`, `src/rpc.ts` | T3 and Kaneo integration |
@@ -28,6 +29,32 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | `src/web.ts`, `src/oidc.ts` | Web API and authentication |
 | `web/`, `macos/` | Browser and native interfaces |
 | `scripts/`, `deploy/` | macOS installation and optional proxy launcher |
+
+### Web interface
+
+The browser app is plain ES modules served by `src/web.ts`; there is no bundler or build step. Preact, signals, and htm live in `web/vendor/` with their imports rewritten to relative paths, so the page needs no import map. After changing those versions in `package.json`, run `npm run vendor:web` and commit the result. The font is bundled in `web/fonts/` so the installed app works offline. Colours are CSS variables set by `web/lib/theme.js`; `web/lib/themes.js` is generated from a T3 Code checkout by `npm run vendor:themes -- <path>` and holds T3 Code's palettes, so the Theme picker offers the same themes as T3 Code in light and dark.
+
+| Directory | Responsibility |
+| --- | --- |
+| `web/lib/` | Runtime re-exports (`h.js`), the fetch wrapper, the router, formatting helpers, and the store: signals plus every action that changes state |
+| `web/ui/` | Component library: controls bound to config paths, the dropdown, segmented filters, the drag-to-reorder list, meters, tags, tables, timelines, dialog, toast |
+| `web/views/` | Pages: login, deck, runs and run detail, activity, models, capacity, projects, upstream, and the app root |
+
+Pages are real paths (`/runs`, `/runs/<id>`, `/models`, and so on) handled by `web/lib/router.js`; the server returns `index.html` for any extensionless path. Server state enters through `applyState` in `web/lib/store.js`. The page opens `/api/events`, a server-sent event stream that pushes the full state whenever the scheduler writes `status.json` or the config file changes; if the stream is unavailable the store polls `/api/state` every 15 seconds. A one-second clock signal keeps relative times and countdowns current between pushes. Inputs that take a `path` read and write the config signal directly, so adding a setting means adding one bound input. `test/web-ui.test.ts` imports the store and helpers in Node without a DOM; `test/web-live.test.ts` covers the stream and run endpoints.
+
+### Scheduler service
+
+`t3-factory run` starts one long-lived process (`src/service.ts`). It holds the store claim, one T3 client, and one connected Kaneo client, and runs passes in series from a single queue. A pass starts when something changes rather than on a clock: T3's `orchestration.subscribeShell` stream reports a project or thread change (bursts settle for 750 ms into one pass), the config file changes, a command arrives, or the `pollSeconds` fallback timer fires. Each pass reads the shell and providers once, reconciles jobs, reads only the ready columns of each project, examines tickets concurrently, and dispatches with the queue it just built; before a launch it re-reads only the ticket, new threads, and the quota. Every pass also reads each provider's allowance for display and writes the queue it would dispatch from as `status.upNext`. Between passes the service fingerprints the ready columns every 15 seconds and starts a pass when they change, and re-reads allowances on a timer so a reading is never older than about `quota.maxAgeSeconds`.
+
+The service listens on `control.sock` in the state directory (`src/control.ts`). `t3-factory dispatch`, `once`, `doctor`, `job-stop`, and `plan-cancel`, and the web server's dispatch, stop, and cancel endpoints, send their command there: dispatches, checks, dry runs, and diagnostics run as a pass on the scheduler's queue and return its decision; stops and cancels return their result and wake a pass. Without a running service they do the work themselves, as before. Before a launch the scheduler re-reads the ticket's labels from the workspace and its blockers, so a label or relation that changed since the queue was read stops the start.
+
+### Chains
+
+A manual dispatch of a ticket that waits on other tickets is not refused. The scheduler walks `blocks` relations, subtask parents, and umbrella children through Kaneo (`blockerTree`) and answers `blocked-ticket-plan-required` with the whole tree. The caller then dispatches again with `--chain first`, which starts the highest-priority ticket in the tree that can start now, or `--chain all`, which stores a plan (`plans` table) and starts every runnable ticket within the run limits. Every automatic pass advances active plans (`runPlans`): tickets start in priority order as the ones ahead of them finish in Kaneo, tickets without the ready label run with that waiver, and the target runs last. Only the launches made while the user chooses the chain carry manual policy; later continuations keep the automatic quota and idle policy, apply only the chain's recorded override, and use automatic models only when the chain was started with the automatic model. `t3-factory plan-cancel <id>` and `/api/plans/<id>/cancel` stop a plan; running tickets finish on their own. Active plans reach the page as `status.plans`.
+
+### Journal
+
+`Store.save` is the only job write path, so it records an event whenever a job is created, changes state, or gains a pull request. `Store.decide` records a check only when its outcome differs from the previous one or when it failed; a dispatch is journaled by the job it creates. Events live in the `events` table of `state.sqlite` (capped at 5000) and reach the page as `status.journal`; `/api/jobs/<id>/report` returns one run with its events and completion report. `t3-factory sources` (served as `/api/sources`) lists T3 projects, Kaneo projects with their columns, and workspace labels so the projects page can pick instead of typing identifiers. `t3-factory job-stop <jobId>` asks T3 to stop a run's thread and the service reconciles at once; the web app's Stop button calls it through `/api/jobs/<id>/stop`.
 
 ## T3 compatibility
 

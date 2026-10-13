@@ -1,31 +1,19 @@
 import AppKit
 import SwiftUI
+import Combine
 
 enum FactoryIcon {
+    // The app icon's silhouette (sawtooth roof, chimney with its cap, three windows) as an 18-point template image.
     static let image: NSImage = {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            let s = 0.38, x = { (v: Double) in 1 + (v - 10) * s }, y = { (v: Double) in 2 + (48 - v) * s }
             let shape = NSBezierPath()
-            shape.move(to: NSPoint(x: 1.5, y: 1.5))
-            shape.line(to: NSPoint(x: 16.5, y: 1.5))
-            shape.curve(to: NSPoint(x: 17, y: 2), controlPoint1: NSPoint(x: 16.8, y: 1.5), controlPoint2: NSPoint(x: 17, y: 1.7))
-            shape.line(to: NSPoint(x: 16.8, y: 15.8))
-            shape.curve(to: NSPoint(x: 16.3, y: 16.3), controlPoint1: NSPoint(x: 16.8, y: 16.1), controlPoint2: NSPoint(x: 16.6, y: 16.3))
-            shape.line(to: NSPoint(x: 14.1, y: 16.3))
-            shape.curve(to: NSPoint(x: 13.6, y: 15.8), controlPoint1: NSPoint(x: 13.8, y: 16.3), controlPoint2: NSPoint(x: 13.6, y: 16.1))
-            shape.line(to: NSPoint(x: 13.4, y: 8.7))
-            shape.line(to: NSPoint(x: 12.2, y: 8.7))
-            shape.line(to: NSPoint(x: 12.2, y: 11.3))
-            shape.curve(to: NSPoint(x: 11.6, y: 11.8), controlPoint1: NSPoint(x: 12.2, y: 11.8), controlPoint2: NSPoint(x: 11.9, y: 12))
-            shape.line(to: NSPoint(x: 6.5, y: 8.7))
-            shape.line(to: NSPoint(x: 6.5, y: 11.3))
-            shape.curve(to: NSPoint(x: 5.9, y: 11.8), controlPoint1: NSPoint(x: 6.5, y: 11.8), controlPoint2: NSPoint(x: 6.2, y: 12))
-            shape.line(to: NSPoint(x: 1.3, y: 8.9))
-            shape.curve(to: NSPoint(x: 1, y: 8.4), controlPoint1: NSPoint(x: 1.1, y: 8.8), controlPoint2: NSPoint(x: 1, y: 8.6))
-            shape.line(to: NSPoint(x: 1, y: 2))
-            shape.curve(to: NSPoint(x: 1.5, y: 1.5), controlPoint1: NSPoint(x: 1, y: 1.7), controlPoint2: NSPoint(x: 1.2, y: 1.5))
+            let outline: [(Double, Double)] = [(10, 48), (10, 25.5), (22.5, 32.5), (22.5, 25.5), (35, 32.5), (35, 25.5), (44, 30.54), (44, 15), (43, 15), (43, 12), (52, 12), (52, 15), (51, 15), (51, 32.5), (52, 32.5), (52, 48)]
+            shape.move(to: NSPoint(x: x(outline[0].0), y: y(outline[0].1)))
+            for (px, py) in outline.dropFirst() { shape.line(to: NSPoint(x: x(px), y: y(py))) }
             shape.close()
-            for x in [3.1, 7.8, 12.5] {
-                shape.append(NSBezierPath(roundedRect: NSRect(x: x, y: 4, width: 2.4, height: 2.4), xRadius: 0.25, yRadius: 0.25))
+            for wx in [14.5, 27.0, 39.5] {
+                shape.append(NSBezierPath(roundedRect: NSRect(x: x(wx), y: y(43.5), width: 7 * s, height: 5.5 * s), xRadius: 0.4, yRadius: 0.4))
             }
             shape.windingRule = .evenOdd
             NSColor.black.setFill()
@@ -40,6 +28,7 @@ enum FactoryIcon {
 @MainActor final class FactoryAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private var badge: AnyCancellable?
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
         let appMenu = NSMenu()
@@ -65,13 +54,37 @@ enum FactoryIcon {
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: FactoryMenuView(model: FactoryModel.shared).frame(height: 600))
-        // AppKit must position the full panel, not its default 320×320 content size.
-        popover.contentSize = NSSize(width: 370, height: 600)
-        if !UserDefaults.standard.bool(forKey: "openedSettings") || ProcessInfo.processInfo.arguments.contains("--settings") {
+        popover.contentViewController = NSHostingController(rootView: FactoryPanel(model: FactoryModel.shared))
+        popover.contentSize = panelSize()
+        // Runs that need you show as a count beside the icon.
+        badge = FactoryModel.shared.$status.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            let waiting = FactoryModel.shared.waitingJobs.count
+            self?.statusItem?.button?.title = waiting > 0 ? " \(waiting)" : ""
+            self?.statusItem?.button?.imagePosition = .imageLeading
+            self?.statusItem?.length = waiting > 0 ? NSStatusItem.variableLength : NSStatusItem.squareLength
+        }
+        // `--render DIR` draws the panel and every window page to PNG files and quits, for review without screen recording.
+        if let at = ProcessInfo.processInfo.arguments.firstIndex(of: "--render"), ProcessInfo.processInfo.arguments.indices.contains(at + 1) {
+            let dir = ProcessInfo.processInfo.arguments[at + 1]
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await FactoryModel.shared.refreshSources()
+                FactoryRender.all(to: dir); NSApp.terminate(nil)
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--panel"), let button = item.button {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.popover.contentSize = self.panelSize(); self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        } else if !UserDefaults.standard.bool(forKey: "openedSettings") || ProcessInfo.processInfo.arguments.contains("--settings") {
             FactoryModel.shared.openSettings()
             UserDefaults.standard.set(true, forKey: "openedSettings")
         }
+    }
+    // The panel is as tall as the screen under the menu bar allows, up to 720 points, so it never has to overlap the bar.
+    private func panelSize() -> NSSize {
+        let screen = statusItem?.button?.window?.screen ?? NSScreen.main
+        let available = (screen?.visibleFrame.height ?? 800) - 24
+        return NSSize(width: 420, height: min(720, max(420, available)))
     }
     @objc private func openFromStatusBar(_ sender: NSStatusBarButton) {
         if NSApp.currentEvent?.type == .rightMouseUp || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
@@ -80,6 +93,7 @@ enum FactoryIcon {
             closePopover()
         } else {
             NSApp.activate(ignoringOtherApps: true)
+            popover.contentSize = panelSize()
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }
@@ -99,120 +113,32 @@ enum FactoryIcon {
     }
 }
 
-struct FactoryMenuView: View {
-    @ObservedObject var model: FactoryModel
-    var compact = true
-    @State private var chooseTicket = false
-    var body: some View {
-        ScrollView {
-            if compact {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Label { Text("T3 Factory") } icon: { Image(nsImage: FactoryIcon.image) }.font(.headline)
-                        Spacer()
-                        refreshButton
-                    }
-                    status
-                    Divider()
-                    runControls
-                    Divider()
-                    HStack {
-                        Button("Settings…") { model.openSettings() }
-                        Spacer()
-                        Button("Open T3") { model.openT3() }
-                        Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("Quit menu app; the factory service keeps running").accessibilityLabel("Quit menu app")
-                    }.buttonStyle(.borderless)
-                }.padding(18)
-            } else {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        HStack { Text("Live status").font(.headline); Spacer(); refreshButton }
-                        status
-                        Button("Open T3") { model.openT3() }
-                    }.frame(width: 210)
-                    Divider().frame(minHeight: 320)
-                    runControls.frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(24)
-            }
-        }.frame(width: compact ? 370 : nil).disabled(model.busy != nil)
-            .onAppear { chooseTicket = !model.ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    }
-    private var refreshButton: some View {
-        Button { model.refreshStatus() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh status").accessibilityLabel("Refresh status").buttonStyle(.plain)
-    }
-    private var status: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Toggle("Ticket automation", isOn: Binding(get: { model.enabled }, set: { value in Task { await model.setEnabled(value) } })).toggleStyle(.switch)
-            if model.hasUpstream {
-                Toggle("Upstream reviews", isOn: Binding(get: { model.upstreamEnabled }, set: { value in Task { await model.setEnabled(value, upstream: true) } })).toggleStyle(.switch)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.statusTitle).font(.subheadline.weight(.medium))
-                Text(model.lastCheck).font(.caption).foregroundStyle(.secondary)
-                HStack { Text("\(model.activeJobs.count) executing"); Text("·"); Text("\(model.waitingJobs) awaiting input") }.font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(["claudeAgent", "codex"], id: \.self) { driver in
-                let jobs = model.jobsForProvider(driver)
-                let active = jobs.filter { ["running", "dispatching"].contains($0["state"] as? String ?? "") }
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(driver == "codex" ? "Codex" : "Claude").font(.subheadline.weight(.medium))
-                        Spacer()
-                        Text("\(active.count) running · \(jobs.filter { $0["state"] as? String == "waiting" }.count) waiting").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text(model.streamReason(driver)).font(.caption).foregroundStyle(.secondary)
-                    ForEach(Array(active.enumerated()), id: \.offset) { _, job in Text(job["label"] as? String ?? job["ticketKey"] as? String ?? "Discovery").font(.caption.monospaced()) }
-                    let directQuota = model.decision["quota"] as? [String: Any] ?? [:]
-                    let providerName = driver == "codex" ? "Codex" : "Claude"
-                    let quota = directQuota["provider"] as? String == providerName ? directQuota : model.streams.first { $0["driver"] as? String == driver }?["quota"] as? [String: Any] ?? [:]
-                    if let routing = quota["factoryRouting"] as? [String: Any], let remaining = routing["fableRemainingPercent"] as? Double {
-                        quotaRow("Fable weekly", remaining: remaining)
-                    }
-                    ForEach(Array((quota["windows"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, window in
-                        quotaRow(window["name"] as? String == "fiveHour" ? "Five-hour allowance" : "Weekly allowance", remaining: window["remaining"] as? Double ?? 0)
-                    }
-                }
-            }
+
+
+enum FactoryRender {
+    @MainActor static func all(to dir: String) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        write(FactoryPanel(model: FactoryModel.shared), size: NSSize(width: 420, height: 720), to: "\(dir)/panel.png")
+        // The menu bar glyph, enlarged, for review.
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 144, pixelsHigh: 144, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 144, height: 144).fill()
+        FactoryIcon.image.draw(in: NSRect(x: 0, y: 0, width: 144, height: 144), from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/glyph.png"))
+        for page in ["factory", "runs", "activity", "models", "capacity", "projects", "upstream"] {
+            write(FactorySettingsView(model: FactoryModel.shared, page: page), size: NSSize(width: 1100, height: 820), to: "\(dir)/\(page).png")
         }
     }
-    private var runControls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Start a run").font(.headline)
-            Picker("Ticket", selection: $chooseTicket) {
-                Text("Next eligible ticket").tag(false)
-                Text("Choose a ticket…").tag(true)
-            }.onChange(of: chooseTicket) { _, specific in if !specific { model.ticket = "" } }
-            if chooseTicket {
-                TextField("e.g. APP-123", text: $model.ticket).textFieldStyle(.roundedBorder).accessibilityLabel("Ticket key")
-            }
-            Picker("Model", selection: $model.selectedModel) {
-                Text("Automatic selection").tag("auto")
-                ForEach(Array(model.configuredModels.enumerated()), id: \.offset) { _, preset in
-                    Text(preset["name"] as? String ?? "Manual model").tag(preset["id"] as? String ?? "")
-                }
-            }
-            if model.selectedModelUsesCodex {
-                Text("This manual run uses Codex quota. Idle time and reserved allowance do not apply.").font(.caption).foregroundStyle(.secondary)
-            } else {
-                Toggle("Start without waiting for idle or reserves", isOn: $model.overrideLimits).font(.caption)
-                Text("For this run only. Ticket readiness, merge rules, and Claude’s limits still apply.").font(.caption).foregroundStyle(.secondary)
-            }
-            Button { Task { await model.dispatch() } } label: {
-                Label(chooseTicket ? "Run ticket now" : "Run next ticket now", systemImage: "play.fill").frame(maxWidth: .infinity)
-            }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.config.isEmpty || (chooseTicket && model.ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-            if !model.activeJobs.isEmpty { Text("Manual runs can start alongside existing work. Each ticket gets its own thread and worktree.").font(.caption).foregroundStyle(.secondary) }
-            feedback
-        }
-    }
-    private func quotaRow(_ title: String, remaining: Double) -> some View {
-        VStack(spacing: 4) {
-            HStack { Text(title); Spacer(); Text("\(Int(remaining))% remaining").monospacedDigit() }.font(.caption)
-            ProgressView(value: max(0, min(100, remaining)), total: 100).tint(remaining < 15 ? .orange : .accentColor)
-        }
-    }
-    @ViewBuilder private var feedback: some View {
-        if let busy = model.busy { HStack { ProgressView().controlSize(.small); Text(busy).font(.caption) } }
-        if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-        else if let notice = model.notice { Text(notice).font(.caption).foregroundStyle(.secondary) }
+    @MainActor static func write<V: View>(_ view: V, size: NSSize, to path: String) {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.appearance = NSAppearance(named: .darkAqua)
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)) }
     }
 }

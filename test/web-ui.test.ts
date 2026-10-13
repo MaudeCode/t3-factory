@@ -1,139 +1,159 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { createContext, runInContext } from 'node:vm';
 
-// Execute the browser's actual event handlers without live API calls.
-function ui() {
-  const listeners = new Map<string, Function[]>();
-  const nodes = new Map<string, any>();
-  const document = {
-    addEventListener(type: string, callback: Function) {
-      listeners.set(type, [...(listeners.get(type) ?? []), callback]);
-    },
-    querySelector(selector: string) {
-      if (!nodes.has(selector)) nodes.set(selector, {
-        hidden: true, open: true,
-        addEventListener(type: string, callback: Function) {
-          listeners.set(`${selector}:${type}`, [...(listeners.get(`${selector}:${type}`) ?? []), callback]);
-        },
-        getBoundingClientRect: () => ({ left: 100, right: 500, top: 100, bottom: 600 }),
-        close() { this.open = false; },
-        showModal() { this.open = true; },
-      });
-      return nodes.get(selector);
-    },
-  };
-  const context = createContext({ document, structuredClone,
-    fetch: () => new Promise(() => {}), setInterval: () => {},
-  });
-  runInContext(readFileSync(new URL('../web/app.js', import.meta.url), 'utf8'), context);
-  runInContext('state.config = { models: [{ name: "Original" }] }; state.base = clone(state.config);', context);
-  async function fire(type: string, target: any, properties = {}) {
-    const event = new Event(type.split(':').at(-1)!, { cancelable: true });
-    Object.defineProperty(event, 'target', { value: target });
-    Object.defineProperty(event, 'currentTarget', { value: type.startsWith('#model-dialog:') ? document.querySelector('#model-dialog') : document });
-    Object.assign(event, properties);
-    for (const callback of listeners.get(type) ?? []) await callback(event);
-    return event;
-  }
-  return { context, document, fire };
-}
+// The browser store and helpers run unchanged in Node: no DOM is touched until a view renders.
+const store = await import('../web/lib/store.js');
+const { api } = await import('../web/lib/api.js');
+const { coerce, isBackdropClick, moveItem, decisionSentence, until, ago } = await import('../web/lib/format.js');
 
-test('project label priorities can be reordered and cleared through the actual input handler', async () => {
-  const { context, document, fire } = ui();
-  runInContext('state.config.projects = [{ name: "Fixture", kaneoId: "p", readyStatuses: ["todo"], doneStatuses: ["done"], priorityLabels: ["security", "compatibility"] }]; state.status = { jobs: [] }; state.base = clone(state.config);', context);
-  assert.match(runInContext('projects()', context), /value="security, compatibility"/);
-  await fire('input', { dataset: { list: '["projects","0","priorityLabels"]' }, value: 'compatibility, security' });
-  assert.equal(runInContext('JSON.stringify(state.config.projects[0].priorityLabels)', context), '["compatibility","security"]');
-  assert.equal(document.querySelector('#save-bar').hidden, false);
-  await fire('input', { dataset: { list: '["projects","0","priorityLabels"]' }, value: '' });
-  assert.equal(runInContext('JSON.stringify(state.config.projects[0].priorityLabels)', context), '[]');
+const fixture = () => ({
+  config: {
+    enabled: true,
+    concurrency: { claude: 1, codex: 1 },
+    models: [{ id: 'm1', name: 'Original', automatic: true, maxDifficulty: 'high', model: { instanceId: 'codex', model: 'x', options: [] } }],
+    projects: [{ name: 'Fixture', kaneoId: 'p', readyStatuses: ['todo'], doneStatuses: ['done'], priorityLabels: ['security', 'compatibility'] }],
+  },
+  status: { jobs: [] },
+});
+
+test('config edits are immutable updates that mark the save bar dirty', () => {
+  store.applyState(fixture(), true);
+  assert.equal(store.dirty.value, false);
+  store.set(['projects', '0', 'priorityLabels'], coerce('list', { value: 'compatibility, security' }));
+  assert.deepEqual(store.config.value.projects[0].priorityLabels, ['compatibility', 'security']);
+  assert.deepEqual(store.base.value.projects[0].priorityLabels, ['security', 'compatibility'], 'base copy is untouched');
+  assert.equal(store.dirty.value, true);
+  store.set(['projects', '0', 'priorityLabels'], coerce('list', { value: '' }));
+  assert.deepEqual(store.config.value.projects[0].priorityLabels, []);
+});
+
+test('numeric inputs keep zero as a number', () => {
+  store.applyState(fixture(), true);
+  store.set(['concurrency', 'claude'], coerce('integer', { value: '0' }));
+  assert.equal(store.config.value.concurrency.claude, 0);
+  assert.equal(store.config.value.concurrency.codex, 1);
+  assert.equal(coerce('boolean', { checked: true }), true);
+  assert.equal(coerce('text', { value: ' a ' }), ' a ');
 });
 
 test('API recovers a transient empty proxy response on reads without resending writes', async () => {
-  const { context, document } = ui();
   let calls = 0;
-  context.fetch = async () => ++calls === 1 ? new Response('', { status: 502 }) : Response.json({ state: 'done' });
-  const result = await runInContext('api("/api/operations/saved-request")', context);
-  assert.equal(result.state, 'done');
+  globalThis.fetch = async () => (++calls === 1 ? new Response('', { status: 502 }) : Response.json({ state: 'done' }));
+  assert.deepEqual(await api('/api/operations/saved-request'), { state: 'done' });
   assert.equal(calls, 2);
 
   calls = 0;
-  context.fetch = async () => { calls++; return new Response('<html>Unavailable</html>', { status: 503 }); };
-  await assert.rejects(runInContext('api("/api/dispatch", { method: "POST", body: "{}" })', context), { status: 503, message: /HTTP 503/ });
+  globalThis.fetch = async () => { calls++; return new Response('<html>Unavailable</html>', { status: 503 }); };
+  await assert.rejects(api('/api/dispatch', { method: 'POST', body: '{}' }), { status: 503, message: /HTTP 503/ });
   assert.equal(calls, 1, 'a lost dispatch response must be reconciled using its saved ID, never resent by the API helper');
 
   calls = 0;
-  context.fetch = async () => { calls++; return new Response('', { status: 502 }); };
-  await assert.rejects(runInContext('api("/api/state")', context), { status: 502, message: /HTTP 502/ });
+  globalThis.fetch = async () => { calls++; return new Response('', { status: 502 }); };
+  await assert.rejects(api('/api/state'), { status: 502, message: /HTTP 502/ });
   assert.equal(calls, 2, 'persistent gateway failures do not cause an unbounded retry loop');
 
-  context.fetch = async () => new Response('', { status: 401 });
-  document.querySelector('#login').hidden = true;
-  await assert.rejects(runInContext('api("/api/state")', context), { status: 401 });
-  assert.equal(document.querySelector('#login').hidden, false, 'empty auth responses still open sign-in');
+  globalThis.fetch = async () => new Response('', { status: 401 });
+  store.authenticated.value = true;
+  await assert.rejects(api('/api/state'), { status: 401 });
+  assert.equal(store.authenticated.value, false, 'empty auth responses still open sign-in');
 
-  context.fetch = async () => new Response('');
-  await assert.rejects(runInContext('api("/api/state")', context), /empty or invalid response/);
+  globalThis.fetch = async () => new Response('');
+  await assert.rejects(api('/api/state'), /empty or invalid response/);
 });
-
-test('Done keeps native dialog submission available before and after model edits', async () => {
-  const { context, document, fire } = ui();
-  assert.equal((await fire('submit', { id: '', method: 'dialog' })).defaultPrevented, false);
-  await fire('input', { dataset: { path: '["models","0","name"]', kind: 'text' }, value: 'Edited' });
-  assert.equal(document.querySelector('#save-bar').hidden, false);
-  assert.equal((await fire('submit', { id: '', method: 'dialog' })).defaultPrevented, false);
-  assert.equal(runInContext('state.config.models[0].name', context), 'Edited');
-  // The run form must still be handled by JavaScript, even while busy.
-  runInContext('state.busy = true;', context);
-  assert.equal((await fire('submit', { id: 'run-form', method: 'post' })).defaultPrevented, true);
-});
-
-test('clicking the model backdrop closes the dialog; clicking its content does not', async () => {
-  const { document, fire } = ui();
-  const dialog = document.querySelector('#model-dialog');
-  await fire('#model-dialog:click', dialog, { clientX: 150, clientY: 150 });
-  assert.equal(dialog.open, true);
-  await fire('#model-dialog:click', { closest: () => null }, { clientX: 50, clientY: 50 });
-  assert.equal(dialog.open, true);
-  await fire('#model-dialog:click', dialog, { clientX: 50, clientY: 50 });
-  assert.equal(dialog.open, false);
-});
-
-
-test('provider limit inputs retain zero as a numeric setting', async () => {
-  const { context, document, fire } = ui();
-  runInContext('state.config.concurrency = { claude: 1, codex: 1 }; state.base = clone(state.config);', context);
-  await fire('input', { dataset: { path: '["concurrency","claude"]', kind: 'number' }, value: '0' });
-  assert.equal(runInContext('state.config.concurrency.claude', context), 0);
-  assert.equal(runInContext('state.config.concurrency.codex', context), 1);
-  assert.equal(document.querySelector('#save-bar').hidden, false);
-  const html = runInContext('field("Claude run limit", ["concurrency", "claude"], "integer")', context);
-  assert.match(html, /min="0" step="1"/);
-  assert.match(html, /value="0"/);
-});
-
 
 test('missing-label confirmation cancels safely and binds Run anyway to the original ticket', async () => {
-  const { context, document, fire } = ui();
-  runInContext(`
-    state.operation = { id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'ready-label-confirmation-required', requiredLabel: 'sf' } } };
-    startRun = async input => { globalThis.started = input; };
-    showReadinessConfirmation();
-  `, context);
-  assert.equal(document.querySelector('#readiness-dialog').open, true);
-  assert.match(document.querySelector('#readiness-description').textContent, /skips only/);
-  await fire('#readiness-dialog:close', document.querySelector('#readiness-dialog'));
-  await runInContext('action("run-without-ready-label")', context);
-  assert.equal(runInContext('globalThis.started', context), undefined, 'Cancel cannot dispatch');
-  runInContext('showReadinessConfirmation(); state.operation.id = "different";', context);
-  await runInContext('action("run-without-ready-label")', context);
-  assert.equal(runInContext('globalThis.started', context), undefined, 'stale confirmation cannot dispatch');
-  runInContext('state.operation.id = "original"; showReadinessConfirmation();', context);
-  await runInContext('action("run-without-ready-label")', context);
-  assert.equal(runInContext('globalThis.started.ticket', context), 'APP-1');
-  assert.equal(runInContext('globalThis.started.model', context), 'opus');
-  assert.equal(runInContext('globalThis.started.allowMissingReadyLabel', context), true);
-  assert.equal(document.querySelector('#readiness-dialog').open, false);
+  const started: unknown[] = [];
+  globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url) === '/api/dispatch') {
+      started.push(JSON.parse(init!.body as string));
+      return Response.json({ id: 'x', state: 'done', result: { data: { reason: 'dispatched' } } });
+    }
+    return Response.json(fixture());
+  };
+  store.applyState(fixture(), true);
+  store.operation.value = { id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'ready-label-confirmation-required', requiredLabel: 'sf' } } };
+  store.showReadinessConfirmation();
+  assert.equal(store.readiness.value?.label, 'sf');
+  store.readiness.value = null; // Cancel
+  await store.runWithoutReadyLabel();
+  assert.equal(started.length, 0, 'Cancel cannot dispatch');
+  store.showReadinessConfirmation();
+  store.operation.value = { ...store.operation.value, id: 'different' };
+  await store.runWithoutReadyLabel();
+  assert.equal(started.length, 0, 'stale confirmation cannot dispatch');
+  store.operation.value = { ...store.operation.value, id: 'original' };
+  store.showReadinessConfirmation();
+  await store.runWithoutReadyLabel();
+  assert.deepEqual(started, [{ ticket: 'APP-1', model: 'opus', overrideLimits: true, allowMissingReadyLabel: true }]);
+  assert.equal(store.readiness.value, null);
+});
+
+test('backdrop clicks close a dialog; clicks on its content do not', () => {
+  const dialog = { getBoundingClientRect: () => ({ left: 100, right: 500, top: 100, bottom: 600 }) };
+  assert.equal(isBackdropClick({ target: dialog, clientX: 150, clientY: 150 }, dialog), false);
+  assert.equal(isBackdropClick({ target: {}, clientX: 50, clientY: 50 }, dialog), false);
+  assert.equal(isBackdropClick({ target: dialog, clientX: 50, clientY: 50 }, dialog), true);
+});
+
+test('reordering models keeps the list intact and selects the moved model', () => {
+  assert.deepEqual(moveItem([1, 2, 3, 4], 0, 2), [2, 3, 1, 4]);
+  assert.deepEqual(moveItem([1, 2, 3, 4], 3, 1), [1, 4, 2, 3]);
+  assert.deepEqual(moveItem([1, 2], 1, 5), [1, 2], 'out-of-range moves are ignored');
+  store.applyState({ ...fixture(), config: { ...fixture().config, models: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] } }, true);
+  store.actions.moveModel(2, 0);
+  assert.deepEqual(store.config.value.models.map((m: any) => m.id), ['c', 'a', 'b']);
+  assert.equal(store.selectedModel.value, 0);
+  assert.equal(store.dirty.value, true);
+});
+
+test('relative times accept ISO strings and millisecond numbers alike', () => {
+  const now = Date.parse('2026-01-01T00:00:00Z');
+  assert.equal(until(now + 28 * 60_000, now), 'in 28 min');
+  assert.equal(until(new Date(now + 3600_000).toISOString(), now), 'in 1 h');
+  assert.equal(until(now - 1, now), 'now');
+  assert.equal(ago(now - 90_000, now), '1 min ago');
+});
+
+test('the deck explains the last check in one sentence', () => {
+  assert.equal(decisionSentence(null), 'No check has run yet.');
+  assert.equal(decisionSentence({ reason: 'disabled' }), 'Automation is paused. Running work continues.');
+  assert.equal(decisionSentence({ reason: 'dispatched', ticket: 'APP-1', model: 'claude-opus-5-5' }), 'Started APP-1 on claude-opus-5-5.');
+  assert.equal(
+    decisionSentence({ reason: 'no-eligible-ticket', eligible: 0, streams: [{ provider: 'Claude', reason: 'waiting-for-idle' }, { provider: 'Codex', reason: 'provider-disabled' }] }),
+    'Claude is waiting for idle time; Codex is automatic starts off. Nothing eligible to start.',
+  );
+});
+
+test('server pushes replace status but keep local config edits until saved', () => {
+  store.applyState(fixture(), true);
+  store.set(['concurrency', 'claude'], 3);
+  store.applyState({ ...fixture(), status: { jobs: [{ id: 'j1', state: 'running' }], journal: [{ id: 1 }] } });
+  assert.equal(store.config.value.concurrency.claude, 3, 'local edit survives a push');
+  assert.equal(store.jobs.value.length, 1);
+  assert.equal(store.journal.value.length, 1);
+  assert.equal(store.dirty.value, true);
+  store.applyState(fixture(), true);
+  assert.equal(store.dirty.value, false);
+});
+
+test('a project added from the catalogs starts with its path, prefix, and columns filled in', () => {
+  store.applyState(fixture(), true);
+  store.sources.value = {
+    t3: [{ id: 't3-1', title: 'widgets', workspaceRoot: '/Users/me/git/example/widgets' }],
+    kaneo: { projects: [{ id: 'k1', name: 'Widgets', slug: 'WID', githubRepo: null }], columns: { k1: [{ slug: 'backlog', name: 'Backlog', isFinal: false }, { slug: 'done', name: 'Done', isFinal: true }, { slug: 'wont-do', name: "Won't do", isFinal: true }] }, labels: [] },
+  };
+  store.actions.addProject(store.sources.value.t3[0], store.sources.value.kaneo.projects[0]);
+  const added = store.config.value.projects.at(-1);
+  assert.deepEqual(
+    { ...added, upstreams: undefined },
+    { name: 'widgets', enabled: false, key: 'WID', kaneoId: 'k1', t3Id: 't3-1', repoPath: '/Users/me/git/example/widgets', githubRepo: 'example/widgets', baseBranch: 'main', readyStatuses: ['backlog'], doneStatuses: ['done', 'wont-do'], priorityLabels: [], upstreams: undefined },
+  );
+  assert.equal(store.selectedProject.value, 1);
+  store.actions.linkKaneo(0, 'k1');
+  assert.deepEqual(store.config.value.projects[0].readyStatuses, ['backlog'], 'relinking resets the columns to the new project');
+  store.actions.addUpstream(0, { name: 'T3', repo: 'pingdotgg/t3code', firstBase: 'v1', prereleases: false });
+  store.actions.setUpstream(0, 0, { name: 'T3 Code', repo: 'pingdotgg/t3code', firstBase: 'v1', prereleases: true });
+  assert.equal(store.config.value.projects[0].upstreams[0].name, 'T3 Code');
+  store.actions.removeUpstream(0, 0);
+  assert.deepEqual(store.config.value.projects[0].upstreams, []);
 });

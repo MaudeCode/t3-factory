@@ -5,7 +5,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod';
 import { threadSchema, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
-import { callT3Rpc } from './rpc.ts';
+import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
 
 /** T3 orchestration protocol this client speaks; T3 rejects other versions. */
 export const ORCHESTRATION_PROTOCOL = 2;
@@ -14,6 +14,9 @@ const ORCHESTRATION_PROTOCOL_HEADER = 'x-t3-orchestration-protocol', ORCHESTRATI
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
+  // One provider read serves a whole scheduler pass; a refresh replaces it. reset() starts the next pass.
+  private providerSnapshot?: Promise<Awaited<ReturnType<T3['readProviders']>>>;
+  reset() { this.providerSnapshot = undefined; }
   constructor(config: Config['t3']) { this.config = config; }
   async request(path: string, body?: unknown): Promise<unknown> {
     const credential = z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8')));
@@ -104,6 +107,18 @@ export class T3 {
     return callT3Rpc(await this.socketUrl(), { type: 'close-terminal', threadId, terminalId });
   }
   async providers(refreshInstance?: string) {
+    if (refreshInstance || !this.providerSnapshot) {
+      const read = this.readProviders(refreshInstance);
+      this.providerSnapshot = read;
+      read.catch(() => { if (this.providerSnapshot === read) this.providerSnapshot = undefined; });
+    }
+    return this.providerSnapshot;
+  }
+  // Follows every shell change until the signal aborts; onItem receives snapshots, markers, and change events.
+  subscribe(onItem: (item: unknown) => void, signal: AbortSignal, onError?: (error: unknown) => void) {
+    return subscribeT3Shell(() => this.socketUrl(), onItem, signal, onError);
+  }
+  private async readProviders(refreshInstance?: string) {
     const data = z.object({ providers: z.array(z.object({
       instanceId: z.string(), driver: z.string(), status: z.string(), installed: z.boolean(), enabled: z.boolean(),
       models: z.array(z.object({ slug: z.string(), aliases: z.array(z.string()).optional() }).passthrough()),
@@ -157,16 +172,18 @@ export async function listTaskLabels(kaneo: Kaneo): Promise<TaskLabels> {
   }
   return labels;
 }
-export async function listTasks(kaneo: Kaneo, projectId: string, labels?: TaskLabels): Promise<Task[]> {
+// `statuses` limits the read to those columns; the scheduler only needs ready tickets, not a project's whole history.
+// `labels: null` keeps the list's own label preview, enough to notice a change but not to decide on one.
+export async function listTasks(kaneo: Kaneo, projectId: string, labels?: TaskLabels | null, statuses?: string[]): Promise<Task[]> {
   // Task-list labels are only a capped display preview. Use complete task associations.
-  const taskLabels = labels ?? await listTaskLabels(kaneo);
+  const taskLabels = labels === null ? null : labels ?? await listTaskLabels(kaneo);
   const tasks = new Map<string, Task>();
-  for (let page = 1; ; page++) {
-    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(taskSchema) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await kaneo.call('list_tasks', { projectId, page, limit: 100 }));
+  for (const status of statuses ?? [undefined]) for (let page = 1; ; page++) {
+    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(taskSchema) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await kaneo.call('list_tasks', { projectId, page, limit: 100, ...(status ? { status } : {}) }));
     if (r.data.workspaceId !== kaneo.config.workspaceId) throw new Error('Kaneo workspace mismatch');
     for (const col of r.data.columns) for (const task of col.tasks) {
       if (task.projectId !== projectId) throw new Error('Kaneo project mismatch');
-      tasks.set(task.id, { ...task, labels: taskLabels.get(task.id) ?? [] });
+      tasks.set(task.id, { ...task, labels: taskLabels ? taskLabels.get(task.id) ?? [] : task.labels ?? [] });
     }
     if (page >= r.pagination.totalPages) break;
     if (page > 100) throw new Error('Kaneo pagination exceeded 100 pages');

@@ -1,16 +1,18 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, renameSync, existsSync, watch } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
 import { modify, applyEdits, parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
-import { cycle, log, safeError, writeStatus } from './scheduler.ts';
+import { cycle, log, safeError, stopJob, cancelPlan, writeStatus } from './scheduler.ts';
+import { FactoryService } from './service.ts';
+import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
 import { saveSettings } from './settings.ts';
 import type { CycleOptions } from './scheduler.ts';
-import { ZodError } from 'zod';
-import { T3 } from './clients.ts';
-import { createFactoryWeb, webSettings } from './web.ts';
+import { z, ZodError } from 'zod';
+import { T3, Kaneo } from './clients.ts';
+import { createFactoryWeb, runFactory, webSettings } from './web.ts';
 
 import { loadEnvironment } from './env.ts';
 import { createOidc } from './oidc.ts';
@@ -28,16 +30,56 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
 };
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
-  const c = loadConfig(configPath);
-  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, readState: () => {
-    const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
-    const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
-    const jobs = (status.jobs ?? []).filter((j: any) => j.state !== 'dismissed');
-    status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map((j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, threadId: j.threadId, prUrls: j.prUrls, modelSelection: j.modelSelection, providerDriver: j.providerDriver, difficulty: j.difficulty }));
-    return { config, status };
-  } });
+  const c = loadConfig(configPath), store = new Store(c.stateDir);
+  const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
+  // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
+  const viaService = async (args: string[], input?: unknown) => {
+    const command = commandFor(args);
+    return (command && await callControl(c.stateDir, command)) ?? runFactory(args, input);
+  };
+  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
+    readState: () => {
+      const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
+      const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
+      const jobs = (status.jobs ?? []).filter((j: any) => j.state !== 'dismissed');
+      status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map(compact);
+      status.journal = store.events(80);
+      return { config, status, now: new Date().toISOString() };
+    },
+    history: () => store.jobs().map(compact).toReversed(),
+    report: (id) => {
+      const job = store.job(id);
+      if (!job) return undefined;
+      return { job: compact(job), events: store.events(200, id).toReversed(), report: existsSync(job.reportPath) ? JSON.parse(readFileSync(job.reportPath, 'utf8')) : null };
+    },
+    watch: (notify) => {
+      const watchers = [watch(c.stateDir, (_, name) => { if (name === 'status.json') notify(); }), watch(dirname(configPath), (_, name) => { if (name === basename(configPath)) notify(); })];
+      return () => { for (const w of watchers) w.close(); };
+    },
+  });
   server.listen(config.port, config.host, () => console.log(`Factory web controls listening on ${config.host}:${config.port}`));
-  process.once('SIGTERM', () => server.close()); process.once('SIGINT', () => server.close());
+  const shutdown = () => { server.closeAllConnections(); server.close(); store.close(); };
+  process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
+} else if (command === 'job-stop') {
+  // The running scheduler stops the thread and reconciles at once; otherwise stop it here and leave reconciliation to the next pass.
+  try {
+    const c = loadConfig(configPath);
+    const forwarded = await callControl(c.stateDir, { type: 'job-stop', jobId: process.argv[3] ?? '' });
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else {
+      const store = new Store(c.stateDir);
+      const result = await stopJob(c, store, new T3(c.t3), process.argv[3] ?? '');
+      writeStatus(c, store); store.close();
+      console.log(JSON.stringify(result));
+    }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (command === 'plan-cancel') {
+  try {
+    const c = loadConfig(configPath);
+    const forwarded = await callControl(c.stateDir, { type: 'plan-cancel', planId: process.argv[3] ?? '' });
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(cancelPlan(store, process.argv[3] ?? ''))); writeStatus(c, store); store.close(); }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'web-pair') {
   try {
     const { config, secret, oidc } = webSettings();
@@ -51,6 +93,25 @@ if (command === 'web') {
     const providers = await new T3(loadConfig(configPath).t3).providers();
     console.log(JSON.stringify({ providers: providers.filter(p => ['claudeAgent', 'codex'].includes(p.driver)).map(({ instanceId, driver, status, enabled, installed, models }) => ({ instanceId, driver, status, enabled, installed, models })) }));
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (command === 'sources') {
+  // Catalogs the settings pages pick from: T3 projects, Kaneo projects with their columns, and workspace labels.
+  const c = loadConfig(configPath), kaneo = new Kaneo(c.kaneo);
+  try {
+    const t3 = z.object({ projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await new T3(c.t3).request('/api/orchestration/shell')).projects;
+    await kaneo.connect();
+    const projects = z.array(z.object({ id: z.string(), name: z.string(), slug: z.string(), description: z.string().nullish(), archivedAt: z.string().nullish() }).passthrough()).parse(await kaneo.call('list_projects', { workspaceId: c.kaneo.workspaceId })).filter(p => !p.archivedAt);
+    const labels = z.array(z.object({ name: z.string().min(1), deletionStartedAt: z.string().nullish() }).passthrough()).parse(await kaneo.call('list_workspace_labels', { workspaceId: c.kaneo.workspaceId }));
+    const column = z.object({ slug: z.string(), name: z.string(), isFinal: z.boolean(), position: z.number() }).passthrough();
+    const columns = await Promise.all(projects.map(async p => [p.id, z.array(column).parse(await kaneo.call('list_project_columns', { projectId: p.id })).sort((a, b) => a.position - b.position).map(({ slug, name, isFinal }) => ({ slug, name, isFinal }))] as const));
+    console.log(JSON.stringify({
+      t3: t3.map(({ id, title, workspaceRoot }) => ({ id, title, workspaceRoot })),
+      kaneo: {
+        projects: projects.map(p => ({ id: p.id, name: p.name, slug: p.slug, githubRepo: p.description?.match(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?=[\s.,;)]|$)/)?.[1] ?? null })),
+        columns: Object.fromEntries(columns),
+        labels: [...new Set(labels.filter(l => !l.deletionStartedAt).map(l => l.name))].sort(),
+      },
+    }));
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; } finally { await kaneo.close().catch(() => {}); }
 } else if (command === 'config-get' || command === 'config-save') {
   try {
     const result = command === 'config-get' ? loadConfig(configPath) : saveSettings(JSON.parse(readFileSync(0, 'utf8')), configPath);
@@ -77,53 +138,44 @@ if (command === 'web') {
 } else if (command === 'status') {
   const c = loadConfig(configPath), store = new Store(c.stateDir);
   console.log(JSON.stringify(writeStatus(c, store), null, 2)); store.close();
-} else if (['doctor', 'once', 'run', 'dispatch'].includes(command)) {
-  const options: CycleOptions = { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor', manual: command === 'dispatch', overrideLimits: process.argv.includes('--override-limits'), allowMissingReadyLabel: process.argv.includes('--allow-missing-ready-label') };
-  if (command === 'dispatch') {
-    const args = process.argv.slice(3);
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] === '--ticket') options.ticket = args[++i];
-      else if (args[i] === '--model') {
-        const value = args[++i];
-        if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
-        options.model = value as CycleOptions['model'];
-      } else if (!['--override-limits', '--dry-run', '--allow-missing-ready-label'].includes(args[i])) throw new Error(`Unknown dispatch argument: ${args[i]}`);
-    }
-    if (args.includes('--ticket') && !options.ticket) throw new Error('--ticket requires a ticket key');
-  }
+} else if (command === 'run') {
+  const service = new FactoryService(configPath);
+  const shutdown = () => { service.stop().finally(() => process.exit(0)); };
+  process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
+  try { await service.start(); } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (['doctor', 'once', 'dispatch'].includes(command)) {
+  const options: CycleOptions = command === 'dispatch' ? dispatchOptions(process.argv.slice(3)) : { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor' };
+  // A running scheduler runs dispatches, checks, dry runs, and diagnostics itself, so they never wait on its store claim.
+  const forwarded = await callControl(loadConfig(configPath).stateDir, commandFor(process.argv.slice(2))!);
+  if (forwarded) {
+    log('decision', forwarded.data as Record<string, unknown>);
+    process.exitCode = forwarded.code;
+  } else {
   let stop = false;
-  const signal = new AbortController();
-  process.once('SIGTERM', () => { stop = true; signal.abort(); });
-  process.once('SIGINT', () => { stop = true; signal.abort(); });
-  let configuredStateDir: string | undefined;
-  do {
-    let store: Store | undefined;
-    let seconds = 60;
-    try {
-      const c = loadConfig(configPath);
-      if (configuredStateDir && configuredStateDir !== c.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
-      configuredStateDir = c.stateDir; seconds = c.pollSeconds;
-      store = new Store(c.stateDir);
-      let claimed = store.claim();
-      for (let retry = 0; !claimed && options.manual && retry < 20 && !stop; retry++) {
-        await delay(500); claimed = store.claim();
-      }
-      if (!claimed) { store.close(); store = undefined; throw new Error('Another scheduler cycle is checking the queue. Try again shortly.'); }
-      const result = await cycle(c, store, options);
-      if (options.manual && !['dispatched', 'would-dispatch'].includes(result.reason)) process.exitCode = 1;
-      writeStatus(c, store);
-    } catch (e) {
-      const message = safeError(e); log('error', { message });
-      if (store) {
-        store.set('lastDecision', JSON.stringify({ reason: 'error', message, at: new Date().toISOString() }));
-        try { writeStatus(loadConfig(configPath), store); } catch { /* Invalid config is already logged. */ }
-      }
-      if (command !== 'run') process.exitCode = 1;
-    } finally { store?.close(); }
-    if (command !== 'run' || stop) break;
-    await delay(seconds * 1000, undefined, { signal: signal.signal }).catch(() => {});
-  } while (!stop);
+  process.once('SIGTERM', () => { stop = true; });
+  process.once('SIGINT', () => { stop = true; });
+  let store: Store | undefined;
+  try {
+    const c = loadConfig(configPath);
+    store = new Store(c.stateDir);
+    let claimed = store.claim();
+    for (let retry = 0; !claimed && options.manual && retry < 20 && !stop; retry++) {
+      await delay(500); claimed = store.claim();
+    }
+    if (!claimed) { store.close(); store = undefined; throw new Error('The scheduler is busy and not answering on its control socket. Try again shortly.'); }
+    const result = await cycle(c, store, options);
+    if (options.manual && !['dispatched', 'would-dispatch', 'plan-started'].includes(result.reason)) process.exitCode = 1;
+    writeStatus(c, store);
+  } catch (e) {
+    const message = safeError(e); log('error', { message });
+    if (store) {
+      store.decide({ reason: 'error', message, at: new Date().toISOString() });
+      try { writeStatus(loadConfig(configPath), store); } catch { /* Invalid config is already logged. */ }
+    }
+    process.exitCode = 1;
+  } finally { store?.close(); }
+  }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | web | web-pair | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

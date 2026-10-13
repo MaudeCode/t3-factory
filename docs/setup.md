@@ -94,6 +94,6 @@ ditto "build/T3 Factory.app" "$HOME/Applications/T3 Factory.app"
 open "$HOME/Applications/T3 Factory.app"
 ```
 
-The app is ad-hoc signed and requires macOS 14 or later. Quit it before replacing the bundle during an update. Left-click opens its status panel; right-click opens Settings. Quitting the app leaves the scheduler running.
+The app is ad-hoc signed and requires macOS 14 or later. Quit it before replacing the bundle during an update. Left-click opens its status panel: the automation switch, each provider's allowance, runs that need you, running work, chains, the queue, and a way to start a run. The count beside the icon is the number of runs waiting for you. Right-click opens Settings. The panel follows the scheduler's status file as it changes and sends commands through the CLI, so it reaches the running scheduler the same way the web app does. Quitting the app leaves the scheduler running.
 
 For browser and phone controls, continue with [web access](web-access.md). Both interfaces reuse the same CLI and private configuration.

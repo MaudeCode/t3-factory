@@ -37,10 +37,9 @@ for (const entry of [
   cpSync(join(root, entry), join(app, entry), { recursive: true });
 cpSync(envPath, join(app, ".env"));
 chmodSync(join(app, ".env"), 0o600);
-execFileSync("npm", ["ci", "--omit=dev", "--ignore-scripts"], {
-  cwd: app,
-  stdio: "inherit",
-});
+// Dependencies are copied in place rather than rebuilt with npm: the scheduler runs from the same
+// directory, and an npm install there removes modules it is loading.
+cpSync(join(root, "node_modules"), join(app, "node_modules"), { recursive: true });
 try {
   execFileSync("launchctl", ["bootout", `${domain}/${label}`], {
     stdio: "ignore",
