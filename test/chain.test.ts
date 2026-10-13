@@ -94,6 +94,9 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     finish('FIX-48');
     await runPlans(c, store, new T3(c.t3), new Kaneo(c.kaneo), instances, threads);
     assert.deepEqual(launches.slice(3).map(l => l.title), ['Factory: FIX-49']);
+    assert.match(launches[1].initialMessage.text, /Manual dispatch/, 'the launches made as the user chose the chain are manual');
+    assert.doesNotMatch(launches[3].initialMessage.text, /Manual dispatch/, 'a continuation keeps the automatic policy');
+    assert.match(launches[3].initialMessage.text, /Started by a chain the user requested/);
     finish('FIX-47'); finish('FIX-49');
     await runPlans(c, store, new T3(c.t3), new Kaneo(c.kaneo), instances, threads);
     assert.deepEqual(launches.slice(4).map(l => l.title), ['Factory: FIX-50'], 'the target starts once every ticket ahead of it is done');

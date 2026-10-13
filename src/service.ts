@@ -18,6 +18,9 @@ const DEFAULT_TIMING: ServiceTiming = { kaneoPollMs: 15_000 };
 export class FactoryService {
   private store!: Store;
   private t3!: T3;
+  private t3Settings = '';
+  private kaneoSettings = '';
+  private stream?: AbortController;
   private kaneo?: Promise<Kaneo>; // resolves once connected, so no caller sees a client mid-handshake
   private polling = false;
   private control?: Server;
@@ -41,16 +44,23 @@ export class FactoryService {
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
     if (!this.store.claim()) throw new Error('Another scheduler owns this state directory');
-    this.t3 = new T3(c.t3);
+    this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
     this.watcher = watch(dirname(this.configPath), (_, name) => { if (name === basename(this.configPath)) this.wake('config'); });
-    void this.t3.subscribe(item => this.onShellItem(item), this.abort.signal, error => log('t3-stream-error', { message: safeError(error) }));
     this.wake('start');
     this.scheduleQuota(c);
     this.kaneoTimer = setInterval(() => void this.checkKaneo(), this.timing.kaneoPollMs);
     log('service-started', { pid: process.pid, stateDir: c.stateDir });
   }
 
+  // A new T3 client and shell stream whenever the connection settings change, so an edit applies without a restart.
+  private connectT3(c: Config) {
+    this.stream?.abort();
+    this.t3 = new T3(c.t3); this.t3Settings = JSON.stringify(c.t3);
+    const stream = new AbortController(); this.stream = stream;
+    this.abort.signal.addEventListener('abort', () => stream.abort(), { once: true });
+    void this.t3.subscribe(item => this.onShellItem(item), stream.signal, error => log('t3-stream-error', { message: safeError(error) }));
+  }
   async stop() {
     this.stopped = true;
     this.abort.abort();
@@ -146,6 +156,8 @@ export class FactoryService {
     try {
       c = loadConfig(this.configPath);
       if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
+      if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
+      if (JSON.stringify(c.kaneo) !== this.kaneoSettings) { if (this.kaneoSettings) log('kaneo-settings-changed'); this.dropKaneo(); this.kaneoSettings = JSON.stringify(c.kaneo); }
       const kaneo = await this.ensureKaneo(c);
       const result = await cycle(c, this.store, options, { t3: this.t3, kaneo });
       writeStatus(c, this.store);

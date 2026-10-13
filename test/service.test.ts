@@ -24,6 +24,13 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.throws(() => commandFor(['dispatch', '--bogus']), /Unknown dispatch argument/);
     await new Promise<void>(resolve => server.close(() => resolve()));
     assert.equal(seen.length, 1);
+    // A scheduler that takes the request and then drops the connection leaves the outcome unknown; that is not "no scheduler".
+    const dropping = serveControl(dir, async () => new Promise(() => {}));
+    await new Promise(resolve => dropping.once('listening', resolve));
+    dropping.on('request', req => setTimeout(() => req.socket.destroy(), 50));
+    const lost = await callControl(dir, dispatch);
+    assert.equal((lost?.data as any)?.uncertain, true, JSON.stringify(lost));
+    await new Promise<void>(resolve => { dropping.closeAllConnections(); dropping.close(() => resolve()); });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

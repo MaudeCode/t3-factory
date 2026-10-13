@@ -40,13 +40,18 @@ export function serveControl(stateDir: string, handle: (command: ControlCommand)
 export function callControl(stateDir: string, command: ControlCommand, timeoutMs = 0): Promise<ControlResult | null> {
   const socketPath = controlPath(stateDir);
   if (!existsSync(socketPath)) return Promise.resolve(null);
+  // Only a failure before the request reached the scheduler means "no scheduler"; after that the outcome is unknown and
+  // must not be retried locally, because the scheduler may already have started the work.
+  const uncertain = { code: 1, data: { message: 'The scheduler stopped answering after taking the request. Check factory status before starting another run.', uncertain: true } };
   return new Promise(resolve => {
+    let sent = false;
     const req = request({ socketPath, path: '/', method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: timeoutMs }, res => {
       const chunks: Buffer[] = [];
       res.on('data', c => chunks.push(c));
-      res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { resolve(null); } });
+      res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { resolve(uncertain); } });
     });
-    req.on('error', () => resolve(null));
+    req.on('finish', () => { sent = true; }); // the request body reached the socket, so the scheduler may act on it
+    req.on('error', () => resolve(sent ? uncertain : null));
     if (timeoutMs) req.on('timeout', () => { req.destroy(); resolve({ code: 1, data: { message: 'The scheduler did not answer in time' } }); });
     req.end(JSON.stringify(command));
   });
