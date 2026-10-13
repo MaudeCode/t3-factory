@@ -118,10 +118,10 @@ export class FactoryService {
     clearTimeout(this.quotaTimer);
     if (this.stopped) return;
     this.quotaTimer = setTimeout(() => void this.enqueue(async () => {
-      const current = loadConfig(this.configPath);
-      try { await refreshQuota(current, this.store, this.t3); writeStatus(current, this.store); }
+      let current: Config | undefined;
+      try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3); writeStatus(current, this.store); }
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
-      finally { this.scheduleQuota(current); }
+      finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
     }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
   }
 

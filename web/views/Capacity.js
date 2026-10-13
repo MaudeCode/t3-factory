@@ -44,7 +44,7 @@ export function Capacity() {
           )}
         <//>
         <${Section} title="Timing">
-          <${Field} label="Wait for the provider to be idle" hint="Automatic ticket work starts only after you have not used the provider for this long. Reviews skip the wait."><${Range} label="Idle time" path=${["idleMinutes"]} min="0" max="180" step="5" format=${minutes} /><//>
+          <${Field} label="Wait for the provider to be idle" hint="Automatic ticket work starts only after you have not used the provider for this long. Reviews skip the wait."><${Range} label="Idle time" path=${["idleMinutes"]} min="1" max="180" step="1" format=${minutes} /><//>
           <${Field} label="Check the queue every"><${Range} label="Check interval" path=${["pollSeconds"]} min="15" max="900" step="15" format=${seconds} /><//>
         <//>
         <${Section} title="Waiting and recovery">
