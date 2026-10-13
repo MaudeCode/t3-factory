@@ -32,7 +32,10 @@ export function log(event: string, fields: Record<string, unknown> = {}) {
 }
 export function safeError(error: unknown): string {
   // Never log HTTP headers, credentials, prompts, or complete SDK error objects.
-  return String(error instanceof Error ? error.message ?? error.name : error).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
+  // T3 RPC failures arrive as plain tagged objects (`{ _tag, detail }`); their message getter does not survive serialization.
+  const fields = error && typeof error === 'object' && !(error instanceof Error) ? error as Record<string, unknown> : undefined;
+  const text = fields ? [fields._tag, fields.message ?? fields.detail].filter(v => typeof v === 'string' && v).join(': ') || 'Unknown error' : error instanceof Error ? error.message ?? error.name : error;
+  return String(text).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
 }
 async function git(path: string, args: string[]): Promise<string> {
   return (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000 })).stdout.trim();
