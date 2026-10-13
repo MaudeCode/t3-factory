@@ -13,6 +13,7 @@ import {
   decisionSentence,
   providerOf,
   providerName,
+  providerIcon,
   isActive,
   stateLabel,
   toneOf,
@@ -30,7 +31,7 @@ import {
   STOPS,
   stopOf,
 } from "../lib/format.js";
-import { Button, Switch, Check, Select, Meter, Stops, Tag, Link, Empty, Timeline, Help } from "../ui/index.js";
+import { Button, Switch, Check, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help } from "../ui/index.js";
 
 function Status() {
   const on = live.value.enabled,
@@ -173,7 +174,7 @@ export function UpNext({ limit = 5, children }) {
               <span class="rank">${i + 1}</span>
               <span class="next-body">
                 <span><b class="key">${t.key}</b> ${t.title}</span>
-                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.difficulty ? difficultyLabel(t.difficulty).toLowerCase() : "unclassified"} · ${t.priority}${t.labelRank != null ? ` · ${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}` : ""}</small>
+                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.difficulty ?? "unclassified"} · ${t.priority}${t.labelRank != null ? ` · ${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}` : ""}</small>
               </span>
               <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ?? "no automatic model fits"}</span>
             </a>`,
@@ -192,15 +193,16 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
     prs = (job.prUrls || []).map(safeLink).filter(Boolean),
     waiting = job.state === "waiting",
     active = isActive(job);
-  const timing = active
-    ? `${duration(job.createdAt)} in, active ${ago(job.lastExecutionAt ?? job.createdAt, now)}`
+  // Short on the row, spelled out on hover.
+  const [timing, timingTitle] = active
+    ? [`${duration(job.createdAt, now)} · ${ago(job.lastExecutionAt ?? job.createdAt, now)}`, `Running for ${duration(job.createdAt, now)}; last activity ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
     : waiting
-      ? `since ${ago(job.lastExecutionAt ?? job.createdAt, now)}`
+      ? [`for ${duration(job.lastExecutionAt ?? job.createdAt, now)}`, `Waiting for you since ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
       : job.completedAt
-        ? `${ago(job.completedAt, now)}, took ${duration(job.createdAt, job.completedAt)}`
+        ? [`${ago(job.completedAt, now)} · ${duration(job.createdAt, job.completedAt)}`, `Finished ${ago(job.completedAt, now)} after ${duration(job.createdAt, job.completedAt)}`]
         : job.dismissedAt
-          ? `${ago(job.dismissedAt, now)}, after ${duration(job.createdAt, job.dismissedAt)}`
-          : ago(job.createdAt, now);
+          ? [`${ago(job.dismissedAt, now)} · ${duration(job.createdAt, job.dismissedAt)}`, `Settled ${ago(job.dismissedAt, now)} after ${duration(job.createdAt, job.dismissedAt)}`]
+          : [ago(job.createdAt, now), `Started ${ago(job.createdAt, now)}`];
   // Settling in T3 is the ordinary way a run ends, so only an unusual reason is worth a line.
   const note = waiting ? (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason) : job.state === "dismissed" && !/^Dismissed by settling/.test(job.reason ?? "") ? job.reason : "";
   return html`<a class=${`run ${job.state}`} href=${`/runs/${job.id}`} onClick=${follow}>
@@ -211,23 +213,24 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
     </span>
     <span class="run-meta">
       ${showProject && project && html`<span>${project.name}</span>`}
-      <span>${modelName(c, job)} <span class="muted">(${providerName(providerOf(job))})</span></span>
-      ${job.difficulty && html`<span class="muted">${difficultyLabel(job.difficulty).toLowerCase()}</span>`}
+      <span><${Icon} name=${providerIcon(providerOf(job))} label=${providerName(providerOf(job))} /> ${modelName(c, job)}</span>
+      ${job.difficulty && html`<${Tag} title=${`${difficultyLabel(job.difficulty)} difficulty`}>${job.difficulty}<//>`}
     </span>
     <${Stops} n=${stopOf(job.state)} tone=${toneOf(job.state)} label=${stateLabel(job.state)} />
-    <span class="run-state muted"><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
+    <span class="run-state muted" title=${timingTitle}><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
     <span class="run-links" onClick=${(e) => e.stopPropagation()}>
-      ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
+      ${prs.map((href) => html`<${Link} key=${href} href=${href} class="run-pr" title=${prLabel(href)}><${Icon} name="pullRequest" label=${prLabel(href)} /><//>`)}
     </span>
   </a>`;
 }
 
-// Rows share one grid so the track column lines up under its legend.
+// Rows share one grid so the track column lines up under its legend. The pane around the grid is the
+// size container, since a container query cannot read the queried element's own width.
 export function RunList({ list, now = serverNow() }) {
-  return html`<div class="runs">
+  return html`<div class="runs-pane"><div class="runs">
     <div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>
     ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} />`)}
-  </div>`;
+  </div></div>`;
 }
 
 export function RunGroup({ title, list, limit = 8, empty, children }) {
@@ -303,8 +306,9 @@ export function Deck() {
           <${Composer} />
           <${Operation} />
         </section>
-        ${waiting.length > 0 && html`<${RunGroup} title="Needs you" list=${waiting} />`}
-        <${RunGroup} title="Running" list=${running} empty="Nothing is running." />
+        <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
+          ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}
+        <//>
         <${Chains} />
         <${UpNext}><a href="/runs?state=next" onClick=${follow}>Whole queue</a><//>
         <${RunGroup} title="Finished recently" list=${done} limit=${5} empty="Nothing has finished yet.">

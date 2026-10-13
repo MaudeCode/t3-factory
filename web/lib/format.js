@@ -27,7 +27,7 @@ export const until = (date, now = Date.now()) => {
   const s = (ms(date) - now) / 1000;
   return s > 0 ? `in ${span(s)}` : "now";
 };
-export const duration = (from, to) => (from ? span(Math.max(0, (Date.parse(to ?? new Date()) - Date.parse(from)) / 1000)) : "");
+export const duration = (from, to = Date.now()) => (from ? span(Math.max(0, (ms(to) - ms(from)) / 1000)) : "");
 export const clockTime = (date) => new Date(date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 export const dayLabel = (date) => {
   const d = new Date(date),
@@ -70,6 +70,7 @@ export const PROVIDERS = [
   { driver: "codex", name: "Codex", concurrency: "codex" },
 ];
 export const providerName = (driver) => PROVIDERS.find((p) => p.driver === driver)?.name ?? driver;
+export const providerIcon = (driver) => (driver === "codex" ? "openai" : "claude");
 export const providerOf = (job) =>
   job.providerDriver || (job.modelSelection?.instanceId === "codex" ? "codex" : "claudeAgent");
 
