@@ -68,8 +68,7 @@ enum FactoryIcon {
         statusItem = item
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: FactoryPanel(model: FactoryModel.shared))
-        // AppKit must position the full panel, not its default 320×320 content size.
-        popover.contentSize = NSSize(width: 400, height: 700)
+        popover.contentSize = panelSize()
         // Runs that need you show as a count beside the icon.
         badge = FactoryModel.shared.$status.receive(on: DispatchQueue.main).sink { [weak self] _ in
             let waiting = FactoryModel.shared.waitingJobs.count
@@ -88,11 +87,17 @@ enum FactoryIcon {
             return
         }
         if ProcessInfo.processInfo.arguments.contains("--panel"), let button = item.button {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.popover.contentSize = self.panelSize(); self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
         } else if !UserDefaults.standard.bool(forKey: "openedSettings") || ProcessInfo.processInfo.arguments.contains("--settings") {
             FactoryModel.shared.openSettings()
             UserDefaults.standard.set(true, forKey: "openedSettings")
         }
+    }
+    // The panel is as tall as the screen under the menu bar allows, up to 720 points, so it never has to overlap the bar.
+    private func panelSize() -> NSSize {
+        let screen = statusItem?.button?.window?.screen ?? NSScreen.main
+        let available = (screen?.visibleFrame.height ?? 800) - 24
+        return NSSize(width: 420, height: min(720, max(420, available)))
     }
     @objc private func openFromStatusBar(_ sender: NSStatusBarButton) {
         if NSApp.currentEvent?.type == .rightMouseUp || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
@@ -101,6 +106,7 @@ enum FactoryIcon {
             closePopover()
         } else {
             NSApp.activate(ignoringOtherApps: true)
+            popover.contentSize = panelSize()
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }

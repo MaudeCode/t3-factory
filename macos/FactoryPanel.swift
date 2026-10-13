@@ -27,7 +27,7 @@ struct FactoryPanel: View {
         }
         .background(Theme.bg)
         .frame(width: compact ? 420 : nil)
-        .frame(height: compact ? 720 : nil)
+        .frame(maxHeight: .infinity)
         .themed()
         .alert(promptTitle, isPresented: Binding(get: { model.prompt != nil }, set: { if !$0 { model.prompt = nil } }), presenting: model.prompt, actions: promptActions, message: promptMessage)
     }
