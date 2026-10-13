@@ -57,7 +57,7 @@ export const streamReason = (reason) => STREAM_REASONS[reason] ?? (reason ? reas
 export function decisionSentence(decision) {
   if (!decision) return "No check has run yet.";
   const d = decision;
-  if (d.reason === "disabled") return "Automation is paused. Running work continues.";
+  if (d.reason === "disabled") return `Automation is paused. Running work continues.${d.eligible ? ` ${d.eligible} ticket${d.eligible === 1 ? "" : "s"} ready to start.` : ""}`;
   if (d.reason === "error") return `The last check failed: ${d.message}`;
   if (d.reason === "dispatched") return `Started ${d.ticket ?? (d.upstream ? `a review of ${d.upstream.name} ${d.upstream.candidate}` : `discovery for ${d.project}`)} on ${d.model}.`;
   const streams = (d.streams || []).map((s) => `${s.provider} is ${streamReason(s.reason)}`).join("; ");

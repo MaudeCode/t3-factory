@@ -607,19 +607,23 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       try { stream.quota = await readModelQuota(t3, c, jobs, preset.id); }
       catch (error) { stream.quotaError = safeError(error); }
     }
-    // Fully paused: provider status and quota stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
+    // The queue is read on every pass, paused or not, so the page always shows what would start next.
     const reviewsOn = !!c.upstream?.enabled, ticketsOn = c.enabled || !!options.manual || !!options.doctor;
-    if (!ticketsOn && !reviewsOn) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams }); }
-    const queue = !ticketsOn ? { ready: [], skipped: [], selected: undefined } as Awaited<ReturnType<typeof inventory>> : await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel);
+    // While tickets are paused the read is for display only, so a Kaneo failure must not hold up reviews.
+    let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true;
+    try { queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel); }
+    catch (error) { if (ticketsOn) throw error; queueRead = false; log('queue-read-failed', { message: safeError(error) }); }
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     if (options.manual && options.ticket && !queue.ready.length) {
       const chained = await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, override, decision);
       if (chained) return chained;
     }
-    if (!options.ticket && ticketsOn) store.set('upNext', JSON.stringify(upNext(c, store, queue)));
+    if (!options.ticket && queueRead) store.set('upNext', JSON.stringify(upNext(c, store, queue)));
+    // Fully paused: provider status, quota, and the queue stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
+    if (!ticketsOn && !reviewsOn) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams, eligible: queue.ready.length }); }
     // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
     const reviews = options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
-    const candidates = [...queue.ready];
+    const candidates = ticketsOn ? [...queue.ready] : [];
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
     const claimedProjects = new Set<string>();
