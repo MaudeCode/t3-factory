@@ -174,7 +174,7 @@ export function UpNext({ limit = 5, children }) {
               <span class="rank">${i + 1}</span>
               <span class="next-body">
                 <span><b class="key">${t.key}</b> ${t.title}</span>
-                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.difficulty ? difficultyLabel(t.difficulty).toLowerCase() : "unclassified"} · ${t.priority}${t.labelRank != null ? ` · ${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}` : ""}</small>
+                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.difficulty ?? "unclassified"} · ${t.priority}${t.labelRank != null ? ` · ${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}` : ""}</small>
               </span>
               <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ?? "no automatic model fits"}</span>
             </a>`,
@@ -214,7 +214,7 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
     <span class="run-meta">
       ${showProject && project && html`<span>${project.name}</span>`}
       <span><${Icon} name=${providerIcon(providerOf(job))} label=${providerName(providerOf(job))} /> ${modelName(c, job)}</span>
-      ${job.difficulty && html`<span class="muted">${difficultyLabel(job.difficulty).toLowerCase()}</span>`}
+      ${job.difficulty && html`<${Tag} title=${`${difficultyLabel(job.difficulty)} difficulty`}>${job.difficulty}<//>`}
     </span>
     <${Stops} n=${stopOf(job.state)} tone=${toneOf(job.state)} label=${stateLabel(job.state)} />
     <span class="run-state muted" title=${timingTitle}><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
@@ -306,8 +306,9 @@ export function Deck() {
           <${Composer} />
           <${Operation} />
         </section>
-        ${waiting.length > 0 && html`<${RunGroup} title="Needs you" list=${waiting} />`}
-        <${RunGroup} title="Running" list=${running} empty="Nothing is running." />
+        <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
+          ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}
+        <//>
         <${Chains} />
         <${UpNext}><a href="/runs?state=next" onClick=${follow}>Whole queue</a><//>
         <${RunGroup} title="Finished recently" list=${done} limit=${5} empty="Nothing has finished yet.">
