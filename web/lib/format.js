@@ -71,6 +71,8 @@ export const PROVIDERS = [
 ];
 export const providerName = (driver) => PROVIDERS.find((p) => p.driver === driver)?.name ?? driver;
 export const providerIcon = (driver) => (driver === "codex" ? "openai" : "claude");
+// The preset an up next entry would start with: by id, or by name for a queue written before ids were recorded.
+export const presetFor = (config, entry) => config.models.find((m) => m.id === entry.modelId) ?? config.models.find((m) => m.name === entry.model);
 export const providerOf = (job) =>
   job.providerDriver || (job.modelSelection?.instanceId === "codex" ? "codex" : "claudeAgent");
 

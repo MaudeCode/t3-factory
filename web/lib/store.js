@@ -16,6 +16,8 @@ export const status = signal({});
 export const journal = signal([]);
 export const history = signal(null); // every job, newest first, loaded on demand
 export const providers = signal([]);
+// The driver behind a provider instance, from T3's catalog once loaded; an instance named after its driver needs no catalog.
+export const instanceDriver = (instanceId) => providers.value.find((p) => p.instanceId === instanceId)?.driver ?? (instanceId === "codex" ? "codex" : "claudeAgent");
 export const sources = signal(null); // T3 projects, Kaneo projects with columns, and labels; loaded on demand
 export const live = signal({ enabled: false, upstream: false, concurrency: { claude: 1, codex: 1 } });
 export const busy = signal(false);

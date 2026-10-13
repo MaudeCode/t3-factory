@@ -1,7 +1,7 @@
 import { html, useEffect } from "../lib/h.js";
-import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption } from "../lib/store.js";
-import { DIFFICULTIES, difficultyLabel, providerName, streamReason, isOpen } from "../lib/format.js";
-import { Button, Field, Input, Select, Segmented, Toggle, Tag, SortableList, Help } from "../ui/index.js";
+import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption, instanceDriver } from "../lib/store.js";
+import { DIFFICULTIES, difficultyLabel, providerName, providerIcon, streamReason, isOpen } from "../lib/format.js";
+import { Button, Field, Input, Select, Segmented, Toggle, Tag, Icon, SortableList, Help } from "../ui/index.js";
 
 // What the scheduler thinks of each model right now.
 function liveState(m) {
@@ -33,7 +33,7 @@ function Editor({ index }) {
   const inUse = jobs.value.some((j) => isOpen(j) && j.modelSelection?.model === m.model.model && j.modelSelection?.instanceId === m.model.instanceId);
   return html`<div class="detail">
     <div class="detail-head">
-      <div><h2>${m.name}</h2><p class="muted">${live.text}${provider && provider.status && provider.status !== "ready" ? `. Provider ${provider.status}` : ""}</p></div>
+      <div><h2><${Icon} name=${providerIcon(instanceDriver(m.model.instanceId))} /> ${m.name}</h2><p class="muted">${live.text}${provider && provider.status && provider.status !== "ready" ? `. Provider ${provider.status}` : ""}</p></div>
       <${Button} variant="danger" size="sm" disabled=${inUse || config.value.models.length === 1} title=${inUse ? "A run is still using this model" : undefined} onClick=${() => actions.removeModel(index)}>Remove<//>
     </div>
     <${Toggle} path=${[...p, "automatic"]} label="Takes tickets automatically" hint=${m.automatic ? "The scheduler may pick this model when it is next in priority and inside its allowance." : "Only used when you start a run and choose it."} />
@@ -77,7 +77,7 @@ export function Models() {
             <span class="rank">${i + 1}</span>
             <span class="item-body">
               <b>${m.name}</b>
-              <small>${providerName(m.model.instanceId)}, ${m.model.model || "no model"}, up to ${difficultyLabel(m.maxDifficulty).toLowerCase()}</small>
+              <small><${Icon} name=${providerIcon(instanceDriver(m.model.instanceId))} label=${providerName(instanceDriver(m.model.instanceId))} /> ${m.model.model || "no model"} · up to ${difficultyLabel(m.maxDifficulty).toLowerCase()}</small>
               <small class=${live.tone ? `tone-${live.tone}` : ""}>${live.text}</small>
             </span>
             <${Tag} tone=${m.automatic ? "on" : ""}>${m.automatic ? "automatic" : "manual"}<//>

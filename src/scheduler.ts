@@ -958,7 +958,10 @@ export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'sk
   }
   return {
     at: new Date().toISOString(),
-    tickets: order.map(t => ({ id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labelRank: t.labelRank, after: t.after ?? [], model: c.models.find(m => m.automatic && acceptsDifficulty(m, t))?.name ?? null })),
+    tickets: order.map(t => {
+      const preset = c.models.find(m => m.automatic && acceptsDifficulty(m, t));
+      return { id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labelRank: t.labelRank, after: t.after ?? [], model: preset?.name ?? null, modelId: preset?.id ?? null };
+    }),
     held: queue.skipped.filter(s => !s.id || !projected.has(s.id)).map(s => ({ key: s.key, reason: s.reason })),
   };
 }

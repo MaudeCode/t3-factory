@@ -12,6 +12,7 @@ import {
   toneOf,
   providerOf,
   providerName,
+  providerIcon,
   isOpen,
   ticketLink,
   projectLink,
@@ -23,7 +24,7 @@ import {
   difficultyLabel,
   PENDING_KINDS,
 } from "../lib/format.js";
-import { Button, Select, Segmented, Tag, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
+import { Button, Select, Segmented, Tag, Icon, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
 import { RunList, UpNext, Chains } from "./Deck.js";
 
 export function Runs() {
@@ -106,7 +107,7 @@ export function RunDetail({ id }) {
     ${job.state === "waiting" && html`<p class="callout">${job.thread?.pending ? `T3 ${PENDING_KINDS[job.thread.pending] ?? `is waiting: ${job.thread.pending}`}. ` : ""}${job.reason}</p>`}
     <${Facts}
       items=${[
-        ["Model", html`${modelName(c, job)} <span class="muted">(${providerName(providerOf(job))}, ${job.modelSelection?.model})</span>`],
+        ["Model", html`<${Icon} name=${providerIcon(providerOf(job))} label=${providerName(providerOf(job))} /> ${modelName(c, job)} <span class="muted mono">${job.modelSelection?.model}</span>`],
         ["Why this model", job.modelReason],
         ["Difficulty", job.difficulty && difficultyLabel(job.difficulty)],
         ["Started", `${clockTime(job.createdAt)}, ${ago(job.createdAt, now)}`],

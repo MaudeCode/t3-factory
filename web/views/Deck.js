@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import {
   ago,
@@ -14,6 +14,7 @@ import {
   providerOf,
   providerName,
   providerIcon,
+  presetFor,
   isActive,
   stateLabel,
   toneOf,
@@ -67,7 +68,7 @@ function Machine({ provider }) {
   const assigned = quota?.factoryRouting?.modelId && config.value.models.find((m) => m.id === quota.factoryRouting.modelId)?.name;
   return html`<section class="machine ready">
     <header>
-      <h2>${provider.name}</h2>
+      <h2><${Icon} name=${providerIcon(provider.driver)} /> ${provider.name}</h2>
       <span class="reason">${reason}</span>
     </header>
     <p class="slots">
@@ -174,9 +175,12 @@ export function UpNext({ limit = 5, children }) {
               <span class="rank">${i + 1}</span>
               <span class="next-body">
                 <span><b class="key">${t.key}</b> ${t.title}</span>
-                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.difficulty ?? "unclassified"} · ${t.priority}${t.labelRank != null ? ` · ${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}` : ""}</small>
+                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.priority} priority
+                  ${t.difficulty ? html`<${Tag} title=${`${difficultyLabel(t.difficulty)} difficulty`}>${t.difficulty}<//>` : html`<${Tag} tone="attention">no difficulty<//>`}
+                  ${t.labelRank != null && html`<${Tag} tone="on">${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}<//>`}
+                </small>
               </span>
-              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ?? "no automatic model fits"}</span>
+              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(presetFor(c, t)?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
             </a>`,
           )
         : html`<${Empty}>Nothing is ready to start.<//>`}
@@ -208,11 +212,11 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
   return html`<a class=${`run ${job.state}`} href=${`/runs/${job.id}`} onClick=${follow}>
     <span class="run-key">
       ${ticket ? html`<span onClick=${(e) => e.stopPropagation()}><${Link} href=${ticket} class="key">${job.label}<//></span>` : html`<b class="key">${job.label}</b>`}
-      ${job.kind && job.kind !== "ticket" && html`<${Tag}>${job.kind === "upstream" ? "review" : "discovery"}<//>`}
       ${note && html`<span onClick=${(e) => e.stopPropagation()}><${Help} text=${note} glyph=${waiting ? "!" : "i"} tone=${waiting ? "attention" : ""} /></span>`}
     </span>
     <span class="run-meta">
       ${showProject && project && html`<span>${project.name}</span>`}
+      ${job.kind && job.kind !== "ticket" && html`<${Tag}>${job.kind === "upstream" ? "review" : "discovery"}<//>`}
       <span><${Icon} name=${providerIcon(providerOf(job))} label=${providerName(providerOf(job))} /> ${modelName(c, job)}</span>
       ${job.difficulty && html`<${Tag} title=${`${difficultyLabel(job.difficulty)} difficulty`}>${job.difficulty}<//>`}
     </span>

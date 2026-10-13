@@ -1,7 +1,7 @@
 import { html } from "../lib/h.js";
 import { config, status, jobs, clock, serverNow } from "../lib/store.js";
-import { PROVIDERS, WINDOW_NAMES, providerOf, isActive, until, ago, span } from "../lib/format.js";
-import { Field, Range, Stepper, Slots, Budget, Section, useReady, Help } from "../ui/index.js";
+import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span } from "../lib/format.js";
+import { Field, Range, Stepper, Slots, Budget, Section, useReady, Help, Icon } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
@@ -19,7 +19,7 @@ function Allowance({ provider, title, windows }) {
   const quota = quotaFor(provider.driver);
   const live = Object.fromEntries((quota?.windows || []).map((w) => [w.name, w]));
   if (quota?.factoryRouting?.fableRemainingPercent != null) live.fable = { remaining: quota.factoryRouting.fableRemainingPercent };
-  return html`<${Section} title=${title} hint="The dashed line is what is held back right now; the reserve relaxes as the window nears its reset, the floor never does." aside=${html`<small class="muted">${quota?.capturedAt ? `read ${ago(quota.capturedAt, now)}` : "no reading yet"}</small>`}>
+  return html`<${Section} title=${html`<${Icon} name=${providerIcon(provider.driver)} /> ${title}`} hint="The dashed line is what is held back right now; the reserve relaxes as the window nears its reset, the floor never does." aside=${html`<small class="muted">${quota?.capturedAt ? `read ${ago(quota.capturedAt, now)}` : "no reading yet"}</small>`}>
     ${windows.map(([key, label]) => {
       const w = live[key];
       return html`<${Budget} key=${key} ready=${ready} label=${label} remaining=${w?.remaining} reserved=${w?.reserved}
@@ -40,7 +40,7 @@ export function Capacity() {
       <div>
         <${Section} title="Runs at once" hint="Filled slots are running now. Runs waiting for you free their slot. A run you start by hand may exceed the limit.">
           ${PROVIDERS.map(
-            (p) => html`<${Field} group key=${p.driver} label=${`${p.name}: ${running[p.driver]} running`}><${Slots} label=${`${p.name} runs at once`} path=${["concurrency", p.concurrency]} running=${running[p.driver]} /><//>`,
+            (p) => html`<${Field} group key=${p.driver} label=${html`<${Icon} name=${providerIcon(p.driver)} /> ${p.name}: ${running[p.driver]} running`}><${Slots} label=${`${p.name} runs at once`} path=${["concurrency", p.concurrency]} running=${running[p.driver]} /><//>`,
           )}
         <//>
         <${Section} title="Timing">
