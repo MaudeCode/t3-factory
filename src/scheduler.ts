@@ -370,15 +370,17 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
     const branch = expectedBranch ?? job.workspaceCleanup?.branch ?? job.dismissedBranch ?? assignedBranch(job) ?? thread?.branch;
     if (!branch) continue;
     if (job.state === 'dismissed') {
-      if (!job.dismissedAt || !job.dismissedHead) continue;
-      const cleanedBinding = job.workspaceCleanedAt && thread?.branch === null && thread.worktreePath === null;
+      // Settled after cleanup unbound the thread: the head cleanup verified as released stands in for the one dismissal could not read.
+      const dismissedHead = job.dismissedHead ?? job.workspaceCleanup?.head;
+      if (!job.dismissedAt || !dismissedHead) continue;
+      const cleanedBinding = (job.workspaceCleanedAt || job.workspaceCleanup) && thread?.branch === null && thread.worktreePath === null;
       if (thread && (thread.settledOverride !== 'settled' || executing(thread) || (thread.branch !== branch && !cleanedBinding) || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
-      const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath;
+      const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath ?? job.workspaceCleanup?.path;
       if (worktreePath && existsSync(worktreePath)) {
         const [head, changes] = await Promise.all([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
-        if (head !== job.dismissedHead || changes) continue;
+        if (head !== dismissedHead || changes) continue;
       }
-      branches.set(branch, job.dismissedHead); if (thread) inactiveThreads.add(thread.id); continue;
+      branches.set(branch, dismissedHead); if (thread) inactiveThreads.add(thread.id); continue;
     }
     // The completed thread is inactive while idle, unresumed, and clean at its verified head.
     const release = async (head: string) => {
