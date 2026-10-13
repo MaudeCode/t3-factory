@@ -1,5 +1,5 @@
 // Home: what the factory is doing right now, why, and what needs you.
-import { html, useEffect, useRef, useState } from "../lib/h.js";
+import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
@@ -248,49 +248,7 @@ export function RunGroup({ title, list, limit = 8, empty, children }) {
   </section>`;
 }
 
-const PULL = 60;
-function usePullToRefresh(onRefresh) {
-  const ref = useRef();
-  useEffect(() => {
-    const el = ref.current;
-    let start = null;
-    const move = (e) => {
-      if (start === null) return;
-      const dy = e.touches[0].clientY - start;
-      if (dy <= 0) return void ((start = null), (el.style.height = "0px"));
-      if (e.cancelable) e.preventDefault();
-      const d = Math.min(dy / 2, PULL);
-      el.style.height = d + "px";
-      el.textContent = d >= PULL ? "Release to refresh" : "Pull to refresh";
-    };
-    const begin = (e) => {
-      start = window.scrollY === 0 ? e.touches[0].clientY : null;
-      el.classList.remove("settle");
-    };
-    const end = async () => {
-      if (start === null) return;
-      start = null;
-      el.classList.add("settle");
-      if (parseFloat(el.style.height) >= PULL) {
-        el.textContent = "Refreshing";
-        await onRefresh();
-      }
-      el.style.height = "0px";
-    };
-    document.addEventListener("touchstart", begin, { passive: true });
-    document.addEventListener("touchmove", move, { passive: false });
-    document.addEventListener("touchend", end, { passive: true });
-    return () => {
-      document.removeEventListener("touchstart", begin);
-      document.removeEventListener("touchmove", move);
-      document.removeEventListener("touchend", end);
-    };
-  }, []);
-  return ref;
-}
-
 export function Deck() {
-  const ptr = usePullToRefresh(actions.refresh);
   useEffect(() => {
     if (!history.value) loadHistory().catch(() => {});
   }, []);
@@ -301,7 +259,6 @@ export function Deck() {
   // Settled runs leave the live status, so the finished list comes from history.
   const done = (history.value ?? list).filter(isFinished).sort(byFinished);
   return html`
-    <div ref=${ptr} class="ptr" aria-live="polite"></div>
     <${Status} />
     <div class="strip">${PROVIDERS.map((p) => html`<${Machine} key=${p.driver} provider=${p} />`)}</div>
     <div class="deck">
