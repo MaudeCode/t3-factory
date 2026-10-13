@@ -75,6 +75,18 @@ enum Words {
         guard let text, let date = Words.date(text) else { return "never" }
         return span(now.timeIntervalSince(date)) + " ago"
     }
+    static func clock(_ text: String?) -> String {
+        guard let text, let date = Words.date(text) else { return "" }
+        let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short
+        return f.string(from: date)
+    }
+    static func day(_ text: String?) -> String {
+        guard let text, let date = Words.date(text) else { return "" }
+        if Calendar.current.isDateInToday(date) { return "Today" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMM d"
+        return f.string(from: date)
+    }
     static func until(_ text: String?, now: Date) -> String {
         guard let text, let date = Words.date(text) else { return "" }
         let s = date.timeIntervalSince(now)
@@ -107,6 +119,8 @@ enum RunPrompt: Identifiable {
     @Published var providers: [[String: Any]] = []
     @Published var catalogLoading = false
     @Published var catalogError: String?
+    @Published var sources: [String: Any]?
+    @Published var sourcesError: String?
     private var settingsWindow: NSWindowController?
     private var editingBase: [String: Any] = [:]
     private var clock: Timer?
@@ -148,6 +162,20 @@ enum RunPrompt: Identifiable {
     var queued: [[String: Any]] { upNext?["tickets"] as? [[String: Any]] ?? [] }
     var held: [[String: Any]] { upNext?["held"] as? [[String: Any]] ?? [] }
     var chains: [[String: Any]] { (status["plans"] as? [[String: Any]] ?? []).filter { $0["state"] as? String == "active" } }
+    var journal: [[String: Any]] { status["journal"] as? [[String: Any]] ?? [] }
+    var recentJobs: [[String: Any]] { status["recent"] as? [[String: Any]] ?? [] }
+    var t3Projects: [[String: Any]] { sources?["t3"] as? [[String: Any]] ?? [] }
+    var kaneoProjects: [[String: Any]] { (sources?["kaneo"] as? [String: Any])?["projects"] as? [[String: Any]] ?? [] }
+    var workspaceLabels: [String] { (sources?["kaneo"] as? [String: Any])?["labels"] as? [String] ?? [] }
+    func columns(_ kaneoId: String) -> [[String: Any]] { ((sources?["kaneo"] as? [String: Any])?["columns"] as? [String: Any])?[kaneoId] as? [[String: Any]] ?? [] }
+    // The scheduler's view of a configured model on its last pass.
+    func liveModelState(_ id: String) -> String {
+        for s in streams {
+            if ((s["quota"] as? [String: Any])?["factoryRouting"] as? [String: Any])?["modelId"] as? String == id { return "next automatic run" }
+            if let entry = (s["models"] as? [[String: Any]])?.first(where: { $0["id"] as? String == id }) { return Self.streamReasons[entry["reason"] as? String ?? ""] ?? (entry["reason"] as? String ?? "") }
+        }
+        return ""
+    }
     var liveConcurrency: [String: Int] {
         let limits = config["concurrency"] as? [String: Any] ?? [:]
         return ["claudeAgent": (limits["claude"] as? NSNumber)?.intValue ?? 1, "codex": (limits["codex"] as? NSNumber)?.intValue ?? 1]
@@ -235,6 +263,45 @@ enum RunPrompt: Identifiable {
             providers = list; catalogError = nil
         } catch { catalogError = error.localizedDescription }
     }
+    func refreshSources() async {
+        guard sources == nil else { return }
+        do {
+            let result = try await execute(["sources"])
+            guard result.code == 0, let object = jsonObject(result.text) else { throw failure(result) }
+            sources = object; sourcesError = nil
+        } catch { sourcesError = error.localizedDescription }
+    }
+    // A project starts from what T3 and Kaneo already know about it; everything stays editable.
+    func addProject(t3: [String: Any]?, kaneo: [String: Any]?) -> Int {
+        var items = draft["projects"] as? [[String: Any]] ?? []
+        let kaneoId = kaneo?["id"] as? String ?? ""
+        let root = t3?["workspaceRoot"] as? String ?? ""
+        let parts = root.split(separator: "/")
+        let guessed = parts.count >= 4 ? "\(parts[parts.count - 2])/\(parts[parts.count - 1])" : ""
+        items.append(["name": t3?["title"] as? String ?? kaneo?["name"] as? String ?? "New project", "enabled": false, "key": kaneo?["slug"] as? String ?? "", "kaneoId": kaneoId, "t3Id": t3?["id"] as? String ?? "",
+                      "repoPath": root, "githubRepo": kaneo?["githubRepo"] as? String ?? guessed, "baseBranch": "main", "priorityLabels": [], "upstreams": []].merging(statuses(for: kaneoId)) { _, b in b })
+        update(["projects"], items)
+        return items.count - 1
+    }
+    // Ready is the first column, done is every final column, when the Kaneo catalog knows the project.
+    func statuses(for kaneoId: String) -> [String: Any] {
+        let cols = columns(kaneoId)
+        guard !cols.isEmpty else { return ["readyStatuses": ["to-do"], "doneStatuses": ["done"]] }
+        let done = cols.filter { $0["isFinal"] as? Bool == true }.compactMap { $0["slug"] as? String }
+        return ["readyStatuses": [cols.first { $0["isFinal"] as? Bool != true }?["slug"] as? String ?? cols[0]["slug"] as? String ?? "to-do"], "doneStatuses": done.isEmpty ? [cols.last?["slug"] as? String ?? "done"] : done]
+    }
+    func linkT3(_ index: Int, id: String) {
+        let project = t3Projects.first { $0["id"] as? String == id }
+        update(["projects", String(index), "t3Id"], id)
+        if let root = project?["workspaceRoot"] as? String { update(["projects", String(index), "repoPath"], root) }
+    }
+    func linkKaneo(_ index: Int, id: String) {
+        let project = kaneoProjects.first { $0["id"] as? String == id }
+        update(["projects", String(index), "kaneoId"], id)
+        if let slug = project?["slug"] as? String { update(["projects", String(index), "key"], slug) }
+        for (key, value) in statuses(for: id) { update(["projects", String(index), key], value) }
+    }
+    func stringList(_ path: [String]) -> Binding<[String]> { Binding(get: { valueAt(self.draft, path) as? [String] ?? [] }, set: { self.update(path, $0) }) }
     func availableModels(_ instanceId: String) -> [[String: Any]] {
         providers.first { $0["instanceId"] as? String == instanceId }?["models"] as? [[String: Any]] ?? []
     }
@@ -426,4 +493,5 @@ enum RunPrompt: Identifiable {
         NSWorkspace.shared.open(url)
     }
     func openFile(_ path: String) { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+    func openURL(_ text: String) { if let url = URL(string: text) { NSWorkspace.shared.open(url) } }
 }

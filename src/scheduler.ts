@@ -964,6 +964,10 @@ export function writeStatus(c: Config, store: Store) {
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
     jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })),
+    // The menu app reads only this file, so it gets the recent journal and the last finished runs here.
+    journal: store.events(60),
+    recent: store.jobs().filter(j => ['complete', 'dismissed'].includes(j.state)).map(({ command, ...job }) => ({ ...job, label: jobLabel(job) }))
+      .toSorted((a, b) => (b.completedAt ?? b.dismissedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.dismissedAt ?? a.createdAt)).slice(0, 15),
   };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
   return result;

@@ -77,6 +77,12 @@ enum FactoryIcon {
             self?.statusItem?.button?.imagePosition = .imageLeading
             self?.statusItem?.length = waiting > 0 ? NSStatusItem.variableLength : NSStatusItem.squareLength
         }
+        // `--render DIR` draws the panel and every window page to PNG files and quits, for review without screen recording.
+        if let at = ProcessInfo.processInfo.arguments.firstIndex(of: "--render"), ProcessInfo.processInfo.arguments.indices.contains(at + 1) {
+            let dir = ProcessInfo.processInfo.arguments[at + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { FactoryRender.all(to: dir); NSApp.terminate(nil) }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--panel"), let button = item.button {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
         } else if !UserDefaults.standard.bool(forKey: "openedSettings") || ProcessInfo.processInfo.arguments.contains("--settings") {
@@ -110,3 +116,25 @@ enum FactoryIcon {
     }
 }
 
+
+
+enum FactoryRender {
+    @MainActor static func all(to dir: String) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        write(FactoryPanel(model: FactoryModel.shared), size: NSSize(width: 420, height: 720), to: "\(dir)/panel.png")
+        for page in ["factory", "runs", "activity", "models", "capacity", "projects", "upstream"] {
+            write(FactorySettingsView(model: FactoryModel.shared, page: page), size: NSSize(width: 1100, height: 820), to: "\(dir)/\(page).png")
+        }
+    }
+    @MainActor static func write<V: View>(_ view: V, size: NSSize, to path: String) {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.appearance = NSAppearance(named: .darkAqua)
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)) }
+    }
+}

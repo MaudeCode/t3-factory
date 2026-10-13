@@ -12,7 +12,7 @@ Tests use fixtures and temporary state. They cover quota policy, provider routin
 
 `package.json` keeps `private: true` to prevent accidental npm publication. This is a source-installed application.
 
-For the native app, install Xcode Command Line Tools and run `npm run build:menu`. Building does not replace a running app. Use the [setup guide](setup.md#optional-interfaces) to install it after quitting the previous version.
+For the native app, install Xcode Command Line Tools and run `npm run build:menu`. Building does not replace a running app. Use the [setup guide](setup.md#optional-interfaces) to install it after quitting the previous version. The app reads `status.json` and talks to the scheduler through the CLI; `T3Factory --render <dir>` draws the panel and every window page to PNG files from the current state and quits, which is how its views are checked without screen recording.
 
 ## Source layout
 

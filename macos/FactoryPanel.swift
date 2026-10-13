@@ -7,119 +7,84 @@ struct FactoryPanel: View {
     var compact = true
     var body: some View {
         VStack(spacing: 0) {
-            if compact { header; Divider() }
+            if compact { header; Rectangle().fill(Theme.line).frame(height: 1) }
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
                     automation
-                    providers
-                    if !model.waitingJobs.isEmpty { group("Needs you", count: model.waitingJobs.count) { ForEach(model.waitingJobs, id: \.jobId) { RunRow(model: model, job: $0) } } }
-                    group("Running", count: model.activeJobs.count) {
-                        if model.activeJobs.isEmpty { empty("Nothing is running.") } else { ForEach(model.activeJobs, id: \.jobId) { RunRow(model: model, job: $0) } }
+                    HStack(alignment: .top, spacing: 12) { ProviderCard(model: model, driver: "claudeAgent"); ProviderCard(model: model, driver: "codex") }
+                    if !model.waitingJobs.isEmpty { section("Needs you", count: model.waitingJobs.count) { ForEach(model.waitingJobs, id: \.rowId) { RunRow(model: model, job: $0) } } }
+                    section("Running", count: model.activeJobs.count) {
+                        if model.activeJobs.isEmpty { empty("Nothing is running.") } else { ForEach(model.activeJobs, id: \.rowId) { RunRow(model: model, job: $0) } }
                     }
-                    ForEach(model.chains, id: \.planId) { ChainCard(model: model, plan: $0) }
-                    upNext
+                    ForEach(model.chains, id: \.rowId) { ChainCard(model: model, plan: $0) }
+                    UpNextCard(model: model, limit: 5)
                     composer
-                }.padding(16)
+                    if !model.recentJobs.isEmpty { section("Finished recently", count: nil) { ForEach(model.recentJobs.prefix(4), id: \.rowId) { RunRow(model: model, job: $0) } } }
+                    if !model.journal.isEmpty { section("Activity", count: nil) { ForEach(model.journal.prefix(6), id: \.rowId) { JournalRow(model: model, event: $0) } } }
+                }.padding(14)
             }
-            if compact { Divider(); footer }
+            if compact { Rectangle().fill(Theme.line).frame(height: 1); footer }
         }
-        .frame(width: compact ? 400 : nil)
-        .frame(height: compact ? 700 : nil)
+        .background(Theme.bg)
+        .frame(width: compact ? 420 : nil)
+        .frame(height: compact ? 720 : nil)
+        .themed()
         .alert(promptTitle, isPresented: Binding(get: { model.prompt != nil }, set: { if !$0 { model.prompt = nil } }), presenting: model.prompt, actions: promptActions, message: promptMessage)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
             Image(nsImage: FactoryIcon.image)
-            Text("Factory").font(.headline)
+            Text("FACTORY").font(.system(size: 13, weight: .bold)).kerning(1.2)
             Spacer()
-            Text(model.lastCheck).font(.caption).foregroundStyle(.secondary)
-            Button { model.openSettings() } label: { Image(systemName: "gearshape") }.buttonStyle(.plain).help("Settings")
-        }.padding(.horizontal, 16).padding(.vertical, 12)
+            Text(model.lastCheck).font(.system(size: 11)).foregroundStyle(Theme.muted)
+            Button { model.openSettings() } label: { Image(systemName: "slider.horizontal.3").foregroundStyle(Theme.muted) }.buttonStyle(.plain).help("Open the factory window")
+        }.padding(.horizontal, 14).padding(.vertical, 11)
     }
     private var footer: some View {
         HStack {
-            Button("Open T3") { model.openT3() }
+            Button("Open T3") { model.openT3() }.buttonStyle(QuietButton())
+            if let busy = model.busy { ProgressView().controlSize(.small); Text(busy).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1) }
             Spacer()
-            if let busy = model.busy { ProgressView().controlSize(.small); Text(busy).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-            Spacer()
-            Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("Quit the menu app; the factory keeps running")
-        }.buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 10)
+            Button { NSApp.terminate(nil) } label: { Image(systemName: "power").foregroundStyle(Theme.muted) }.buttonStyle(.plain).help("Quit the menu app; the factory keeps running")
+        }.padding(.horizontal, 14).padding(.vertical, 9)
     }
 
-    // Automation switch, the last check in a sentence, and the review switch when reviews are configured.
     private var automation: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 Toggle("", isOn: Binding(get: { model.enabled }, set: { value in Task { await model.setEnabled(value) } })).toggleStyle(.switch).labelsHidden().disabled(model.busy != nil)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.enabled ? "Automation on" : "Automation paused").font(.title3.weight(.semibold))
-                    Text(model.decisionSentence).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(model.enabled ? "Automation on" : "Automation paused").font(.system(size: 17, weight: .semibold))
+                    Text(model.decisionSentence).font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                 }
             }
             if model.hasUpstream {
-                Toggle("Upstream reviews", isOn: Binding(get: { model.upstreamEnabled }, set: { value in Task { await model.setEnabled(value, upstream: true) } })).toggleStyle(.switch).font(.callout).disabled(model.busy != nil)
+                HStack { Text("Upstream reviews").font(.system(size: 12)).foregroundStyle(Theme.muted); Toggle("", isOn: Binding(get: { model.upstreamEnabled }, set: { value in Task { await model.setEnabled(value, upstream: true) } })).toggleStyle(.switch).labelsHidden().controlSize(.small).disabled(model.busy != nil) }
             }
-            if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-            else if let notice = model.notice { Text(notice).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-        }
-    }
-
-    // Each provider: slots in use, its reason, and its allowance windows with the held-back line.
-    private var providers: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ForEach(["claudeAgent", "codex"], id: \.self) { driver in ProviderCard(model: model, driver: driver) }
-        }
-    }
-
-    private var upNext: some View {
-        group("Up next", count: model.queued.count) {
-            if model.upNext == nil { empty("The queue has not been read yet.") }
-            else if model.queued.isEmpty { empty("Nothing is ready to start.") }
-            else {
-                ForEach(Array(model.queued.prefix(5).enumerated()), id: \.offset) { index, ticket in
-                    Button { model.openTicket(ticket["projectId"] as? String, taskId: ticket["id"] as? String) } label: {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 14, alignment: .trailing)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) { Text(ticket["key"] as? String ?? "").font(.callout.weight(.semibold).monospaced()); Text(ticket["title"] as? String ?? "").font(.callout).lineLimit(1) }
-                                HStack(spacing: 4) {
-                                    if let after = ticket["after"] as? [String], !after.isEmpty { Text("after " + after.joined(separator: ", ")).foregroundStyle(.orange) }
-                                    Text([model.projectName(ticket["projectId"] as? String), ticket["difficulty"] as? String ?? "unclassified", ticket["priority"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
-                                }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            Spacer()
-                            Text(ticket["model"] as? String ?? "no automatic model fits").font(.caption).foregroundStyle(ticket["model"] == nil || ticket["model"] is NSNull ? .orange : .secondary)
-                        }.contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                }
-                if model.queued.count > 5 || !model.held.isEmpty {
-                    Text("\(model.queued.count > 5 ? "\(model.queued.count - 5) more queued" : "")\(model.queued.count > 5 && !model.held.isEmpty ? ", " : "")\(model.held.isEmpty ? "" : "\(model.held.count) held back")").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-        }
+            if let error = model.error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            else if let notice = model.notice { Text(notice).font(.system(size: 11)).foregroundStyle(Theme.ok).fixedSize(horizontal: false, vertical: true) }
+        }.card()
     }
 
     private var composer: some View {
-        group("Start a run", count: nil) {
+        section("Start a run", count: nil) {
             HStack(spacing: 8) {
-                TextField("Ticket key, or blank for the next eligible", text: $model.ticket).textFieldStyle(.roundedBorder).font(.body.monospaced()).onSubmit { Task { await model.dispatch() } }
-                Picker("Model", selection: $model.selectedModel) {
+                DarkTextField(placeholder: "Ticket key, or blank for the next eligible", text: $model.ticket, mono: true).onSubmit { Task { await model.dispatch() } }
+                Picker("", selection: $model.selectedModel) {
                     Text("Automatic").tag("auto")
                     ForEach(Array(model.configuredModels.enumerated()), id: \.offset) { _, preset in Text(preset["name"] as? String ?? "Model").tag(preset["id"] as? String ?? "") }
                 }.labelsHidden().frame(width: 120)
             }
             HStack {
-                if model.selectedModelUsesCodex { Text("Codex runs ignore idle time and reserves.").font(.caption).foregroundStyle(.secondary) }
-                else { Toggle("Ignore idle time and reserves", isOn: $model.overrideLimits).font(.caption) }
+                if model.selectedModelUsesCodex { Text("Codex runs ignore idle time and reserves.").font(.system(size: 11)).foregroundStyle(Theme.muted) }
+                else { Toggle("Ignore idle time and reserves", isOn: $model.overrideLimits).font(.system(size: 11)).foregroundStyle(Theme.muted) }
                 Spacer()
-                Button { Task { await model.dispatch() } } label: { Label("Start run", systemImage: "play.fill") }
-                    .buttonStyle(.borderedProminent).disabled(model.config.isEmpty || model.busy != nil)
+                Button { Task { await model.dispatch() } } label: { Label("Start run", systemImage: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty || model.busy != nil)
             }
         }
     }
 
-    // Blocked tickets and missing ready labels are questions, not failures.
     private var promptTitle: String {
         switch model.prompt {
         case .blocked(let ticket, let tree, _): return "\(ticket) waits on \((tree["tickets"] as? [[String: Any]])?.count ?? 0) tickets"
@@ -156,21 +121,14 @@ struct FactoryPanel: View {
         }
     }
 
-    @ViewBuilder private func group<Content: View>(_ title: String, count: Int?, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text(title).font(.subheadline.weight(.semibold))
-                if let count, count > 0 { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
-            }
-            content()
-        }.padding(12).background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quaternary.opacity(0.4)))
+    @ViewBuilder private func section<Content: View>(_ title: String, count: Int?, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) { SectionTitle(title, count: count); content() }.card()
     }
-    private func empty(_ text: String) -> some View { Text(text).font(.callout).foregroundStyle(.secondary) }
+    private func empty(_ text: String) -> some View { Text(text).font(.system(size: 12)).foregroundStyle(Theme.muted) }
 }
 
-private extension Dictionary where Key == String, Value == Any {
-    var jobId: String { self["id"] as? String ?? UUID().uuidString }
-    var planId: String { self["id"] as? String ?? UUID().uuidString }
+extension Dictionary where Key == String, Value == Any {
+    var rowId: String { (self["id"] as? NSNumber).map { "\($0)" } ?? self["id"] as? String ?? UUID().uuidString }
 }
 
 struct ProviderCard: View {
@@ -185,40 +143,62 @@ struct ProviderCard: View {
         let fable = (quota?["factoryRouting"] as? [String: Any])?["fableRemainingPercent"] as? Double
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(name).font(.subheadline.weight(.semibold))
+                Text(name).font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Text(model.streamReason(driver)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.streamReason(driver)).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
             }
-            Text(limit == 0 ? "\(active) running, automatic starts off" : "\(active) running of \(limit)").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 3) {
+                ForEach(0..<max(limit, active, 1), id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 2).fill(i < active ? Theme.accent : .clear).frame(width: 14, height: 8)
+                        .overlay(RoundedRectangle(cornerRadius: 2).stroke(i < limit ? Theme.accent : Theme.line, style: StrokeStyle(lineWidth: 1, dash: i < limit ? [] : [2])))
+                }
+                Text(limit == 0 ? "\(active) running, automatic starts off" : "\(active) of \(limit)").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.leading, 4)
+            }
             if windows.isEmpty && fable == nil {
-                Text((model.stream(driver)["quotaError"] as? String).map { "Allowance unavailable: \($0)" } ?? "No allowance reading yet.").font(.caption).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                Text((model.stream(driver)["quotaError"] as? String).map { "Allowance unavailable: \($0)" } ?? "No allowance reading yet.").font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                 AllowanceBar(label: window["name"] as? String == "fiveHour" ? "Five-hour" : "Weekly", remaining: window["remaining"] as? Double ?? 0, reserved: window["reserved"] as? Double,
                              note: (window["resetsAt"] as? String).map { "resets " + Words.until($0, now: model.now) } ?? "")
             }
-            if let fable { AllowanceBar(label: "Fable", remaining: fable, reserved: nil, note: "") }
-            if let read = quota?["capturedAt"] as? String { Text("read " + Words.ago(read, now: model.now)).font(.caption2).foregroundStyle(.tertiary) }
-        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quaternary.opacity(0.4)))
+            if let fable { AllowanceBar(label: "Fable", remaining: fable, reserved: nil) }
+            if let read = quota?["capturedAt"] as? String { Text("read " + Words.ago(read, now: model.now)).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+        }.card()
     }
 }
 
-// Remaining allowance with the line the scheduler holds back right now.
-struct AllowanceBar: View {
-    let label: String; let remaining: Double; let reserved: Double?; let note: String
+// What the factory would start next; `limit` keeps the panel short, the window shows everything.
+struct UpNextCard: View {
+    @ObservedObject var model: FactoryModel
+    let limit: Int
     var body: some View {
-        let value = max(0, min(100, remaining)), low = value <= (reserved ?? 15)
-        VStack(alignment: .leading, spacing: 3) {
-            HStack { Text(label).font(.caption); Spacer(); Text("\(Int(value))%").font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(low ? .orange : .primary) }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule().fill(low ? Color.orange : Color.accentColor).frame(width: geo.size.width * value / 100)
-                    if let reserved, reserved > 0 { Rectangle().fill(.secondary).frame(width: 1.5, height: 10).offset(x: geo.size.width * min(100, reserved) / 100 - 0.75) }
+        VStack(alignment: .leading, spacing: 8) {
+            SectionTitle("Up next", count: model.queued.count, help: "The order the scheduler would take tickets in, and which automatic model takes each. A ticket shown after another waits for it to finish.")
+            if model.upNext == nil { Text("The queue has not been read yet.").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+            else if model.queued.isEmpty { Text("Nothing is ready to start.").font(.system(size: 12)).foregroundStyle(Theme.muted) }
+            else {
+                ForEach(Array(model.queued.prefix(limit).enumerated()), id: \.offset) { index, ticket in
+                    Button { model.openTicket(ticket["projectId"] as? String, taskId: ticket["id"] as? String) } label: {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("\(index + 1)").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted).frame(width: 18, alignment: .trailing)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) { Text(ticket["key"] as? String ?? "").font(Theme.mono()); Text(ticket["title"] as? String ?? "").font(.system(size: 12)).lineLimit(1) }
+                                HStack(spacing: 4) {
+                                    if let after = ticket["after"] as? [String], !after.isEmpty { Text("after " + after.joined(separator: ", ")).foregroundStyle(Theme.attention) }
+                                    Text([model.projectName(ticket["projectId"] as? String), (ticket["difficulty"] as? String).map { $0 == "med" ? "medium" : $0 } ?? "unclassified", ticket["priority"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(Theme.muted)
+                                }.font(.system(size: 11)).lineLimit(1)
+                            }
+                            Spacer()
+                            Text(ticket["model"] as? String ?? "no automatic model fits").font(.system(size: 11)).foregroundStyle(ticket["model"] is String ? Theme.muted : Theme.attention)
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain)
                 }
-            }.frame(height: 6)
-            if !note.isEmpty { Text(note).font(.caption2).foregroundStyle(.tertiary) }
-        }
+                if model.queued.count > limit || !model.held.isEmpty {
+                    Text([model.queued.count > limit ? "\(model.queued.count - limit) more queued" : "", model.held.isEmpty ? "" : "\(model.held.count) held back"].filter { !$0.isEmpty }.joined(separator: ", ")).font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
+            }
+            if let at = model.upNext?["at"] as? String { Text("Queue read " + Words.ago(at, now: model.now)).font(.system(size: 10)).foregroundStyle(Theme.muted) }
+        }.card()
     }
 }
 
@@ -229,22 +209,25 @@ struct RunRow: View {
     private static let pending = ["approval": "waiting for an approval", "question": "asked a question", "input": "waiting for input"]
     var body: some View {
         let state = job["state"] as? String ?? ""
-        let waiting = state == "waiting"
+        let waiting = state == "waiting", finished = ["complete", "dismissed"].contains(state)
         let thread = job["thread"] as? [String: Any]
         let note = waiting ? ((thread?["pending"] as? String).flatMap { Self.pending[$0] } ?? job["reason"] as? String ?? "") : ""
-        let timing = waiting ? "since " + Words.ago(job["lastExecutionAt"] as? String ?? job["createdAt"] as? String, now: model.now)
-            : Words.span(model.now.timeIntervalSince(FactoryModel.date(job["createdAt"] as? String ?? "") ?? model.now)) + " in, active " + Words.ago(job["lastExecutionAt"] as? String ?? job["createdAt"] as? String, now: model.now)
+        let created = job["createdAt"] as? String
+        let timing: String = waiting ? "since " + Words.ago(job["lastExecutionAt"] as? String ?? created, now: model.now)
+            : finished ? Words.ago(job["completedAt"] as? String ?? job["dismissedAt"] as? String ?? created, now: model.now) + ", took " + Words.span((Words.date(job["completedAt"] as? String ?? job["dismissedAt"] as? String ?? "") ?? model.now).timeIntervalSince(Words.date(created ?? "") ?? model.now))
+            : Words.span(model.now.timeIntervalSince(Words.date(created ?? "") ?? model.now)) + " in, active " + Words.ago(job["lastExecutionAt"] as? String ?? created, now: model.now)
+        let label: (String, Color) = waiting ? ("Needs you", Theme.attention) : state == "dispatching" ? ("Starting", Theme.accent) : state == "complete" ? ("Done", Theme.ok) : state == "dismissed" ? ("Settled", Theme.muted) : ("Running", Theme.accent)
         Button { model.openThread(job) } label: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
-                    Text(job["label"] as? String ?? job["ticketKey"] as? String ?? "Discovery").font(.callout.weight(.semibold).monospaced())
-                    Text([model.projectName(job["projectId"] as? String), model.modelName(job), (job["difficulty"] as? String).map { $0 == "med" ? "medium" : $0 } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(job["label"] as? String ?? job["ticketKey"] as? String ?? "Discovery").font(Theme.mono())
+                    Text([model.projectName(job["projectId"] as? String), model.modelName(job), (job["difficulty"] as? String).map { $0 == "med" ? "medium" : $0 } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
                     Spacer()
-                    Tag(text: waiting ? "Needs you" : state == "dispatching" ? "Starting" : "Running", color: waiting ? .orange : .accentColor)
+                    Tag(text: label.0, color: label.1)
                 }
                 HStack(spacing: 6) {
-                    Text(timing).font(.caption).foregroundStyle(.secondary)
-                    if !note.isEmpty { Text("· " + note).font(.caption).foregroundStyle(.orange).lineLimit(1) }
+                    Text(timing).font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    if !note.isEmpty { Text("· " + note).font(.system(size: 11)).foregroundStyle(Theme.attention).lineLimit(1) }
                 }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
@@ -252,8 +235,21 @@ struct RunRow: View {
             Button("Open in T3") { model.openThread(job) }
             if (job["prUrls"] as? [String])?.isEmpty == false { Button("Open pull request") { model.openPullRequest(job) } }
             if job["taskId"] is String { Button("Open ticket in Kaneo") { model.openTicket(job["projectId"] as? String, taskId: job["taskId"] as? String) } }
-            Divider()
-            Button("Stop run", role: .destructive) { Task { await model.stop(job) } }
+            if !finished { Divider(); Button("Stop run", role: .destructive) { Task { await model.stop(job) } } }
+        }
+    }
+}
+
+struct JournalRow: View {
+    @ObservedObject var model: FactoryModel
+    let event: [String: Any]
+    var body: some View {
+        let kind = event["kind"] as? String ?? "", data = event["data"] as? [String: Any] ?? [:]
+        let color: Color = kind == "job.pr" ? Theme.ok : kind == "job.stop" ? Theme.attention : kind == "job.state" ? ((data["state"] as? String == "waiting") ? Theme.attention : data["state"] as? String == "complete" ? Theme.ok : Theme.accent) : kind == "job.created" ? Theme.accent : kind == "decision" && data["reason"] as? String == "error" ? Theme.danger : Theme.line
+        HStack(alignment: .top, spacing: 8) {
+            Text(Words.clock(event["time"] as? String)).font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted).frame(width: 56, alignment: .leading)
+            Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
+            Text(event["text"] as? String ?? "").font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -265,43 +261,33 @@ struct ChainCard: View {
     var body: some View {
         let target = plan["target"] as? [String: Any] ?? [:]
         let tickets = (plan["tickets"] as? [[String: Any]] ?? []) + [target]
-        let byId = Dictionary(uniqueKeysWithValues: tickets.compactMap { t in (t["id"] as? String).map { ($0, t) } })
+        let byId = Dictionary(tickets.compactMap { t in (t["id"] as? String).map { ($0, t) } }, uniquingKeysWith: { a, _ in a })
         let done = tickets.filter { $0["done"] as? Bool == true }.count
         let openByTask = Dictionary(model.jobs.filter { !["complete", "dismissed"].contains($0["state"] as? String ?? "") }.compactMap { j in (j["taskId"] as? String).map { ($0, j) } }, uniquingKeysWith: { a, _ in a })
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Chain to \(target["key"] as? String ?? "")").font(.subheadline.weight(.semibold))
-                Text("\(done) of \(tickets.count) done").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                Spacer()
-                Button("Cancel") { Task { await model.cancelChain(plan) } }.buttonStyle(.borderless).font(.caption).disabled(model.busy != nil)
+            SectionTitle("Chain to \(target["key"] as? String ?? "")", count: nil) {
+                Text("\(done) of \(tickets.count) done").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted)
+                Button("Cancel chain") { Task { await model.cancelChain(plan) } }.buttonStyle(QuietButton(color: Theme.danger)).disabled(model.busy != nil)
             }
             ForEach(Array(tickets.enumerated()), id: \.offset) { _, t in
                 let id = t["id"] as? String ?? ""
                 let job = openByTask[id]
                 let ahead = (t["blockedBy"] as? [String] ?? []).compactMap { byId[$0] }.filter { $0["done"] as? Bool != true }.compactMap { $0["key"] as? String }
                 let isTarget = id == target["id"] as? String
-                let state: (String, Color, String) = t["done"] as? Bool == true ? ("Done", .green, "")
-                    : job != nil ? ((job?["state"] as? String == "waiting" ? "Needs you" : "Running"), job?["state"] as? String == "waiting" ? .orange : .accentColor, model.modelName(job!))
-                    : isTarget && tickets.dropLast().contains(where: { $0["done"] as? Bool != true }) ? ("Last", .secondary, "after every ticket above")
-                    : !ahead.isEmpty ? ("Waits", .secondary, "after " + ahead.joined(separator: ", "))
-                    : ("Next", .orange, t["note"] as? String ?? "starts when a slot is free")
+                let state: (String, Color, String) = t["done"] as? Bool == true ? ("Done", Theme.ok, "")
+                    : job != nil ? ((job?["state"] as? String == "waiting" ? "Needs you" : "Running"), job?["state"] as? String == "waiting" ? Theme.attention : Theme.accent, model.modelName(job!))
+                    : isTarget && tickets.dropLast().contains(where: { $0["done"] as? Bool != true }) ? ("Last", Theme.muted, "after every ticket above")
+                    : !ahead.isEmpty ? ("Waits", Theme.muted, "after " + ahead.joined(separator: ", "))
+                    : ("Next", Theme.attention, t["note"] as? String ?? "starts when a slot is free")
                 HStack(spacing: 8) {
-                    Tag(text: state.0, color: state.1).frame(width: 70)
+                    Tag(text: state.0, color: state.1).frame(width: 72)
                     VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 6) { Text(t["key"] as? String ?? "").font(.callout.weight(.semibold).monospaced()); Text(t["title"] as? String ?? "").font(.callout).lineLimit(1) }
-                        if !state.2.isEmpty { Text(state.2).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        HStack(spacing: 6) { Text(t["key"] as? String ?? "").font(Theme.mono()); Text(t["title"] as? String ?? "").font(.system(size: 12)).lineLimit(1) }
+                        if !state.2.isEmpty { Text(state.2).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1) }
                     }
                     Spacer()
                 }
             }
-        }.padding(12).background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.quaternary.opacity(0.4)))
-    }
-}
-
-struct Tag: View {
-    let text: String; let color: Color
-    var body: some View {
-        Text(text).font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(color.opacity(0.8), lineWidth: 1)).foregroundStyle(color)
+        }.card()
     }
 }
