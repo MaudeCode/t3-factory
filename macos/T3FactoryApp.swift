@@ -3,30 +3,17 @@ import SwiftUI
 import Combine
 
 enum FactoryIcon {
+    // The app icon's silhouette (sawtooth roof, chimney with its cap, three windows) as an 18-point template image.
     static let image: NSImage = {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            let s = 0.38, x = { (v: Double) in 1 + (v - 10) * s }, y = { (v: Double) in 2 + (48 - v) * s }
             let shape = NSBezierPath()
-            shape.move(to: NSPoint(x: 1.5, y: 1.5))
-            shape.line(to: NSPoint(x: 16.5, y: 1.5))
-            shape.curve(to: NSPoint(x: 17, y: 2), controlPoint1: NSPoint(x: 16.8, y: 1.5), controlPoint2: NSPoint(x: 17, y: 1.7))
-            shape.line(to: NSPoint(x: 16.8, y: 15.8))
-            shape.curve(to: NSPoint(x: 16.3, y: 16.3), controlPoint1: NSPoint(x: 16.8, y: 16.1), controlPoint2: NSPoint(x: 16.6, y: 16.3))
-            shape.line(to: NSPoint(x: 14.1, y: 16.3))
-            shape.curve(to: NSPoint(x: 13.6, y: 15.8), controlPoint1: NSPoint(x: 13.8, y: 16.3), controlPoint2: NSPoint(x: 13.6, y: 16.1))
-            shape.line(to: NSPoint(x: 13.4, y: 8.7))
-            shape.line(to: NSPoint(x: 12.2, y: 8.7))
-            shape.line(to: NSPoint(x: 12.2, y: 11.3))
-            shape.curve(to: NSPoint(x: 11.6, y: 11.8), controlPoint1: NSPoint(x: 12.2, y: 11.8), controlPoint2: NSPoint(x: 11.9, y: 12))
-            shape.line(to: NSPoint(x: 6.5, y: 8.7))
-            shape.line(to: NSPoint(x: 6.5, y: 11.3))
-            shape.curve(to: NSPoint(x: 5.9, y: 11.8), controlPoint1: NSPoint(x: 6.5, y: 11.8), controlPoint2: NSPoint(x: 6.2, y: 12))
-            shape.line(to: NSPoint(x: 1.3, y: 8.9))
-            shape.curve(to: NSPoint(x: 1, y: 8.4), controlPoint1: NSPoint(x: 1.1, y: 8.8), controlPoint2: NSPoint(x: 1, y: 8.6))
-            shape.line(to: NSPoint(x: 1, y: 2))
-            shape.curve(to: NSPoint(x: 1.5, y: 1.5), controlPoint1: NSPoint(x: 1, y: 1.7), controlPoint2: NSPoint(x: 1.2, y: 1.5))
+            let outline: [(Double, Double)] = [(10, 48), (10, 25.5), (22.5, 32.5), (22.5, 25.5), (35, 32.5), (35, 25.5), (44, 30.54), (44, 15), (43, 15), (43, 12), (52, 12), (52, 15), (51, 15), (51, 32.5), (52, 32.5), (52, 48)]
+            shape.move(to: NSPoint(x: x(outline[0].0), y: y(outline[0].1)))
+            for (px, py) in outline.dropFirst() { shape.line(to: NSPoint(x: x(px), y: y(py))) }
             shape.close()
-            for x in [3.1, 7.8, 12.5] {
-                shape.append(NSBezierPath(roundedRect: NSRect(x: x, y: 4, width: 2.4, height: 2.4), xRadius: 0.25, yRadius: 0.25))
+            for wx in [14.5, 27.0, 39.5] {
+                shape.append(NSBezierPath(roundedRect: NSRect(x: x(wx), y: y(43.5), width: 7 * s, height: 5.5 * s), xRadius: 0.4, yRadius: 0.4))
             }
             shape.windingRule = .evenOdd
             NSColor.black.setFill()
@@ -132,6 +119,13 @@ enum FactoryRender {
     @MainActor static func all(to dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         write(FactoryPanel(model: FactoryModel.shared), size: NSSize(width: 420, height: 720), to: "\(dir)/panel.png")
+        // The menu bar glyph, enlarged, for review.
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 144, pixelsHigh: 144, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 144, height: 144).fill()
+        FactoryIcon.image.draw(in: NSRect(x: 0, y: 0, width: 144, height: 144), from: .zero, operation: .sourceOver, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/glyph.png"))
         for page in ["factory", "runs", "activity", "models", "capacity", "projects", "upstream"] {
             write(FactorySettingsView(model: FactoryModel.shared, page: page), size: NSSize(width: 1100, height: 820), to: "\(dir)/\(page).png")
         }
