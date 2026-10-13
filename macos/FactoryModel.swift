@@ -55,14 +55,52 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
     return dict
 }
 
+// Words for durations and times, matching the web app: at most two units, minutes never carry seconds.
+enum Words {
+    static func date(_ text: String) -> Date? {
+        let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return parser.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+    static func span(_ seconds: Double) -> String {
+        var left = max(0, seconds), parts: [String] = []
+        for (name, size) in [("d", 86400.0), ("h", 3600.0), ("min", 60.0), ("s", 1.0)] {
+            let n = Int(left / size)
+            if n > 0 || (name == "s" && parts.isEmpty) { parts.append("\(n) \(name)") }
+            left -= Double(n) * size
+            if parts.count == 2 || (parts.count == 1 && name == "min") { break }
+        }
+        return parts.joined(separator: " ")
+    }
+    static func ago(_ text: String?, now: Date) -> String {
+        guard let text, let date = Words.date(text) else { return "never" }
+        return span(now.timeIntervalSince(date)) + " ago"
+    }
+    static func until(_ text: String?, now: Date) -> String {
+        guard let text, let date = Words.date(text) else { return "" }
+        let s = date.timeIntervalSince(now)
+        return s > 0 ? "in " + span(s) : "now"
+    }
+}
+
+// What the user must answer before a manual run can go ahead.
+enum RunPrompt: Identifiable {
+    case blocked(ticket: String, tree: [String: Any], arguments: [String])
+    case readiness(ticket: String, label: String, arguments: [String])
+    var id: String {
+        switch self { case .blocked(let t, _, _): return "blocked-\(t)"; case .readiness(let t, _, _): return "readiness-\(t)" }
+    }
+}
+
 @MainActor final class FactoryModel: ObservableObject {
     static let shared = FactoryModel()
     @Published var config: [String: Any] = [:]
     @Published var draft: [String: Any] = [:]
     @Published var status: [String: Any] = [:]
+    @Published var now = Date()
     @Published var busy: String?
     @Published var error: String?
     @Published var notice: String?
+    @Published var prompt: RunPrompt?
     @Published var ticket = ""
     @Published var selectedModel = "auto"
     @Published var overrideLimits = true
@@ -71,19 +109,30 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
     @Published var catalogError: String?
     private var settingsWindow: NSWindowController?
     private var editingBase: [String: Any] = [:]
-    private var timer: Timer?
+    private var clock: Timer?
+    private var watcher: DispatchSourceFileSystemObject?
+    private var watchedDir = ""
+    private var pendingRefresh: DispatchWorkItem?
     let home = FileManager.default.homeDirectoryForCurrentUser
 
     init() {
         Task { await reload(); await refreshModels() }
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshStatus() }
+        refreshStatus()
+        clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.now = Date()
+                // The watcher is the live path; a slow fallback keeps the panel honest if an event is missed.
+                if Int(self.now.timeIntervalSince1970) % 30 == 0 { self.refreshStatus() }
+            }
         }
     }
+    var stateDir: String { config["stateDir"] as? String ?? home.appendingPathComponent(".local/share/t3-factory").path }
     var enabled: Bool { config["enabled"] as? Bool ?? false }
     var hasUpstream: Bool { config["upstream"] is [String: Any] }
     var upstreamEnabled: Bool { (config["upstream"] as? [String: Any])?["enabled"] as? Bool ?? false }
     var configuredModels: [[String: Any]] { config["models"] as? [[String: Any]] ?? [] }
+    var projects: [[String: Any]] { config["projects"] as? [[String: Any]] ?? [] }
     var selectedPreset: [String: Any]? { configuredModels.first { $0["id"] as? String == selectedModel } }
     var selectedModelUsesCodex: Bool {
         guard let selection = selectedPreset?["model"] as? [String: Any] else { return false }
@@ -91,60 +140,88 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         return provider?["driver"] as? String == "codex" || selection["instanceId"] as? String == "codex"
     }
     var jobs: [[String: Any]] { status["jobs"] as? [[String: Any]] ?? [] }
-    var activeJobs: [[String: Any]] { jobs.filter { ["running", "dispatching"].contains($0["state"] as? String ?? "") } }
-    var waitingJobs: Int { jobs.filter { $0["state"] as? String == "waiting" }.count }
+    var activeJobs: [[String: Any]] { jobs.filter { ["running", "dispatching"].contains($0["state"] as? String ?? "") }.sorted(by: newest) }
+    var waitingJobs: [[String: Any]] { jobs.filter { $0["state"] as? String == "waiting" }.sorted(by: newest) }
     var decision: [String: Any] { status["decision"] as? [String: Any] ?? [:] }
     var streams: [[String: Any]] { status["streams"] as? [[String: Any]] ?? [] }
+    var upNext: [String: Any]? { status["upNext"] as? [String: Any] }
+    var queued: [[String: Any]] { upNext?["tickets"] as? [[String: Any]] ?? [] }
+    var held: [[String: Any]] { upNext?["held"] as? [[String: Any]] ?? [] }
+    var chains: [[String: Any]] { (status["plans"] as? [[String: Any]] ?? []).filter { $0["state"] as? String == "active" } }
+    var liveConcurrency: [String: Int] {
+        let limits = config["concurrency"] as? [String: Any] ?? [:]
+        return ["claudeAgent": (limits["claude"] as? NSNumber)?.intValue ?? 1, "codex": (limits["codex"] as? NSNumber)?.intValue ?? 1]
+    }
+    private func newest(_ a: [String: Any], _ b: [String: Any]) -> Bool { (a["createdAt"] as? String ?? "") > (b["createdAt"] as? String ?? "") }
+    func stream(_ driver: String) -> [String: Any] { streams.first { $0["driver"] as? String == driver } ?? [:] }
+    func quota(_ driver: String) -> [String: Any]? {
+        let direct = decision["quota"] as? [String: Any]
+        if direct?["driver"] as? String == driver { return direct }
+        return stream(driver)["quota"] as? [String: Any]
+    }
     func jobsForProvider(_ driver: String) -> [[String: Any]] {
         jobs.filter { job in
             let instance = (job["modelSelection"] as? [String: Any])?["instanceId"] as? String ?? "claudeAgent"
             return (job["providerDriver"] as? String ?? providers.first { $0["instanceId"] as? String == instance }?["driver"] as? String ?? instance) == driver
         }
     }
+    func projectName(_ kaneoId: String?) -> String { projects.first { $0["kaneoId"] as? String == kaneoId }?["name"] as? String ?? "" }
+    func modelName(_ job: [String: Any]) -> String {
+        let slug = (job["modelSelection"] as? [String: Any])?["model"] as? String ?? ""
+        return configuredModels.first { ($0["model"] as? [String: Any])?["model"] as? String == slug }?["name"] as? String ?? (slug.isEmpty ? "Factory" : slug)
+    }
+    static let streamReasons = [
+        "provider-running": "working", "provider-disabled": "automatic starts off", "dispatched": "working", "waiting-for-idle": "waiting for idle time",
+        "quota-exhausted": "allowance exhausted", "quota-budget": "waiting for budget", "no-eligible-model": "no automatic model available",
+        "no-eligible-ticket": "watching the queue", "watching-streams": "watching the queue", "difficulty-limit": "no tickets within difficulty limits",
+        "needs-classification": "tickets need difficulty labels", "would-dispatch": "ready to start",
+    ]
     func streamReason(_ driver: String) -> String {
-        guard enabled else { return upstreamEnabled ? "Ticket starts paused; upstream reviews on" : "Automatic starts paused" }
-        let reason = streams.first { $0["driver"] as? String == driver }?["reason"] as? String ?? "Watching the queue"
+        let active = jobsForProvider(driver).contains { ["running", "dispatching"].contains($0["state"] as? String ?? "") }
+        if !enabled && !active { return "paused" }
+        let reason = stream(driver)["reason"] as? String ?? "watching the queue"
+        return Self.streamReasons[reason] ?? reason.replacingOccurrences(of: "-", with: " ")
+    }
+    // One sentence for the last check, in the web app's words.
+    var decisionSentence: String {
+        guard let reason = decision["reason"] as? String else { return "No check has run yet." }
         switch reason {
-        case "provider-disabled": return "Automatic starts off"
-        case "provider-running": return "Run limit reached"
-        case "dispatched": return "Work dispatched"
-        case "waiting-for-idle": return "Waiting for idle time"
-        case "quota-exhausted": return "Allowance exhausted"
-        case "quota-budget": return "Waiting for available budget"
-        case "no-eligible-model": return "No automatic model available"
-        case "no-eligible-ticket", "watching-streams": return "No eligible classified ticket"
-        case "difficulty-limit": return "No tickets within difficulty limits"
-        case "needs-classification": return "Tickets need difficulty labels"
-        case "would-dispatch": return "Ready to start"
-        default: return reason
+        case "disabled":
+            let eligible = (decision["eligible"] as? NSNumber)?.intValue ?? 0
+            return "Automation is paused. Running work continues." + (eligible > 0 ? " \(eligible) ticket\(eligible == 1 ? "" : "s") ready to start." : "")
+        case "error": return "The last check failed: \(decision["message"] as? String ?? "unknown error")"
+        case "dispatched": return "Started \(decision["ticket"] as? String ?? (decision["project"] as? String).map { "discovery for \($0)" } ?? "a run") on \(decision["model"] as? String ?? "the assigned model")."
+        default:
+            let parts = (decision["streams"] as? [[String: Any]] ?? []).map { "\($0["provider"] as? String ?? "") is \(Self.streamReasons[$0["reason"] as? String ?? ""] ?? ($0["reason"] as? String ?? ""))" }
+            let eligible = (decision["eligible"] as? NSNumber)?.intValue ?? 0
+            let tail = eligible > 0 ? "\(eligible) ticket\(eligible == 1 ? "" : "s") eligible." : "Nothing eligible to start."
+            return parts.isEmpty ? tail : parts.joined(separator: "; ") + ". " + tail
         }
     }
-    var statusTitle: String {
-        if !enabled { return upstreamEnabled ? "Tickets paused; upstream reviews on" : "Automatic factory paused" }
-        switch decision["reason"] as? String {
-        case "dispatched", "autonomous-job-running": return "Factory is running"
-        case "personal-Claude-running", "personal-provider-running": return "Waiting for the provider to become idle"
-        case "personal-Claude-recently-active", "personal-provider-recently-active": return "Waiting for idle time"
-        case "quota-reserve", "discovery-quota-reserve": return "Waiting for available quota"
-        case "codex-quota-exhausted": return "Codex quota is exhausted"
-        case "error": return "Factory needs attention"
-        case "no-eligible-work", "no-eligible-ticket": return "No eligible tickets"
-        case "waiting-cap": return "Waiting limit reached"
-        default: return "Factory is watching the queue"
-        }
-    }
-    var lastCheck: String {
-        guard let at = decision["at"] as? String, let date = Self.date(at) else { return "No scheduler check yet" }
-        let seconds = Int(Date().timeIntervalSince(date))
-        return seconds < 120 ? "Checked \(max(0, seconds))s ago" : "Last check \(seconds / 60)m ago"
-    }
-    static func date(_ text: String) -> Date? {
-        let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return parser.date(from: text) ?? ISO8601DateFormatter().date(from: text)
-    }
+    var lastCheck: String { decision["at"] == nil ? "no check yet" : "checked " + Words.ago(decision["at"] as? String, now: now) }
+    nonisolated static func date(_ text: String) -> Date? { Words.date(text) }
     func refreshStatus() {
-        let dir = config["stateDir"] as? String ?? home.appendingPathComponent(".local/share/t3-factory").path
+        let dir = stateDir
         if let data = try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status.json")), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { status = object }
+        if dir != watchedDir { watch(dir) }
+    }
+    // The scheduler replaces status.json atomically, so the directory reports the change.
+    private func watch(_ dir: String) {
+        watcher?.cancel(); watcher = nil
+        let fd = open(dir, O_EVTONLY)
+        guard fd >= 0 else { return }
+        watchedDir = dir
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .rename, .delete, .attrib], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.refreshStatus() }
+            self.pendingRefresh = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        watcher = source
     }
     private func execute(_ arguments: [String], input: Data? = nil) async throws -> CommandResult {
         try await Task.detached(priority: .userInitiated) { try runCLI(arguments, input: input) }.value
@@ -223,21 +300,60 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
                 }
             }
             error = nil
-            notice = upstream ? (enabled ? "Upstream reviews enabled" : "Upstream reviews paused. Running reviews continue.") : (enabled ? "Automatic dispatch enabled" : "Paused. Existing runs continue.")
+            notice = upstream ? (enabled ? "Upstream reviews on" : "Upstream reviews paused. Running reviews continue.") : (enabled ? "Automation on" : "Paused. Running work continues.")
             refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
-    func dispatch() async {
-        guard busy == nil else { return }; busy = "Checking and starting factory"; error = nil; notice = nil; defer { busy = nil }
+    // A manual run. The scheduler may answer with a question (a blocked ticket, a missing ready label) instead of a result.
+    func dispatch(extra: [String] = []) async {
+        guard busy == nil else { return }; busy = "Checking the ticket and starting its T3 run"; error = nil; notice = nil; defer { busy = nil }
         var args = ["dispatch", "--model", selectedModel]
         let key = ticket.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if !key.isEmpty { args += ["--ticket", key] }
         if overrideLimits { args.append("--override-limits") }
+        args += extra
         do {
-            let result = try await execute(args), object = jsonObject(result.text)
-            guard result.code == 0, object?["reason"] as? String == "dispatched" else { throw failure(result) }
-            notice = "Started \(object?["ticket"] as? String ?? "factory") with \(object?["model"] as? String ?? selectedModel)."; refreshStatus()
+            let result = try await execute(args), object = jsonObject(result.text) ?? [:]
+            switch object["reason"] as? String {
+            case "dispatched":
+                notice = "Started \(object["ticket"] as? String ?? "a run") on \(object["model"] as? String ?? selectedModel)."
+                if let chain = object["chain"] as? [String: Any], let picked = chain["picked"] as? String, let target = chain["target"] as? String { notice = "Started \(picked), the first ticket in the chain to \(target)." }
+                ticket = ""
+            case "plan-started": notice = object["message"] as? String ?? "Chain started."; ticket = ""
+            case "blocked-ticket-plan-required": prompt = .blocked(ticket: object["ticket"] as? String ?? key, tree: object["tree"] as? [String: Any] ?? [:], arguments: args)
+            case "ready-label-confirmation-required": prompt = .readiness(ticket: object["ticket"] as? String ?? key, label: object["requiredLabel"] as? String ?? "ready", arguments: args)
+            default: throw failure(result)
+            }
+            refreshStatus()
         } catch { self.error = error.localizedDescription; refreshStatus() }
+    }
+    func answer(_ prompt: RunPrompt, with extra: [String]) async {
+        self.prompt = nil
+        guard busy == nil else { return }; busy = "Starting"; error = nil; notice = nil; defer { busy = nil }
+        let args: [String]
+        switch prompt { case .blocked(_, _, let a), .readiness(_, _, let a): args = a + extra }
+        do {
+            let result = try await execute(args), object = jsonObject(result.text) ?? [:]
+            guard ["dispatched", "plan-started"].contains(object["reason"] as? String ?? "") else { throw failure(result) }
+            notice = object["message"] as? String ?? "Started \(object["ticket"] as? String ?? "a run") on \(object["model"] as? String ?? selectedModel)."
+            ticket = ""; refreshStatus()
+        } catch { self.error = error.localizedDescription; refreshStatus() }
+    }
+    func stop(_ job: [String: Any]) async {
+        guard busy == nil, let id = job["id"] as? String else { return }; busy = "Stopping"; defer { busy = nil }
+        do {
+            let result = try await execute(["job-stop", id])
+            guard result.code == 0 else { throw failure(result) }
+            notice = "Stop requested. T3 confirms on the next check."; error = nil; refreshStatus()
+        } catch { self.error = error.localizedDescription }
+    }
+    func cancelChain(_ plan: [String: Any]) async {
+        guard busy == nil, let id = plan["id"] as? String else { return }; busy = "Cancelling chain"; defer { busy = nil }
+        do {
+            let result = try await execute(["plan-cancel", id])
+            guard result.code == 0 else { throw failure(result) }
+            notice = "Chain cancelled. Tickets already running finish on their own."; error = nil; refreshStatus()
+        } catch { self.error = error.localizedDescription }
     }
     private func failure(_ result: CommandResult) -> NSError {
         let object = jsonObject(result.text)
@@ -247,8 +363,9 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
         case "quota-exhausted": friendly = "The selected model has no allowance left. Choose another model or wait for its quota to reset."
         case "codex-quota-exhausted": friendly = "Codex has reached its usage limit. Wait for its quota to reset or choose a Claude model."
         case "autonomous-job-running", "job-resumed-before-dispatch": friendly = "A factory run is already executing. Wait for it to finish or pause for input."
-        case "personal-Claude-running", "personal-Claude-recently-active", "personal-provider-running", "personal-provider-recently-active": friendly = "The selected provider is active or has not been idle long enough. Enable the one-run override to start now."
-        case "quota-reserve", "gate-changed-before-dispatch": friendly = "The current quota or activity policy blocks this run. Enable the one-run override to bypass those thresholds."
+        case "personal-Claude-running", "personal-Claude-recently-active", "personal-provider-running", "personal-provider-recently-active": friendly = "The selected provider is active or has not been idle long enough. Turn on the override to start now."
+        case "quota-reserve", "gate-changed-before-dispatch": friendly = "The current quota or activity policy blocks this run. Turn on the override to bypass those thresholds."
+        case "chain-nothing-runnable": friendly = object?["message"] as? String ?? "Nothing in the chain can start right now."
         case "no-eligible-ticket":
             let skipped = object?["skipped"] as? [[String: Any]] ?? []
             friendly = skipped.first?["reason"] as? String ?? object?["message"] as? String ?? "No eligible ticket was found."
@@ -262,7 +379,7 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
             let input = try JSONSerialization.data(withJSONObject: ["base": editingBase, "config": draft])
             let result = try await execute(["config-save"], input: input)
             guard result.code == 0, let saved = jsonObject(result.text) else { throw failure(result) }
-            config = saved; draft = saved; editingBase = saved; error = nil; notice = "Settings saved. They apply to the next dispatch."; validateModelSelection(); refreshStatus()
+            config = saved; draft = saved; editingBase = saved; error = nil; notice = "Saved. New runs use these settings."; validateModelSelection(); refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
     func update(_ path: [String], _ value: Any?) { draft = replacing(draft, path, value) as? [String: Any] ?? draft; notice = nil }
@@ -294,6 +411,19 @@ private func replacing(_ value: Any, _ path: [String], _ new: Any?) -> Any {
     func openT3() {
         if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.t3tools.t3code") { NSWorkspace.shared.open(app); return }
         if let url = URL(string: (config["t3"] as? [String: Any])?["url"] as? String ?? "http://127.0.0.1:3773") { NSWorkspace.shared.open(url) }
+    }
+    func openThread(_ job: [String: Any]) {
+        guard let id = job["threadId"] as? String, let url = URL(string: "t3-thread://v1/\(id)") else { openT3(); return }
+        NSWorkspace.shared.open(url)
+    }
+    func openTicket(_ projectId: String?, taskId: String?) {
+        guard let kaneo = config["kaneo"] as? [String: Any], let base = kaneo["url"] as? String, let workspace = kaneo["workspaceId"] as? String, let projectId, let taskId,
+              let url = URL(string: "\(base)/dashboard/workspace/\(workspace)/project/\(projectId)/task/\(taskId)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+    func openPullRequest(_ job: [String: Any]) {
+        guard let url = (job["prUrls"] as? [String])?.first.flatMap(URL.init) else { return }
+        NSWorkspace.shared.open(url)
     }
     func openFile(_ path: String) { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
 }

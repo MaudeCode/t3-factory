@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 enum FactoryIcon {
     static let image: NSImage = {
@@ -40,6 +41,7 @@ enum FactoryIcon {
 @MainActor final class FactoryAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private var badge: AnyCancellable?
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
         let appMenu = NSMenu()
@@ -65,10 +67,19 @@ enum FactoryIcon {
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: FactoryMenuView(model: FactoryModel.shared).frame(height: 600))
+        popover.contentViewController = NSHostingController(rootView: FactoryPanel(model: FactoryModel.shared))
         // AppKit must position the full panel, not its default 320×320 content size.
-        popover.contentSize = NSSize(width: 370, height: 600)
-        if !UserDefaults.standard.bool(forKey: "openedSettings") || ProcessInfo.processInfo.arguments.contains("--settings") {
+        popover.contentSize = NSSize(width: 400, height: 700)
+        // Runs that need you show as a count beside the icon.
+        badge = FactoryModel.shared.$status.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            let waiting = FactoryModel.shared.waitingJobs.count
+            self?.statusItem?.button?.title = waiting > 0 ? " \(waiting)" : ""
+            self?.statusItem?.button?.imagePosition = .imageLeading
+            self?.statusItem?.length = waiting > 0 ? NSStatusItem.variableLength : NSStatusItem.squareLength
+        }
+        if ProcessInfo.processInfo.arguments.contains("--panel"), let button = item.button {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        } else if !UserDefaults.standard.bool(forKey: "openedSettings") || ProcessInfo.processInfo.arguments.contains("--settings") {
             FactoryModel.shared.openSettings()
             UserDefaults.standard.set(true, forKey: "openedSettings")
         }
@@ -99,120 +110,3 @@ enum FactoryIcon {
     }
 }
 
-struct FactoryMenuView: View {
-    @ObservedObject var model: FactoryModel
-    var compact = true
-    @State private var chooseTicket = false
-    var body: some View {
-        ScrollView {
-            if compact {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Label { Text("T3 Factory") } icon: { Image(nsImage: FactoryIcon.image) }.font(.headline)
-                        Spacer()
-                        refreshButton
-                    }
-                    status
-                    Divider()
-                    runControls
-                    Divider()
-                    HStack {
-                        Button("Settings…") { model.openSettings() }
-                        Spacer()
-                        Button("Open T3") { model.openT3() }
-                        Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("Quit menu app; the factory service keeps running").accessibilityLabel("Quit menu app")
-                    }.buttonStyle(.borderless)
-                }.padding(18)
-            } else {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        HStack { Text("Live status").font(.headline); Spacer(); refreshButton }
-                        status
-                        Button("Open T3") { model.openT3() }
-                    }.frame(width: 210)
-                    Divider().frame(minHeight: 320)
-                    runControls.frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(24)
-            }
-        }.frame(width: compact ? 370 : nil).disabled(model.busy != nil)
-            .onAppear { chooseTicket = !model.ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    }
-    private var refreshButton: some View {
-        Button { model.refreshStatus() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh status").accessibilityLabel("Refresh status").buttonStyle(.plain)
-    }
-    private var status: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Toggle("Ticket automation", isOn: Binding(get: { model.enabled }, set: { value in Task { await model.setEnabled(value) } })).toggleStyle(.switch)
-            if model.hasUpstream {
-                Toggle("Upstream reviews", isOn: Binding(get: { model.upstreamEnabled }, set: { value in Task { await model.setEnabled(value, upstream: true) } })).toggleStyle(.switch)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.statusTitle).font(.subheadline.weight(.medium))
-                Text(model.lastCheck).font(.caption).foregroundStyle(.secondary)
-                HStack { Text("\(model.activeJobs.count) executing"); Text("·"); Text("\(model.waitingJobs) awaiting input") }.font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(["claudeAgent", "codex"], id: \.self) { driver in
-                let jobs = model.jobsForProvider(driver)
-                let active = jobs.filter { ["running", "dispatching"].contains($0["state"] as? String ?? "") }
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(driver == "codex" ? "Codex" : "Claude").font(.subheadline.weight(.medium))
-                        Spacer()
-                        Text("\(active.count) running · \(jobs.filter { $0["state"] as? String == "waiting" }.count) waiting").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text(model.streamReason(driver)).font(.caption).foregroundStyle(.secondary)
-                    ForEach(Array(active.enumerated()), id: \.offset) { _, job in Text(job["label"] as? String ?? job["ticketKey"] as? String ?? "Discovery").font(.caption.monospaced()) }
-                    let directQuota = model.decision["quota"] as? [String: Any] ?? [:]
-                    let providerName = driver == "codex" ? "Codex" : "Claude"
-                    let quota = directQuota["provider"] as? String == providerName ? directQuota : model.streams.first { $0["driver"] as? String == driver }?["quota"] as? [String: Any] ?? [:]
-                    if let routing = quota["factoryRouting"] as? [String: Any], let remaining = routing["fableRemainingPercent"] as? Double {
-                        quotaRow("Fable weekly", remaining: remaining)
-                    }
-                    ForEach(Array((quota["windows"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, window in
-                        quotaRow(window["name"] as? String == "fiveHour" ? "Five-hour allowance" : "Weekly allowance", remaining: window["remaining"] as? Double ?? 0)
-                    }
-                }
-            }
-        }
-    }
-    private var runControls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Start a run").font(.headline)
-            Picker("Ticket", selection: $chooseTicket) {
-                Text("Next eligible ticket").tag(false)
-                Text("Choose a ticket…").tag(true)
-            }.onChange(of: chooseTicket) { _, specific in if !specific { model.ticket = "" } }
-            if chooseTicket {
-                TextField("e.g. APP-123", text: $model.ticket).textFieldStyle(.roundedBorder).accessibilityLabel("Ticket key")
-            }
-            Picker("Model", selection: $model.selectedModel) {
-                Text("Automatic selection").tag("auto")
-                ForEach(Array(model.configuredModels.enumerated()), id: \.offset) { _, preset in
-                    Text(preset["name"] as? String ?? "Manual model").tag(preset["id"] as? String ?? "")
-                }
-            }
-            if model.selectedModelUsesCodex {
-                Text("This manual run uses Codex quota. Idle time and reserved allowance do not apply.").font(.caption).foregroundStyle(.secondary)
-            } else {
-                Toggle("Start without waiting for idle or reserves", isOn: $model.overrideLimits).font(.caption)
-                Text("For this run only. Ticket readiness, merge rules, and Claude’s limits still apply.").font(.caption).foregroundStyle(.secondary)
-            }
-            Button { Task { await model.dispatch() } } label: {
-                Label(chooseTicket ? "Run ticket now" : "Run next ticket now", systemImage: "play.fill").frame(maxWidth: .infinity)
-            }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.config.isEmpty || (chooseTicket && model.ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-            if !model.activeJobs.isEmpty { Text("Manual runs can start alongside existing work. Each ticket gets its own thread and worktree.").font(.caption).foregroundStyle(.secondary) }
-            feedback
-        }
-    }
-    private func quotaRow(_ title: String, remaining: Double) -> some View {
-        VStack(spacing: 4) {
-            HStack { Text(title); Spacer(); Text("\(Int(remaining))% remaining").monospacedDigit() }.font(.caption)
-            ProgressView(value: max(0, min(100, remaining)), total: 100).tint(remaining < 15 ? .orange : .accentColor)
-        }
-    }
-    @ViewBuilder private var feedback: some View {
-        if let busy = model.busy { HStack { ProgressView().controlSize(.small); Text(busy).font(.caption) } }
-        if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-        else if let notice = model.notice { Text(notice).font(.caption).foregroundStyle(.secondary) }
-    }
-}

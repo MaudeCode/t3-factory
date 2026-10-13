@@ -9,7 +9,7 @@ struct FactorySettingsView: View {
     @State private var rawJSON = ""
     @State private var preserveAdvancedText = false
     private let pages = [
-        (id: "run", title: "Run now", icon: "play.circle", subtitle: "Start a ticket and see what the factory is doing."),
+        (id: "run", title: "Factory", icon: "play.circle", subtitle: "What the factory is doing, what needs you, what comes next."),
         (id: "automation", title: "Automation", icon: "clock.arrow.circlepath", subtitle: "Decide when the factory starts work and how it uses your allowance."),
         (id: "models", title: "Models", icon: "cpu", subtitle: "Rank your models, set difficulty limits, and choose which may run automatically."),
         (id: "projects", title: "Projects", icon: "folder", subtitle: "Choose the repositories and ticket queues the factory can use."),
@@ -37,7 +37,7 @@ struct FactorySettingsView: View {
                 }.padding(24)
                 Group {
                     switch page {
-                    case "run": FactoryMenuView(model: model, compact: false)
+                    case "run": FactoryPanel(model: model, compact: false)
                     case "models": models
                     case "projects": projects
                     case "discovery": discovery
@@ -106,7 +106,8 @@ struct FactorySettingsView: View {
             }
             Section("When to start") {
                 numberField("Wait until the selected provider has been idle for", path: ["idleMinutes"], unit: "min")
-                numberField("Check for ready tickets every", path: ["pollSeconds"], unit: "sec", range: 15...86400)
+                numberField("Check at least every", path: ["pollSeconds"], unit: "sec", range: 15...86400)
+                Text("Passes start as soon as a T3 thread, the config, or a ready ticket changes; this is the fallback interval.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Claude budgets") {
                 budgetGrid([(name: "Five-hour", key: "fiveHour"), (name: "Weekly", key: "weekly"), (name: "Fable allowance", key: "fable")], provider: "claude")
