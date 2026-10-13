@@ -46,6 +46,8 @@ html {
   font: 14px/1.45 var(--font);
   -webkit-text-size-adjust: 100%;
   font-feature-settings: "tnum";
+  /* WebKit reads the root, not body, to stop the whole app rubber-banding; pull to refresh is the app's own. */
+  overscroll-behavior-y: none;
 }
 body {
   margin: 0;
@@ -232,8 +234,8 @@ input.search {
   border-color: var(--ink);
   outline: none;
 }
+/* The tip exists only while shown, so hidden tips never widen the page. */
 .help::after {
-  content: attr(data-tip);
   position: absolute;
   left: -6px;
   top: calc(100% + 8px);
@@ -248,19 +250,20 @@ input.search {
   line-height: 1.45;
   text-align: left;
   white-space: normal;
-  opacity: 0;
-  transform: translateY(-4px);
   pointer-events: none;
   z-index: 25;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  transition:
-    opacity var(--fast),
-    transform var(--fast);
 }
 .help:hover::after,
 .help:focus-visible::after {
-  opacity: 1;
-  transform: none;
+  content: attr(data-tip);
+  animation: tip var(--fast) var(--ease);
+}
+@keyframes tip {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 h1 .help,
 h2 .help {
@@ -2004,6 +2007,16 @@ dialog .chain {
   :root {
     --gutter: var(--space-4);
   }
+  /* A tip anchored to its glyph can run off a phone screen, so it sits above the bottom edge instead. */
+  .help::after {
+    position: fixed;
+    top: auto;
+    left: var(--gutter);
+    right: var(--gutter);
+    bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+    width: auto;
+    max-width: none;
+  }
   .top {
     flex-wrap: wrap;
     gap: var(--space-2) var(--space-3);
@@ -2084,6 +2097,13 @@ dialog .chain {
     content: attr(data-label) ": ";
     color: var(--muted);
     font-size: 12px;
+  }
+}
+/* iOS zooms into any input under 16px when it takes focus, and the page stays zoomed. */
+@media (pointer: coarse) {
+  input,
+  input.mono {
+    font-size: 16px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -1,4 +1,4 @@
-import { html, useState, useEffect } from "../lib/h.js";
+import { html, useState, useEffect, useRef } from "../lib/h.js";
 import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, readiness, blocked, actions, runWithoutReadyLabel, runChain, message } from "../lib/store.js";
 import { route, PAGES, follow } from "../lib/router.js";
 import { Button, Dialog, Confirmation, Toast, Segmented, Tag } from "../ui/index.js";
@@ -33,9 +33,55 @@ function ThemePicker({ open, onClose }) {
   <//>`;
 }
 
+// Pulling down from the top of any page reloads its state. Dialogs and drag handles keep their touches.
+const PULL = 60;
+function usePullToRefresh(onRefresh) {
+  const ref = useRef();
+  useEffect(() => {
+    const el = ref.current;
+    let start = null;
+    const move = (e) => {
+      if (start === null) return;
+      const dy = e.touches[0].clientY - start.y;
+      // A sideways swipe belongs to the scroller under it.
+      if (dy <= 0 || Math.abs(e.touches[0].clientX - start.x) > dy) return void ((start = null), (el.style.height = "0px"));
+      if (e.cancelable) e.preventDefault();
+      const d = Math.min(dy / 2, PULL);
+      el.style.height = d + "px";
+      el.textContent = d >= PULL ? "Release to refresh" : "Pull to refresh";
+    };
+    const begin = (e) => {
+      const t = e.touches[0];
+      // scrollY dips below zero while a bounce settles; that still counts as the top.
+      start = window.scrollY <= 0 && !e.target.closest?.("dialog, .grip") ? { x: t.clientX, y: t.clientY } : null;
+      el.classList.remove("settle");
+    };
+    const end = async () => {
+      if (start === null) return;
+      start = null;
+      el.classList.add("settle");
+      if (parseFloat(el.style.height) >= PULL) {
+        el.textContent = "Refreshing";
+        await onRefresh();
+      }
+      el.style.height = "0px";
+    };
+    document.addEventListener("touchstart", begin, { passive: true });
+    document.addEventListener("touchmove", move, { passive: false });
+    document.addEventListener("touchend", end, { passive: true });
+    return () => {
+      document.removeEventListener("touchstart", begin);
+      document.removeEventListener("touchmove", move);
+      document.removeEventListener("touchend", end);
+    };
+  }, []);
+  return ref;
+}
+
 function Shell() {
   const { page, param } = route.value;
   const [picking, setPicking] = useState(false);
+  const ptr = usePullToRefresh(actions.refresh);
   const Page = pages[page];
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
   return html`<header class="top">
@@ -54,6 +100,7 @@ function Shell() {
     </span>
   </header>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />
+  <div ref=${ptr} class="ptr" aria-live="polite"></div>
   <main key=${page + param}><${Page} id=${param} /></main>`;
 }
 
