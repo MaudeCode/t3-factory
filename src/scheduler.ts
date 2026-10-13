@@ -153,6 +153,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
       store.save(job); continue;
     }
     if (executing(t, c.monitoringTimeoutMinutes) || ['dispatching', 'running'].includes(job.state)) job.lastExecutionAt = t.updatedAt;
+    job.thread = { title: t.title, status: t.status, branch: t.branch, worktreePath: t.worktreePath, updatedAt: t.updatedAt, pending: t.pendingRuntimeRequest?.kind ?? null, background: t.pendingBackgroundTasks.map(b => b.kind) };
     if (waiting(t)) { job.state = 'waiting'; job.reason = 'T3 is awaiting human input'; }
     else if (executing(t, c.monitoringTimeoutMinutes)) { job.state = 'running'; job.reason = 'Claude is executing'; }
     else {
@@ -527,7 +528,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {})
   if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
     const result = { reason, at: new Date().toISOString(), ...extra };
-    store.set('lastDecision', JSON.stringify(result)); log('decision', result); return result;
+    store.decide(result); log('decision', result); return result;
   };
   const override = !!options.manual && !!options.overrideLimits;
   const t3 = new T3(c.t3), kaneo = new Kaneo(c.kaneo);
@@ -643,7 +644,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   if (ticketKey && !c.projects.some(p => p.enabled && ticketKey.startsWith(`${p.key}-`))) throw new Error('Ticket project is not enabled in the factory settings');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
     const result = { reason, at: new Date().toISOString(), ...extra };
-    store.set('lastDecision', JSON.stringify(result)); log('decision', result); return result;
+    store.decide(result); log('decision', result); return result;
   };
   if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && c.upstream?.enabled)) return decision('disabled');
   const t3 = new T3(c.t3);
@@ -742,8 +743,13 @@ export function upstreamRows(c: Config, store: Store) {
   }));
 }
 
+const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {
-  const result = { enabled: c.enabled, upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'), jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })) };
+  const result = {
+    enabled: c.enabled, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
+    discovery: c.projects.map(p => ({ projectId: p.kaneoId, lastAt: iso(store.get(`discoveryLast:${p.kaneoId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kaneoId}`)) })),
+    jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })),
+  };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
   return result;
 }

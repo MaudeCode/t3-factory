@@ -12,7 +12,7 @@ import {
   renameSync,
   readdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { oidcSchema, type createOidc } from "./oidc.ts";
 import { spawn } from "node:child_process";
@@ -155,6 +155,9 @@ export function createFactoryWeb(options: {
   oidc?: Awaited<ReturnType<typeof createOidc>>;
   dataDir: string;
   readState: () => unknown;
+  history?: () => unknown;
+  report?: (id: string) => unknown;
+  watch?: (notify: () => void) => () => void;
   run?: typeof runFactory;
   assetDir?: string;
   now?: () => number;
@@ -196,6 +199,13 @@ export function createFactoryWeb(options: {
         },
       });
   }
+  // Live updates: every open event stream receives the full state whenever the factory writes it.
+  const streams = new Set<() => void>();
+  let pushTimer: NodeJS.Timeout | undefined;
+  const stopWatching = options.watch?.(() => {
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => { for (const push of streams) push(); }, 150);
+  });
   const sign = (value: string) =>
     createHmac("sha256", secret).update(value).digest("base64url");
   const authenticated = (req: IncomingMessage) => {
@@ -350,8 +360,27 @@ export function createFactoryWeb(options: {
         }
         if (path === "/api/state" && req.method === "GET")
           return json(res, 200, options.readState());
-        if (path === "/api/models" && req.method === "GET") {
-          const result = await run(["model-catalog"]);
+        if (path === "/api/events" && req.method === "GET") {
+          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
+          const push = () => { try { res.write(`event: state\ndata: ${JSON.stringify(options.readState())}\n\n`); } catch { streams.delete(push); } };
+          const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
+          streams.add(push);
+          req.on("close", () => { streams.delete(push); clearInterval(heartbeat); });
+          return push();
+        }
+        if (path === "/api/history" && req.method === "GET")
+          return json(res, 200, options.history?.() ?? []);
+        const job = path.match(/^\/api\/jobs\/([\w-]{1,64})\/(report|stop)$/);
+        if (job && job[2] === "report" && req.method === "GET") {
+          const detail = options.report?.(job[1]);
+          return detail ? json(res, 200, detail) : json(res, 404, { message: "Run not found" });
+        }
+        if (job && job[2] === "stop" && req.method === "POST") {
+          const result = await run(["job-stop", job[1]]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
+        if ((path === "/api/models" || path === "/api/sources") && req.method === "GET") {
+          const result = await run([path === "/api/models" ? "model-catalog" : "sources"]);
           return json(res, result.code ? 503 : 200, result.data);
         }
         if (
@@ -447,22 +476,17 @@ export function createFactoryWeb(options: {
       }
       if (req.method !== "GET")
         return json(res, 405, { message: "Method not allowed" });
-      const files: Record<string, [string, string]> = {
-        "/": ["index.html", "text/html"],
-        "/app.js": ["app.js", "text/javascript"],
-        "/style.css": ["style.css", "text/css"],
-        "/icon.svg": ["icon.svg", "image/svg+xml"],
-        "/icon.png": ["icon.png", "image/png"],
-        "/apple-touch-icon.png": ["apple-touch-icon.png", "image/png"],
-        "/manifest.webmanifest": [
-          "manifest.webmanifest",
-          "application/manifest+json",
-        ],
-      };
-      const asset = files[path];
-      if (!asset) return json(res, 404, { message: "Not found" });
-      res.writeHead(200, { "Content-Type": asset[1] });
-      res.end(readFileSync(join(assets, asset[0])));
+      // Static files come only from the web directory, by a strict relative name.
+      // Extensionless paths are app routes and load the page shell.
+      const file = path === "/" || !extname(path) ? "index.html" : path.slice(1);
+      const type = staticTypes[extname(file)];
+      if (!type || !/^[\w-]+(\/[\w-]+)*\.\w+$/.test(file) || !existsSync(join(assets, file)))
+        return json(res, 404, { message: "Not found" });
+      res.writeHead(200, {
+        "Content-Type": type,
+        "Cache-Control": file.startsWith("vendor/") || file.startsWith("fonts/") ? "max-age=86400" : "no-cache",
+      });
+      res.end(readFileSync(join(assets, file)));
     } catch (error) {
       json(
         res,
@@ -480,11 +504,22 @@ export function createFactoryWeb(options: {
       );
     }
   });
-  server.requestTimeout = 200_000;
+  server.requestTimeout = 0; // event streams stay open; headersTimeout still bounds slow clients
+  server.on("close", () => stopWatching?.());
   server.headersTimeout = 15_000;
   server.maxConnections = 100;
   return server;
 }
+
+const staticTypes: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
+  ".woff2": "font/woff2",
+};
 
 export function webSettings(env = process.env) {
   const config = webConfigSchema.parse({

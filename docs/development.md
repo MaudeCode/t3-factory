@@ -8,7 +8,7 @@ npm run check
 npm test
 ```
 
-Tests use fixtures and temporary state. They cover quota policy, provider routing, ownership, manual dispatch, monitoring, reopened tickets, merge approval, and web authentication. They do not require production credentials or prove compatibility with a live T3 build.
+Tests use fixtures and temporary state. They cover quota policy, provider routing, ownership, manual dispatch, monitoring, reopened tickets, merge approval, the journal, web authentication, and the web app's live stream. They do not require production credentials or prove compatibility with a live T3 build.
 
 `package.json` keeps `private: true` to prevent accidental npm publication. This is a source-installed application.
 
@@ -28,6 +28,22 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | `src/web.ts`, `src/oidc.ts` | Web API and authentication |
 | `web/`, `macos/` | Browser and native interfaces |
 | `scripts/`, `deploy/` | macOS installation and optional proxy launcher |
+
+### Web interface
+
+The browser app is plain ES modules served by `src/web.ts`; there is no bundler or build step. Preact, signals, and htm live in `web/vendor/` with their imports rewritten to relative paths, so the page needs no import map. After changing those versions in `package.json`, run `npm run vendor:web` and commit the result. The font is bundled in `web/fonts/` so the installed app works offline. Colours are CSS variables set by `web/lib/theme.js`; `web/lib/themes.js` is generated from a T3 Code checkout by `npm run vendor:themes -- <path>` and holds T3 Code's palettes, so the Theme picker offers the same themes as T3 Code in light and dark.
+
+| Directory | Responsibility |
+| --- | --- |
+| `web/lib/` | Runtime re-exports (`h.js`), the fetch wrapper, the router, formatting helpers, and the store: signals plus every action that changes state |
+| `web/ui/` | Component library: controls bound to config paths, the dropdown, segmented filters, the drag-to-reorder list, meters, tags, tables, timelines, dialog, toast |
+| `web/views/` | Pages: login, deck, runs and run detail, activity, models, capacity, projects, upstream, and the app root |
+
+Pages are real paths (`/runs`, `/runs/<id>`, `/models`, and so on) handled by `web/lib/router.js`; the server returns `index.html` for any extensionless path. Server state enters through `applyState` in `web/lib/store.js`. The page opens `/api/events`, a server-sent event stream that pushes the full state whenever the scheduler writes `status.json` or the config file changes; if the stream is unavailable the store polls `/api/state` every 15 seconds. A one-second clock signal keeps relative times and countdowns current between pushes. Inputs that take a `path` read and write the config signal directly, so adding a setting means adding one bound input. `test/web-ui.test.ts` imports the store and helpers in Node without a DOM; `test/web-live.test.ts` covers the stream and run endpoints.
+
+### Journal
+
+`Store.save` is the only job write path, so it records an event whenever a job is created, changes state, or gains a pull request. `Store.decide` records a check only when its outcome differs from the previous one, or when it dispatched or failed. Events live in the `events` table of `state.sqlite` (capped at 5000) and reach the page as `status.journal`; `/api/jobs/<id>/report` returns one run with its events and completion report. `t3-factory sources` (served as `/api/sources`) lists T3 projects, Kaneo projects with their columns, and workspace labels so the projects page can pick instead of typing identifiers. `t3-factory job-stop <jobId>` asks T3 to stop a run's thread; the web app's Stop button calls it through `/api/jobs/<id>/stop`.
 
 ## T3 compatibility
 

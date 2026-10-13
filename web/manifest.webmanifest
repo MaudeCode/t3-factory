@@ -3,8 +3,8 @@
   "short_name": "Factory",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f7f7f5",
-  "theme_color": "#f7f7f5",
+  "background_color": "#171320",
+  "theme_color": "#171320",
   "icons": [
     {
       "src": "/icon.svg",

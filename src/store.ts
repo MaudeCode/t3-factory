@@ -22,6 +22,8 @@ export interface Job {
   modelReason?: string;
   difficulty?: Difficulty;
   prUrls: string[]; completedAt: string | null;
+  // Snapshot of the T3 thread from the last reconcile, for the web app.
+  thread?: { title: string; status: string; branch: string | null; worktreePath: string | null; updatedAt: string; pending: string | null; background: string[] };
   workspaceCleanup?: { path: string; branch: string; head: string };
   workspaceCleanedAt?: string;
   workspaceCleanupError?: string;
@@ -29,6 +31,21 @@ export interface Job {
 }
 export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
   return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : 'Discovery');
+}
+export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }
+const STATE_TEXT: Record<Job['state'], string> = { dispatching: 'is starting', running: 'is running', waiting: 'needs you', complete: 'finished', dismissed: 'was dismissed' };
+const STREAM_TEXT: Record<string, string> = {
+  'provider-running': 'working', 'provider-disabled': 'automatic starts off', 'waiting-for-idle': 'waiting for idle time', 'quota-exhausted': 'allowance exhausted',
+  'quota-budget': 'waiting for budget', 'no-eligible-model': 'no automatic model', 'difficulty-limit': 'nothing within difficulty limits',
+  'needs-classification': 'tickets need difficulty labels', 'no-eligible-ticket': 'watching the queue', dispatched: 'starting work', 'would-dispatch': 'ready to start',
+};
+export function decisionText(result: { reason: string } & Record<string, unknown>): string {
+  if (result.reason === 'dispatched') return `Started ${result.ticket ?? (result.upstream ? `review of ${(result.upstream as any).name} ${(result.upstream as any).candidate}` : `discovery for ${result.project}`)} on ${result.model}`;
+  if (result.reason === 'error') return `Check failed: ${result.message}`;
+  if (result.reason === 'disabled') return 'Automation paused';
+  const streams = result.streams as { provider: string; reason: string }[] | undefined;
+  if (!streams?.length) return '';
+  return streams.map(s => `${s.provider} ${STREAM_TEXT[s.reason] ?? s.reason.replaceAll('-', ' ')}`).join('; ');
 }
 export class Store {
   db: DatabaseSync;
@@ -39,12 +56,41 @@ export class Store {
     chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, task_id TEXT UNIQUE, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS events_job ON events(job_id);`);
     // task_id is the live claim. Completed and dismissed history retain their ticket IDs in data.
     this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND json_extract(data, '$.state') IN ('complete', 'dismissed')");
   }
   jobs(): Job[] { return this.db.prepare('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
-  save(job: Job) { this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job)); }
+  job(id: string): Job | undefined { const row = this.db.prepare('SELECT data FROM jobs WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  // Every job write passes through here, so the journal records each state change and delivered PR once.
+  save(job: Job) {
+    const before = this.job(job.id);
+    this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job));
+    const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
+    if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
+    else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
+    for (const url of job.prUrls ?? []) if (!before?.prUrls?.includes(url)) this.record('job.pr', `${label} opened ${url.replace(/^https:\/\/github\.com\//, '')}`, { ...detail, url }, job.id);
+  }
+  record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
+    this.db.prepare('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
+    this.db.prepare('DELETE FROM events WHERE id < (SELECT MAX(id) FROM events) - 5000').run();
+  }
+  events(limit = 100, jobId?: string): FactoryEvent[] {
+    const rows = jobId
+      ? this.db.prepare('SELECT * FROM events WHERE job_id=? ORDER BY id DESC LIMIT ?').all(jobId, limit)
+      : this.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit);
+    return rows.map(r => ({ id: r.id as number, time: r.time as string, kind: r.kind as string, jobId: r.job_id as string | null, text: r.text as string, data: JSON.parse(r.data as string) }));
+  }
+  // Store a decision and journal it only when the outcome changes, so a quiet factory does not flood the log.
+  decide(result: { reason: string; at: string } & Record<string, unknown>) {
+    const previous = this.get('lastDecision');
+    this.set('lastDecision', JSON.stringify(result));
+    const text = decisionText(result);
+    // A dispatch is journaled by the job it creates; checks are journaled when their outcome changes or fails.
+    if (text && result.reason !== 'dispatched' && (result.reason === 'error' || !previous || decisionText(JSON.parse(previous)) !== text)) this.record('decision', text, { reason: result.reason, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
+  }
   get(key: string): string | null { return this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
   claim(): boolean {

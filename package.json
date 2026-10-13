@@ -9,7 +9,9 @@
     "status": "node src/main.ts status",
     "doctor": "node src/main.ts doctor",
     "dry-run": "node src/main.ts once --dry-run",
-    "build:menu": "node scripts/build-menu.ts"
+    "build:menu": "node scripts/build-menu.ts",
+    "vendor:web": "node scripts/vendor-web.ts",
+    "vendor:themes": "node scripts/vendor-themes.ts"
   },
   "engines": {
     "node": ">=24.13"
@@ -23,7 +25,10 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@preact/signals": "2.11.3",
     "@types/node": "24.10.1",
+    "htm": "3.1.1",
+    "preact": "10.29.0",
     "typescript": "5.9.3"
   },
   "description": "A local scheduler for ticket-driven coding work in T3 Code",
