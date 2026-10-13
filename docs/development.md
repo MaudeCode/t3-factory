@@ -64,7 +64,7 @@ The integration uses application APIs that can change between T3 builds. Matchin
 - Authenticated HTTP snapshots from `/api/orchestration/shell` and `/api/orchestration/threads/<id>/bounded`.
 - WebSocket tickets from `/api/auth/websocket-ticket` and the `/ws` endpoint.
 - Effect RPC methods `server.getConfig`, `server.refreshProviders`, `orchestration.launchThread`, `orchestration.dispatchCommand`, `vcs.removeWorktree`, `subscribeTerminalMetadata` (stream; the first event is a terminal snapshot), and `terminal.close`.
-- The `terminal:operate` scope on the scheduler credential, for the two terminal methods.
+- The `terminal:read` scope on the scheduler credential for `subscribeTerminalMetadata`, and `terminal:operate` for `terminal.close`. Without `terminal:read`, workspace cleanup stops with `EnvironmentAuthorizationError`.
 - Provider model metadata and usage windows with timestamps, remaining-window information, and reset times.
 - Thread launch input and the `thread.stop` command compatible with the payloads in `src/scheduler.ts`.
 
