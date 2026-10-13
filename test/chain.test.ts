@@ -53,7 +53,7 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
   t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(x => !args.status || x.status === args.status) }] }, pagination: { total: tasks.length, totalPages: 1 } };
-    if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
+    if (name === 'get_task') { const { labels, ...task } = tasks.find(task => task.id === args.taskId)!; return task; } // Kaneo's single-task read carries no labels
     if (name === 'get_task_relations') return relations.filter(r => r.sourceTaskId === args.taskId || r.targetTaskId === args.taskId);
     throw new Error(name);
   });

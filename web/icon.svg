@@ -1,1 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#244f3e"/><path d="M11 51V30l13-8v8l13-8v8h4V12h10v39H11zm6-7h6v-6h-6zm13 0h6v-6h-6zm13 0h6v-6h-6z" fill="#e6f0e8" fill-rule="evenodd"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f7a5e"/>
+      <stop offset="1" stop-color="#143428"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f4f9f5"/>
+      <stop offset="1" stop-color="#d6e6da"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <rect width="64" height="64" rx="15" fill="url(#sheen)"/>
+  <circle cx="47.5" cy="13.5" r="2.4" fill="#eaf3ec" opacity="0.5"/>
+  <circle cx="51.5" cy="8.5" r="1.7" fill="#eaf3ec" opacity="0.3"/>
+  <rect x="10" y="52" width="46" height="3" rx="1.5" fill="#0b1f18" opacity="0.55"/>
+  <path d="M11 51V30l13-8v8l13-8v8h4V17h10v34H11z" fill="url(#wall)"/>
+  <rect x="17" y="38" width="6" height="6" rx="1" fill="#1f5a45"/>
+  <rect x="30" y="38" width="6" height="6" rx="1" fill="#1f5a45"/>
+  <rect x="43" y="38" width="6" height="6" rx="1" fill="#1f5a45"/>
+  <rect x="18.5" y="39.5" width="3" height="3" rx="0.6" fill="#9ee2b8" opacity="0.9"/>
+  <rect x="31.5" y="39.5" width="3" height="3" rx="0.6" fill="#9ee2b8" opacity="0.9"/>
+  <rect x="44.5" y="39.5" width="3" height="3" rx="0.6" fill="#9ee2b8" opacity="0.9"/>
+</svg>

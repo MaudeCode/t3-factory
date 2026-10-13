@@ -126,7 +126,7 @@ export function ticketLabelRank(labels: { name: string }[], priorityLabels: stri
   const rank = priorityLabels.findIndex(name => labels.some(label => label.name === name));
   return rank < 0 ? undefined : rank;
 }
-export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; labelRank?: number; title?: string; }
+export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; labelRank?: number; title?: string; labels?: { name: string }[] }
 export type TicketPriority = Pick<Candidate, 'priority' | 'labelRank'>;
 export function compareTicketPriority(a: TicketPriority, b: TicketPriority): number {
   const aRank = a.labelRank ?? Infinity, bRank = b.labelRank ?? Infinity;

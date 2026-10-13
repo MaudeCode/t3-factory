@@ -523,7 +523,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
       if ((await prs.get(p.kaneoId)!).some(pr => mentionsTicket(`${pr.title}\n${pr.headRefName}\n${pr.body}`, key))) reason = 'Existing open PR references this ticket';
     }
     if (reason) return { key, id: t.id, reason };
-    return { candidate: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, ...await inheritedPriority(t, p) } };
+    return { candidate: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, labels: t.labels ?? [], ...await inheritedPriority(t, p) } };
   };
   const verdicts: Verdict[] = new Array(potential.length);
   let next = 0;
@@ -777,7 +777,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const u = job.upstream;
     const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : `Factory discovery: ${project.name}`;
     // Ticket branches carry the ticket's kind (fix, feat, perf, ...) so release tooling can bump versions from them.
-    const branch = job.kind === 'ticket' ? `${branchKind(task?.labels ?? [])}/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-${job.kind}-${id.slice(0, 8)}`;
+    // Kaneo's single-task read carries no labels; the queue entry keeps the complete labels the inventory read.
+    const branch = job.kind === 'ticket' ? `${branchKind(queue.selected?.labels ?? [])}/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-${job.kind}-${id.slice(0, 8)}`;
     // T3 creates the worktree from the project's workspace root, which must match project.repoPath (checked above).
     job.command = { commandId: randomUUID(), threadId: job.threadId, projectId: project.t3Id, title,
       modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default',
@@ -807,7 +808,16 @@ export async function stopJob(c: Config, store: Store, t3: T3, jobId: string) {
 // Reads tickets and tells whether they are finished, for configured projects and, through their columns, any other.
 function taskReader(c: Config, kaneo: Kaneo) {
   const tasks = new Map<string, Promise<Task>>(), columns = new Map<string, Promise<string[]>>();
-  const task = (id: string) => { if (!tasks.has(id)) tasks.set(id, kaneo.call('get_task', { taskId: id }).then(t => taskSchema.parse(t))); return tasks.get(id)!; };
+  // Kaneo's single-task read carries no labels; the workspace's label associations are read once and merged in.
+  let labels: Promise<Awaited<ReturnType<typeof listTaskLabels>>> | undefined;
+  const task = (id: string) => {
+    if (!tasks.has(id)) tasks.set(id, kaneo.call('get_task', { taskId: id }).then(async t => {
+      const parsed = taskSchema.parse(t);
+      labels ??= listTaskLabels(kaneo);
+      return { ...parsed, labels: (await labels).get(id) ?? parsed.labels ?? [] };
+    }));
+    return tasks.get(id)!;
+  };
   const done = async (t: Task) => {
     const p = c.projects.find(p => p.kaneoId === t.projectId);
     if (p) return p.doneStatuses.includes(t.status);
