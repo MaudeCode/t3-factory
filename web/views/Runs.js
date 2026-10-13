@@ -2,6 +2,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow } from "../lib/router.js";
+import { confirmAction } from "../lib/confirmation.js";
 import {
   ago,
   duration,
@@ -94,7 +95,7 @@ export function RunDetail({ id }) {
         <h1>${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//></h1>
         <p>${job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}</p>
       </div>
-      ${isOpen(job) && html`<${Button} variant="danger" disabled=${busy.value} onClick=${() => confirm(`Stop ${job.label}? T3 ends the run; the worktree and any open PR stay as they are.`) && actions.stopJob(job.id)}>Stop run<//>`}
+      ${isOpen(job) && html`<${Button} variant="danger" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}
     </div>
     <div class="links-row">
       ${ticket && html`<${Link} href=${ticket}>Ticket in Kaneo<//>`}

@@ -2,6 +2,7 @@
 import { html, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
 import { follow } from "../lib/router.js";
+import { confirmAction } from "../lib/confirmation.js";
 import {
   ago,
   until,
@@ -143,7 +144,7 @@ export function Chains() {
     return html`<section class="group" key=${p.id}>
       <header>
         <h2>Chain to ${p.target.key} <small>${done} of ${all.length} done</small></h2>
-        <${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirm(`Cancel the chain to ${p.target.key}? Tickets already running finish on their own.`) && actions.cancelPlan(p.id)}>Cancel chain<//>
+        <${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: "Cancel chain" }, () => actions.cancelPlan(p.id))}>Cancel chain<//>
       </header>
       ${all.map((t) => {
         const [label, tone, note] = state(t), job = jobByTask.get(t.id);
