@@ -1,7 +1,8 @@
 import { html, useState, useEffect } from "../lib/h.js";
 import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, readiness, blocked, actions, runWithoutReadyLabel, runChain, message } from "../lib/store.js";
 import { route, PAGES, follow } from "../lib/router.js";
-import { Button, Dialog, Toast, Segmented, Tag } from "../ui/index.js";
+import { Button, Dialog, Confirmation, Toast, Segmented, Tag } from "../ui/index.js";
+import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { Login } from "./Login.js";
 import { Deck } from "./Deck.js";
@@ -49,7 +50,7 @@ function Shell() {
     <span class="right">
       <span class=${`conn ${connection.value}`} title=${`Updates: ${CONNECTION[connection.value]}`}><i></i>${CONNECTION[connection.value]}</span>
       <${Button} variant="ghost" size="sm" onClick=${() => setPicking(true)}>Theme<//>
-      <${Button} variant="ghost" size="sm" onClick=${() => (!dirty.value || confirm("Discard unsaved changes?")) && actions.logout()}>${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"}<//>
+      <${Button} variant="ghost" size="sm" onClick=${() => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout()}>${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"}<//>
     </span>
   </header>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />
@@ -135,6 +136,7 @@ export function App() {
     ${config.value && html`<${Shell} />`}
     <${Readiness} />
     <${Blocked} />
+    <${Confirmation} />
     ${dirty.value && html`<${SaveBar} />`}
     <${Toast} notice=${notice.value} onDone=${() => message("")} />`;
 }

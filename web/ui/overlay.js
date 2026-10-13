@@ -2,9 +2,10 @@
 import { html, useEffect, useRef } from "../lib/h.js";
 import { isBackdropClick } from "../lib/format.js";
 import { Button } from "./controls.js";
+import { confirmation, finishConfirmation } from "../lib/confirmation.js";
 
 // Native <dialog>; closes on Escape, backdrop click, or the Done button.
-export function Dialog({ open, onClose, title, children, actions }) {
+export function Dialog({ open, onClose, title, children, actions, descriptionId }) {
   const ref = useRef();
   useEffect(() => {
     const d = ref.current;
@@ -16,6 +17,7 @@ export function Dialog({ open, onClose, title, children, actions }) {
     onClose=${onClose}
     onClick=${(e) => isBackdropClick(e, ref.current) && ref.current.close()}
     aria-label=${title}
+    aria-describedby=${descriptionId}
   >
     ${open &&
     html`<div class="dialog-head">
@@ -25,6 +27,21 @@ export function Dialog({ open, onClose, title, children, actions }) {
       ${children}
       ${actions && html`<div class="dialog-actions">${actions}</div>`}`}
   </dialog>`;
+}
+
+export function Confirmation() {
+  const prompt = confirmation.value;
+  useEffect(() => () => finishConfirmation(), []);
+  return html`<${Dialog}
+    open=${!!prompt}
+    onClose=${() => finishConfirmation()}
+    title=${prompt?.title ?? "Confirm"}
+    descriptionId="confirmation-message"
+    actions=${html`<${Button} variant="ghost" autofocus onClick=${() => finishConfirmation()}>Cancel<//>
+      <${Button} variant="danger" onClick=${() => finishConfirmation(true)}>${prompt?.label}<//>`}
+  >
+    <p id="confirmation-message">${prompt?.message}</p>
+  <//>`;
 }
 
 export function Toast({ notice, onDone, ttl = 4000 }) {

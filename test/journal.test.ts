@@ -52,3 +52,24 @@ test('decisions are journaled only when their outcome changes', () => {
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('paused checks update status without adding activity between dispatches, errors, or restarts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-journal-'));
+  try {
+    let store = new Store(dir);
+    const paused = { reason: 'disabled', at: '2026-01-01T00:00:00.000Z' };
+    store.decide(paused);
+    store.save(job());
+    store.decide({ ...paused, reason: 'dispatched', ticket: 'APP-1', model: 'gpt-6-astra' });
+    store.decide(paused);
+    store.decide({ ...paused, reason: 'error', message: 'T3 unreachable' });
+    store.decide(paused);
+    store.close();
+    store = new Store(dir);
+    store.decide(paused);
+    assert.deepEqual(JSON.parse(store.get('lastDecision')!), paused);
+    assert.deepEqual(store.events(10).toReversed().map(e => e.kind), ['job.created', 'decision']);
+    assert.equal(store.events(10)[0]!.text, 'Check failed: T3 unreachable');
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

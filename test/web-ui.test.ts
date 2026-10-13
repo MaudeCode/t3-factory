@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 const store = await import('../web/lib/store.js');
 const { api } = await import('../web/lib/api.js');
 const { coerce, isBackdropClick, moveItem, decisionSentence, until, ago } = await import('../web/lib/format.js');
+const { confirmation, confirmAction, finishConfirmation } = await import('../web/lib/confirmation.js');
 
 const fixture = () => ({
   config: {
@@ -93,6 +94,23 @@ test('backdrop clicks close a dialog; clicks on its content do not', () => {
   assert.equal(isBackdropClick({ target: dialog, clientX: 150, clientY: 150 }, dialog), false);
   assert.equal(isBackdropClick({ target: {}, clientX: 50, clientY: 50 }, dialog), false);
   assert.equal(isBackdropClick({ target: dialog, clientX: 50, clientY: 50 }, dialog), true);
+});
+
+test('confirmation defers the original action, cancels safely, and accepts only once', () => {
+  const calls: string[] = [];
+  const options = { title: 'Cancel the chain to APP-1?', message: 'Running tickets finish.', label: 'Cancel chain' };
+  confirmAction(options, () => calls.push('original'));
+  assert.equal(confirmation.value.title, options.title);
+  assert.equal(calls.length, 0, 'opening a confirmation cannot perform the action');
+  finishConfirmation();
+  finishConfirmation(true);
+  assert.equal(calls.length, 0, 'dismissal cannot leave a pending action');
+  confirmAction(options, () => calls.push('original'));
+  confirmAction(options, () => calls.push('replacement'));
+  finishConfirmation(true);
+  finishConfirmation(true);
+  assert.deepEqual(calls, ['original'], 'repeated clicks cannot replace or repeat the action');
+  assert.equal(confirmation.value, null);
 });
 
 test('reordering models keeps the list intact and selects the moved model', () => {

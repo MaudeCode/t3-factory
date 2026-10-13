@@ -104,8 +104,8 @@ export class Store {
     const previous = this.get('lastDecision');
     this.set('lastDecision', JSON.stringify(result));
     const text = decisionText(result);
-    // A dispatch is journaled by the job it creates; checks are journaled when their outcome changes or fails.
-    if (text && result.reason !== 'dispatched' && (result.reason === 'error' || !previous || decisionText(JSON.parse(previous)) !== text)) this.record('decision', text, { reason: result.reason, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
+    // Dispatches have job events; routine paused checks are status, not activity.
+    if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !previous || decisionText(JSON.parse(previous)) !== text)) this.record('decision', text, { reason: result.reason, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
   }
   get(key: string): string | null { return this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
   set(key: string, value: string) { this.db.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
