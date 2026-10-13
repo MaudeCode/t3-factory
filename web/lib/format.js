@@ -71,6 +71,8 @@ export const PROVIDERS = [
 ];
 export const providerName = (driver) => PROVIDERS.find((p) => p.driver === driver)?.name ?? driver;
 export const providerIcon = (driver) => (driver === "codex" ? "openai" : "claude");
+// Up next names its model by display name only; the glyph comes from the matching preset.
+export const modelIcon = (config, name) => providerIcon(config.models.find((m) => m.name === name)?.model.instanceId);
 export const providerOf = (job) =>
   job.providerDriver || (job.modelSelection?.instanceId === "codex" ? "codex" : "claudeAgent");
 

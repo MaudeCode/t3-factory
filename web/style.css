@@ -1161,7 +1161,7 @@ dialog::backdrop {
   font-weight: 600;
   color: var(--ink);
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1188,6 +1188,22 @@ a.key:hover {
 .icon {
   flex: none;
   vertical-align: -0.15em;
+}
+h2 .icon,
+.field-label .icon {
+  font-size: 0.9em;
+  margin-right: 2px;
+  color: var(--muted);
+}
+.next-body small .tag {
+  font-size: 10px;
+  padding: 0 5px;
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+.next-model .icon {
+  color: var(--muted);
+  font-size: 13px;
 }
 .run-meta .icon {
   font-size: 13px;
