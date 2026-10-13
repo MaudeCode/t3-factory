@@ -142,9 +142,9 @@ enum RunPrompt: Identifiable {
         }
     }
     var stateDir: String { config["stateDir"] as? String ?? home.appendingPathComponent(".local/share/t3-factory").path }
-    var enabled: Bool { config["enabled"] as? Bool ?? false }
+    var enabled: Bool { status["enabled"] as? Bool ?? config["enabled"] as? Bool ?? false }
     var hasUpstream: Bool { config["upstream"] is [String: Any] }
-    var upstreamEnabled: Bool { (config["upstream"] as? [String: Any])?["enabled"] as? Bool ?? false }
+    var upstreamEnabled: Bool { status["upstreamEnabled"] as? Bool ?? (config["upstream"] as? [String: Any])?["enabled"] as? Bool ?? false }
     var configuredModels: [[String: Any]] { config["models"] as? [[String: Any]] ?? [] }
     var projects: [[String: Any]] { config["projects"] as? [[String: Any]] ?? [] }
     var selectedPreset: [String: Any]? { configuredModels.first { $0["id"] as? String == selectedModel } }
@@ -171,13 +171,16 @@ enum RunPrompt: Identifiable {
     // The scheduler's view of a configured model on its last pass.
     func liveModelState(_ id: String) -> String {
         for s in streams {
-            if ((s["quota"] as? [String: Any])?["factoryRouting"] as? [String: Any])?["modelId"] as? String == id { return "next automatic run" }
-            if let entry = (s["models"] as? [[String: Any]])?.first(where: { $0["id"] as? String == id }) { return Self.streamReasons[entry["reason"] as? String ?? ""] ?? (entry["reason"] as? String ?? "") }
+            if let entry = (s["models"] as? [[String: Any]])?.first(where: { $0["id"] as? String == id }) {
+                let reason = entry["reason"] as? String ?? ""
+                if reason == "ready", ((s["quota"] as? [String: Any])?["factoryRouting"] as? [String: Any])?["modelId"] as? String == id { return "next automatic run" }
+                return Self.streamReasons[reason] ?? reason
+            }
         }
         return ""
     }
     var liveConcurrency: [String: Int] {
-        let limits = config["concurrency"] as? [String: Any] ?? [:]
+        let limits = status["concurrency"] as? [String: Any] ?? config["concurrency"] as? [String: Any] ?? [:]
         return ["claudeAgent": (limits["claude"] as? NSNumber)?.intValue ?? 1, "codex": (limits["codex"] as? NSNumber)?.intValue ?? 1]
     }
     private func newest(_ a: [String: Any], _ b: [String: Any]) -> Bool { (a["createdAt"] as? String ?? "") > (b["createdAt"] as? String ?? "") }
@@ -227,7 +230,6 @@ enum RunPrompt: Identifiable {
         }
     }
     var lastCheck: String { decision["at"] == nil ? "no check yet" : "checked " + Words.ago(decision["at"] as? String, now: now) }
-    nonisolated static func date(_ text: String) -> Date? { Words.date(text) }
     func refreshStatus() {
         let dir = stateDir
         if let data = try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status.json")), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { status = object }
@@ -263,8 +265,8 @@ enum RunPrompt: Identifiable {
             providers = list; catalogError = nil
         } catch { catalogError = error.localizedDescription }
     }
-    func refreshSources() async {
-        guard sources == nil else { return }
+    func refreshSources(force: Bool = false) async {
+        guard force || sources == nil else { return }
         do {
             let result = try await execute(["sources"])
             guard result.code == 0, let object = jsonObject(result.text) else { throw failure(result) }
@@ -372,13 +374,25 @@ enum RunPrompt: Identifiable {
         } catch { self.error = error.localizedDescription }
     }
     // A manual run. The scheduler may answer with a question (a blocked ticket, a missing ready label) instead of a result.
-    func dispatch(extra: [String] = []) async {
-        guard busy == nil else { return }; busy = "Checking the ticket and starting its T3 run"; error = nil; notice = nil; defer { busy = nil }
+    func dispatch() async {
+        guard busy == nil else { return }
         var args = ["dispatch", "--model", selectedModel]
         let key = ticket.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if !key.isEmpty { args += ["--ticket", key] }
         if overrideLimits { args.append("--override-limits") }
-        args += extra
+        await send(args)
+    }
+    // The answer re-sends the same request with the chosen flag; the scheduler may ask the next question (a ticket can lack its label and be blocked).
+    func answer(_ prompt: RunPrompt, with extra: [String]) async {
+        guard busy == nil else { error = "Wait for the current action to finish, then choose again."; return }
+        self.prompt = nil
+        let args: [String]
+        switch prompt { case .blocked(_, _, let a), .readiness(_, _, let a): args = a + extra }
+        await send(args)
+    }
+    private func send(_ args: [String]) async {
+        busy = "Checking the ticket and starting its T3 run"; error = nil; notice = nil; defer { busy = nil }
+        let key = (args.firstIndex(of: "--ticket").map { args[$0 + 1] }) ?? ""
         do {
             let result = try await execute(args), object = jsonObject(result.text) ?? [:]
             switch object["reason"] as? String {
@@ -392,18 +406,6 @@ enum RunPrompt: Identifiable {
             default: throw failure(result)
             }
             refreshStatus()
-        } catch { self.error = error.localizedDescription; refreshStatus() }
-    }
-    func answer(_ prompt: RunPrompt, with extra: [String]) async {
-        self.prompt = nil
-        guard busy == nil else { return }; busy = "Starting"; error = nil; notice = nil; defer { busy = nil }
-        let args: [String]
-        switch prompt { case .blocked(_, _, let a), .readiness(_, _, let a): args = a + extra }
-        do {
-            let result = try await execute(args), object = jsonObject(result.text) ?? [:]
-            guard ["dispatched", "plan-started"].contains(object["reason"] as? String ?? "") else { throw failure(result) }
-            notice = object["message"] as? String ?? "Started \(object["ticket"] as? String ?? "a run") on \(object["model"] as? String ?? selectedModel)."
-            ticket = ""; refreshStatus()
         } catch { self.error = error.localizedDescription; refreshStatus() }
     }
     func stop(_ job: [String: Any]) async {
@@ -483,9 +485,10 @@ enum RunPrompt: Identifiable {
         guard let id = job["threadId"] as? String, let url = URL(string: "t3-thread://v1/\(id)") else { openT3(); return }
         NSWorkspace.shared.open(url)
     }
+    // Without a task this opens the project.
     func openTicket(_ projectId: String?, taskId: String?) {
-        guard let kaneo = config["kaneo"] as? [String: Any], let base = kaneo["url"] as? String, let workspace = kaneo["workspaceId"] as? String, let projectId, let taskId,
-              let url = URL(string: "\(base)/dashboard/workspace/\(workspace)/project/\(projectId)/task/\(taskId)") else { return }
+        guard let kaneo = config["kaneo"] as? [String: Any], let base = kaneo["url"] as? String, let workspace = kaneo["workspaceId"] as? String, let projectId,
+              let url = URL(string: "\(base)/dashboard/workspace/\(workspace)/project/\(projectId)" + (taskId.map { "/task/\($0)" } ?? "")) else { return }
         NSWorkspace.shared.open(url)
     }
     func openPullRequest(_ job: [String: Any]) {

@@ -37,7 +37,11 @@ export async function subscribeT3Shell(socketUrl: () => Promise<string>, onItem:
       }).pipe(Effect.provide(protocol), Effect.scoped), { signal });
     } catch (error) { if (signal.aborted) return; onError(error); }
     backoff = Date.now() - started > 60_000 ? 1000 : Math.min(backoff * 2, 30_000);
-    await new Promise(resolve => { const t = setTimeout(resolve, backoff); signal.addEventListener('abort', () => { clearTimeout(t); resolve(undefined); }, { once: true }); });
+    await new Promise<void>(resolve => {
+      const stop = () => { clearTimeout(timer); signal.removeEventListener('abort', stop); resolve(); };
+      const timer = setTimeout(stop, backoff);
+      signal.addEventListener('abort', stop);
+    });
   }
 }
 export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string }): Promise<unknown> {

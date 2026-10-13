@@ -8,6 +8,7 @@ import { join } from 'node:path';
 export type ControlCommand =
   | { type: 'dispatch'; options: Record<string, unknown> }
   | { type: 'wake'; reason?: string }
+  | { type: 'once'; options: Record<string, unknown> }
   | { type: 'job-stop'; jobId: string }
   | { type: 'plan-cancel'; planId: string }
   | { type: 'health' };
@@ -35,7 +36,8 @@ export function serveControl(stateDir: string, handle: (command: ControlCommand)
 }
 
 // null when no scheduler is listening, so the caller can do the work itself.
-export function callControl(stateDir: string, command: ControlCommand, timeoutMs = 180_000): Promise<ControlResult | null> {
+// A dispatch or a pass may take as long as the scheduler needs; the socket only gives up on it when the scheduler is gone.
+export function callControl(stateDir: string, command: ControlCommand, timeoutMs = 0): Promise<ControlResult | null> {
   const socketPath = controlPath(stateDir);
   if (!existsSync(socketPath)) return Promise.resolve(null);
   return new Promise(resolve => {
@@ -45,26 +47,36 @@ export function callControl(stateDir: string, command: ControlCommand, timeoutMs
       res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { resolve(null); } });
     });
     req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve({ code: 1, data: { message: 'The scheduler did not answer in time' } }); });
+    if (timeoutMs) req.on('timeout', () => { req.destroy(); resolve({ code: 1, data: { message: 'The scheduler did not answer in time' } }); });
     req.end(JSON.stringify(command));
   });
 }
 
 // Translate a CLI argument list into a control command, or undefined for commands the scheduler does not take.
 export function commandFor(args: string[]): ControlCommand | undefined {
-  if (args[0] === 'once' && !args.includes('--dry-run')) return { type: 'wake', reason: 'once' };
+  if (args[0] === 'once' || args[0] === 'doctor') return { type: 'once', options: { dryRun: args.includes('--dry-run'), doctor: args[0] === 'doctor' } };
   if (args[0] === 'job-stop' && args[1]) return { type: 'job-stop', jobId: args[1] };
   if (args[0] === 'plan-cancel' && args[1]) return { type: 'plan-cancel', planId: args[1] };
   if (args[0] !== 'dispatch') return undefined;
-  const options: Record<string, unknown> = { manual: true };
-  for (let i = 1; i < args.length; i++) {
-    if (args[i] === '--ticket') options.ticket = args[++i];
-    else if (args[i] === '--model') options.model = args[++i];
-    else if (args[i] === '--override-limits') options.overrideLimits = true;
+  return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
+}
+// The one parser for dispatch arguments, shared by the CLI and the socket.
+export function dispatchOptions(args: string[]): { manual: true; ticket?: string; model?: string; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
+  const options: ReturnType<typeof dispatchOptions> = { manual: true };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
+    else if (args[i] === '--model') {
+      const value = args[++i];
+      if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
+      options.model = value;
+    } else if (args[i] === '--chain') {
+      const value = args[++i];
+      if (value !== 'first' && value !== 'all') throw new Error('--chain requires first or all');
+      options.chain = value;
+    } else if (args[i] === '--override-limits') options.overrideLimits = true;
     else if (args[i] === '--allow-missing-ready-label') options.allowMissingReadyLabel = true;
     else if (args[i] === '--dry-run') options.dryRun = true;
-    else if (args[i] === '--chain') options.chain = args[++i];
     else throw new Error(`Unknown dispatch argument: ${args[i]}`);
   }
-  return { type: 'dispatch', options };
+  return options;
 }

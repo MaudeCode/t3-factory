@@ -64,9 +64,11 @@ export function applyState(data, reset = false) {
     status.value = data.status;
     journal.value = data.status.journal ?? [];
     if (data.now) serverOffset = Date.parse(data.now) - Date.now();
-    // Follow the server's config unless there are local edits; those keep their base for conflict checks.
-    if (!config.value || reset || !dirty.value) config.value = clone(data.config);
-    base.value = clone(data.config);
+    // Follow the server's config unless there are local edits; those keep their baseline so a save still detects outside changes.
+    if (!config.value || reset || !dirty.value) {
+      config.value = clone(data.config);
+      base.value = clone(data.config);
+    }
     live.value = {
       enabled: data.config.enabled,
       upstream: !!data.config.upstream?.enabled,
@@ -359,8 +361,9 @@ export function showBlockedChoice() {
 // Run the first blocker that can start, or the whole chain and then the ticket.
 export async function runChain(mode) {
   const choice = blocked.value;
+  if (!choice || choice.id !== operation.value?.id) { blocked.value = null; return; }
+  if (busy.value || dispatching.value) { message("Wait for the current action to finish, then choose again.", true); return; }
   blocked.value = null;
-  if (!choice || choice.id !== operation.value?.id) return;
   await startRun({ ...choice.input, chain: mode });
 }
 export async function runWithoutReadyLabel() {

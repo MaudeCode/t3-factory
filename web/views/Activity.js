@@ -1,5 +1,5 @@
-import { html, useState } from "../lib/h.js";
-import { journal, jobs, history } from "../lib/store.js";
+import { html, useState, useEffect } from "../lib/h.js";
+import { journal, jobs, history, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { Segmented, Empty, Timeline, Help } from "../ui/index.js";
 
@@ -11,6 +11,9 @@ const KINDS = [
 
 export function Activity() {
   const [kind, setKind] = useState("all");
+  useEffect(() => {
+    if (!history.value) loadHistory().catch(() => {});
+  }, []);
   const list = journal.value.filter((e) => kind === "all" || (kind === "runs" ? e.kind.startsWith("job.") : e.kind === kind));
   const known = new Set([...jobs.value, ...(history.value ?? [])].map((j) => j.id));
   const text = (e) =>

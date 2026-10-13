@@ -139,14 +139,14 @@ test('server pushes replace status but keep local config edits until saved', () 
 test('a project added from the catalogs starts with its path, prefix, and columns filled in', () => {
   store.applyState(fixture(), true);
   store.sources.value = {
-    t3: [{ id: 't3-1', title: 'cowtail', workspaceRoot: '/Users/me/git/MaudeCode/cowtail' }],
-    kaneo: { projects: [{ id: 'k1', name: 'Cowtail', slug: 'COW', githubRepo: null }], columns: { k1: [{ slug: 'backlog', name: 'Backlog', isFinal: false }, { slug: 'done', name: 'Done', isFinal: true }, { slug: 'wont-do', name: "Won't do", isFinal: true }] }, labels: [] },
+    t3: [{ id: 't3-1', title: 'widgets', workspaceRoot: '/Users/me/git/example/widgets' }],
+    kaneo: { projects: [{ id: 'k1', name: 'Widgets', slug: 'WID', githubRepo: null }], columns: { k1: [{ slug: 'backlog', name: 'Backlog', isFinal: false }, { slug: 'done', name: 'Done', isFinal: true }, { slug: 'wont-do', name: "Won't do", isFinal: true }] }, labels: [] },
   };
   store.actions.addProject(store.sources.value.t3[0], store.sources.value.kaneo.projects[0]);
   const added = store.config.value.projects.at(-1);
   assert.deepEqual(
     { ...added, upstreams: undefined },
-    { name: 'cowtail', enabled: false, key: 'COW', kaneoId: 'k1', t3Id: 't3-1', repoPath: '/Users/me/git/MaudeCode/cowtail', githubRepo: 'MaudeCode/cowtail', baseBranch: 'main', readyStatuses: ['backlog'], doneStatuses: ['done', 'wont-do'], priorityLabels: [], upstreams: undefined },
+    { name: 'widgets', enabled: false, key: 'WID', kaneoId: 'k1', t3Id: 't3-1', repoPath: '/Users/me/git/example/widgets', githubRepo: 'example/widgets', baseBranch: 'main', readyStatuses: ['backlog'], doneStatuses: ['done', 'wont-do'], priorityLabels: [], upstreams: undefined },
   );
   assert.equal(store.selectedProject.value, 1);
   store.actions.linkKaneo(0, 'k1');

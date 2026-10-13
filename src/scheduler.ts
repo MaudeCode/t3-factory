@@ -759,7 +759,17 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     ]);
     if (queue.selected) {
       if (!task || task.projectId !== project.kaneoId || !project.readyStatuses.includes(task.status)) return decision('ticket-changed-before-dispatch');
-      const known = new Set(shell.threads.map(t => t.id)), key = queue.selected.key;
+      // Labels and blockers can change between the queue read and now; Kaneo's single-task read has no labels, so they come from the workspace.
+      const labels = (await listTaskLabels(kaneo)).get(task.id) ?? [], key = queue.selected.key;
+      let difficulty: Candidate['difficulty'];
+      try { difficulty = ticketDifficulty(labels); } catch { difficulty = undefined; }
+      if (difficulty !== queue.selected.difficulty || !acceptsDifficulty(preset, { ...queue.selected, difficulty })) return decision('ticket-changed-before-dispatch', { message: 'The ticket\'s difficulty label changed.' });
+      if (!options.allowMissingReadyLabel && !labels.some(l => l.name === c.kaneo.readyLabel)) return decision('ticket-changed-before-dispatch', { message: `The ticket lost its ${c.kaneo.readyLabel} label.` });
+      const reader = taskReader(c, kaneo);
+      for (const r of relationsSchema.parse(await kaneo.call('get_task_relations', { taskId: task.id }))) {
+        if (r.relationType === 'blocks' && r.targetTaskId === task.id && !await reader.done(await reader.task(r.sourceTaskId))) return decision('ticket-changed-before-dispatch', { message: 'The ticket gained a blocker.' });
+      }
+      const known = new Set(shell.threads.map(t => t.id));
       if (store.jobs().some(j => j.taskId === task.id && !['complete', 'dismissed'].includes(j.state)) || fresh.threads.some(t => !known.has(t.id) && mentionsTicket(`${t.title}\n${t.branch ?? ''}`, key))) return decision('ticket-order-or-eligibility-changed');
     }
     if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
@@ -969,7 +979,7 @@ export function upstreamRows(c: Config, store: Store) {
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {
   const result = {
-    enabled: c.enabled, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
+    enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kaneoId, lastAt: iso(store.get(`discoveryLast:${p.kaneoId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kaneoId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),

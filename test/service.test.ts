@@ -16,8 +16,9 @@ test('commands reach the running scheduler over its socket and fall back without
     const dispatch = commandFor(['dispatch', '--model', 'opus', '--ticket', 'APP-1', '--override-limits'])!;
     assert.deepEqual(dispatch, { type: 'dispatch', options: { manual: true, model: 'opus', ticket: 'APP-1', overrideLimits: true } });
     assert.deepEqual(await callControl(dir, dispatch), { code: 0, data: { reason: 'dispatched', ticket: 'APP-1' } });
-    assert.deepEqual(commandFor(['once']), { type: 'wake', reason: 'once' });
-    assert.equal(commandFor(['once', '--dry-run']), undefined, 'dry runs stay local');
+    assert.deepEqual(commandFor(['once']), { type: 'once', options: { dryRun: false, doctor: false } });
+    assert.deepEqual(commandFor(['doctor']), { type: 'once', options: { dryRun: false, doctor: true } });
+    assert.throws(() => commandFor(['dispatch', '--chain', 'later']), /--chain requires first or all/);
     assert.equal(commandFor(['model-catalog']), undefined);
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });
     assert.throws(() => commandFor(['dispatch', '--bogus']), /Unknown dispatch argument/);
@@ -80,6 +81,7 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     const dispatch = callControl(c.stateDir, { type: 'dispatch', options: { manual: true, model: 'opus', ticket: 'FIX-2', overrideLimits: true } });
     for (const item of [{ kind: 'snapshot', snapshot: {} }, { kind: 'synchronized' }, { type: 'thread.meta-updated', aggregateId: 'x', sequence: 1 }, { type: 'thread.created', aggregateId: 'y', sequence: 2 }]) emit(item);
     await callControl(c.stateDir, { type: 'wake', reason: 'test' });
+    const dry = callControl(c.stateDir, { type: 'once', options: { dryRun: true } });
     assert.deepEqual(await callControl(c.stateDir, { type: 'health' }), { code: 0, data: { ok: true, pid: process.pid } });
     release();
     const result = await dispatch;
@@ -87,6 +89,7 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     assert.equal((result?.data as any).reason, 'dispatched');
     assert.equal((result?.data as any).ticket, 'FIX-2');
     assert.equal(launches.length, 1);
+    assert.equal((await dry)?.code, 0, 'a dry run over the socket returns its decision');
     // Let the queued wake-ups drain: the T3 events and the explicit wake were one queued pass, not three.
     await new Promise(resolve => setTimeout(resolve, 1200));
     const status = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));

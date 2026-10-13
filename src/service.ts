@@ -6,9 +6,8 @@ import { basename, dirname } from 'node:path';
 import type { Server } from 'node:http';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
-import { T3, Kaneo } from './clients.ts';
+import { T3, Kaneo, listTasks } from './clients.ts';
 import { cycle, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, type CycleOptions } from './scheduler.ts';
-import { listTasks } from './clients.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
@@ -19,7 +18,8 @@ const DEFAULT_TIMING: ServiceTiming = { kaneoPollMs: 15_000 };
 export class FactoryService {
   private store!: Store;
   private t3!: T3;
-  private kaneo?: Kaneo;
+  private kaneo?: Promise<Kaneo>; // resolves once connected, so no caller sees a client mid-handshake
+  private polling = false;
   private control?: Server;
   private watcher?: FSWatcher;
   private timer?: NodeJS.Timeout;
@@ -58,7 +58,7 @@ export class FactoryService {
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
     await this.queue.catch(() => {});
-    await this.kaneo?.close().catch(() => {});
+    await this.kaneo?.then(k => k.close()).catch(() => {});
     this.store.close();
   }
 
@@ -95,6 +95,10 @@ export class FactoryService {
       const result = await this.enqueue(async () => { const r = cancelPlan(this.store, command.planId); writeStatus(loadConfig(this.configPath), this.store); return r; });
       return { code: 0, data: result };
     }
+    if (command.type === 'once') {
+      const result = await this.enqueue(() => this.pass(command.options as CycleOptions, 'once'));
+      return { code: result.reason === 'error' ? 1 : 0, data: result };
+    }
     const result = await this.enqueue(() => this.pass({ ...(command.options as CycleOptions), manual: true }, 'dispatch'));
     return { code: ['dispatched', 'would-dispatch', 'plan-started'].includes(result.reason) ? 0 : 1, data: result };
   }
@@ -113,7 +117,8 @@ export class FactoryService {
 
   // Kaneo has no push, so the ready columns are fingerprinted cheaply; any change starts a pass.
   private async checkKaneo() {
-    if (this.stopped) return;
+    if (this.stopped || this.polling) return;
+    this.polling = true;
     try {
       const c = loadConfig(this.configPath), kaneo = await this.ensureKaneo(c);
       const tasks = await Promise.all(c.projects.filter(p => p.enabled).map(p => listTasks(kaneo, p.kaneoId, null, p.readyStatuses)));
@@ -121,11 +126,17 @@ export class FactoryService {
       if (this.readyFingerprint !== undefined && fingerprint !== this.readyFingerprint) this.wake('kaneo');
       this.readyFingerprint = fingerprint;
     } catch (error) { log('kaneo-poll-failed', { message: safeError(error) }); }
+    finally { this.polling = false; }
   }
 
-  private async ensureKaneo(c: Config) {
-    if (!this.kaneo) { this.kaneo = new Kaneo(c.kaneo); await this.kaneo.connect(); }
-    return this.kaneo;
+  private ensureKaneo(c: Config): Promise<Kaneo> {
+    this.kaneo ??= (async () => { const client = new Kaneo(c.kaneo); await client.connect(); return client; })();
+    return this.kaneo.catch(error => { this.kaneo = undefined; throw error; });
+  }
+  // A broken MCP transport cannot be reused; the next pass spawns a fresh client.
+  private dropKaneo() {
+    const dead = this.kaneo; this.kaneo = undefined;
+    dead?.then(k => k.close()).catch(() => {});
   }
 
   private async pass(options: CycleOptions, reason: string) {
@@ -144,8 +155,7 @@ export class FactoryService {
       const message = safeError(error); log('error', { message, reason });
       this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
       try { writeStatus(c ?? loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
-      // A broken MCP transport cannot be reused; the next pass spawns a fresh Kaneo client.
-      await this.kaneo?.close().catch(() => {}); this.kaneo = undefined;
+      this.dropKaneo();
       throw error;
     } finally {
       if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);

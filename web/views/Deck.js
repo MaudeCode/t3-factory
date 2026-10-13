@@ -28,7 +28,7 @@ import {
   isFinished,
   isOpen,
 } from "../lib/format.js";
-import { Button, Switch, Check, Select, Meter, Tag, Link, Empty, Timeline, useReady } from "../ui/index.js";
+import { Button, Switch, Check, Select, Meter, Tag, Link, Empty, Timeline } from "../ui/index.js";
 
 function Status() {
   const on = live.value.enabled,
@@ -51,7 +51,6 @@ function Status() {
 }
 
 function Machine({ provider }) {
-  const ready = useReady();
   const now = serverNow();
   const stream = (status.value.streams || []).find((s) => s.driver === provider.driver) || {};
   const active = jobs.value.filter((j) => providerOf(j) === provider.driver && isActive(j)).length;
@@ -63,7 +62,7 @@ function Machine({ provider }) {
   if (fable != null) windows.push({ label: "Fable", value: fable, marker: config.value.quota?.claude?.fable?.minRemainingPercent });
   const reason = !live.value.enabled && !active ? "paused" : streamReason(stream.reason);
   const assigned = quota?.factoryRouting?.modelId && config.value.models.find((m) => m.id === quota.factoryRouting.modelId)?.name;
-  return html`<section class=${`machine ${ready ? "ready" : ""}`}>
+  return html`<section class="machine ready">
     <header>
       <h2>${provider.name}</h2>
       <span class="reason">${reason}</span>
@@ -204,7 +203,7 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
   const note = waiting ? (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason) : job.state === "dismissed" && !/^Dismissed by settling/.test(job.reason ?? "") ? job.reason : "";
   return html`<a class=${`run ${job.state}`} href=${`/runs/${job.id}`} onClick=${follow}>
     <span class="run-key">
-      ${ticket ? html`<${Link} href=${ticket} class="key">${job.label}<//>` : html`<b class="key">${job.label}</b>`}
+      ${ticket ? html`<span onClick=${(e) => e.stopPropagation()}><${Link} href=${ticket} class="key">${job.label}<//></span>` : html`<b class="key">${job.label}</b>`}
       ${job.kind && job.kind !== "ticket" && html`<${Tag}>${job.kind === "upstream" ? "review" : "discovery"}<//>`}
     </span>
     <span class="run-meta">

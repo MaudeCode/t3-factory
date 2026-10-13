@@ -67,7 +67,7 @@ struct FactorySettingsView: View {
                 model.draft = parsed
             }
             if new == "advanced" { if preserveAdvancedText { preserveAdvancedText = false } else { rawJSON = prettyJSON(model.draft) } }
-            if new == "projects" || new == "upstream" { Task { await model.refreshSources() } }
+            if new == "projects" || new == "upstream" { Task { await model.refreshSources(force: true) } }
             if new == "models" || new == "factory" { Task { await model.refreshModels() } }
         }
         .sheet(isPresented: $adding) { AddProjectSheet(model: model) { index in selectedProject = index; adding = false } onCancel: { adding = false } }
@@ -188,7 +188,6 @@ struct FactorySettingsView: View {
                         }.padding(.vertical, 4).tag(id).listRowBackground(Color.clear)
                     }.onMove { offsets, destination in model.moveModels(from: offsets, to: destination) }
                 }.listStyle(.plain).scrollContentBackground(.hidden).background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
-                Text("Drag to set priority").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.top, 8)
                 if let error = model.catalogError { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).lineLimit(2).padding(.top, 4) }
             }.frame(width: 300).padding(.leading, 24).padding(.bottom, 24)
             ScrollView {
@@ -271,7 +270,7 @@ struct FactorySettingsView: View {
                     }.card()
                     VStack(alignment: .leading, spacing: 12) {
                         SectionTitle("Timing")
-                        SliderField(label: "Wait for the provider to be idle", help: "Automatic ticket work starts only after you have not used the provider for this long. Reviews skip the wait.", value: model.number(["idleMinutes"]), range: 0...180, step: 5, format: minutes)
+                        SliderField(label: "Wait for the provider to be idle", help: "Automatic ticket work starts only after you have not used the provider for this long. Reviews skip the wait.", value: model.number(["idleMinutes"], fallback: 30), range: 1...180, step: 1, format: minutes)
                         SliderField(label: "Check at least every", help: "Passes start as soon as a T3 thread, the config, or a ready ticket changes; this is the fallback interval.", value: model.number(["pollSeconds"], fallback: 60), range: 15...900, step: 15, format: seconds)
                     }.card()
                     VStack(alignment: .leading, spacing: 12) {
@@ -320,7 +319,7 @@ struct FactorySettingsView: View {
             ForEach(windows, id: \.0) { key, label in
                 let w = live[key], remaining = key == "fable" ? fable : w?["remaining"] as? Double
                 VStack(alignment: .leading, spacing: 6) {
-                    AllowanceBar(label: label, remaining: remaining ?? 0, reserved: w?["reserved"] as? Double, note: (w?["resetsAt"] as? String).map { "resets " + Words.until($0, now: model.now) } ?? (remaining == nil ? "no reading" : ""))
+                    AllowanceBar(label: label, remaining: remaining ?? 0, reserved: w?["reserved"] as? Double, note: (w?["resetsAt"] as? String).flatMap { $0.isEmpty ? nil : "resets " + Words.until($0, now: model.now) } ?? (remaining == nil ? "no reading" : ""))
                     HStack(spacing: 14) {
                         SliderField(label: "Reserve at window start", value: model.number(["quota", provider, key, "reservePercent"]), range: 0...100, step: 1) { "\(Int($0))%" }
                         SliderField(label: "Floor", value: model.number(["quota", provider, key, "minRemainingPercent"]), range: 0...100, step: 1) { "\(Int($0))%" }
@@ -547,7 +546,6 @@ struct UpstreamSheet: View {
     @ObservedObject var model: FactoryModel
     @State var draft: UpstreamDraft
     let onClose: () -> Void
-    @State private var custom = false
     var body: some View {
         let projects = model.draft["projects"] as? [[String: Any]] ?? []
         let name = draft.entry["name"] as? String ?? "", repo = draft.entry["repo"] as? String ?? "", base = draft.entry["firstBase"] as? String ?? ""
@@ -572,18 +570,30 @@ struct UpstreamSheet: View {
         }.padding(22).frame(width: 480).background(Theme.bg).themed()
     }
     private func field(_ key: String) -> Binding<String> { Binding(get: { draft.entry[key] as? String ?? "" }, set: { draft.entry[key] = $0 }) }
+    private let origin: Int
+    init(model: FactoryModel, draft: UpstreamDraft, onClose: @escaping () -> Void) {
+        self.model = model; self._draft = State(initialValue: draft); self.onClose = onClose; self.origin = draft.project
+    }
     private func apply() {
         var entry = draft.entry
         entry["name"] = (entry["name"] as? String ?? "").trimmingCharacters(in: .whitespaces)
         entry["repo"] = (entry["repo"] as? String ?? "").trimmingCharacters(in: .whitespaces).lowercased()
         entry["firstBase"] = (entry["firstBase"] as? String ?? "").trimmingCharacters(in: .whitespaces)
-        var list = valueAt(model.draft, ["projects", String(draft.project), "upstreams"]) as? [[String: Any]] ?? []
-        if let index = draft.index, list.indices.contains(index) { list[index] = entry } else { list.append(entry) }
-        model.update(["projects", String(draft.project), "upstreams"], list)
+        if let index = draft.index, draft.project == origin {
+            var list = valueAt(model.draft, ["projects", String(origin), "upstreams"]) as? [[String: Any]] ?? []
+            if list.indices.contains(index) { list[index] = entry } else { list.append(entry) }
+            model.update(["projects", String(origin), "upstreams"], list)
+        } else {
+            // Edited under another project: it leaves the original list and joins the new one.
+            if let index = draft.index { remove(index) }
+            var list = valueAt(model.draft, ["projects", String(draft.project), "upstreams"]) as? [[String: Any]] ?? []
+            list.append(entry)
+            model.update(["projects", String(draft.project), "upstreams"], list)
+        }
     }
     private func remove(_ index: Int) {
-        var list = valueAt(model.draft, ["projects", String(draft.project), "upstreams"]) as? [[String: Any]] ?? []
+        var list = valueAt(model.draft, ["projects", String(origin), "upstreams"]) as? [[String: Any]] ?? []
         if list.indices.contains(index) { list.remove(at: index) }
-        model.update(["projects", String(draft.project), "upstreams"], list)
+        model.update(["projects", String(origin), "upstreams"], list)
     }
 }

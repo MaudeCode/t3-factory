@@ -115,7 +115,7 @@ struct FactoryPanel: View {
                 let state = after.isEmpty ? (t["runnable"] as? Bool == true ? "can start" : "project not included") : "after " + after.joined(separator: ", ")
                 return "\(t["key"] as? String ?? "") \(t["title"] as? String ?? "") — \(state)\(t["readyLabel"] as? Bool == false ? ", no ready label" : "")"
             }
-            return Text("The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs \(ticket) last.\n\n" + lines.joined(separator: "\n"))
+            return Text("The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs \(ticket) last. Tickets without the ready label run anyway.\n\n" + lines.joined(separator: "\n"))
         case .readiness(_, let label, _):
             return Text("This ticket is not marked \(label). Running it skips only that label check; dependency, difficulty, quota, and duplicate checks still apply.")
         }
@@ -159,7 +159,7 @@ struct ProviderCard: View {
             }
             ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
                 AllowanceBar(label: window["name"] as? String == "fiveHour" ? "Five-hour" : "Weekly", remaining: window["remaining"] as? Double ?? 0, reserved: window["reserved"] as? Double,
-                             note: (window["resetsAt"] as? String).map { "resets " + Words.until($0, now: model.now) } ?? "")
+                             note: (window["resetsAt"] as? String).flatMap { $0.isEmpty ? nil : "resets " + Words.until($0, now: model.now) } ?? "")
             }
             if let fable { AllowanceBar(label: "Fable", remaining: fable, reserved: nil) }
             if let read = quota?["capturedAt"] as? String { Text("read " + Words.ago(read, now: model.now)).font(.system(size: 10)).foregroundStyle(Theme.muted) }

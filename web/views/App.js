@@ -49,7 +49,7 @@ function Shell() {
     <span class="right">
       <span class=${`conn ${connection.value}`} title=${`Updates: ${CONNECTION[connection.value]}`}><i></i>${CONNECTION[connection.value]}</span>
       <${Button} variant="ghost" size="sm" onClick=${() => setPicking(true)}>Theme<//>
-      <${Button} variant="ghost" size="sm" onClick=${actions.logout}>${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"}<//>
+      <${Button} variant="ghost" size="sm" onClick=${() => (!dirty.value || confirm("Discard unsaved changes?")) && actions.logout()}>${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"}<//>
     </span>
   </header>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />
@@ -110,7 +110,7 @@ const SaveBar = () => html`<div class="save-bar" role="region" aria-label="Unsav
 function useEditGuards() {
   useEffect(() => {
     const key = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         if (dirty.value && !busy.value) actions.save();
       }

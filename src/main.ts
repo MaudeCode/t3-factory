@@ -6,7 +6,7 @@ import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
 import { cycle, log, safeError, stopJob, cancelPlan, writeStatus } from './scheduler.ts';
 import { FactoryService } from './service.ts';
-import { callControl, commandFor } from './control.ts';
+import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
 import { saveSettings } from './settings.ts';
 import type { CycleOptions } from './scheduler.ts';
@@ -58,7 +58,7 @@ if (command === 'web') {
     },
   });
   server.listen(config.port, config.host, () => console.log(`Factory web controls listening on ${config.host}:${config.port}`));
-  const shutdown = () => { server.close(); store.close(); };
+  const shutdown = () => { server.closeAllConnections(); server.close(); store.close(); };
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 } else if (command === 'job-stop') {
   // The running scheduler stops the thread and reconciles at once; otherwise stop it here and leave reconciliation to the next pass.
@@ -144,28 +144,12 @@ if (command === 'web') {
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
   try { await service.start(); } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (['doctor', 'once', 'dispatch'].includes(command)) {
-  const options: CycleOptions = { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor', manual: command === 'dispatch', overrideLimits: process.argv.includes('--override-limits'), allowMissingReadyLabel: process.argv.includes('--allow-missing-ready-label') };
-  if (command === 'dispatch') {
-    const args = process.argv.slice(3);
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] === '--ticket') options.ticket = args[++i];
-      else if (args[i] === '--model') {
-        const value = args[++i];
-        if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
-        options.model = value as CycleOptions['model'];
-      } else if (args[i] === '--chain') {
-        const value = args[++i];
-        if (value !== 'first' && value !== 'all') throw new Error('--chain requires first or all');
-        options.chain = value;
-      } else if (!['--override-limits', '--dry-run', '--allow-missing-ready-label'].includes(args[i])) throw new Error(`Unknown dispatch argument: ${args[i]}`);
-    }
-    if (args.includes('--ticket') && !options.ticket) throw new Error('--ticket requires a ticket key');
-  }
-  // A running scheduler takes dispatches and wake-ups itself, so they never wait on its store claim.
-  const forwarded = options.dryRun || options.doctor ? null : await callControl(loadConfig(configPath).stateDir, commandFor(process.argv.slice(2))!);
+  const options: CycleOptions = command === 'dispatch' ? dispatchOptions(process.argv.slice(3)) : { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor' };
+  // A running scheduler runs dispatches, checks, dry runs, and diagnostics itself, so they never wait on its store claim.
+  const forwarded = await callControl(loadConfig(configPath).stateDir, commandFor(process.argv.slice(2))!);
   if (forwarded) {
-    if (command === 'dispatch') { log('decision', forwarded.data as Record<string, unknown>); process.exitCode = forwarded.code; }
-    else console.log(JSON.stringify(forwarded.data));
+    log('decision', forwarded.data as Record<string, unknown>);
+    process.exitCode = forwarded.code;
   } else {
   let stop = false;
   process.once('SIGTERM', () => { stop = true; });

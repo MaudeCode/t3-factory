@@ -24,7 +24,7 @@ export const Switch = ({ checked, onChange, disabled, label }) =>
   />`;
 
 // A small question mark that explains its heading on hover or keyboard focus.
-export const Help = ({ text }) => (text ? html`<span class="help" tabindex="0" role="note" aria-label=${text} data-tip=${text}>?</span>` : null);
+export const Help = ({ text }) => (text ? html`<span class="help" tabindex="0" role="note" aria-label=${text} data-tip=${text} onClick=${(e) => e.preventDefault()}>?</span>` : null);
 
 // `group` renders a div instead of a label, for controls made of several buttons.
 export const Field = ({ label, hint, children, group }) =>
@@ -167,7 +167,7 @@ export function Select({ path, value, options, onChange, label, size, class: ext
       type="button"
       aria-haspopup="listbox"
       aria-expanded=${open}
-      aria-label=${label}
+      aria-label=${`${label}: ${options[index]?.[1] ?? current ?? ""}`}
       onClick=${() => setOpen(!open)}
       onKeyDown=${onKeyDown}
     >
@@ -194,15 +194,17 @@ export const Check = ({ path, label, checked, onChange, hint }) =>
   </label>`;
 
 // Exclusive filter chips. `options` is a list of [value, name, count?].
-export const Segmented = ({ options, value, onChange, label }) =>
-  html`<div class="segmented" role="radiogroup" aria-label=${label}>
+export const Segmented = ({ path, options, value, onChange, label }) => {
+  const [current, change] = bind(path, value, onChange);
+  return html`<div class="segmented" role="radiogroup" aria-label=${label}>
     ${options.map(
       ([v, name, count]) =>
-        html`<button key=${v} type="button" role="radio" aria-checked=${v === value} onClick=${() => onChange(v)}>
+        html`<button key=${v} type="button" role="radio" aria-checked=${v === current} onClick=${() => change(v)}>
           ${name}${count != null && html`<small>${count}</small>`}
         </button>`,
     )}
   </div>`;
+};
 
 // Drag-to-reorder list. Rows render through `render(item, index, grip)`; put `grip` on the handle.
 // Pointer drags move neighbours out of the way; the arrow keys on a handle move one step.

@@ -1,5 +1,5 @@
 import { html, useEffect } from "../lib/h.js";
-import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption, set } from "../lib/store.js";
+import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption } from "../lib/store.js";
 import { DIFFICULTIES, difficultyLabel, providerName, streamReason, isOpen } from "../lib/format.js";
 import { Button, Field, Input, Select, Segmented, Toggle, Tag, SortableList, Help } from "../ui/index.js";
 
@@ -39,7 +39,7 @@ function Editor({ index }) {
     <${Toggle} path=${[...p, "automatic"]} label="Takes tickets automatically" hint=${m.automatic ? "The scheduler may pick this model when it is next in priority and inside its allowance." : "Only used when you start a run and choose it."} />
     <div class="grid-2">
       <${Field} label="Name"><${Input} path=${[...p, "name"]} /><//>
-      <${Field} group label="Hardest ticket it may take" hint="Tickets carry a difficulty label. Applies to automatic and manual runs."><${Segmented} label="Hardest ticket" value=${m.maxDifficulty} options=${DIFFICULTIES} onChange=${(v) => set([...p, "maxDifficulty"], v)} /><//>
+      <${Field} group label="Hardest ticket it may take" hint="Tickets carry a difficulty label. Applies to automatic and manual runs."><${Segmented} label="Hardest ticket" path=${[...p, "maxDifficulty"]} options=${DIFFICULTIES} /><//>
       <${Field} label="Provider"><${Select} label="Provider" value=${m.model.instanceId} options=${providerOptions} onChange=${(v) => chooseModel(index, v, "")} /><//>
       <${Field} label="Model"><${Select} label="Model" value=${m.model.model} options=${slugOptions} onChange=${(v) => chooseModel(index, m.model.instanceId, v)} /><//>
       ${descriptors.map((d) => {

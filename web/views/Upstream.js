@@ -14,7 +14,7 @@ const blank = { name: "", repo: "", firstBase: "", prereleases: false, checkMinu
 // One watched repository, new or existing. Edits land in the config only on Save.
 function WatchDialog({ edit, onClose }) {
   const c = config.value;
-  const [project, setProject] = useState(edit?.project ?? c.projects.findIndex((p) => p.enabled));
+  const [project, setProject] = useState(edit?.project ?? Math.max(0, c.projects.findIndex((p) => p.enabled)));
   const [entry, setEntry] = useState(edit?.entry ?? blank);
   const patch = (k) => (v) => setEntry((e) => ({ ...e, [k]: v }));
   const custom = entry.checkMinutes != null;
@@ -22,8 +22,11 @@ function WatchDialog({ edit, onClose }) {
   const save = () => {
     const next = { ...entry, name: entry.name.trim(), repo: entry.repo.trim().toLowerCase(), firstBase: entry.firstBase.trim() };
     if (!custom) delete next.checkMinutes;
-    if (edit?.entry) actions.setUpstream(edit.project, edit.index, next);
-    else actions.addUpstream(project, next);
+    if (edit?.entry && project === edit.project) actions.setUpstream(edit.project, edit.index, next);
+    else {
+      if (edit?.entry) actions.removeUpstream(edit.project, edit.index);
+      actions.addUpstream(project, next);
+    }
     onClose();
   };
   return html`<${Dialog} open=${!!edit} onClose=${onClose} title=${edit?.entry ? `Watching ${edit.entry.name}` : "Watch a repository"}
@@ -74,7 +77,7 @@ export function Upstream() {
           ${watched.length
             ? watched.map(
                 ({ entry: u, live: r, ...w }) => html`<div class="release" key=${u.repo} role="button" tabindex="0" onClick=${() => setEdit({ ...w, entry: u })} onKeyDown=${(e) => e.key === "Enter" && setEdit({ ...w, entry: u })}>
-                  <span class="release-name"><b>${u.name}</b><small><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}</small></span>
+                  <span class="release-name" onClick=${(e) => e.target.closest("a") && e.stopPropagation()}><b>${u.name}</b><small><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}</small></span>
                   <span class="release-state">
                     ${r?.reviewing ? html`<${Tag} tone="on">reviewing<//>` : r?.pending ? html`<${Tag} tone="attention">review due<//>` : r?.latest ? html`<${Tag} tone="ok">up to date<//>` : html`<${Tag}>new<//>`}
                   </span>
@@ -87,7 +90,7 @@ export function Upstream() {
                 </div>`,
               )
             : html`<${Empty}>No watched repositories yet.<//>`}
-          <${Button} size="sm" style="margin-top:12px" onClick=${() => setEdit({ project: c.projects.findIndex((p) => p.enabled), index: -1 })}>Watch a repository<//>
+          <${Button} size="sm" style="margin-top:12px" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })}>Watch a repository<//>
         <//>
         <${RunGroup} title="Reviews" list=${reviews} empty="No reviews yet." />
       </div>
