@@ -53,7 +53,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
     t.mock.method(T3.prototype, 'providers', async () => providers);
     let shellReads = 0;
     t.mock.method(T3.prototype, 'shell', async () => {
-      if (scenario === 'parallel-resumed' && ++shellReads >= 3) threads.forEach(thread => { thread.status = 'running'; thread.pendingRuntimeRequest = null; });
+      // The pass reads the shell once and each dispatch re-reads it just before launch: the second read is the first dispatch's final check.
+      if (scenario === 'parallel-resumed' && ++shellReads >= 2) threads.forEach(thread => { thread.status = 'running'; thread.pendingRuntimeRequest = null; });
       return { threads, projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) };
     });
     t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
@@ -110,8 +111,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'codex-exhausted
         assert.match(attempts[0].initialMessage.text, /Manual run validation/);
         assert.equal((await cycle(c, store, confirmed)).reason, 'no-eligible-ticket', 'confirmation cannot bypass ownership');
         const blocked = await cycle(c, store, { ...confirmed, ticket: 'FIX-2' });
-        assert.equal(blocked.reason, 'no-eligible-ticket');
-        assert.match((blocked as any).skipped[0].reason, /blocker/);
+        assert.equal(blocked.reason, 'blocked-ticket-plan-required', 'a blocked ticket is offered as a chain instead of refused');
+        assert.deepEqual((blocked as any).tree.tickets.map((x: any) => x.key), ['FIX-1']);
         tasks[2].labels = [];
         assert.equal((await cycle(c, store, { ...confirmed, ticket: 'FIX-3' })).reason, 'no-eligible-ticket', 'classification remains required');
         tasks[2].labels = [{ name: 'high' }]; tasks[2].status = 'done';

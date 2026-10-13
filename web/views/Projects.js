@@ -1,7 +1,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, jobs, history, sources, selectedProject, clock, serverNow, actions, set } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
-import { Button, Field, Input, Select, Chips, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section } from "../ui/index.js";
+import { Button, Field, Input, Select, Chips, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Help } from "../ui/index.js";
 import { follow } from "../lib/router.js";
 
 const t3Options = (current) => {
@@ -68,7 +68,7 @@ export function Projects() {
   const columns = columnOptions(current.kaneoId);
   return html`<div class="page">
     <div class="page-head">
-      <div><h1>Projects</h1><p>Repositories the factory may work in. A project pairs a T3 project with a Kaneo project.</p></div>
+      <div><h1>Projects<${Help} text="Repositories the factory may work in. A project pairs a T3 project with a Kaneo project." /></h1></div>
       <${Button} variant="primary" onClick=${() => setAdding(true)}>Add project<//>
     </div>
     <${AddProject} open=${adding} onClose=${() => setAdding(false)} />
@@ -114,7 +114,7 @@ export function Projects() {
             <${Field} label="T3 project" hint="T3 creates each run's worktree from this project."><${Select} label="T3 project" value=${current.t3Id} options=${t3Options(current.t3Id)} onChange=${(v) => actions.linkT3(i, v)} /><//>
             <${Field} label="Base branch"><${Input} mono path=${[...p, "baseBranch"]} /><//>
           </div>
-          <${Field} label="Repository path on your Mac" hint=${pathMismatch ? undefined : "Matches the T3 project's workspace root."}><${Input} mono path=${[...p, "repoPath"]} /><//>
+          <${Field} label="Repository path on your Mac" hint="Must match the T3 project's workspace root, or T3 cannot create worktrees for its runs."><${Input} mono path=${[...p, "repoPath"]} /><//>
           ${pathMismatch && html`<p class="hint section-hint tone-attention">T3 works in <code>${t3Project.workspaceRoot}</code>. Dispatch fails until these match.
             <${Button} variant="ghost" size="sm" onClick=${() => set([...p, "repoPath"], t3Project.workspaceRoot)}>Use T3's path<//></p>`}
         <//>
@@ -131,7 +131,7 @@ export function Projects() {
           ${current.upstreams?.length
             ? current.upstreams.map((u) => html`<div class="row" key=${u.repo}><span><b>${u.name}</b> <small class="muted mono">${u.repo}</small></span><small class="muted">${u.prereleases ? "including pre-releases" : "releases only"}${u.checkMinutes ? `, every ${span(u.checkMinutes * 60)}` : ""}</small></div>`)
             : html`<${Empty}>None yet.<//>`}
-          <p class="hint"><a href="/upstream" onClick=${follow}>Manage watched releases</a></p>
+          <p class="small"><a href="/upstream" onClick=${follow}>Manage watched releases</a></p>
         <//>
       </div>
     </div>

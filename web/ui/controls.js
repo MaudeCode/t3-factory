@@ -23,9 +23,12 @@ export const Switch = ({ checked, onChange, disabled, label }) =>
     onChange=${onChange}
   />`;
 
+// A small question mark that explains its heading on hover or keyboard focus.
+export const Help = ({ text }) => (text ? html`<span class="help" tabindex="0" role="note" aria-label=${text} data-tip=${text}>?</span>` : null);
+
 // `group` renders a div instead of a label, for controls made of several buttons.
 export const Field = ({ label, hint, children, group }) =>
-  html`<${group ? "div" : "label"} class="field"><span>${label}</span>${children}${hint && html`<p class="hint">${hint}</p>`}<//>`;
+  html`<${group ? "div" : "label"} class="field"><span class="field-label">${label}<${Help} text=${hint} /></span>${children}<//>`;
 
 // Reads a bound config path, or an explicit value; writes through `set` or the given `onChange`.
 const bind = (path, value, onChange) => [path ? at(path) : value, onChange ?? ((v) => set(path, v))];
@@ -104,7 +107,7 @@ export function Chips({ path, value, onChange, options = [], ordered, custom, la
 // Switch with its name and a sentence of consequence.
 export const Toggle = ({ path, checked, onChange, label, hint, disabled }) =>
   html`<label class="toggle">
-    <span><b>${label}</b>${hint && html`<small>${hint}</small>`}</span>
+    <span><b>${label}<${Help} text=${hint} /></b></span>
     <${Switch} label=${label} checked=${path ? !!at(path) : checked} disabled=${disabled} onChange=${onChange ?? ((e) => set(path, e.target.checked))} />
   </label>`;
 
@@ -181,13 +184,13 @@ export function Select({ path, value, options, onChange, label, size, class: ext
 }
 
 export const Check = ({ path, label, checked, onChange, hint }) =>
-  html`<label class="check" title=${hint}>
+  html`<label class="check">
     <input
       type="checkbox"
       checked=${path ? !!at(path) : checked}
       onChange=${onChange ?? ((e) => set(path, e.target.checked))}
     />
-    <span>${label}</span>
+    <span>${label}</span><${Help} text=${hint} />
   </label>`;
 
 // Exclusive filter chips. `options` is a list of [value, name, count?].

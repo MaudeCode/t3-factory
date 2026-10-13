@@ -66,8 +66,8 @@ test('manual override runs the specified ticket/model while paused, but retains 
   });
   try {
     assert.equal((await cycle(c, store)).reason, 'disabled');
-    assert.equal((await cycle(c, store, { manual: true, ticket: 'fix-2' })).reason, 'no-eligible-ticket');
-    assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', overrideLimits: true })).reason, 'no-eligible-ticket');
+    assert.equal((await cycle(c, store, { manual: true, ticket: 'fix-2' })).reason, 'blocked-ticket-plan-required', 'a blocked ticket is offered as a chain, not started');
+    assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', overrideLimits: true })).reason, 'blocked-ticket-plan-required');
     assert.equal(dispatches.length, 0);
     blocked = false;
     const result = await cycle(c, store, { manual: true, ticket: 'fix-2', model: 'fable', overrideLimits: true });
@@ -112,9 +112,9 @@ test('manual override runs the specified ticket/model while paused, but retains 
     assert.ok(providerCalls.every(id => id === 'codex'), 'Codex dispatch only queries Codex quota');
     assert.equal((await cycle(c, store, { manual: true, model: 'sol', ticket: 'FIX-3' })).reason, 'no-eligible-ticket', 'Codex retains duplicate guards');
     claudeAvailable = true;
-    providerCalls.length = 0;
+    const before = dispatches.length;
     await cycle({ ...c, enabled: true }, store);
-    assert.equal(providerCalls.length, 0, 'automatic dispatch waits for the current run');
+    assert.equal(dispatches.length, before, 'automatic dispatch waits for the current run');
 
     const custom = configSchema.parse({ ...c, models: [...c.models, { id: 'quick-review', name: 'Quick review', model: { ...configuredModel(c, 'sol').model, options: [{ id: 'reasoningEffort', value: 'low' }, { id: 'serviceTier', value: 'priority' }] } }] });
     writeFileSync(file, '// preserve this comment\n' + JSON.stringify(custom));

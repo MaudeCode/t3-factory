@@ -1,6 +1,7 @@
 // Read-only display pieces: gauges, tags, tables, timelines.
 import { html, useEffect, useState } from "../lib/h.js";
 import { clockTime, dayLabel } from "../lib/format.js";
+import { Help } from "./controls.js";
 
 const pct = (value) => Math.max(0, Math.min(100, Number(value) || 0));
 
@@ -32,11 +33,10 @@ export const Tag = ({ tone, children, title }) => html`<span class=${`tag ${tone
 
 export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;
 
-// Titled block of a page. `aside` sits on the title line; `hint` is one sentence under it.
+// Titled block of a page. `aside` sits on the title line; `hint` explains the block from a question mark beside the title.
 export const Section = ({ title, hint, aside, children }) =>
   html`<section class="section">
-    <header><h2>${title}</h2>${aside}</header>
-    ${hint && html`<p class="hint section-hint">${hint}</p>`}
+    <header><h2>${title}<${Help} text=${hint} /></h2>${aside}</header>
     ${children}
   </section>`;
 

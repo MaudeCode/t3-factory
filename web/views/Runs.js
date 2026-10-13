@@ -1,6 +1,6 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
+import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import {
   ago,
@@ -23,15 +23,15 @@ import {
   difficultyLabel,
   PENDING_KINDS,
 } from "../lib/format.js";
-import { Button, Select, Segmented, Tag, Link, Empty, Facts, Timeline } from "../ui/index.js";
-import { RunRow } from "./Deck.js";
+import { Button, Select, Segmented, Tag, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
+import { RunRow, UpNext, Chains } from "./Deck.js";
 
 export function Runs() {
   clock.value;
   useEffect(() => {
     loadHistory().catch((e) => message(e.message, true));
   }, []);
-  const [state, setState] = useState("open");
+  const [state, setState] = useState(new URLSearchParams(location.search).get("state") ?? "open");
   const [project, setProject] = useState("all");
   const [provider, setProvider] = useState("all");
   const [query, setQuery] = useState("");
@@ -49,7 +49,7 @@ export function Runs() {
   );
   return html`<div class="page">
     <div class="page-head">
-      <div><h1>Runs</h1><p>Every run the factory has started, newest first.</p></div>
+      <div><h1>Runs<${Help} text="Every run the factory has started, newest first." /></h1></div>
       <input class="mono search" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
       <${Select} label="Project" size="sm" value=${project} onChange=${setProject} options=${[["all", "All projects"], ...config.value.projects.map((p) => [p.kaneoId, p.name])]} />
       <${Select} label="Provider" size="sm" value=${provider} onChange=${setProvider} options=${[["all", "Both providers"], ...PROVIDERS.map((p) => [p.driver, p.name])]} />
@@ -58,11 +58,13 @@ export function Runs() {
       label="State"
       value=${state}
       onChange=${setState}
-      options=${[["open", "Open", counts.running + counts.dispatching + counts.waiting], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
+      options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", counts.running + counts.dispatching + counts.waiting], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
-    <div class="runs-list">
-      ${history.value === null && !jobs.value.length ? html`<${Empty}>Loading runs.<//>` : list.length ? list.map((j) => html`<${RunRow} key=${j.id} job=${j} />`) : html`<${Empty}>No runs match.<//>`}
-    </div>
+    ${state === "next"
+      ? html`<${Chains} /><${UpNext} limit=${Infinity} />`
+      : html`<div class="runs-list">
+          ${history.value === null && !jobs.value.length ? html`<${Empty}>Loading runs.<//>` : list.length ? list.map((j) => html`<${RunRow} key=${j.id} job=${j} />`) : html`<${Empty}>No runs match.<//>`}
+        </div>`}
   </div>`;
 }
 

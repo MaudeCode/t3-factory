@@ -1,7 +1,7 @@
 import { html, useEffect } from "../lib/h.js";
 import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption, set } from "../lib/store.js";
 import { DIFFICULTIES, difficultyLabel, providerName, streamReason, isOpen } from "../lib/format.js";
-import { Button, Field, Input, Select, Segmented, Toggle, Tag, SortableList } from "../ui/index.js";
+import { Button, Field, Input, Select, Segmented, Toggle, Tag, SortableList, Help } from "../ui/index.js";
 
 // What the scheduler thinks of each model right now.
 function liveState(m) {
@@ -49,7 +49,7 @@ function Editor({ index }) {
         <//>`;
       })}
     </div>
-    ${m.quotaWindowId && html`<p class="hint">Budgeted against the ${m.quotaWindowId.replaceAll("_", " ")} window.</p>`}
+    ${m.quotaWindowId && html`<p class="small muted">Budgeted against the ${m.quotaWindowId.replaceAll("_", " ")} window.</p>`}
   </div>`;
 }
 
@@ -59,7 +59,7 @@ export function Models() {
   const index = Math.min(selectedModel.value, list.length - 1);
   return html`<div class="page">
     <div class="page-head">
-      <div><h1>Models</h1><p>Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket.</p></div>
+      <div><h1>Models<${Help} text="Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket." /></h1></div>
       <${Button} variant="ghost" size="sm" onClick=${actions.catalog}>Refresh catalog<//>
       <${Button} variant="primary" onClick=${actions.addModel}>Add model<//>
     </div>

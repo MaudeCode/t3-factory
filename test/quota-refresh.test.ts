@@ -50,15 +50,17 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
   await readModelQuota(t3, c, [], 'opus');
   assert.equal(requests.some(r => r.tag === 'server.refreshProviders'), false, 'fresh quota avoids unnecessary probes');
 
-  checkedAt = old; failedRefreshes = 1; requests.length = 0;
+  // Each scheduler pass starts with reset(); these reads stand for separate passes.
+  checkedAt = old; failedRefreshes = 1; requests.length = 0; t3.reset();
   assert.equal((await readModelQuota(t3, c, [], 'opus')).hasAllowance, true, 'retry a transient probe failure automatically');
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2);
 
-  checkedAt = old; failedRefreshes = 1; requests.length = 0;
+  checkedAt = old; failedRefreshes = 1; requests.length = 0; t3.reset();
   assert.equal((await readModelQuota(t3, c, [], 'opus', true, true)).hasAllowance, true, 'dispatch-boundary refresh also retries a transient failure');
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2);
 
   checkedAt = old; failedRefreshes = 5; requests.length = 0;
+  t3.reset();
   await assert.rejects(readModelQuota(t3, c, [], 'opus'), /automatic refresh failed.*snapshot is stale/);
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2, 'failed refresh stays bounded and never permits stale quota');
 });

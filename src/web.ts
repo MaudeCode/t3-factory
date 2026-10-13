@@ -68,6 +68,7 @@ const dispatchSchema = z
       .default("auto"),
     overrideLimits: z.boolean().default(true),
     allowMissingReadyLabel: z.boolean().default(false),
+    chain: z.enum(["first", "all"]).optional(),
   })
   .strict()
   .refine(input => !input.allowMissingReadyLabel || !!input.ticket, "The readiness-label override requires a specific ticket");
@@ -379,6 +380,11 @@ export function createFactoryWeb(options: {
           const result = await run(["job-stop", job[1]]);
           return json(res, result.code ? 409 : 200, result.data);
         }
+        const plan = path.match(/^\/api\/plans\/([\w-]{1,64})\/cancel$/);
+        if (plan && req.method === "POST") {
+          const result = await run(["plan-cancel", plan[1]]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
         if ((path === "/api/models" || path === "/api/sources") && req.method === "GET") {
           const result = await run([path === "/api/models" ? "model-catalog" : "sources"]);
           return json(res, result.code ? 503 : 200, result.data);
@@ -445,6 +451,7 @@ export function createFactoryWeb(options: {
             ...(input.ticket ? ["--ticket", input.ticket.toUpperCase()] : []),
             ...(input.overrideLimits ? ["--override-limits"] : []),
             ...(input.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
+            ...(input.chain ? ["--chain", input.chain] : []),
           ];
           void run(args)
             .then((result) =>

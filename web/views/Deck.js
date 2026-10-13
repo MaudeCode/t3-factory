@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import {
   ago,
@@ -26,6 +26,7 @@ import {
   byNewest,
   byFinished,
   isFinished,
+  isOpen,
 } from "../lib/format.js";
 import { Button, Switch, Check, Select, Meter, Tag, Link, Empty, Timeline, useReady } from "../ui/index.js";
 
@@ -44,7 +45,7 @@ function Status() {
     </div>
     <div class="status-meta">
       <span>Last check ${ago(d?.at, now)}</span>
-      ${next && on && html`<span>Next check ${next > now + 1000 ? until(next, now) : "due now"}</span>`}
+      ${next && on && html`<span title="Sooner when a T3 thread or the config changes">Next check ${next > now + 1000 ? until(next, now) : "due now"} at the latest</span>`}
     </div>
   </section>`;
 }
@@ -73,7 +74,7 @@ function Machine({ provider }) {
     </p>
     ${windows.length
       ? windows.map((w) => html`<${Meter} key=${w.label} label=${w.label} value=${w.value} marker=${w.marker} note=${w.reset ? `resets ${until(w.reset, now)}` : ""} />`)
-      : html`<p class="muted small">No quota reading yet.</p>`}
+      : html`<p class="muted small">${stream.quotaError ? `Allowance unavailable: ${stream.quotaError}` : "No allowance reading yet."}</p>`}
     ${(stream.models || []).length > 0 &&
     html`<p class="model-reasons">
       ${stream.models.map((m) => html`<span key=${m.id}><b>${m.name}</b> ${streamReason(m.reason)}</span>`)}
@@ -96,6 +97,7 @@ function Operation() {
     ${running && html`<i class="spinner"></i>`}
     <span>${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     ${d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${showReadinessConfirmation}>Review and run anyway<//>`}
+    ${d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${showBlockedChoice}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${retryRequest}>Retry saved request<//>`}
     ${!running && html`<${Button} variant="ghost" size="sm" icon aria-label="Dismiss" onClick=${actions.dismissOperation}>×<//>`}
   </div>`;
@@ -116,6 +118,69 @@ export function Composer() {
     <${Check} label="Override limits" checked=${override} onChange=${(e) => setOverride(e.target.checked)} hint="Skips idle and reserve thresholds. Readiness, difficulty, duplicate checks, and merge rules still apply." />
     <${Button} variant="primary" type="submit" disabled=${busy.value || dispatching.value}>Start run<//>
   </form>`;
+}
+
+// Chains the user started: each ticket's state, and what the next one waits for.
+export function Chains() {
+  clock.value;
+  const plans = (status.value.plans ?? []).filter((p) => p.state === "active");
+  if (!plans.length) return null;
+  const jobByTask = new Map(jobs.value.filter(isOpen).map((j) => [j.taskId, j]));
+  return plans.map((p) => {
+    const all = [...p.tickets, p.target], byId = new Map(all.map((t) => [t.id, t])), done = all.filter((t) => t.done).length;
+    const state = (t) => {
+      const job = jobByTask.get(t.id);
+      if (t.done) return ["Done", "ok", ""];
+      if (job) return [stateLabel(job.state), toneOf(job.state), ""];
+      const ahead = t.blockedBy.filter((id) => !byId.get(id)?.done).map((id) => byId.get(id)?.key ?? "?");
+      if (t === p.target && p.tickets.some((x) => !x.done)) return ["Last", "", "after every ticket above"];
+      if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
+      return ["Next", "attention", t.note ?? "starts when a slot is free"];
+    };
+    return html`<section class="group" key=${p.id}>
+      <header>
+        <h2>Chain to ${p.target.key} <small>${done} of ${all.length} done</small></h2>
+        <${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirm(`Cancel the chain to ${p.target.key}? Tickets already running finish on their own.`) && actions.cancelPlan(p.id)}>Cancel chain<//>
+      </header>
+      ${all.map((t) => {
+        const [label, tone, note] = state(t), job = jobByTask.get(t.id);
+        const row = html`<span class="chain-body"><span><b class="key">${t.key}</b> ${t.title}</span><small>${note || (job ? `${modelName(config.value, job)}` : "")}</small></span>`;
+        return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
+          <${Tag} tone=${tone}>${label}<//>${row}
+        <//>`;
+      })}
+    </section>`;
+  });
+}
+
+// What the factory would start next, in order. The same list feeds the deck and the runs page.
+export function UpNext({ limit = 5, children }) {
+  clock.value;
+  const c = config.value,
+    q = status.value.upNext,
+    tickets = q?.tickets ?? [],
+    held = q?.held ?? [],
+    all = limit === Infinity;
+  const project = (id) => c.projects.find((p) => p.kaneoId === id);
+  return html`<section class="group">
+    <header><h2>Up next ${tickets.length > 0 && html`<small>${tickets.length}</small>`}</h2>${children}</header>
+    ${!q
+      ? html`<${Empty}>The queue has not been read yet.<//>`
+      : tickets.length
+        ? tickets.slice(0, limit).map(
+            (t, i) => html`<a class="next" key=${t.id} href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
+              <span class="rank">${i + 1}</span>
+              <span class="next-body">
+                <span><b class="key">${t.key}</b> ${t.title}</span>
+                <small>${project(t.projectId)?.name ?? t.projectId} · ${t.difficulty ? difficultyLabel(t.difficulty).toLowerCase() : "unclassified"} · ${t.priority}${t.labelRank != null ? ` · ${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}` : ""}</small>
+              </span>
+              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ?? "no automatic model fits"}</span>
+            </a>`,
+          )
+        : html`<${Empty}>Nothing is ready to start.<//>`}
+    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span></div>`)}`}
+    ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
+  </section>`;
 }
 
 // One run. Used on the deck, the runs page, and upstream reviews.
@@ -234,6 +299,8 @@ export function Deck() {
         </section>
         ${waiting.length > 0 && html`<${RunGroup} title="Needs you" list=${waiting} />`}
         <${RunGroup} title="Running" list=${running} empty="Nothing is running." />
+        <${Chains} />
+        <${UpNext}><a href="/runs?state=next" onClick=${follow}>Whole queue</a><//>
         <${RunGroup} title="Finished recently" list=${done} limit=${5} empty="Nothing has finished yet.">
           <a href="/runs" onClick=${follow}>All runs</a>
         <//>

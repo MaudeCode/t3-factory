@@ -1,7 +1,7 @@
 import { html, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, clock, serverNow, actions } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
-import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section } from "../ui/index.js";
+import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Help } from "../ui/index.js";
 import { RunGroup } from "./Deck.js";
 
 const minutes = (n) => span(n * 60);
@@ -61,7 +61,7 @@ export function Upstream() {
     minutesDefault = c.upstream.checkMinutes;
   return html`<div class="page">
     <div class="page-head">
-      <div><h1>Upstream</h1><p>Each new release of a watched repository gets a review run that files tickets for anything worth adopting.</p></div>
+      <div><h1>Upstream<${Help} text="Each new release of a watched repository gets a review run that files tickets for anything worth adopting." /></h1></div>
       <div class="automation">
         <${Switch} label="Upstream reviews" checked=${live.value.upstream} disabled=${busy.value} onChange=${() => actions.toggle("upstream")} />
         <span><b>${live.value.upstream ? "Reviews on" : "Reviews paused"}</b></span>

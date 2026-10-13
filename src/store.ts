@@ -32,6 +32,12 @@ export interface Job {
 export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
   return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : 'Discovery');
 }
+// A chain: the unfinished tickets that must finish before a target ticket, run in priority order as they unblock.
+export interface PlanTicket {
+  id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
+  difficulty?: Difficulty; labelRank?: number; readyLabel: boolean; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
+}
+export interface Plan { id: string; createdAt: string; target: PlanTicket; tickets: PlanTicket[]; model: string; overrideLimits: boolean; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }
 const STATE_TEXT: Record<Job['state'], string> = { dispatching: 'is starting', running: 'is running', waiting: 'needs you', complete: 'finished', dismissed: 'was dismissed' };
 const STREAM_TEXT: Record<string, string> = {
@@ -58,7 +64,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, task_id TEXT UNIQUE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS events_job ON events(job_id);`);
+      CREATE INDEX IF NOT EXISTS events_job ON events(job_id);
+      CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
     // task_id is the live claim. Completed and dismissed history retain their ticket IDs in data.
     this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND json_extract(data, '$.state') IN ('complete', 'dismissed')");
   }
@@ -72,6 +79,15 @@ export class Store {
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
     for (const url of job.prUrls ?? []) if (!before?.prUrls?.includes(url)) this.record('job.pr', `${label} opened ${url.replace(/^https:\/\/github\.com\//, '')}`, { ...detail, url }, job.id);
+  }
+  plans(): Plan[] { return this.db.prepare('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  plan(id: string): Plan | undefined { const row = this.db.prepare('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  savePlan(plan: Plan) {
+    const before = this.plan(plan.id);
+    this.db.prepare('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(plan.id, JSON.stringify(plan));
+    const detail = { planId: plan.id, ticketKey: plan.target.key, tickets: plan.tickets.map(t => t.key) };
+    if (!before) this.record('plan.created', `Chain to ${plan.target.key} started with ${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'} ahead of it`, detail);
+    else if (before.state !== plan.state) this.record('plan.state', `Chain to ${plan.target.key} ${plan.state === 'done' ? 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
   }
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
     this.db.prepare('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));

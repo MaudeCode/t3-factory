@@ -21,6 +21,7 @@ export const live = signal({ enabled: false, upstream: false, concurrency: { cla
 export const busy = signal(false);
 export const operation = signal(null);
 export const readiness = signal(null);
+export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
 export const selectedModel = signal(0);
 export const selectedProject = signal(0);
@@ -167,6 +168,12 @@ export const actions = {
   ensureCatalog: () => {
     if (!providers.value.length) catalog().catch((e) => message(e.message, true));
   },
+  cancelPlan: (id) =>
+    run(async () => {
+      await post(`/api/plans/${id}/cancel`, {});
+      await load();
+      message("Chain cancelled. Tickets already running finish on their own.");
+    }),
   stopJob: (id) =>
     run(async () => {
       await post(`/api/jobs/${id}/stop`, {});
@@ -300,6 +307,7 @@ export async function pollOperation() {
     if (operation.value.state !== "running") {
       await load();
       showReadinessConfirmation();
+      showBlockedChoice();
     }
   } catch (error) {
     if (!authenticated.value) return;
@@ -318,7 +326,7 @@ export async function pollOperation() {
     }
     message("Checking dispatch status: " + error.message, true);
   }
-  if (operation.value?.state === "running") setTimeout(pollOperation, 2000);
+  if (operation.value?.state === "running") setTimeout(pollOperation, 1000);
 }
 export async function startRun(input) {
   if (busy.value || dispatching.value) return;
@@ -342,6 +350,18 @@ export function showReadinessConfirmation() {
   )
     return;
   readiness.value = { id: op.id, input: clone(op.input), label: op.result.data.requiredLabel };
+}
+export function showBlockedChoice() {
+  const op = operation.value, d = op?.result?.data;
+  if (d?.reason !== "blocked-ticket-plan-required" || !op.input?.ticket || op.input.chain) return;
+  blocked.value = { id: op.id, input: clone(op.input), ticket: d.ticket, tree: d.tree, message: d.message };
+}
+// Run the first blocker that can start, or the whole chain and then the ticket.
+export async function runChain(mode) {
+  const choice = blocked.value;
+  blocked.value = null;
+  if (!choice || choice.id !== operation.value?.id) return;
+  await startRun({ ...choice.input, chain: mode });
 }
 export async function runWithoutReadyLabel() {
   const confirmation = readiness.value;

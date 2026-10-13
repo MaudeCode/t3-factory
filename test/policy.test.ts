@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { queueOrder, branchKind } from '../src/policy.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -127,4 +128,23 @@ test('subagent descendants are transitive, exclude other relationships, and tole
   const threads = [child('root', 'grandchild'), child('child', 'root'), child('grandchild', 'child'), child('fork', 'root', 'fork'), child('fork-child', 'fork'), child('foreign', 'other'), v2Thread({ id: 'plain' })];
   assert.deepEqual(subagentDescendants(threads, 'root').map(t => t.id), ['child', 'grandchild']);
   assert.deepEqual(subagentDescendants(threads, 'plain'), []);
+});
+
+test('the up-next order rotates projects the way dispatch does', () => {
+  const t = (key: string, projectId: string, priority: string, createdAt: string) => ({ id: key, key, projectId, priority, createdAt });
+  const order = queueOrder([t('A-2', 'A', 'high', '2026-01-02'), t('A-1', 'A', 'high', '2026-01-01'), t('B-1', 'B', 'high', '2026-01-03'), t('A-3', 'A', 'low', '2026-01-01')], 'A', ['A', 'B']);
+  // Within a tier the project holding more tickets goes first; the rotation only breaks ties.
+  assert.deepEqual(order.map(x => x.key), ['A-1', 'B-1', 'A-2', 'A-3']);
+  assert.deepEqual(queueOrder([], null, ['A']), []);
+});
+
+test('branch prefixes follow the ticket kind label in conventional-commit terms', () => {
+  const labels = (...names: string[]) => names.map(name => ({ name }));
+  assert.equal(branchKind(labels('sf', 'high', 'bug')), 'fix');
+  assert.equal(branchKind(labels('sec', 'med')), 'fix');
+  assert.equal(branchKind(labels('feat')), 'feat');
+  assert.equal(branchKind(labels('ux')), 'feat');
+  assert.equal(branchKind(labels('perf')), 'perf');
+  assert.equal(branchKind(labels('docs')), 'docs');
+  assert.equal(branchKind(labels('high', 'app')), 'chore', 'no kind label falls back to chore');
 });

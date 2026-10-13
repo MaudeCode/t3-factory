@@ -20,9 +20,11 @@ export function match(path) {
 
 export const route = signal(match(globalThis.location?.pathname ?? "/"));
 
-export function navigate(path, replace = false) {
+export function navigate(href, replace = false) {
+  const [path, query = ""] = href.split("?");
   const next = match(path);
-  if (next.path !== location.pathname) history[replace ? "replaceState" : "pushState"](null, "", next.path);
+  const target = next.path + (query ? `?${query}` : "");
+  if (target !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", target);
   route.value = next;
   window.scrollTo(0, 0);
 }

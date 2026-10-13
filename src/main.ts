@@ -1,17 +1,18 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, watch } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { modify, applyEdits, parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
-import { cycle, log, safeError, writeStatus } from './scheduler.ts';
+import { cycle, log, safeError, stopJob, cancelPlan, writeStatus } from './scheduler.ts';
+import { FactoryService } from './service.ts';
+import { callControl, commandFor } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
 import { saveSettings } from './settings.ts';
 import type { CycleOptions } from './scheduler.ts';
 import { z, ZodError } from 'zod';
 import { T3, Kaneo } from './clients.ts';
-import { createFactoryWeb, webSettings } from './web.ts';
+import { createFactoryWeb, runFactory, webSettings } from './web.ts';
 
 import { loadEnvironment } from './env.ts';
 import { createOidc } from './oidc.ts';
@@ -31,7 +32,12 @@ if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
   const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
-  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir,
+  // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
+  const viaService = async (args: string[], input?: unknown) => {
+    const command = commandFor(args);
+    return (command && await callControl(c.stateDir, command)) ?? runFactory(args, input);
+  };
+  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
     readState: () => {
       const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
       const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
@@ -55,15 +61,24 @@ if (command === 'web') {
   const shutdown = () => { server.close(); store.close(); };
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 } else if (command === 'job-stop') {
-  // Ask T3 to stop a run's thread. The next scheduler cycle reconciles the job state from T3.
+  // The running scheduler stops the thread and reconciles at once; otherwise stop it here and leave reconciliation to the next pass.
   try {
-    const c = loadConfig(configPath), store = new Store(c.stateDir), job = store.job(process.argv[3] ?? '');
-    if (!job || ['complete', 'dismissed'].includes(job.state)) throw new Error('That run is not active');
-    await new T3(c.t3).dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: job.threadId, reason: 'Stopped from the factory web app' });
-    job.reason = 'Stop requested from the web app; waiting for T3 to confirm'; store.save(job);
-    store.record('job.stop', `${jobLabel(job)} stop requested`, { ticketKey: job.ticketKey, projectId: job.projectId }, job.id);
-    writeStatus(c, store); store.close();
-    console.log(JSON.stringify({ ok: true, jobId: job.id }));
+    const c = loadConfig(configPath);
+    const forwarded = await callControl(c.stateDir, { type: 'job-stop', jobId: process.argv[3] ?? '' });
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else {
+      const store = new Store(c.stateDir);
+      const result = await stopJob(c, store, new T3(c.t3), process.argv[3] ?? '');
+      writeStatus(c, store); store.close();
+      console.log(JSON.stringify(result));
+    }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (command === 'plan-cancel') {
+  try {
+    const c = loadConfig(configPath);
+    const forwarded = await callControl(c.stateDir, { type: 'plan-cancel', planId: process.argv[3] ?? '' });
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(cancelPlan(store, process.argv[3] ?? ''))); writeStatus(c, store); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'web-pair') {
   try {
@@ -123,7 +138,12 @@ if (command === 'web') {
 } else if (command === 'status') {
   const c = loadConfig(configPath), store = new Store(c.stateDir);
   console.log(JSON.stringify(writeStatus(c, store), null, 2)); store.close();
-} else if (['doctor', 'once', 'run', 'dispatch'].includes(command)) {
+} else if (command === 'run') {
+  const service = new FactoryService(configPath);
+  const shutdown = () => { service.stop().finally(() => process.exit(0)); };
+  process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
+  try { await service.start(); } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (['doctor', 'once', 'dispatch'].includes(command)) {
   const options: CycleOptions = { dryRun: process.argv.includes('--dry-run'), doctor: command === 'doctor', manual: command === 'dispatch', overrideLimits: process.argv.includes('--override-limits'), allowMissingReadyLabel: process.argv.includes('--allow-missing-ready-label') };
   if (command === 'dispatch') {
     const args = process.argv.slice(3);
@@ -133,43 +153,45 @@ if (command === 'web') {
         const value = args[++i];
         if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
         options.model = value as CycleOptions['model'];
+      } else if (args[i] === '--chain') {
+        const value = args[++i];
+        if (value !== 'first' && value !== 'all') throw new Error('--chain requires first or all');
+        options.chain = value;
       } else if (!['--override-limits', '--dry-run', '--allow-missing-ready-label'].includes(args[i])) throw new Error(`Unknown dispatch argument: ${args[i]}`);
     }
     if (args.includes('--ticket') && !options.ticket) throw new Error('--ticket requires a ticket key');
   }
+  // A running scheduler takes dispatches and wake-ups itself, so they never wait on its store claim.
+  const forwarded = options.dryRun || options.doctor ? null : await callControl(loadConfig(configPath).stateDir, commandFor(process.argv.slice(2))!);
+  if (forwarded) {
+    if (command === 'dispatch') { log('decision', forwarded.data as Record<string, unknown>); process.exitCode = forwarded.code; }
+    else console.log(JSON.stringify(forwarded.data));
+  } else {
   let stop = false;
-  const signal = new AbortController();
-  process.once('SIGTERM', () => { stop = true; signal.abort(); });
-  process.once('SIGINT', () => { stop = true; signal.abort(); });
-  let configuredStateDir: string | undefined;
-  do {
-    let store: Store | undefined;
-    let seconds = 60;
-    try {
-      const c = loadConfig(configPath);
-      if (configuredStateDir && configuredStateDir !== c.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
-      configuredStateDir = c.stateDir; seconds = c.pollSeconds;
-      store = new Store(c.stateDir);
-      let claimed = store.claim();
-      for (let retry = 0; !claimed && options.manual && retry < 20 && !stop; retry++) {
-        await delay(500); claimed = store.claim();
-      }
-      if (!claimed) { store.close(); store = undefined; throw new Error('Another scheduler cycle is checking the queue. Try again shortly.'); }
-      const result = await cycle(c, store, options);
-      if (options.manual && !['dispatched', 'would-dispatch'].includes(result.reason)) process.exitCode = 1;
-      writeStatus(c, store);
-    } catch (e) {
-      const message = safeError(e); log('error', { message });
-      if (store) {
-        store.decide({ reason: 'error', message, at: new Date().toISOString() });
-        try { writeStatus(loadConfig(configPath), store); } catch { /* Invalid config is already logged. */ }
-      }
-      if (command !== 'run') process.exitCode = 1;
-    } finally { store?.close(); }
-    if (command !== 'run' || stop) break;
-    await delay(seconds * 1000, undefined, { signal: signal.signal }).catch(() => {});
-  } while (!stop);
+  process.once('SIGTERM', () => { stop = true; });
+  process.once('SIGINT', () => { stop = true; });
+  let store: Store | undefined;
+  try {
+    const c = loadConfig(configPath);
+    store = new Store(c.stateDir);
+    let claimed = store.claim();
+    for (let retry = 0; !claimed && options.manual && retry < 20 && !stop; retry++) {
+      await delay(500); claimed = store.claim();
+    }
+    if (!claimed) { store.close(); store = undefined; throw new Error('The scheduler is busy and not answering on its control socket. Try again shortly.'); }
+    const result = await cycle(c, store, options);
+    if (options.manual && !['dispatched', 'would-dispatch', 'plan-started'].includes(result.reason)) process.exitCode = 1;
+    writeStatus(c, store);
+  } catch (e) {
+    const message = safeError(e); log('error', { message });
+    if (store) {
+      store.decide({ reason: 'error', message, at: new Date().toISOString() });
+      try { writeStatus(loadConfig(configPath), store); } catch { /* Invalid config is already logged. */ }
+    }
+    process.exitCode = 1;
+  } finally { store?.close(); }
+  }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | dispatch [--ticket KEY] [--model auto|MODEL_ID] [--override-limits] [--allow-missing-ready-label] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

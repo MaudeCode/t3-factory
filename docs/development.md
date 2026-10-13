@@ -20,6 +20,7 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | --- | --- |
 | `src/main.ts` | CLI entry point and process lifecycle |
 | `src/scheduler.ts` | Inventory, reconciliation, and dispatch |
+| `src/service.ts`, `src/control.ts` | The long-lived scheduler, its triggers, and the control socket |
 | `src/config.ts`, `src/settings.ts` | Configuration validation and edits |
 | `src/models.ts`, `src/policy.ts` | Quota and eligibility decisions |
 | `src/clients.ts`, `src/rpc.ts` | T3 and Kaneo integration |
@@ -41,9 +42,19 @@ The browser app is plain ES modules served by `src/web.ts`; there is no bundler 
 
 Pages are real paths (`/runs`, `/runs/<id>`, `/models`, and so on) handled by `web/lib/router.js`; the server returns `index.html` for any extensionless path. Server state enters through `applyState` in `web/lib/store.js`. The page opens `/api/events`, a server-sent event stream that pushes the full state whenever the scheduler writes `status.json` or the config file changes; if the stream is unavailable the store polls `/api/state` every 15 seconds. A one-second clock signal keeps relative times and countdowns current between pushes. Inputs that take a `path` read and write the config signal directly, so adding a setting means adding one bound input. `test/web-ui.test.ts` imports the store and helpers in Node without a DOM; `test/web-live.test.ts` covers the stream and run endpoints.
 
+### Scheduler service
+
+`t3-factory run` starts one long-lived process (`src/service.ts`). It holds the store claim, one T3 client, and one connected Kaneo client, and runs passes in series from a single queue. A pass starts when something changes rather than on a clock: T3's `orchestration.subscribeShell` stream reports a project or thread change (bursts settle for 750 ms into one pass), the config file changes, a command arrives, or the `pollSeconds` fallback timer fires. Each pass reads the shell and providers once, reconciles jobs, reads only the ready columns of each project, examines tickets concurrently, and dispatches with the queue it just built; before a launch it re-reads only the ticket, new threads, and the quota. Every pass also reads each provider's allowance for display and writes the queue it would dispatch from as `status.upNext`. Between passes the service fingerprints the ready columns every 15 seconds and starts a pass when they change, and re-reads allowances on a timer so a reading is never older than about `quota.maxAgeSeconds`.
+
+The service listens on `control.sock` in the state directory (`src/control.ts`). `t3-factory dispatch`, `once`, and `job-stop`, and the web server's dispatch and stop endpoints, send their command there and get the decision back from the running scheduler, so a manual dispatch never waits on the store claim. Without a running service they do the work themselves, as before.
+
+### Chains
+
+A manual dispatch of a ticket that waits on other tickets is not refused. The scheduler walks `blocks` relations, subtask parents, and umbrella children through Kaneo (`blockerTree`) and answers `blocked-ticket-plan-required` with the whole tree. The caller then dispatches again with `--chain first`, which starts the highest-priority ticket in the tree that can start now, or `--chain all`, which stores a plan (`plans` table) and starts every runnable ticket within the run limits. Every automatic pass advances active plans (`runPlans`): tickets start in priority order as the ones ahead of them finish in Kaneo, tickets without the ready label run with that waiver, and the target runs last. `t3-factory plan-cancel <id>` and `/api/plans/<id>/cancel` stop a plan; running tickets finish on their own. Active plans reach the page as `status.plans`.
+
 ### Journal
 
-`Store.save` is the only job write path, so it records an event whenever a job is created, changes state, or gains a pull request. `Store.decide` records a check only when its outcome differs from the previous one, or when it dispatched or failed. Events live in the `events` table of `state.sqlite` (capped at 5000) and reach the page as `status.journal`; `/api/jobs/<id>/report` returns one run with its events and completion report. `t3-factory sources` (served as `/api/sources`) lists T3 projects, Kaneo projects with their columns, and workspace labels so the projects page can pick instead of typing identifiers. `t3-factory job-stop <jobId>` asks T3 to stop a run's thread; the web app's Stop button calls it through `/api/jobs/<id>/stop`.
+`Store.save` is the only job write path, so it records an event whenever a job is created, changes state, or gains a pull request. `Store.decide` records a check only when its outcome differs from the previous one, or when it dispatched or failed. Events live in the `events` table of `state.sqlite` (capped at 5000) and reach the page as `status.journal`; `/api/jobs/<id>/report` returns one run with its events and completion report. `t3-factory sources` (served as `/api/sources`) lists T3 projects, Kaneo projects with their columns, and workspace labels so the projects page can pick instead of typing identifiers. `t3-factory job-stop <jobId>` asks T3 to stop a run's thread and the service reconciles at once; the web app's Stop button calls it through `/api/jobs/<id>/stop`.
 
 ## T3 compatibility
 

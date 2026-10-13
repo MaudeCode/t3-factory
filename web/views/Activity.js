@@ -1,7 +1,7 @@
 import { html, useState } from "../lib/h.js";
 import { journal, jobs, history } from "../lib/store.js";
 import { follow } from "../lib/router.js";
-import { Segmented, Empty, Timeline } from "../ui/index.js";
+import { Segmented, Empty, Timeline, Help } from "../ui/index.js";
 
 const KINDS = [
   ["all", "Everything"],
@@ -17,7 +17,7 @@ export function Activity() {
     e.jobId && known.has(e.jobId) ? html`<a href=${`/runs/${e.jobId}`} onClick=${follow}>${e.text}</a>` : e.text;
   return html`<div class="page narrow">
     <div class="page-head">
-      <div><h1>Activity</h1><p>What the factory decided and what each run did. A check is recorded when its outcome changes.</p></div>
+      <div><h1>Activity<${Help} text="What the factory decided and what each run did. A check is recorded when its outcome changes." /></h1></div>
     </div>
     <${Segmented} label="Kind" value=${kind} onChange=${setKind} options=${KINDS} />
     ${list.length ? html`<${Timeline} events=${list} renderText=${text} />` : html`<${Empty}>Nothing recorded yet.<//>`}

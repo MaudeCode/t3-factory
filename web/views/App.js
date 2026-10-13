@@ -1,7 +1,7 @@
 import { html, useState, useEffect } from "../lib/h.js";
-import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, readiness, actions, runWithoutReadyLabel, message } from "../lib/store.js";
+import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, readiness, blocked, actions, runWithoutReadyLabel, runChain, message } from "../lib/store.js";
 import { route, PAGES, follow } from "../lib/router.js";
-import { Button, Dialog, Toast, Segmented } from "../ui/index.js";
+import { Button, Dialog, Toast, Segmented, Tag } from "../ui/index.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { Login } from "./Login.js";
 import { Deck } from "./Deck.js";
@@ -69,6 +69,37 @@ function Readiness() {
   <//>`;
 }
 
+// A ticket that waits on other tickets: run the first one that can start, or the whole chain and then the ticket.
+function Blocked() {
+  const b = blocked.value;
+  const tickets = b?.tree.tickets ?? [];
+  const byId = new Map(tickets.map((t) => [t.id, t]));
+  const now = tickets.filter((t) => !t.blockedBy.length && t.runnable).length;
+  return html`<${Dialog}
+    open=${!!b}
+    onClose=${() => (blocked.value = null)}
+    title=${b ? `${b.ticket} waits on ${tickets.length} ticket${tickets.length === 1 ? "" : "s"}` : "Blocked"}
+    actions=${html`<${Button} variant="ghost" onClick=${() => (blocked.value = null)}>Cancel<//>
+      <${Button} disabled=${!now} onClick=${() => runChain("first")}>Run the first blocker<//>
+      <${Button} variant="primary" onClick=${() => runChain("all")}>Run the whole chain<//>`}
+  >
+    ${b && html`<p class="muted">The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs ${b.ticket} last. Tickets without the ready label run anyway.</p>
+      <div class="chain">
+        ${tickets.map(
+          (t) => {
+            const ahead = t.blockedBy.map((id) => byId.get(id)?.key).filter(Boolean);
+            return html`<div class="chain-row" key=${t.id}>
+              <${Tag} tone=${ahead.length ? "" : t.runnable ? "ok" : "attention"}>${ahead.length ? "waits" : t.runnable ? "can start" : "not included"}<//>
+              <span class="chain-body"><span><b class="key">${t.key}</b> ${t.title}</span>
+                <small>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}${t.priority ? ` · ${t.priority}` : ""}${t.difficulty ? ` · ${t.difficulty}` : " · no difficulty label"}${t.readyLabel ? "" : " · no ready label"}</small>
+              </span>
+            </div>`;
+          },
+        )}
+      </div>`}
+  <//>`;
+}
+
 const SaveBar = () => html`<div class="save-bar" role="region" aria-label="Unsaved changes">
   <span>${changes.value} unsaved ${changes.value === 1 ? "change" : "changes"}</span>
   <${Button} variant="ghost" disabled=${busy.value} onClick=${actions.revert}>Discard<//>
@@ -103,6 +134,7 @@ export function App() {
   return html`
     ${config.value && html`<${Shell} />`}
     <${Readiness} />
+    <${Blocked} />
     ${dirty.value && html`<${SaveBar} />`}
     <${Toast} notice=${notice.value} onDone=${() => message("")} />`;
 }

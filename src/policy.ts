@@ -117,11 +117,16 @@ export function ticketDifficulty(labels: { name: string }[]): Difficulty | undef
   if (found.length > 1) throw new Error('Conflicting difficulty labels');
   return found[0];
 }
+// Branch prefix from the ticket's kind label, in conventional-commit terms so release tooling can read it.
+const BRANCH_KINDS: Record<string, string> = { bug: 'fix', sec: 'fix', feat: 'feat', ux: 'feat', perf: 'perf', test: 'test', ci: 'ci', docs: 'docs', chore: 'chore' };
+export function branchKind(labels: { name: string }[]): string {
+  return labels.map(l => BRANCH_KINDS[l.name]).find(Boolean) ?? 'chore';
+}
 export function ticketLabelRank(labels: { name: string }[], priorityLabels: string[]): number | undefined {
   const rank = priorityLabels.findIndex(name => labels.some(label => label.name === name));
   return rank < 0 ? undefined : rank;
 }
-export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; labelRank?: number; }
+export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; labelRank?: number; title?: string; }
 export type TicketPriority = Pick<Candidate, 'priority' | 'labelRank'>;
 export function compareTicketPriority(a: TicketPriority, b: TicketPriority): number {
   const aRank = a.labelRank ?? Infinity, bRank = b.labelRank ?? Infinity;
@@ -151,6 +156,15 @@ export function mentionsTicket(text: string, key: string): boolean {
   return new RegExp(`(?:^|[^A-Z0-9])${key}(?![0-9])`, 'i').test(text);
 }
 
+// The order the scheduler would take these tickets in if nothing else changed: each pick rotates projects as a real dispatch would.
+export function queueOrder(candidates: Candidate[], lastProject: string | null, projectOrder: string[]): Candidate[] {
+  const order: Candidate[] = [];
+  let pool = candidates, last = lastProject;
+  for (let next = selectTicket(pool, last, projectOrder); next; next = selectTicket(pool, last, projectOrder)) {
+    order.push(next); pool = pool.filter(t => t !== next); last = next.projectId;
+  }
+  return order;
+}
 export function acceptsDifficulty(model: Pick<ModelPreset, 'maxDifficulty'>, ticket: Candidate): boolean {
   const levels = ['low', 'med', 'high'];
   return ticket.difficulty !== undefined && levels.indexOf(ticket.difficulty) <= levels.indexOf(model.maxDifficulty);
