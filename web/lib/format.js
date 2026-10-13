@@ -27,7 +27,7 @@ export const until = (date, now = Date.now()) => {
   const s = (ms(date) - now) / 1000;
   return s > 0 ? `in ${span(s)}` : "now";
 };
-export const duration = (from, to) => (from ? span(Math.max(0, (Date.parse(to ?? new Date()) - Date.parse(from)) / 1000)) : "");
+export const duration = (from, to = Date.now()) => (from ? span(Math.max(0, (ms(to) - ms(from)) / 1000)) : "");
 export const clockTime = (date) => new Date(date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 export const dayLabel = (date) => {
   const d = new Date(date),

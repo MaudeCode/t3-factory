@@ -195,9 +195,9 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
     active = isActive(job);
   // Short on the row, spelled out on hover.
   const [timing, timingTitle] = active
-    ? [`${duration(job.createdAt)} · ${ago(job.lastExecutionAt ?? job.createdAt, now)}`, `Running for ${duration(job.createdAt)}; last activity ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
+    ? [`${duration(job.createdAt, now)} · ${ago(job.lastExecutionAt ?? job.createdAt, now)}`, `Running for ${duration(job.createdAt, now)}; last activity ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
     : waiting
-      ? [`for ${duration(job.lastExecutionAt ?? job.createdAt)}`, `Waiting for you since ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
+      ? [`for ${duration(job.lastExecutionAt ?? job.createdAt, now)}`, `Waiting for you since ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
       : job.completedAt
         ? [`${ago(job.completedAt, now)} · ${duration(job.createdAt, job.completedAt)}`, `Finished ${ago(job.completedAt, now)} after ${duration(job.createdAt, job.completedAt)}`]
         : job.dismissedAt

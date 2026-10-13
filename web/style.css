@@ -1076,7 +1076,7 @@ dialog::backdrop {
 }
 .runs {
   display: grid;
-  grid-template-columns: minmax(110px, max-content) minmax(230px, 1fr) minmax(160px, 260px) max-content auto;
+  grid-template-columns: minmax(110px, max-content) minmax(230px, 1fr) minmax(244px, 260px) max-content auto;
   column-gap: var(--space-4);
   margin-top: var(--space-2);
 }
@@ -1214,8 +1214,9 @@ a.key:hover {
 .run.waiting .run-stop {
   color: var(--attention);
 }
-/* Narrow pane, not just a narrow screen: the deck's run pane beside the activity column is one. */
-@container (width < 640px) {
+/* Narrow pane, not just a narrow screen: the deck's run pane beside the activity column is one.
+   The threshold is the wide grid's minimum: column floors, gaps, the timing text, and the link glyph. */
+@container (width < 804px) {
   .runs {
     grid-template-columns: 1fr auto;
   }
