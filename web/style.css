@@ -1071,10 +1071,12 @@ dialog::backdrop {
   }
 }
 
-.runs {
+.runs-pane {
   container-type: inline-size;
+}
+.runs {
   display: grid;
-  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr) minmax(200px, 260px) max-content auto;
+  grid-template-columns: minmax(110px, max-content) minmax(230px, 1fr) minmax(160px, 260px) max-content auto;
   column-gap: var(--space-4);
   margin-top: var(--space-2);
 }
@@ -1177,6 +1179,28 @@ a.key:hover {
 .run-meta > span:first-child {
   color: var(--ink);
 }
+.run-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.icon {
+  flex: none;
+  vertical-align: -0.15em;
+}
+.run-meta .icon {
+  font-size: 13px;
+  color: var(--muted);
+}
+.run-pr {
+  display: inline-flex;
+  font-size: 15px;
+  color: var(--muted);
+}
+.run-pr:hover {
+  color: var(--accent-text);
+}
 .run-state {
   font-size: 12px;
   white-space: nowrap;
@@ -1220,7 +1244,7 @@ a.key:hover {
   display: flex;
   gap: var(--space-2);
   font-size: 12.5px;
-  min-width: 60px;
+  min-width: 16px;
   justify-content: flex-end;
 }
 .next {

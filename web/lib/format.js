@@ -70,6 +70,7 @@ export const PROVIDERS = [
   { driver: "codex", name: "Codex", concurrency: "codex" },
 ];
 export const providerName = (driver) => PROVIDERS.find((p) => p.driver === driver)?.name ?? driver;
+export const providerIcon = (driver) => (driver === "codex" ? "openai" : "claude");
 export const providerOf = (job) =>
   job.providerDriver || (job.modelSelection?.instanceId === "codex" ? "codex" : "claudeAgent");
 

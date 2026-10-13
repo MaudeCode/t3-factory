@@ -2,6 +2,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { clockTime, dayLabel } from "../lib/format.js";
 import { Help } from "./controls.js";
+import { ICONS } from "../vendor/icons.js";
 
 const pct = (value) => Math.max(0, Math.min(100, Number(value) || 0));
 
@@ -27,6 +28,12 @@ export const Meter = ({ label, value, marker, note, lowBelow }) => {
     <em>${Math.round(n)}<small>%</small></em>
     ${note && html`<span class="meter-note">${note}</span>`}
   </div>`;
+};
+
+// An inline glyph from the vendored set. With a `label` it is announced; without one it is decoration.
+export const Icon = ({ name, label }) => {
+  const icon = ICONS[name];
+  return html`<svg class=${`icon icon-${name}`} viewBox=${`0 0 ${icon.box} ${icon.box}`} width="1em" height="1em" fill="currentColor" role=${label ? "img" : undefined} aria-label=${label} aria-hidden=${label ? undefined : "true"}><path d=${icon.d} /></svg>`;
 };
 
 // Four-stop track of a run; the first `n` stops are lit.
@@ -56,8 +63,8 @@ export const Table = ({ head, rows, stack = true }) =>
     </tbody>
   </table>`;
 
-export const Link = ({ href, children, class: extra }) =>
-  href ? html`<a class=${extra} href=${href} target="_blank" rel="noopener noreferrer">${children}</a>` : null;
+export const Link = ({ href, children, class: extra, title }) =>
+  href ? html`<a class=${extra} href=${href} title=${title} target="_blank" rel="noopener noreferrer">${children}</a>` : null;
 
 // Label and value pairs.
 export const Facts = ({ items }) =>
