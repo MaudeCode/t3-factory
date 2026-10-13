@@ -24,7 +24,7 @@ import {
   PENDING_KINDS,
 } from "../lib/format.js";
 import { Button, Select, Segmented, Tag, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
-import { RunRow, UpNext, Chains } from "./Deck.js";
+import { RunList, UpNext, Chains } from "./Deck.js";
 
 export function Runs() {
   clock.value;
@@ -62,9 +62,11 @@ export function Runs() {
     />
     ${state === "next"
       ? html`<${Chains} /><${UpNext} limit=${Infinity} />`
-      : html`<div class="runs-list">
-          ${history.value === null && !jobs.value.length ? html`<${Empty}>Loading runs.<//>` : list.length ? list.map((j) => html`<${RunRow} key=${j.id} job=${j} />`) : html`<${Empty}>No runs match.<//>`}
-        </div>`}
+      : history.value === null && !jobs.value.length
+        ? html`<${Empty}>Loading runs.<//>`
+        : list.length
+          ? html`<${RunList} list=${list} />`
+          : html`<${Empty}>No runs match.<//>`}
   </div>`;
 }
 

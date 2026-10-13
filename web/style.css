@@ -1071,9 +1071,68 @@ dialog::backdrop {
   }
 }
 
+.runs {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr) minmax(200px, 260px) max-content auto;
+  column-gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+.run-legend {
+  grid-column: 3;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-1);
+  font-size: 10.5px;
+  color: var(--muted);
+  padding-bottom: 2px;
+}
+.run-legend span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stops {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-1);
+  align-self: center;
+}
+.stops i {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  position: relative;
+  overflow: hidden;
+}
+.stops i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--tone, var(--muted));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.35s var(--ease);
+}
+.stops i:nth-child(2)::after { transition-delay: 0.1s; }
+.stops i:nth-child(3)::after { transition-delay: 0.2s; }
+.stops i:nth-child(4)::after { transition-delay: 0.3s; }
+.stops[data-n="1"] i:nth-child(-n + 1)::after,
+.stops[data-n="2"] i:nth-child(-n + 2)::after,
+.stops[data-n="3"] i:nth-child(-n + 3)::after,
+.stops[data-n="4"] i:nth-child(-n + 4)::after {
+  transform: scaleX(1);
+}
+.stops-on { --tone: var(--accent); }
+.stops-on i:nth-child(2)::after { animation: blink 1.6s 1s infinite; }
+.stops-attention { --tone: var(--attention); }
+.stops-ok { --tone: var(--ok); }
+@keyframes blink {
+  50% { opacity: 0.25; }
+}
 .run {
   display: grid;
-  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr) auto auto;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   gap: 2px var(--space-4);
   align-items: center;
   padding: 10px var(--space-2);
@@ -1118,9 +1177,6 @@ a.key:hover {
   color: var(--ink);
 }
 .run-state {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1244,9 +1300,6 @@ dialog .chain {
 }
 .run.waiting .run-note {
   color: var(--attention);
-}
-.runs-list {
-  margin-top: var(--space-2);
 }
 .deck-side .timeline {
   font-size: 12.5px;
@@ -1924,11 +1977,18 @@ dialog .chain {
   .composer .btn {
     margin-left: auto;
   }
-  .run {
+  .runs {
     grid-template-columns: 1fr auto;
+  }
+  .run-legend {
+    display: none;
   }
   .run-meta {
     grid-column: 1 / -1;
+  }
+  .run .stops {
+    grid-column: 1 / -1;
+    margin: var(--space-1) 0;
   }
   .run-state {
     grid-column: 1;
