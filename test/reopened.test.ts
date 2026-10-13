@@ -114,6 +114,16 @@ test('a ticket closed without delivery can be dispatched again once ready', asyn
   const inspect = () => inventory(c, new Kaneo(c.kaneo), [thread], store.jobs(), store, 'FIX-1');
   try {
     assert.equal((await inspect()).selected?.key, 'FIX-1', 'a released, idle, clean history does not block the ready ticket');
+    // Cleanup verified the head and unbound the thread, then the owner settled it before the directory was removed.
+    store.save({ ...job, workspaceCleanup: { path: tree, branch, head: git(tree, 'rev-parse', 'HEAD') } });
+    thread.branch = null; thread.worktreePath = null; thread.settledOverride = 'settled';
+    await reconcile(c, store, {} as T3, new Kaneo(c.kaneo), [thread], false);
+    assert.equal(store.jobs()[0].state, 'dismissed');
+    assert.equal(store.jobs()[0].dismissedHead, undefined, 'the unbound thread has no worktree to read');
+    assert.equal((await inspect()).selected?.key, 'FIX-1', 'the head cleanup verified releases a ticket settled mid-cleanup');
+    writeFileSync(join(tree, 'file'), 'uncommitted\n');
+    assert.match((await inspect()).skipped[0].reason, /T3 thread|Git branch/, 'a dirty leftover workspace still blocks');
+    git(tree, 'checkout', '--', 'file');
     writeFileSync(join(tree, 'file'), 'new work\n'); git(tree, 'commit', '-qam', 'new work');
     assert.match((await inspect()).skipped[0].reason, /T3 thread|Git branch/, 'a new commit on the old branch still blocks');
   } finally { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
