@@ -27,14 +27,40 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
   const blocks = (source: number, target: number) => ({ sourceTaskId: `task-${source}`, targetTaskId: `task-${target}`, relationType: 'blocks' });
   let relations = [blocks(19, 20)];
   const k = new Kaneo(c.kaneo), store = new Store(c.stateDir), reads = new Map<string, number>();
+  const listed: Record<string, unknown>[] = [], fetched: string[] = [];
+  let unavailableProject = '';
   t.mock.method(k, 'call', async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels!.map(label => ({ ...label, taskId: task.id, workspaceId: c.kaneo.workspaceId })));
-    if (name === 'list_tasks') return { data: { workspaceId: c.kaneo.workspaceId, columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId) }] }, pagination: { total: tasks.length, totalPages: 1 } };
+    if (name === 'list_tasks') {
+      listed.push(args);
+      if (args.projectId === unavailableProject) throw new Error('Unrelated project unavailable');
+      const matching = tasks.filter(task => task.projectId === args.projectId && (!args.status || task.status === args.status));
+      const page = Number(args.page);
+      return { data: { workspaceId: c.kaneo.workspaceId, columns: [{ tasks: matching.slice((page - 1) * 2, page * 2) }] }, pagination: { total: matching.length, totalPages: Math.ceil(matching.length / 2) } };
+    }
+    if (name === 'get_task') {
+      fetched.push(String(args.taskId));
+      const { labels, ...task } = tasks.find(task => task.id === args.taskId)!;
+      return task; // Single-task responses omit labels.
+    }
+    if (name === 'list_project_columns') return [{ slug: 'done', isFinal: true }];
     if (name === 'get_task_relations') { const id = String(args.taskId); reads.set(id, (reads.get(id) ?? 0) + 1); return relations.filter(r => r.sourceTaskId === id || r.targetTaskId === id); }
     throw new Error(name);
   });
-  const queue = () => { reads.clear(); return inventory(c, k, [], [], store); };
+  const queue = (key?: string) => { reads.clear(); listed.length = 0; fetched.length = 0; return inventory(c, k, [], [], store, key); };
   try {
+    await t.test('named-ticket inventory lists only its project across every page and ignores unrelated listing failures', async () => {
+      let q = await queue(`${p.key}-18`);
+      assert.equal(q.selected?.key, `${p.key}-18`, 'the requested ticket on the last page is found');
+      assert.deepEqual(listed.map(a => [a.projectId, a.status, a.page]), [[p.kaneoId, undefined, 1], [p.kaneoId, undefined, 2], [p.kaneoId, undefined, 3]], 'named inventory must not list unrelated projects');
+      unavailableProject = other.kaneoId;
+      try { q = await queue(`${p.key}-18`); assert.equal(q.selected?.key, `${p.key}-18`); }
+      finally { unavailableProject = ''; }
+      q = await queue();
+      assert.deepEqual([...new Set(listed.map(a => a.projectId))].sort(), [p.kaneoId, other.kaneoId].sort(), 'unnamed inventory still lists every enabled project');
+      assert(listed.every(a => a.status === 'to-do'), 'unnamed inventory reads ready columns only');
+      assert.equal(q.selected?.key, `${p.key}-19`, 'full-queue priority ordering is preserved');
+    });
     let q = await queue();
     assert.equal(q.selected?.key, `${p.key}-19`, 'unlabeled prerequisite beats both ranked and ordinary work');
     assert.equal(q.selected?.labelRank, 0); assert.equal(q.selected?.priority, 'urgent');
@@ -66,6 +92,38 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     q = await queue();
     assert.equal(q.selected?.key, `${p.key}-19`, 'open dependents can boost a blocker across enabled projects even before readiness/classification');
     assert.equal(q.selected?.labelRank, 0);
+    await t.test('named-ticket priority uses complete labels for dependents fetched outside ready columns', async () => {
+      tasks[1].status = 'in-progress';
+      try {
+        const named = await queue(`${p.key}-19`);
+        assert.equal(named.selected?.labelRank, 0, 'lazy cross-project reads must retain the associated security label');
+        assert.equal(named.selected?.priority, 'urgent');
+        assert.deepEqual(fetched, ['task-20']);
+      } finally { tasks[1].status = 'to-do'; }
+    });
+    await t.test('named-ticket dependencies still block across projects and unconfigured final statuses', async () => {
+      const saved = relations;
+      try {
+        for (const projectId of [other.kaneoId, 'external']) {
+          tasks[1].projectId = projectId;
+          for (const edges of [
+            [blocks(20, 19)],
+            [{ sourceTaskId: 'task-19', targetTaskId: 'task-20', relationType: 'subtask' }],
+            [{ sourceTaskId: 'task-20', targetTaskId: 'task-19', relationType: 'subtask' }, blocks(21, 20)],
+            [{ sourceTaskId: 'task-20', targetTaskId: 'task-19', relationType: 'subtask' }, { sourceTaskId: 'task-19', targetTaskId: 'task-20', relationType: 'subtask' }],
+          ]) {
+            relations = edges;
+            const blocked = await queue(`${p.key}-19`);
+            assert.equal(blocked.ready.length, 0, 'blockers, children, ancestor blockers and cycles remain ineligible');
+            assert(blocked.skipped.some(s => /blocker|children|cycle/.test(s.reason)));
+            assert(fetched.includes('task-20') || reads.has('task-20'), 'cross-project dependencies are read by ID');
+          }
+          relations = [blocks(20, 19)]; tasks[1].status = 'done';
+          assert.equal((await queue(`${p.key}-19`)).selected?.key, `${p.key}-19`, 'configured and discovered final statuses release blockers');
+          tasks[1].status = 'to-do';
+        }
+      } finally { relations = saved; tasks[1].projectId = other.kaneoId; tasks[1].status = 'to-do'; }
+    });
     other.enabled = false;
     q = await queue();
     assert.equal(q.ready.find(t => t.id === 'task-19')?.labelRank, 1, 'disabled projects do not contribute priority');

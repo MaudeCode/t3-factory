@@ -442,8 +442,9 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   const projects = c.projects.filter(p => p.enabled);
   const all = new Map<string, Task>();
   const labels = await listTaskLabels(kaneo);
+  const listedProjects = ticketKey ? projects.filter(p => ticketKey.startsWith(`${p.key}-`)) : projects;
   // Only ready columns can yield work; a named ticket is read from every column so its real status can be reported.
-  for (const tasks of await Promise.all(projects.map(p => listTasks(kaneo, p.kaneoId, labels, ticketKey?.startsWith(`${p.key}-`) ? undefined : p.readyStatuses)))) for (const t of tasks) all.set(t.id, t);
+  for (const tasks of await Promise.all(listedProjects.map(p => listTasks(kaneo, p.kaneoId, labels, ticketKey ? undefined : p.readyStatuses)))) for (const t of tasks) all.set(t.id, t);
   const owned = new Map(jobs.filter(j => !['complete', 'dismissed'].includes(j.state)).map(j => [j.taskId, j]));
   const ready: Candidate[] = [], skipped: Skipped[] = [];
   const potential = [...all.values()].filter(t => {
@@ -464,7 +465,10 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   const getTask = (id: string): Promise<Task> => {
     const known = all.get(id);
     if (known) return Promise.resolve(known);
-    if (!fetched.has(id)) fetched.set(id, kaneo.call('get_task', { taskId: id }).then(t => { const task = taskSchema.parse(t); all.set(id, task); return task; }));
+    if (!fetched.has(id)) fetched.set(id, kaneo.call('get_task', { taskId: id }).then(t => {
+      const parsed = taskSchema.parse(t), task = { ...parsed, labels: labels.get(parsed.id) ?? [] };
+      all.set(id, task); return task;
+    }));
     return fetched.get(id)!;
   };
   const isDone = async (id: string) => {

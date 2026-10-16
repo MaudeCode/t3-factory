@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { globalAgent } from 'node:http';
 import { serveControl, callControl, commandFor } from '../src/control.ts';
 
 // The control socket is how the CLI and the web server hand work to the running scheduler.
@@ -23,6 +24,7 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });
     assert.throws(() => commandFor(['dispatch', '--bogus']), /Unknown dispatch argument/);
     await new Promise<void>(resolve => server.close(() => resolve()));
+    globalAgent.destroy(); // The replacement server must receive the next request, not a pooled socket from the old server.
     assert.equal(seen.length, 1);
     // A scheduler that takes the request and then drops the connection leaves the outcome unknown; that is not "no scheduler".
     const dropping = serveControl(dir, async () => new Promise(() => {}));
