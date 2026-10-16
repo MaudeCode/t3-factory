@@ -5,14 +5,14 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { reconcile } from '../src/scheduler.ts';
+import { reconcile, cleanupNextWorkspace } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent'] as const) {
-  test(`completed workspace cleanup: ${scenario}`, async () => {
+for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent'] as const) {
+  test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
     git('init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'merged\n'); git('add', 'file');
@@ -23,7 +23,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
     const mergedBranch = scenario.startsWith('renamed') || scenario.startsWith('pushed') || scenario.startsWith('missing') ? 'fix/FIX-1-delivery' : branch;
     writeFileSync(join(dir, 'gh'), `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ state: scenario.endsWith('unmerged') ? 'OPEN' : 'MERGED', headRefName: mergedBranch, headRefOid: head, baseRefName: 'main', mergeCommit: { oid: head } })}'\n`, { mode: 0o755 });
     const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
-    const store = new Store(join(dir, 'state'));
+    let store = new Store(join(dir, 'state'));
     const project = { kaneoId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', doneStatuses: ['done'] };
     const c = { monitoringTimeoutMinutes: 30, projects: [project] } as Config;
     const job: Job = { id: 'job', kind: scenario === 'discovery' ? 'discovery' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Verified complete', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: scenario.startsWith('no-pr') ? [] : ['https://github.com/fixture/repo/pull/1'], command: { workspaceStrategy: { type: 'worktree', branch } } };
@@ -45,6 +45,10 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
     }, terminals: async () => { terminalReads++; if (scenario === 'terminal-snapshot-failure') throw new Error('T3 terminal snapshot unavailable'); return terminals(); },
     closeTerminal: async (threadId: string, terminalId: string) => { closes.push({ threadId, terminalId }); if (terminalProcess) { const exited = once(terminalProcess, 'exit'); terminalProcess.kill(); await exited; } } } as unknown as T3;
     const kaneo = { call: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status: scenario.endsWith('not-done') ? 'to-do' : 'done' }) } as unknown as Kaneo;
+    const runReconcile = async (allow = true) => {
+      await reconcile(c, store, t3, kaneo, threads, allow, mode === 'direct');
+      if (allow && mode === 'deferred') await cleanupNextWorkspace(c, store, t3, kaneo, new Set());
+    };
     let childProcess: ReturnType<typeof spawn> | undefined;
     try {
       if (scenario.startsWith('renamed')) { execFileSync('git', ['-C', tree, 'branch', '-m', mergedBranch]); if (scenario === 'renamed') thread.branch = mergedBranch; }
@@ -75,22 +79,23 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
       // A blocked cleanup makes no T3, Kaneo, Git or process call until its retry window passes.
       const skipsUntilRetry = async () => {
         const reads = () => [shellReads, terminalReads, attempts, detachAttempts, commands.length];
-        const before = reads(); await reconcile(c, store, t3, kaneo, threads);
+        const before = reads(); await runReconcile();
         assert.deepEqual(reads(), before, 'skip a blocked cleanup within its retry window');
         assert.ok(store.jobs()[0].workspaceCleanupBlockedAt, 'record when cleanup was blocked');
         const saved = store.jobs()[0]; saved.workspaceCleanupBlockedAt = new Date(Date.now() - 16 * 60_000).toISOString(); store.save(saved);
       };
       store.save(job);
-      await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
+      await runReconcile(scenario !== 'dry-run');
+      if (mode === 'deferred') { store.close(); store = new Store(join(dir, 'state')); }
       if (scenario === 'retry-detach') await skipsUntilRetry();
       if (scenario === 'resumed-after-detach') thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
       if (scenario === 'dirty-after-detach') writeFileSync(join(tree, 'untracked'), 'new work');
       if (scenario === 'branch-change-after-detach') execFileSync('git', ['-C', tree, 'switch', '-qc', 'unrelated-work']);
       if (scenario === 'path-change-after-detach') thread.worktreePath = repo;
-      await reconcile(c, store, t3, kaneo, threads, scenario !== 'dry-run');
-      if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); if (scenario === 'retry') assert.equal(store.jobs()[0].workspaceCleanupError, 'GitCommandError: temporary removal failure'); await skipsUntilRetry(); await reconcile(c, store, t3, kaneo, threads); }
-      if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await reconcile(c, store, t3, kaneo, threads);
-      if (scenario === 'monitor-subagent') await reconcile(c, store, t3, kaneo, threads);
+      await runReconcile(scenario !== 'dry-run');
+      if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); if (scenario === 'retry') assert.equal(store.jobs()[0].workspaceCleanupError, 'GitCommandError: temporary removal failure'); await skipsUntilRetry(); await runReconcile(); }
+      if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await runReconcile();
+      if (scenario === 'monitor-subagent') await runReconcile();
       const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done'].includes(scenario);
       if (removed) assert.deepEqual([store.jobs()[0].workspaceCleanupError, store.jobs()[0].workspaceCleanupBlockedAt], [undefined, undefined], 'cleanup completes without a recorded error');
       else if (store.jobs()[0].workspaceCleanupError) await skipsUntilRetry();
@@ -107,7 +112,7 @@ for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-compl
         assert.equal(thread.worktreePath, null); assert.equal(thread.branch, null);
         assert.ok(!git('worktree', 'list', '--porcelain').includes(realTree)); assert.ok(store.jobs()[0].workspaceCleanedAt);
         if (scenario.startsWith('missing')) assert.equal(attempts, scenario === 'missing-registered-worktree' ? 1 : 0, 'remove only a workspace Git still registers');
-        const count = attempts; await reconcile(c, store, t3, kaneo, threads); assert.equal(attempts, count, 'successful cleanup is idempotent');
+        const count = attempts; await runReconcile(); assert.equal(attempts, count, 'successful cleanup is idempotent');
       }
       if (scenario.endsWith('subagent')) {
         const detached = commands.filter(command => command.type === 'thread.metadata.update').map(command => command.threadId);

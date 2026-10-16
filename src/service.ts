@@ -7,7 +7,7 @@ import type { Server } from 'node:http';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kaneo, listTasks } from './clients.ts';
-import { cycle, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, type CycleOptions } from './scheduler.ts';
+import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, type CycleOptions } from './scheduler.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
@@ -29,6 +29,9 @@ export class FactoryService {
   private settle?: NodeJS.Timeout;
   private quotaTimer?: NodeJS.Timeout;
   private kaneoTimer?: NodeJS.Timeout;
+  private cleanupTimer?: NodeJS.Timeout;
+  private cleanupQueued = false;
+  private readonly cleanupVisited = new Set<string>();
   private readyFingerprint?: string;
   private readonly timing: ServiceTiming;
   private queue: Promise<unknown> = Promise.resolve();
@@ -64,7 +67,7 @@ export class FactoryService {
   async stop() {
     this.stopped = true;
     this.abort.abort();
-    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer);
+    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
     await this.queue.catch(() => {});
@@ -91,6 +94,27 @@ export class FactoryService {
     const run = this.queue.then(work, work);
     this.queue = run.catch(() => {});
     return run;
+  }
+
+  // Yield to the command response and enqueue only one step. Continuations join the tail,
+  // so housekeeping shares the single writer without occupying the dispatch call itself.
+  private scheduleCleanup(newSweep = false) {
+    if (this.stopped || this.cleanupQueued) return;
+    if (newSweep) this.cleanupVisited.clear();
+    this.cleanupQueued = true;
+    this.cleanupTimer = setTimeout(() => void this.enqueue(async () => {
+      let more = false;
+      try {
+        if (this.stopped) return;
+        const c = this.configure(), kaneo = await this.ensureKaneo(c);
+        more = await cleanupNextWorkspace(c, this.store, this.t3, kaneo, this.cleanupVisited);
+        writeStatus(c, this.store);
+      } catch (error) { log('workspace-maintenance-failed', { message: safeError(error) }); }
+      finally {
+        this.cleanupQueued = false;
+        if (more) this.scheduleCleanup();
+      }
+    }), 0);
   }
 
   private async handle(command: ControlCommand): Promise<ControlResult> {
@@ -149,17 +173,22 @@ export class FactoryService {
     dead?.then(k => k.close()).catch(() => {});
   }
 
+  private configure(): Config {
+    const c = loadConfig(this.configPath);
+    if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
+    if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
+    if (JSON.stringify(c.kaneo) !== this.kaneoSettings) { if (this.kaneoSettings) log('kaneo-settings-changed'); this.dropKaneo(); this.kaneoSettings = JSON.stringify(c.kaneo); }
+    return c;
+  }
+
   private async pass(options: CycleOptions, reason: string) {
     clearTimeout(this.timer);
     const started = Date.now();
     let c: Config | undefined;
     try {
-      c = loadConfig(this.configPath);
-      if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
-      if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
-      if (JSON.stringify(c.kaneo) !== this.kaneoSettings) { if (this.kaneoSettings) log('kaneo-settings-changed'); this.dropKaneo(); this.kaneoSettings = JSON.stringify(c.kaneo); }
+      c = this.configure();
       const kaneo = await this.ensureKaneo(c);
-      const result = await cycle(c, this.store, options, { t3: this.t3, kaneo });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kaneo, deferCleanup: true });
       writeStatus(c, this.store);
       log('pass', { reason, outcome: result.reason, ms: Date.now() - started });
       return result;
@@ -170,6 +199,7 @@ export class FactoryService {
       this.dropKaneo();
       throw error;
     } finally {
+      if (!options.dryRun && !options.doctor) this.scheduleCleanup(true);
       if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
     }
   }
