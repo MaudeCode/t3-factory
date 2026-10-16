@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,6 +9,61 @@ import { Store, type Job } from '../src/store.ts';
 import { Kaneo, T3 } from '../src/clients.ts';
 import { inventory, reconcile, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
+import { parse } from 'jsonc-parser';
+
+for (const scenario of ['other-project', 'settled-discussion'] as const) test(`ticket references: ${scenario}`, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-references-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
+  const git = (path: string, ...args: string[]) => execFileSync('/usr/bin/git', ['-C', path, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', ...args], { encoding: 'utf8' }).trim();
+  git(repo, 'init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'released\n'); git(repo, 'add', 'file'); git(repo, 'commit', '-qm', 'released');
+  git(repo, 'update-ref', 'refs/remotes/origin/main', git(repo, 'rev-parse', 'HEAD'));
+  const input = parse(readFileSync(new URL('../config.example.jsonc', import.meta.url), 'utf8'));
+  input.stateDir = join(dir, 'state'); input.projects[0].repoPath = repo; input.projects[0].readyStatuses = ['to-do'];
+  const c = configSchema.parse(input), p = c.projects[0], key = `${p.key}-1`;
+  const task = { id: 'task', projectId: p.kaneoId, number: 1, title: 'Ready work', status: 'to-do', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'med' }] };
+  const kaneo = new Kaneo(c.kaneo), store = new Store(c.stateDir);
+  t.mock.method(kaneo, 'call', async (name: string) => {
+    if (name === 'list_workspace_labels') return task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: c.kaneo.workspaceId }));
+    if (name === 'list_tasks') return { data: { workspaceId: c.kaneo.workspaceId, columns: [{ tasks: [task] }] }, pagination: { total: 1, totalPages: 1 } };
+    if (name === 'get_task_relations') return [];
+    throw new Error(name);
+  });
+  let openPR = false;
+  writeFileSync(join(dir, 'gh'), `#!/bin/sh\ncat ${JSON.stringify(join(dir, 'prs'))}\n`, { mode: 0o755 });
+  const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
+  const branch = `t3/${key.toLowerCase()}-scope`;
+  const thread = v2Thread({ title: `Clarify ${key} scope`, projectId: scenario === 'other-project' ? 'maintenance' : p.t3Id, settledOverride: 'settled' });
+  if (scenario === 'settled-discussion') {
+    git(repo, 'worktree', 'add', '-qb', branch, tree); thread.branch = branch; thread.worktreePath = tree;
+  }
+  const threads = [thread];
+  const inspect = () => {
+    writeFileSync(join(dir, 'prs'), JSON.stringify(openPR ? [{ title: key, headRefName: branch, body: '' }] : []));
+    return inventory(c, kaneo, threads, store.jobs(), store, key);
+  };
+  const blocked = async (message: string) => assert.equal((await inspect()).selected, undefined, message);
+  try {
+    assert.equal((await inspect()).selected?.key, key, 'a discussion does not own implementation');
+    if (scenario === 'other-project') {
+      thread.status = 'running'; thread.activeRunId = 'run'; thread.branch = `fix/${key}-maintenance`;
+      assert.equal((await inspect()).selected?.key, key, 'even active references in another project are unrelated');
+      thread.projectId = p.t3Id; await blocked('a reference in the ticket project remains protected');
+      return;
+    }
+    thread.settledOverride = null; await blocked('unsettled threads remain protected'); thread.settledOverride = 'settled';
+    thread.status = 'running'; thread.activeRunId = 'run'; await blocked('settled active runs remain protected'); thread.status = 'completed'; thread.activeRunId = null;
+    thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: thread.updatedAt }; await blocked('pending requests remain protected'); thread.pendingRuntimeRequest = null;
+    thread.pendingBackgroundTasks = [{ kind: 'monitor', taskId: 'watch' }]; await blocked('even passive background work remains protected'); thread.pendingBackgroundTasks = [];
+    thread.worktreePath = join(dir, 'missing'); await blocked('missing workspaces cannot be verified'); thread.worktreePath = tree;
+    git(tree, 'checkout', '-qb', 'another-branch'); await blocked('a changed workspace binding remains protected'); git(tree, 'checkout', '-q', branch);
+    writeFileSync(join(tree, 'untracked'), 'work'); await blocked('untracked work remains protected'); rmSync(join(tree, 'untracked'));
+    writeFileSync(join(tree, 'file'), 'dirty\n'); await blocked('modified work remains protected'); git(tree, 'checkout', '--', 'file');
+    openPR = true; await blocked('open PRs still block an untouched discussion branch'); openPR = false;
+    threads.push(v2Thread({ id: 'shared', projectId: p.t3Id, worktreePath: tree, status: 'running', activeRunId: 'run' }));
+    await blocked('another thread using the workspace remains protected'); threads.pop();
+    writeFileSync(join(tree, 'file'), 'new work\n'); git(tree, 'commit', '-qam', 'new work'); await blocked('new commits remain protected');
+    git(repo, 'update-ref', 'refs/remotes/origin/main', git(tree, 'rev-parse', 'HEAD')); await blocked('directly released commits do not make an implementation an untouched discussion');
+  } finally { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
+});
 
 for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true, false, false], [false, true, false], [false, true, true]]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}${launched ? ' v2 launch' : ''}${pushedElsewhere ? ' pushed under another name' : ''}`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-reopened-')), repo = join(dir, 'repo'), tree = join(dir, 'old-tree'); mkdirSync(repo);

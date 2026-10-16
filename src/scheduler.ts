@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
-import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
+import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
@@ -417,6 +417,27 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
   return { branches, inactiveThreads };
 }
 
+async function openPullRequests(project: Project) {
+  return z.array(z.object({ title: z.string(), headRefName: z.string(), body: z.string() })).parse(await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
+}
+// Extend historical release checks to explicit settlements outside Factory, without releasing any Factory-owned work by this path.
+async function ticketArtifacts(project: Project, key: string, taskId: string, threads: Thread[], jobs: Job[], store: Store, prs = openPullRequests(project)) {
+  const openPR = (await prs).some(pr => mentionsTicket(`${pr.title}\n${pr.headRefName}\n${pr.body}`, key));
+  const history = jobs.filter(j => j.taskId === taskId && ['complete', 'dismissed'].includes(j.state));
+  const artifacts = await historicalArtifacts(project, history, threads, undefined, store);
+  for (const thread of threads.filter(t => threadReferencesTicket(t, project.t3Id, key))) {
+    if (jobs.some(j => j.threadId === thread.id) || thread.settledOverride !== 'settled' || executing(thread) || waiting(thread) || thread.activeRunId || thread.pendingRuntimeRequest || thread.pendingBackgroundTasks.length || !thread.branch || !thread.worktreePath || !existsSync(thread.worktreePath)) continue;
+    // A shared checkout or branch can still belong to work whose title does not mention this ticket.
+    if (threads.some(t => t.id !== thread.id && (t.worktreePath === thread.worktreePath || t.projectId === project.t3Id && t.branch === thread.branch))) continue;
+    try {
+      const head = await untouchedHead(project, thread.branch, thread.worktreePath);
+      if (!head || await git(thread.worktreePath, ['status', '--porcelain']) || await git(thread.worktreePath, ['branch', '--show-current']) !== thread.branch) continue;
+      artifacts.branches.set(thread.branch, head); artifacts.inactiveThreads.add(thread.id);
+    } catch { /* Unverifiable discussions retain their duplicate protection. */ }
+  }
+  return { ...artifacts, openPR };
+}
+
 export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, allowMissingReadyLabel = false) {
   const projects = c.projects.filter(p => p.enabled);
   const all = new Map<string, Task>();
@@ -459,7 +480,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   // Branch and open-PR mentions are read once per project, concurrently, while the tickets are examined.
   const needed = [...new Set(potential.map(t => t.projectId))].map(id => projects.find(p => p.kaneoId === id)!);
   const refs = new Map(needed.map(p => [p.kaneoId, git(p.repoPath, ['for-each-ref', '--format=%(refname)\t%(objectname)', 'refs/heads', 'refs/remotes'])]));
-  const prs = new Map(needed.map(p => [p.kaneoId, gh(['pr', 'list', '--repo', p.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']).then(r => z.array(z.object({ title: z.string(), headRefName: z.string(), body: z.string() })).parse(r))]));
+  const prs = new Map(needed.map(p => [p.kaneoId, openPullRequests(p)]));
   for (const pending of [...refs.values(), ...prs.values()]) pending.catch(() => {}); // Surfaced where a ticket needs them.
   const { blockersOf, openChildren } = dependencyRules(relationsFor, isDone);
   const priorityFor = (task: Task, project: Project): TicketPriority => ({ priority: task.priority, labelRank: ticketLabelRank(task.labels ?? [], project.priorityLabels) });
@@ -498,20 +519,19 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
     if (children.length) { reason = 'Umbrella has unfinished children; select leaves instead'; blockedBy.push(...children); }
     // A blocked ticket keeps what the queue needs to place it behind its blockers.
     if (reason && blockedBy.length) return { key, id: t.id, reason, blockedBy, ticket: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, ...await inheritedPriority(t, p) } };
-    const history = jobs.filter(j => j.taskId === t.id && ['complete', 'dismissed'].includes(j.state));
-    let artifacts = { branches: new Map<string, string>(), inactiveThreads: new Set<string>() };
-    if (!reason && history.length) {
-      try { artifacts = await historicalArtifacts(p, history, threads, undefined, store); }
+    let artifacts = { branches: new Map<string, string>(), inactiveThreads: new Set<string>(), openPR: false };
+    if (!reason) {
+      try { artifacts = await ticketArtifacts(p, key, t.id, threads, jobs, store, prs.get(p.kaneoId)!); }
       catch { reason = 'Previous work could not be verified; inspect its PR and worktree before restarting'; }
     }
-    if (!reason && threads.some(s => !artifacts.inactiveThreads.has(s.id) && mentionsTicket(`${s.title}\n${s.branch ?? ''}`, key))) reason = 'Existing T3 thread or branch references this ticket';
+    if (!reason && threads.some(s => !artifacts.inactiveThreads.has(s.id) && threadReferencesTicket(s, p.t3Id, key))) reason = 'Existing T3 thread or branch references this ticket';
     if (!reason) {
       const unmatched = (await refs.get(p.kaneoId)!).split('\n').filter(line => {
         const [ref, head] = line.split('\t');
         return ![...artifacts.branches].some(([branch, mergedHead]) => head === mergedHead && (ref === `refs/heads/${branch}` || ref.startsWith('refs/remotes/') && ref.endsWith(`/${branch}`)));
       }).join('\n');
       if (mentionsTicket(unmatched, key)) reason = 'Existing Git branch references this ticket';
-      if ((await prs.get(p.kaneoId)!).some(pr => mentionsTicket(`${pr.title}\n${pr.headRefName}\n${pr.body}`, key))) reason = 'Existing open PR references this ticket';
+      if (artifacts.openPR) reason = 'Existing open PR references this ticket';
     }
     if (reason) return { key, id: t.id, reason };
     return { candidate: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, labels: t.labels ?? [], ...await inheritedPriority(t, p) } };
@@ -784,8 +804,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const rules = dependencyRules(id => kaneo.call('get_task_relations', { taskId: id }).then(r => relationsSchema.parse(r)), async id => reader.done(await reader.task(id)));
       const blockers = await rules.blockersOf(task.id);
       if (blockers === 'cycle' || blockers.length || (await rules.openChildren(task.id)).length) return decision('ticket-changed-before-dispatch', { message: 'The ticket gained a blocker or an unfinished child.' });
-      const known = new Set(shell.threads.map(t => t.id));
-      if (store.jobs().some(j => j.taskId === task.id && !['complete', 'dismissed'].includes(j.state)) || fresh.threads.some(t => !known.has(t.id) && mentionsTicket(`${t.title}\n${t.branch ?? ''}`, key))) return decision('ticket-order-or-eligibility-changed');
+      const jobs = store.jobs(), artifacts = await ticketArtifacts(project, key, task.id, fresh.threads, jobs, store);
+      if (artifacts.openPR || jobs.some(j => j.taskId === task.id && !['complete', 'dismissed'].includes(j.state)) || fresh.threads.some(t => !artifacts.inactiveThreads.has(t.id) && threadReferencesTicket(t, project.t3Id, key))) return decision('ticket-order-or-eligibility-changed');
     }
     if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
     const currentManualCodex = manualPolicy && currentQuota.provider === 'Codex';
