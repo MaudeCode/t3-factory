@@ -160,6 +160,9 @@ export function selectTicket(candidates: Candidate[], lastProject: string | null
 export function mentionsTicket(text: string, key: string): boolean {
   return new RegExp(`(?:^|[^A-Z0-9])${key}(?![0-9])`, 'i').test(text);
 }
+export function threadReferencesTicket(thread: Thread, projectId: string, key: string): boolean {
+  return thread.projectId === projectId && mentionsTicket(`${thread.title}\n${thread.branch ?? ''}`, key);
+}
 
 // The order the scheduler would take these tickets in if nothing else changed: each pick rotates projects as a real dispatch would.
 export function queueOrder(candidates: Candidate[], lastProject: string | null, projectOrder: string[]): Candidate[] {

@@ -11,7 +11,7 @@ import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible', 'new-other-project-reference', 'new-project-reference'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -54,8 +54,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
     let shellReads = 0;
     t.mock.method(T3.prototype, 'shell', async () => {
       // The pass reads the shell once and each dispatch re-reads it just before launch: the second read is the first dispatch's final check.
-      if (scenario === 'parallel-resumed' && ++shellReads >= 2) threads.forEach(thread => { thread.status = 'running'; thread.pendingRuntimeRequest = null; });
-      return { threads, projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) };
+      shellReads++;
+      if (scenario === 'parallel-resumed' && shellReads >= 2) threads.forEach(thread => { thread.status = 'running'; thread.pendingRuntimeRequest = null; });
+      if (scenario.startsWith('new-') && shellReads === 2) threads.push(v2Thread({ id: 'new-reference', projectId: scenario === 'new-project-reference' ? 'FIX' : 'maintenance', title: 'Investigate FIX-1', branch: 'fix/FIX-1-investigation', status: 'running', activeRunId: 'run' }));
+      return { threads: [...threads], projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) };
     });
     t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
     t.mock.method(T3.prototype, 'provider', async (instanceId: string, refresh: boolean) => {
@@ -95,6 +97,13 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
       }
     }
     try {
+      if (scenario.startsWith('new-')) {
+        const result = await cycle(c, store, { manual: true, ticket: 'FIX-1', model: 'sol' });
+        const related = scenario === 'new-project-reference';
+        assert.equal(result.reason, related ? 'ticket-order-or-eligibility-changed' : 'dispatched');
+        assert.equal(attempts.length, related ? 0 : 1, 'the final duplicate check uses the ticket project too');
+        return;
+      }
       if (scenario === 'missing-sf-confirmation') {
         const options = { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true };
         const warning = await cycle(c, store, options);
