@@ -130,6 +130,30 @@ test('foreground FIFO permits a background item after every three foreground com
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+test('a prioritized stop uses T3 settings changed while the active pass was blocked', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  t.mock.method(internal, 'pass', async (_: unknown, reason: string) => {
+    events.push(reason);
+    if (reason === 'start') { entered.resolve(); await release.promise; }
+    return { reason: 'disabled' };
+  });
+  const next = { ...f.c, t3: { ...f.c.t3, url: 'http://127.0.0.1:4773', credentialFile: join(f.dir, 'new-unused-credential') } };
+  t.mock.method(T3.prototype, 'dispatch', async function(this: T3, command: any) {
+    assert.equal(command.type, 'thread.stop');
+    assert.deepEqual(this.config, next.t3, 'stop must use the current endpoint and credential path');
+    events.push('stop');
+  });
+  try {
+    await service.start(); await entered.promise;
+    internal.store.save({ ...f.job, state: 'running', completedAt: null });
+    writeFileSync(f.path, JSON.stringify(next)); service.wake('config');
+    const stopping = internal.handle({ type: 'job-stop', jobId: f.job.id });
+    release.resolve(); assert.equal((await stopping).code, 0); await internal.queue;
+    assert.deepEqual(events, ['start', 'stop', 'config']);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 test('wake bursts coalesce and changes during an active background pass get a fresh pass after rejection', { timeout: 10000 }, async t => {
   const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
   const entered = deferred(), release = deferred(), next = deferred(), releaseNext = deferred(), events: string[] = [];

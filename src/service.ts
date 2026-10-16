@@ -152,7 +152,7 @@ export class FactoryService {
     if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
     if (command.type === 'job-stop') {
-      const result = await this.enqueue(() => stopJob(loadConfig(this.configPath), this.store, this.t3, command.jobId));
+      const result = await this.enqueue(() => stopJob(this.configure(), this.store, this.t3, command.jobId));
       this.wake('job-stop');
       return { code: 0, data: result };
     }
