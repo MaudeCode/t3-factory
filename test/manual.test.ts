@@ -28,6 +28,8 @@ test('manual override runs the specified ticket/model while paused, but retains 
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'Fixture', enabled: true, key: 'FIX', kaneoId: 'kp', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
   });
+  const other = { ...c.projects[0], name: 'Library', key: 'LIB', kaneoId: 'library', t3Id: 'library' };
+  c.projects.push(other);
   writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
   c.models.forEach(m => { m.automatic = false; });
   const file = join(dir, 'config.jsonc'); process.env.T3_FACTORY_CONFIG = file;
@@ -37,9 +39,11 @@ test('manual override runs the specified ticket/model while paused, but retains 
   const owned: Thread[] = [];
   let claudeAvailable = true, codexUsed = 20, codexReady = true, codexAdvertised = true, codexStale = false, exhaustOnRefresh = false;
   const providerCalls: string[] = [];
+  const listed: Record<string, unknown>[] = [];
+  let unrelatedUnavailable = false;
   const personal = v2Thread({ id: 'personal', projectId: 'tp', title: 'Personal work', modelSelection: configuredModel(c, 'opus').model, status: 'running', activeRunId: 'run', latestRunCompletedAt: null, latestUserMessageAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   t.mock.method(T3.prototype, 'providers', async () => ['codex', 'claudeAgent'].map(instanceId => ({ instanceId, driver: instanceId, status: 'ready', enabled: true, installed: true, models: [] })));
-  t.mock.method(T3.prototype, 'shell', async () => ({ projects: [{ id: 'tp', title: 'Fixture', workspaceRoot: repo }], threads: [personal, ...owned] }));
+  t.mock.method(T3.prototype, 'shell', async () => ({ projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })), threads: [personal, ...owned] }));
   t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
   t.mock.method(T3.prototype, 'provider', async (instanceId: string, refresh: boolean) => {
     providerCalls.push(instanceId);
@@ -59,13 +63,55 @@ test('manual override runs the specified ticket/model while paused, but retains 
   t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
   t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks }] }, pagination: { total: tasks.length, totalPages: 1 } };
+    if (name === 'list_tasks') {
+      listed.push(args);
+      if (unrelatedUnavailable && args.projectId === other.kaneoId) throw new Error('Unrelated project unavailable');
+      const matching = tasks.filter(task => task.projectId === args.projectId && (!args.status || task.status === args.status));
+      return { data: { workspaceId: 'workspace', columns: [{ tasks: matching }] }, pagination: { total: matching.length, totalPages: 1 } };
+    }
     if (name === 'get_task') return tasks.find(t => t.id === args.taskId);
     if (name === 'get_task_relations') return blocked && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
     throw new Error(name);
   });
   try {
     assert.equal((await cycle(c, store)).reason, 'disabled');
+    await t.test('named explicit and automatic model requests keep eligibility outcomes without unrelated project reads', async () => {
+      const preset = configuredModel(c, 'opus');
+      preset.automatic = true;
+      try {
+        for (const model of ['opus', 'auto']) {
+          const options = { manual: true, model, ticket: 'fix-1', overrideLimits: true, dryRun: true };
+          listed.length = 0;
+          assert.equal((await cycle(c, store, options)).reason, 'would-dispatch');
+          assert.deepEqual(listed.map(a => [a.projectId, a.status]), [['kp', undefined]]);
+          unrelatedUnavailable = true;
+          assert.equal((await cycle(c, store, options)).reason, 'would-dispatch', 'an unrelated listing outage cannot block the request');
+          assert.equal((await cycle(c, store, { ...options, ticket: 'FIX-999' })).reason, 'no-eligible-ticket');
+          tasks[0].status = 'done';
+          const closed = await cycle(c, store, options);
+          assert.equal(closed.reason, 'no-eligible-ticket');
+          assert.match(JSON.stringify(closed.skipped), /Ticket is done/);
+          tasks[0].status = 'to-do';
+          tasks[0].labels = [{ name: 'high' }];
+          assert.equal((await cycle(c, store, options)).reason, 'ready-label-confirmation-required');
+          assert.equal((await cycle(c, store, { ...options, allowMissingReadyLabel: true })).reason, 'would-dispatch');
+          tasks[0].labels = [{ name: 'sf' }];
+          assert.equal((await cycle(c, store, options)).reason, 'no-eligible-ticket', 'difficulty remains mandatory');
+          tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];
+          other.enabled = false;
+          if (model === 'auto') assert.equal((await cycle(c, store, { ...options, ticket: 'LIB-1' })).reason, 'no-eligible-ticket');
+          else await assert.rejects(cycle(c, store, { ...options, ticket: 'LIB-1' }), /not enabled/);
+          if (model === 'auto') assert.equal((await cycle(c, store, { ...options, ticket: 'UNKNOWN-1' })).reason, 'no-eligible-ticket');
+          else await assert.rejects(cycle(c, store, { ...options, ticket: 'UNKNOWN-1' }), /not enabled/);
+          other.enabled = true;
+          unrelatedUnavailable = false;
+        }
+        assert.equal(dispatches.length, 0, 'dry-run probes never launch');
+      } finally {
+        preset.automatic = false; unrelatedUnavailable = false; other.enabled = true;
+        tasks[0].status = 'to-do'; tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];
+      }
+    });
     assert.equal((await cycle(c, store, { manual: true, ticket: 'fix-2' })).reason, 'blocked-ticket-plan-required', 'a blocked ticket is offered as a chain, not started');
     assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', overrideLimits: true })).reason, 'blocked-ticket-plan-required');
     assert.equal(dispatches.length, 0);
