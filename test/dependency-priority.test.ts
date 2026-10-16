@@ -9,6 +9,7 @@ import { configSchema } from '../src/config.ts';
 import { Kaneo, type Task } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { inventory } from '../src/scheduler.ts';
+import { dispatchFixture, deferred } from './dispatch-fixture.ts';
 
 test('blockers inherit downstream label rank and urgency without weakening eligibility', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-dependency-priority-')), repo = join(dir, 'repo');
@@ -140,4 +141,22 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     relations = [];
     q = await queue(); assert.equal(q.ready.find(t => t.id === 'task-19')?.labelRank, undefined, 'removed dependencies clear inherited priority on the next snapshot');
   } finally { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('inventory dependency fan-out and priority traversal share the six-read bound', async t => {
+  const f = dispatchFixture(t), release = deferred(), started = deferred();
+  f.tasks.push(f.task('second', 3, 'to-do'), f.task('inherited', 4, 'in-progress'));
+  f.relations.splice(0, 1, { sourceTaskId: 'root', targetTaskId: 'inherited', relationType: 'blocks' });
+  for (let n = 0; n < 12; n++) { const id = `dep-${n}`; f.tasks.push(f.task(id, n + 10)); f.relations.push({ sourceTaskId: id, targetTaskId: 'second', relationType: 'blocks' }); }
+  let active = 0, maximum = 0;
+  f.hooks.read = async name => {
+    if (name !== 'get_task') return;
+    active++; maximum = Math.max(maximum, active); started.resolve();
+    await release.promise; active--;
+  };
+  const pending = inventory(f.c, f.kaneo, [], [], f.store); await started.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  const simultaneous = active;
+  release.resolve(); assert.equal((await pending).ready.length, 2);
+  assert.equal(simultaneous, 6); assert.equal(maximum, 6);
 });

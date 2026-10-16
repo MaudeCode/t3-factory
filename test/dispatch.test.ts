@@ -10,6 +10,7 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
+import { dispatchFixture, deferred } from './dispatch-fixture.ts';
 
 for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible', 'new-other-project-reference', 'new-project-reference', 'new-open-pr'] as const) {
   test(`provider streams: ${scenario}`, async t => {
@@ -219,3 +220,125 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
     }
   });
 }
+
+// Gates stay unresolved until the independent starts have been observed.
+test('dispatch read phases overlap independent reads and deduplicate fresh snapshots', async t => {
+  const f = dispatchFixture(t), initial = deferred(), shellStarted = deferred(), finalShell = deferred(), finalStarted = deferred();
+  f.hooks.shell = async final => { if (final) { finalStarted.resolve(); await finalShell.promise; } else { shellStarted.resolve(); await initial.promise; } };
+  const pending = f.run();
+  await shellStarted.promise;
+  const providersOverlapped = f.calls.includes('providers');
+  initial.resolve();
+  await finalStarted.promise;
+  // Flush only work already scheduled by this phase, without a timing threshold.
+  await new Promise(resolve => setImmediate(resolve));
+  const labelsOverlapped = f.calls.includes('list_workspace_labels::true'), dependenciesOverlapped = f.calls.includes('get_task_relations:root:true');
+  finalShell.resolve();
+  assert.equal((await pending).reason, 'dispatched');
+  assert(providersOverlapped, 'provider read must start before the initial shell resolves');
+  assert(labelsOverlapped, 'final labels must start before the final shell resolves');
+  assert(dependenciesOverlapped, 'final dependencies must start before the final shell resolves');
+  assert(f.calls.includes('quota:true'), 'the selected provider still receives a forced refresh');
+  assert.equal(f.calls.filter(x => x.startsWith('list_workspace_labels:')).length, 2, 'one complete label snapshot per phase');
+  for (const phase of ['false', 'true']) assert.equal(f.calls.filter(x => x === `get_task_relations:root:${phase}`).length, 1, 'blockers and children share a relation read');
+  assert.equal(f.calls.filter(x => x === 'get_task:blocker:true').length, 1);
+});
+
+for (const change of ['blocker', 'child', 'sf', 'difficulty', 'status', 'open-pr', 'thread', 'config', 'read-failure', 'mapping'] as const) {
+  test(`final dispatch reads fail closed after inventory: ${change}`, async t => {
+    const f = dispatchFixture(t);
+    f.hooks.shell = async final => {
+      if (!final) return;
+      if (change === 'blocker') f.tasks[1].status = 'in-progress';
+      if (change === 'child') { f.tasks[1].status = 'to-do'; f.relations.splice(0, 1, { sourceTaskId: 'root', targetTaskId: 'blocker', relationType: 'subtask' }); }
+      if (change === 'sf') f.tasks[0].labels = [{ name: 'med' }];
+      if (change === 'difficulty') f.tasks[0].labels = [{ name: 'sf' }, { name: 'low' }];
+      if (change === 'status') f.tasks[0].status = 'done';
+      if (change === 'open-pr') writeFileSync(join(f.dir, 'prs'), JSON.stringify([{ title: 'FIX-1 delivery', headRefName: 'fix/work', body: '' }]));
+      if (change === 'thread') f.threads.push(v2Thread({ id: 'new', projectId: 'FIX', title: 'FIX-1', status: 'running', activeRunId: 'run' }));
+      if (change === 'config') writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, idleMinutes: 2 }));
+    };
+    f.hooks.read = async (name, _id, final) => { if (change === 'read-failure' && final && name === 'get_task_relations') throw new Error('Required relation read failed'); };
+    if (change === 'mapping') t.mock.method(f.t3, 'provider', async (_id: string, refresh: boolean) => {
+      const p = f.provider();
+      if (refresh) {
+        p.driver = 'claudeAgent';
+        p.usageLimits.windows = [{ id: 'five_hour', usedPercent: 0, windowDurationMins: 300, resetsAt: new Date(Date.now() + 300 * 60_000).toISOString() }, { id: 'seven_day', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 10080 * 60_000).toISOString() }];
+      }
+      return p;
+    });
+    const result = await f.run('auto'), last = (result.dispatches as { reason: string; message?: string }[])[0];
+    if (change === 'read-failure') { assert.equal(last.reason, 'error'); assert.match(last.message!, /Required relation read failed/); }
+    else assert.equal(last.reason, ['open-pr', 'thread'].includes(change) ? 'ticket-order-or-eligibility-changed' : change === 'config' ? 'configuration-changed-before-dispatch' : change === 'mapping' ? 'provider-mapping-changed' : 'ticket-changed-before-dispatch');
+    assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+  });
+}
+
+test('a failed final read drains other reads before closing the dispatch phase', async t => {
+  const f = dispatchFixture(t), release = deferred(), started = deferred(), failure = deferred();
+  f.hooks.quota = async refresh => { if (refresh) { started.resolve(); await release.promise; } };
+  f.hooks.read = async (name, _id, final) => { if (name === 'get_task' && _id === 'root') { failure.resolve(); throw new Error('Task unavailable'); } };
+  let ended = false;
+  const pending = f.run().then(() => { ended = true; }, e => { ended = true; throw e; });
+  const rejected = assert.rejects(pending, /Task unavailable/);
+  await started.promise; await failure.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  const endedBeforeRelease = ended;
+  release.resolve(); await rejected;
+  assert.equal(endedBeforeRelease, false, 'phase cannot finish while a started quota read is unresolved');
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+});
+
+test('initial dispatch read failures drain the independent shell before returning', async t => {
+  const f = dispatchFixture(t), release = deferred(), started = deferred();
+  f.hooks.shell = async () => { started.resolve(); await release.promise; };
+  f.hooks.providers = async () => { throw new Error('Providers unavailable'); };
+  let ended = false;
+  const pending = f.run().finally(() => { ended = true; });
+  const rejected = assert.rejects(pending, /Providers unavailable/);
+  await started.promise; await new Promise(resolve => setImmediate(resolve));
+  const endedBeforeRelease = ended;
+  release.resolve(); await rejected;
+  assert.equal(endedBeforeRelease, false);
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+});
+
+for (const failed of ['shell', 'task', 'labels', 'relations', 'columns', 'pull-requests'] as const) test(`required final read failure prevents launch: ${failed}`, async t => {
+  const f = dispatchFixture(t);
+  f.hooks.shell = async final => {
+    if (!final) return;
+    if (failed === 'shell') throw new Error('Read unavailable');
+    if (failed === 'pull-requests') writeFileSync(join(f.dir, 'prs'), 'unavailable');
+  };
+  if (failed === 'columns') f.tasks[1].projectId = 'external';
+  f.hooks.read = async (name, _id, final) => {
+    if (final && name === ({ task: 'get_task', labels: 'list_workspace_labels', relations: 'get_task_relations', columns: 'list_project_columns' } as Record<string, string>)[failed]) throw new Error('Read unavailable');
+  };
+  // Inventory also needs external final statuses, so allow that first read.
+  if (failed === 'columns') {
+    let reads = 0;
+    f.hooks.read = async name => { if (name === 'list_project_columns' && ++reads > 1) throw new Error('Read unavailable'); };
+  }
+  await assert.rejects(f.run(), failed === 'pull-requests' ? /Unexpected token|JSON/ : /Read unavailable/);
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+});
+
+test('automatic dispatch keeps ownership and launches serial while reads overlap', async t => {
+  const f = dispatchFixture(t), release = deferred(), started = deferred();
+  f.c.concurrency.codex = 2;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.tasks.push(f.task('next', 3, 'to-do'));
+  t.mock.method(f.t3, 'launch', async (command: unknown) => {
+    assert(f.store.jobs().every(j => ['dispatching', 'running'].includes(j.state)));
+    f.launches.push(command);
+    if (f.launches.length === 1) { started.resolve(); await release.promise; }
+    return {};
+  });
+  const pending = f.run('auto', false); await started.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  const before = [f.launches.length, f.store.jobs().length];
+  release.resolve(); assert.equal((await pending).reason, 'dispatched');
+  assert.deepEqual(before, [1, 1], 'the second dispatch cannot prepare ownership or launch until the first launch settles');
+  assert.equal(f.launches.length, 2);
+  assert.equal(new Set(f.store.jobs().map(j => j.taskId)).size, 2);
+});
