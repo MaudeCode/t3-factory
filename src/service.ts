@@ -7,7 +7,7 @@ import type { Server } from 'node:http';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kaneo, listTasks } from './clients.ts';
-import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, type CycleOptions } from './scheduler.ts';
+import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, readAll, type CycleOptions } from './scheduler.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
@@ -22,7 +22,7 @@ export class FactoryService {
   private kaneoSettings = '';
   private stream?: AbortController;
   private kaneo?: Promise<Kaneo>; // resolves once connected, so no caller sees a client mid-handshake
-  private polling = false;
+  private polling?: Promise<void>;
   private control?: Server;
   private watcher?: FSWatcher;
   private timer?: NodeJS.Timeout;
@@ -35,6 +35,8 @@ export class FactoryService {
   private readyFingerprint?: string;
   private readonly timing: ServiceTiming;
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly pending: { foreground: boolean; run: () => Promise<void> }[] = [];
+  private running = false;
   private wanted = false;
   private stopped = false;
   private readonly abort = new AbortController();
@@ -60,6 +62,7 @@ export class FactoryService {
   private connectT3(c: Config) {
     this.stream?.abort();
     this.t3 = new T3(c.t3); this.t3Settings = JSON.stringify(c.t3);
+    if (this.stopped) return;
     const stream = new AbortController(); this.stream = stream;
     this.abort.signal.addEventListener('abort', () => stream.abort(), { once: true });
     void this.t3.subscribe(item => this.onShellItem(item), stream.signal, error => log('t3-stream-error', { message: safeError(error) }));
@@ -71,12 +74,14 @@ export class FactoryService {
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
     await this.queue.catch(() => {});
+    await this.polling;
     await this.kaneo?.then(k => k.close()).catch(() => {});
     this.store.close();
   }
 
   // Anything but the opening snapshot and its completion marker means a project or thread changed.
   private onShellItem(item: unknown) {
+    if (this.stopped) return;
     const kind = item && typeof item === 'object' && 'kind' in item ? String((item as { kind: unknown }).kind) : '';
     if (KINDS_WITHOUT_WORK.has(kind)) return;
     clearTimeout(this.settle);
@@ -87,13 +92,37 @@ export class FactoryService {
   wake(reason: string) {
     if (this.stopped || this.wanted) return;
     this.wanted = true;
-    void this.enqueue(async () => { this.wanted = false; await this.pass({}, reason); });
+    void this.enqueue(async queueWaitMs => {
+      this.wanted = false;
+      if (!this.stopped) await this.pass({}, reason, queueWaitMs);
+    }, false).catch(error => log('background-pass-failed', { reason, message: safeError(error) }));
   }
 
-  private enqueue<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(work, work);
-    this.queue = run.catch(() => {});
-    return run;
+  private enqueue<T>(work: (queueWaitMs: number) => Promise<T>, foreground = true): Promise<T> {
+    const queued = performance.now();
+    const result = new Promise<T>((resolve, reject) => {
+      this.pending.push({ foreground, run: async () => {
+        try { resolve(await work(performance.now() - queued)); }
+        catch (error) { reject(error); }
+      } });
+    });
+    if (!this.running) this.queue = this.drain();
+    return result;
+  }
+
+  private async drain() {
+    this.running = true;
+    let foregroundCount = 0;
+    while (this.pending.length) {
+      const background = this.pending.findIndex(item => !item.foreground);
+      const foreground = this.pending.findIndex(item => item.foreground);
+      const index = background !== -1 && foregroundCount >= 3 ? background : foreground !== -1 ? foreground : 0;
+      const [item] = this.pending.splice(index, 1);
+      // Only count commands competing with background work toward the fairness bound.
+      foregroundCount = item.foreground && background !== -1 ? foregroundCount + 1 : 0;
+      await item.run();
+    }
+    this.running = false;
   }
 
   // Yield to the command response and enqueue only one step. Continuations join the tail,
@@ -115,11 +144,12 @@ export class FactoryService {
         this.cleanupQueued = false;
         if (more) this.scheduleCleanup();
       }
-    }), 0);
+    }, false), 0);
   }
 
   private async handle(command: ControlCommand): Promise<ControlResult> {
     if (command.type === 'health') return { code: 0, data: { ok: true, pid: process.pid } };
+    if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
     if (command.type === 'job-stop') {
       const result = await this.enqueue(() => stopJob(loadConfig(this.configPath), this.store, this.t3, command.jobId));
@@ -131,10 +161,10 @@ export class FactoryService {
       return { code: 0, data: result };
     }
     if (command.type === 'once') {
-      const result = await this.enqueue(() => this.pass(command.options as CycleOptions, 'once'));
+      const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
       return { code: result.reason === 'error' ? 1 : 0, data: result };
     }
-    const result = await this.enqueue(() => this.pass({ ...(command.options as CycleOptions), manual: true }, 'dispatch'));
+    const result = await this.enqueue(queueWaitMs => this.pass({ ...(command.options as CycleOptions), manual: true }, 'dispatch', queueWaitMs));
     return { code: ['dispatched', 'would-dispatch', 'plan-started'].includes(result.reason) ? 0 : 1, data: result };
   }
 
@@ -143,25 +173,28 @@ export class FactoryService {
     clearTimeout(this.quotaTimer);
     if (this.stopped) return;
     this.quotaTimer = setTimeout(() => void this.enqueue(async () => {
+      if (this.stopped) return;
       let current: Config | undefined;
       try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3); writeStatus(current, this.store); }
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
       finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
-    }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
+    }, false), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
   }
 
   // Kaneo has no push, so the ready columns are fingerprinted cheaply; any change starts a pass.
-  private async checkKaneo() {
-    if (this.stopped || this.polling) return;
-    this.polling = true;
-    try {
-      const c = loadConfig(this.configPath), kaneo = await this.ensureKaneo(c);
-      const tasks = await Promise.all(c.projects.filter(p => p.enabled).map(p => listTasks(kaneo, p.kaneoId, null, p.readyStatuses)));
-      const fingerprint = JSON.stringify(tasks.flat().map(t => [t.id, t.status, t.priority, (t.labels ?? []).map(l => l.name).sort()]).sort());
-      if (this.readyFingerprint !== undefined && fingerprint !== this.readyFingerprint) this.wake('kaneo');
-      this.readyFingerprint = fingerprint;
-    } catch (error) { log('kaneo-poll-failed', { message: safeError(error) }); }
-    finally { this.polling = false; }
+  private checkKaneo() {
+    if (this.stopped || this.polling) return this.polling;
+    this.polling = (async () => {
+      try {
+        const c = loadConfig(this.configPath), kaneo = await this.ensureKaneo(c);
+        const tasks = await readAll(c.projects.filter(p => p.enabled).map(p => listTasks(kaneo, p.kaneoId, null, p.readyStatuses)));
+        const fingerprint = JSON.stringify(tasks.flat().map(t => [t.id, t.status, t.priority, (t.labels ?? []).map(l => l.name).sort()]).sort());
+        if (this.readyFingerprint !== undefined && fingerprint !== this.readyFingerprint) this.wake('kaneo');
+        this.readyFingerprint = fingerprint;
+      } catch (error) { log('kaneo-poll-failed', { message: safeError(error) }); }
+      finally { this.polling = undefined; }
+    })();
+    return this.polling;
   }
 
   private ensureKaneo(c: Config): Promise<Kaneo> {
@@ -182,19 +215,19 @@ export class FactoryService {
     return c;
   }
 
-  private async pass(options: CycleOptions, reason: string) {
+  private async pass(options: CycleOptions, reason: string, queueWaitMs: number) {
     clearTimeout(this.timer);
-    const started = Date.now();
+    const started = performance.now();
     let c: Config | undefined;
     try {
       c = this.configure();
       const kaneo = await this.ensureKaneo(c);
       const result = await cycle(c, this.store, options, { t3: this.t3, kaneo, deferCleanup: true });
       writeStatus(c, this.store);
-      log('pass', { reason, outcome: result.reason, ms: Date.now() - started });
+      log('pass', { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
       return result;
     } catch (error) {
-      const message = safeError(error); log('error', { message, reason });
+      const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
       this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
       try { writeStatus(c ?? loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
       this.dropKaneo();

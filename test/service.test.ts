@@ -75,6 +75,167 @@ async function maintenanceFixture(t: import('node:test').TestContext) {
   return { dir, c, path, thread, job, shell };
 }
 
+test('manual dispatch passes pending background work without interrupting the active pass', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  let active = 0, maximum = 0;
+  t.mock.method(internal, 'pass', async (_options: unknown, reason: string) => {
+    maximum = Math.max(maximum, ++active); events.push(reason);
+    if (reason === 'start') { entered.resolve(); await release.promise; }
+    active--; return { reason: 'dispatched' };
+  });
+  t.mock.method(T3.prototype, 'providers', async () => { events.push('quota'); assert.equal(active, 0); return []; });
+  const configure = internal.configure.bind(internal);
+  t.mock.method(internal, 'configure', () => { events.push('cleanup'); return configure(); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await service.start(); await entered.promise;
+    service.wake('config'); service.wake('kaneo');
+    t.mock.timers.tick(150_000); // The display refresh is now pending behind the active pass.
+    internal.scheduleCleanup(); t.mock.timers.tick(0);
+    const dispatch = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
+    assert.deepEqual(await internal.handle({ type: 'health' }), { code: 0, data: { ok: true, pid: process.pid } });
+    assert.deepEqual(events, ['start']);
+    release.resolve(); await dispatch; await internal.queue;
+    assert.deepEqual(events, ['start', 'dispatch', 'config', 'quota', 'cleanup']);
+    assert.equal(maximum, 1);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('foreground FIFO permits a background item after every three foreground commands', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  t.mock.method(internal, 'pass', async (options: any, reason: string) => {
+    events.push(options.ticket ?? reason);
+    if (reason === 'start') { entered.resolve(); await release.promise; }
+    return { reason: 'dispatched' };
+  });
+  t.mock.method(T3.prototype, 'providers', async () => { events.push('quota'); return []; });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await service.start(); await entered.promise;
+    service.wake('config'); t.mock.timers.tick(150_000);
+    const job = internal.store.job.bind(internal.store), plan = internal.store.plan.bind(internal.store);
+    t.mock.method(internal.store, 'job', (id: string) => { events.push('stop'); return job(id); });
+    t.mock.method(internal.store, 'plan', (id: string) => { events.push('cancel'); return plan(id); });
+    const commands = [
+      assert.rejects(internal.handle({ type: 'job-stop', jobId: 'missing' }), /not active/),
+      assert.rejects(internal.handle({ type: 'plan-cancel', planId: 'missing' }), /not active/),
+      internal.handle({ type: 'once', options: { ticket: 'doctor', doctor: true } }),
+      internal.handle({ type: 'once', options: { ticket: 'dry', dryRun: true } }),
+      ...Array.from({ length: 6 }, (_, n) => internal.handle({ type: 'dispatch', options: { ticket: `dispatch-${n}` } })),
+    ];
+    release.resolve(); await Promise.all(commands); await internal.queue;
+    assert.deepEqual(events, ['start', 'stop', 'cancel', 'doctor', 'config', 'dry', 'dispatch-0', 'dispatch-1', 'quota', 'dispatch-2', 'dispatch-3', 'dispatch-4', 'dispatch-5']);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('wake bursts coalesce and changes during an active background pass get a fresh pass after rejection', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), next = deferred(), releaseNext = deferred(), events: string[] = [];
+  t.mock.method(internal, 'pass', async (_: unknown, reason: string) => {
+    events.push(reason);
+    if (reason === 'start') { entered.resolve(); await release.promise; throw new Error('Synthetic background failure'); }
+    if (reason === 'config') { next.resolve(); await releaseNext.promise; }
+    return { reason: 'dispatched' };
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await service.start(); await entered.promise;
+    service.wake('config'); service.wake('kaneo'); service.wake('timer');
+    release.resolve(); await next.promise;
+    internal.onShellItem({ type: 'thread.meta-updated' });
+    internal.onShellItem({ type: 'thread.created' });
+    t.mock.timers.tick(750);
+    service.wake('kaneo');
+    releaseNext.resolve(); await internal.queue;
+    assert.deepEqual(events, ['start', 'config', 't3']);
+  } finally { release.resolve(); releaseNext.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('stop drains accepted foreground commands and failures before closing resources', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  let reads = 0;
+  t.mock.method(T3.prototype, 'shell', async () => {
+    events.push('pass');
+    if (++reads === 1) { entered.resolve(); await release.promise; }
+    return f.shell();
+  });
+  t.mock.method(Kaneo.prototype, 'close', async () => { events.push('close-client'); });
+  const close = Store.prototype.close;
+  t.mock.method(Store.prototype, 'close', function(this: Store) { events.push('close-store'); close.call(this); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stopping: Promise<void> | undefined;
+  try {
+    await service.start(); await entered.promise;
+    service.wake('config'); internal.scheduleCleanup(); t.mock.timers.tick(0);
+    const failed = assert.rejects(internal.handle({ type: 'job-stop', jobId: 'missing' }), /not active/);
+    const dry = internal.handle({ type: 'once', options: { dryRun: true } }).then((r: any) => { events.push('dry-result'); return r; });
+    t.mock.method(T3.prototype, 'subscribe', async () => { events.push('new-stream'); });
+    writeFileSync(f.path, JSON.stringify({ ...f.c, t3: { ...f.c.t3, url: 'http://127.0.0.1:4773' } }));
+    stopping = service.stop().then(() => { events.push('stopped'); });
+    assert.deepEqual(events, ['pass'], 'stop must wait for the active pass');
+    const late = internal.handle({ type: 'dispatch', options: {} });
+    assert.equal((await internal.handle({ type: 'health' })).code, 0);
+    service.wake('after-stop'); internal.onShellItem({ type: 'thread.created' });
+    release.resolve(); await failed; await dry; await stopping;
+    assert.equal((await late).code, 1, 'new commands are refused after stop');
+    assert.deepEqual(events, ['pass', 'pass', 'dry-result', 'close-client', 'close-store', 'stopped']);
+    t.mock.timers.tick(300_000);
+    assert.equal(events.at(-1), 'stopped', 'no background maintenance or timers restart after shutdown');
+  } finally { release.resolve(); await (stopping ?? service.stop()); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('pass diagnostics separate queue wait from active duration', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), logs: any[] = [];
+  let clock = 0, reads = 0;
+  t.mock.method(performance, 'now', () => clock);
+  t.mock.method(console, 'log', (line: string) => { logs.push(JSON.parse(line)); });
+  t.mock.method(T3.prototype, 'shell', async () => {
+    if (++reads === 1) { entered.resolve(); await release.promise; }
+    else clock += 7;
+    return f.shell();
+  });
+  try {
+    await service.start(); await entered.promise;
+    const command = internal.handle({ type: 'once', options: { dryRun: true } });
+    clock = 5000; release.resolve(); await command;
+    const diagnostic = logs.find(l => l.event === 'pass' && l.reason === 'once');
+    assert.equal(diagnostic.queueWaitMs, 5000);
+    assert.equal(diagnostic.ms, 7);
+    assert.equal(diagnostic.outcome, 'disabled');
+    assert.deepEqual(Object.keys(diagnostic).sort(), ['time', 'event', 'reason', 'outcome', 'ms', 'queueWaitMs'].sort());
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+for (const siblingFails of [false, true]) test(`shutdown drains ready-column polls before closing the shared client: sibling failure=${siblingFails}`, { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
+  if (siblingFails) writeFileSync(f.path, JSON.stringify({ ...f.c, projects: [...f.c.projects, { ...f.c.projects[0], key: 'OTHER', kaneoId: 'OTHER', t3Id: 'OTHER', githubRepo: 'fixture/OTHER' }] }));
+  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
+    assert.equal(name, 'list_tasks');
+    if (args.projectId === 'OTHER') throw new Error('Synthetic poll failure');
+    entered.resolve(); await release.promise;
+    events.push('poll-finished');
+    return { data: { workspaceId: 'workspace', columns: [{ tasks: [] }] }, pagination: { total: 0, totalPages: 1 } };
+  });
+  t.mock.method(Kaneo.prototype, 'close', async () => { events.push('close-client'); });
+  let stopping: Promise<void> | undefined;
+  try {
+    await service.start();
+    const poll = internal.checkKaneo(); await entered.promise;
+    stopping = service.stop().then(() => { events.push('stopped'); });
+    await internal.queue;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(events, [], 'the client must remain open while the poll is using it');
+    release.resolve(); await poll; await stopping;
+    assert.deepEqual(events, ['poll-finished', 'close-client', 'stopped']);
+  } finally { release.resolve(); await (stopping ?? service.stop()); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 test('service dispatch returns before blocked cleanup and queued commands run between maintenance items', { timeout: 10000 }, async t => {
   const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
   const entered = deferred(), release = deferred(), events: string[] = [];

@@ -450,7 +450,7 @@ async function ticketArtifacts(project: Project, key: string, taskId: string, th
 }
 
 // Keep a failed phase open until every read it started has settled.
-async function readAll<T extends unknown[]>(reads: [...T]): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
+export async function readAll<T extends unknown[]>(reads: [...T]): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
   try { return await Promise.all(reads); }
   catch (error) { await Promise.allSettled(reads); throw error; }
 }
