@@ -109,6 +109,38 @@ test('service dispatch returns before blocked cleanup and queued commands run be
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+test('an ordinary pass renews a sweep while its cleanup continuation is queued', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred();
+  const git = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim();
+  git('init', '-qb', 'main'); writeFileSync(join(f.dir, 'merged'), 'merged'); git('add', 'merged');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'merged');
+  git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD'));
+  const branch = 'chore/FIX-1-factory', tree = join(f.dir, 'tree');
+  git('worktree', 'add', '-qb', branch, tree);
+  Object.assign(f.thread, { branch, worktreePath: tree });
+  f.job.command = { workspaceStrategy: { type: 'worktree', branch } };
+  t.mock.method(T3.prototype, 'dispatch', async (command: any) => {
+    assert.equal(command.type, 'thread.metadata.update');
+    entered.resolve(); await release.promise;
+    Object.assign(f.thread, { worktreePath: null, branch: null });
+  });
+  t.mock.method(T3.prototype, 'terminals', async () => []);
+  t.mock.method(T3.prototype, 'removeWorktree', async (_: string, path: string) => { git('worktree', 'remove', path); });
+  try {
+    await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
+    internal.store.save(f.job);
+    await internal.handle({ type: 'dispatch', options: {} });
+    await entered.promise;
+    // The pass waits behind detach. Detach then queues its continuation before the pass asks for a new sweep.
+    const ordinary = internal.handle({ type: 'once', options: {} });
+    release.resolve(); await ordinary;
+    await new Promise(resolve => setTimeout(resolve, 20)); await internal.queue;
+    assert.ok(internal.store.job(f.job.id).workspaceCleanedAt, 'the intervening ordinary pass must advance the detached workspace');
+    assert.equal(existsSync(tree), false);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 for (const failedDispatch of [false, true]) test(`maintenance survives ${failedDispatch ? 'failed' : 'accepted'} dispatch and restart with paused automation`, { timeout: 10000 }, async t => {
   const f = await maintenanceFixture(t);
   let service = new FactoryService(f.path), internal = service as any;

@@ -99,8 +99,9 @@ export class FactoryService {
   // Yield to the command response and enqueue only one step. Continuations join the tail,
   // so housekeeping shares the single writer without occupying the dispatch call itself.
   private scheduleCleanup(newSweep = false) {
-    if (this.stopped || this.cleanupQueued) return;
+    if (this.stopped) return;
     if (newSweep) this.cleanupVisited.clear();
+    if (this.cleanupQueued) return;
     this.cleanupQueued = true;
     this.cleanupTimer = setTimeout(() => void this.enqueue(async () => {
       let more = false;
