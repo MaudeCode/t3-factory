@@ -17,6 +17,7 @@ const exec = promisify(execFile);
 const CLEANUP_RETRY_MINUTES = 15;
 // An unrecorded or unreadable block time retries now.
 const cleanupDue = (job: Job) => !(Date.now() - Date.parse(job.workspaceCleanupBlockedAt ?? '') < CLEANUP_RETRY_MINUTES * 60_000);
+const cleanupPending = (job: Job) => (job.state === 'complete' || (job.state === 'dismissed' && !!job.completedAt) || !!job.workspaceCleanup) && !job.workspaceCleanedAt && cleanupDue(job);
 const reportSchema = z.object({
   jobId: z.string(), status: z.enum(['complete', 'awaiting-human', 'no-work']), reason: z.string(),
   prUrls: z.array(z.url()).default([]), createdTaskIds: z.array(z.string()).default([]),
@@ -116,10 +117,10 @@ async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: K
   if (!branch || !await branchTip(project, branch)) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
   if (!await untouchedHead(project, branch, worktree)) throw unmerged;
 }
-export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true) {
-  for (const job of store.jobs().filter(j => j.state !== 'dismissed' || (j.workspaceCleanup && !j.workspaceCleanedAt))) {
+export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true, allowCleanup = true) {
+  for (const job of store.jobs().filter(j => j.state !== 'dismissed' || ((j.workspaceCleanup || j.completedAt) && !j.workspaceCleanedAt))) {
     const t = threads.find(t => t.id === job.threadId);
-    if (t && allowMonitorStop && (job.state === 'complete' || job.workspaceCleanup) && !job.workspaceCleanedAt && cleanupDue(job)) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
+    if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
     if (job.state === 'dismissed') continue;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
       job.state = 'dismissed'; job.reason = 'Dismissed by settling the task in T3'; job.dismissedAt = new Date().toISOString();
@@ -194,6 +195,16 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
     }
     store.save(job);
   }
+}
+
+// One existing cleanup step per job per sweep. Re-read durable state after every queued command;
+// intermediate steps resume on the next pass, even after a service restart.
+export async function cleanupNextWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, visited: Set<string>): Promise<boolean> {
+  const job = store.jobs().find(job => !visited.has(job.id) && job.completedAt && cleanupPending(job));
+  if (!job) return false;
+  visited.add(job.id);
+  await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
+  return true;
 }
 
 function assignedBranch(job: Job): string | undefined {
@@ -598,7 +609,7 @@ function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsS
 }
 // A long-lived caller (the service) keeps one T3 client and one connected Kaneo client across passes;
 // a one-shot caller leaves these out and the pass opens and closes its own.
-export interface Clients { t3?: T3; kaneo?: Kaneo }
+export interface Clients { t3?: T3; kaneo?: Kaneo; deferCleanup?: boolean }
 export type Decision = { reason: string; at: string } & Record<string, unknown>;
 type Queue = Awaited<ReturnType<typeof inventory>>;
 
@@ -631,7 +642,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   const instances = new Map(providers.map(p => [p.instanceId, p.driver]));
   if (ownsKaneo) await kaneo.connect();
   try {
-    await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor);
+    await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor, !options.manual && !clients.deferCleanup);
     // Chains the user started run whether or not automation is on; they take their slots first.
     if (!options.manual && !options.doctor && !options.dryRun) await runPlans(c, store, t3, kaneo, instances, shell.threads);
     const jobs = store.jobs();
@@ -774,7 +785,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   const kaneo = plan?.kaneo ?? clients.kaneo ?? new Kaneo(c.kaneo), ownsKaneo = !(plan?.kaneo ?? clients.kaneo);
   if (ownsKaneo) await kaneo.connect();
   try {
-    if (!plan) await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor);
+    if (!plan) await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor, !options.manual && !clients.deferCleanup);
     const jobs = store.jobs();
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
