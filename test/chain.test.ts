@@ -10,6 +10,7 @@ import { Store } from '../src/store.ts';
 import { cycle, runPlans, cancelPlan } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
+import { dispatchFixture, deferred } from './dispatch-fixture.ts';
 
 // FIX-50 is blocked by FIX-49, FIX-48, and FIX-47; FIX-48 is blocked by FIX-13. The user may run the first
 // runnable blocker, or the whole chain in priority order within the run limits, then FIX-50.
@@ -110,4 +111,40 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     process.env.PATH = oldPath; process.env.T3_FACTORY_CONFIG = oldConfig;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('shared dependency ancestors reuse reads without becoming cycles', async t => {
+  const f = dispatchFixture(t);
+  for (const [n, id] of ['left', 'right', 'shared'].entries()) f.tasks.push(f.task(id, n + 3));
+  f.relations.splice(0, f.relations.length, ...[
+    ['left', 'root'], ['right', 'root'], ['shared', 'left'], ['shared', 'right'],
+  ].map(([sourceTaskId, targetTaskId]) => ({ sourceTaskId, targetTaskId, relationType: 'subtask' })));
+  assert.equal((await f.run()).reason, 'dispatched');
+  assert.equal(f.calls.filter(x => x === 'get_task_relations:shared:true').length, 1, 'shared ancestor reads are cached independently of the ancestry path');
+});
+
+test('dependency ancestor cycles still refuse dispatch', async t => {
+  const f = dispatchFixture(t);
+  f.relations.splice(0, 1, { sourceTaskId: 'blocker', targetTaskId: 'root', relationType: 'subtask' }, { sourceTaskId: 'root', targetTaskId: 'blocker', relationType: 'subtask' });
+  assert.equal((await f.run()).reason, 'blocked-ticket-plan-required');
+  assert.equal(f.launches.length, 0);
+});
+
+test('independent final dependency reads fan out with a bound of six', async t => {
+  const f = dispatchFixture(t), release = deferred(), started = deferred();
+  for (let n = 0; n < 12; n++) { const id = `dep-${n}`; f.tasks.push(f.task(id, n + 3)); f.relations.push({ sourceTaskId: id, targetTaskId: 'root', relationType: 'blocks' }); }
+  let active = 0, maximum = 0;
+  f.hooks.read = async (name, id, final) => {
+    if (final && name === 'get_task' && id.startsWith('dep-')) {
+      active++; maximum = Math.max(maximum, active); started.resolve();
+      await release.promise; active--;
+    }
+  };
+  const pending = f.run(); await started.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  const simultaneous = active;
+  release.resolve(); assert.equal((await pending).reason, 'dispatched');
+  assert.equal(simultaneous, 6, 'independent dependencies must start together up to the read bound');
+  assert.equal(maximum, 6, 'dependency reads cannot exceed the bound');
+  for (let n = 0; n < 12; n++) assert.equal(f.calls.filter(x => x === `get_task:dep-${n}:true`).length, 1);
 });

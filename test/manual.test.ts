@@ -11,6 +11,7 @@ import { cycle } from '../src/scheduler.ts';
 import { saveSettings } from '../src/settings.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
 test('manual override runs the specified ticket/model while paused, but retains dependency and duplicate guards', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-manual-')), repo = join(dir, 'repo'); mkdirSync(repo);
@@ -189,4 +190,13 @@ test('manual override runs the specified ticket/model while paused, but retains 
     if (oldConfig === undefined) delete process.env.T3_FACTORY_CONFIG; else process.env.T3_FACTORY_CONFIG = oldConfig;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('manual explicit and automatic model final checks use one fresh label and relation snapshot', async t => {
+  for (const model of ['sol', 'auto']) await t.test(model, async t => {
+    const f = dispatchFixture(t);
+    assert.equal((await f.run(model)).reason, 'dispatched');
+    assert.equal(f.calls.filter(x => x.startsWith('list_workspace_labels:')).length, 2, 'inventory and final validation each read labels once, including dependency tasks');
+    assert.equal(f.calls.filter(x => x === 'get_task_relations:root:true').length, 1, 'blockers and children share the final relation snapshot');
+  });
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { T3 } from '../src/clients.ts';
 import { readModelQuota } from '../src/models.ts';
 import type { Config } from '../src/config.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
 test('stale quota automatically bypasses the T3 probe cache over RPC', async t => {
   const old = new Date(Date.now() - 600_000).toISOString();
@@ -63,4 +64,22 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
   t3.reset();
   await assert.rejects(readModelQuota(t3, c, [], 'opus'), /automatic refresh failed.*snapshot is stale/);
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2, 'failed refresh stays bounded and never permits stale quota');
+});
+
+for (const probe of ['retry', 'exhausted', 'stale'] as const) test(`concurrent final dispatch retains forced quota policy: ${probe}`, async t => {
+  const f = dispatchFixture(t);
+  let forced = 0;
+  t.mock.method(f.t3, 'provider', async (_id: string, refresh: boolean) => {
+    const p = f.provider();
+    if (refresh) {
+      forced++;
+      if (probe === 'stale' || probe === 'retry' && forced === 1) p.usageLimits.checkedAt = new Date(0).toISOString();
+      if (probe === 'exhausted') p.usageLimits.windows[0].usedPercent = 100;
+    }
+    return p;
+  });
+  if (probe === 'stale') await assert.rejects(f.run(), /automatic refresh failed.*stale/);
+  else assert.equal((await f.run()).reason, probe === 'retry' ? 'dispatched' : 'codex-quota-exhausted');
+  assert.equal(forced, probe === 'exhausted' ? 1 : 2, 'only the selected provider is refreshed with the existing retry bound');
+  assert.equal(f.launches.length, probe === 'retry' ? 1 : 0);
 });
