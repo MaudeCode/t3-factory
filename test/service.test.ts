@@ -369,7 +369,7 @@ for (const options of [{ manual: true }, { manual: true, model: 'sol' }, { dryRu
 
 // The service runs passes in series: a manual dispatch sent while a pass is running waits for it and
 // never sees a store-claim error; T3 events and commands coalesce into one queued pass.
-test('the service answers dispatches during a pass and folds wake-ups into one queued pass', async t => {
+test('the service answers dispatches during a pass and folds wake-ups into one queued pass', { timeout: 10000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-service-')), repo = join(dir, 'repo'); mkdirSync(repo);
   execFileSync('/usr/bin/git', ['init', '-q', repo]);
   writeFileSync(join(dir, 'gh'), '#!/bin/sh\nprintf "[]\\n"\n', { mode: 0o755 });
@@ -409,6 +409,15 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     throw new Error(name);
   });
   const service = new FactoryService(process.env.T3_FACTORY_CONFIG, { kaneoPollMs: 60 });
+  const internal = service as any, backgroundDone = deferred(), queueUpdated = deferred();
+  const pass = internal.pass.bind(internal);
+  t.mock.method(internal, 'pass', async (options: unknown, reason: string, queueWaitMs: number) => {
+    const result = await pass(options, reason, queueWaitMs);
+    if (reason === 't3' || reason === 'test') backgroundDone.resolve();
+    const status = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
+    if (status.upNext?.tickets.some((ticket: any) => ticket.key === 'FIX-3')) queueUpdated.resolve();
+    return result;
+  });
   try {
     await service.start(); // The start pass is now blocked inside its first shell read.
     const dispatch = callControl(c.stateDir, { type: 'dispatch', options: { manual: true, model: 'opus', ticket: 'FIX-2', overrideLimits: true } });
@@ -423,8 +432,8 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     assert.equal((result?.data as any).ticket, 'FIX-2');
     assert.equal(launches.length, 1);
     assert.equal((await dry)?.code, 0, 'a dry run over the socket returns its decision');
-    // Let the queued wake-ups drain: the T3 events and the explicit wake were one queued pass, not three.
-    await new Promise(resolve => setTimeout(resolve, 1200));
+    // Observe a coalesced background pass rather than assume it finished after a sleep.
+    await backgroundDone.promise; clearTimeout(internal.settle); await internal.queue;
     const status = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
     assert.equal(status.jobs.length, 1);
     assert.ok(shellReads >= 3 && shellReads <= 6, `start, dispatch, final check, and one coalesced pass: ${shellReads} shell reads`);
@@ -435,8 +444,9 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     assert.deepEqual(status.upNext.tickets.map((t: any) => [t.key, t.model]), [['FIX-1', null]], 'up next lists the remaining ready ticket; no automatic model takes it');
     assert.ok(status.streams.every((s: any) => s.quota || s.quotaError), 'every provider shows an allowance or why not');
     // A ticket appearing in Kaneo is noticed by the poll and reaches the queue without a timer or a T3 event.
+    await internal.checkKaneo();
     tasks.push({ id: 'task-3', projectId: 'FIX', title: 'New work', number: 3, status: 'to-do', priority: 'urgent', createdAt: '2026-01-02T00:00:00Z', labels: [{ name: 'sf' }, { name: 'low' }] });
-    await new Promise(resolve => setTimeout(resolve, 600));
+    await queueUpdated.promise;
     const later = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
     assert.deepEqual(later.upNext.tickets.map((t: any) => t.key), ['FIX-3', 'FIX-1']);
   } finally {
