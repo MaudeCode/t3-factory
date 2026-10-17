@@ -46,12 +46,13 @@ export function Confirmation() {
 
 export function Toast({ notice, onDone, ttl = 4000 }) {
   useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(onDone, notice.error ? ttl * 2 : ttl);
+    if (!notice || notice.error) return;
+    const t = setTimeout(onDone, ttl);
     return () => clearTimeout(t);
-  }, [notice]);
+  }, [notice, ttl]);
   if (!notice) return null;
-  return html`<div key=${notice.at} class=${`toast ${notice.error ? "toast-error" : ""}`} role=${notice.error ? "alert" : "status"} onClick=${onDone} title="Dismiss">
-    ${notice.text}
+  return html`<div key=${notice.at} class=${`toast ${notice.error ? "toast-error" : ""}`} role=${notice.error ? "alert" : "status"}>
+    <div class="toast-content" tabindex="0" role="region" aria-label="Notification text">${notice.text}</div>
+    <${Button} variant="ghost" class="toast-dismiss" onClick=${onDone}>Dismiss<//>
   </div>`;
 }

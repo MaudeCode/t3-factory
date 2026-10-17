@@ -762,12 +762,38 @@ dialog::backdrop {
   animation: rise 0.3s var(--ease);
 }
 .toast {
-  max-width: min(520px, calc(100% - 32px));
+  --toast-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+  --toast-gutter: calc(var(--space-4) + max(env(safe-area-inset-left), env(safe-area-inset-right)));
+  bottom: var(--toast-bottom);
+  width: max-content;
+  max-width: min(520px, calc(100% - 2 * var(--toast-gutter)));
+  max-height: calc(100dvh - var(--toast-bottom) - var(--space-4) - env(safe-area-inset-top));
+  display: flex;
+  gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
+  overflow: hidden;
   background: var(--ink);
   color: var(--bg);
   font-weight: 500;
+}
+.toast-content {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.toast-dismiss {
+  flex: none;
+  align-self: flex-start;
+  min-height: 44px;
+  min-width: 44px;
+  color: inherit;
+}
+.toast :focus-visible {
+  outline-color: currentColor;
+  outline-offset: -2px;
 }
 .toast-error {
   background: var(--danger);
@@ -783,7 +809,7 @@ dialog::backdrop {
   white-space: nowrap;
 }
 .save-bar + .toast {
-  bottom: calc(var(--space-4) + 60px + env(safe-area-inset-bottom));
+  --toast-bottom: calc(var(--space-4) + 60px + env(safe-area-inset-bottom));
 }
 @keyframes rise {
   from {
