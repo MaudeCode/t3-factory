@@ -13,7 +13,8 @@ import SwiftUI
             if calls.count == 1 { await withCheckedContinuation { held = $0 } }
             let ticket = args[args.firstIndex(of: "--ticket")! + 1]
             let reason: String
-            if args.contains("--allow-missing-ready-label") || args.contains("--chain") { reason = "dispatched" }
+            if args.contains("--chain") { reason = "plan-started" }
+            else if args.contains("--allow-missing-ready-label") { reason = "dispatched" }
             else if ticket == "APP-1" { reason = "ready-label-confirmation-required" }
             else if ticket == "APP-2" { throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Fixture refusal"]) }
             else { reason = "blocked-ticket-plan-required" }
@@ -54,6 +55,8 @@ import SwiftUI
         if let artifacts = ProcessInfo.processInfo.environment["T3_FACTORY_TEST_ARTIFACTS"] {
             FactoryRender.write(FactoryPanel(model: model, compact: false), size: NSSize(width: 780, height: 1100), to: "\(artifacts)/native-results.png")
         }
+        precondition(model.requests.count == 1, "Confirmed runs and chains must leave the visible queue")
+        precondition(model.requests.allSatisfy { $0.prompt == nil }, "Answered choices remain retired")
         model.dismissRequest(chain.id)
         await model.answer(chain, with: ["--chain", "first"])
         precondition(calls.count == 5, "A stale prompt cannot dispatch")
