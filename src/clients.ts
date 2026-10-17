@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -89,6 +90,37 @@ export class T3 {
   }
   async dispatch(command: unknown) {
     return callT3Rpc(await this.socketUrl(), { type: 'dispatch', command });
+  }
+  /** Match T3's public interruptThreadTurn: resolve fresh work, hold the queue, or end runless watches. */
+  async stop(id: string) {
+    const { projection } = z.object({ projection: z.object({
+      thread: z.object({ id: z.literal(id), activeProviderThreadId: z.string().nullable(), pullRequests: z.array(z.object({
+        host: z.string().min(1), repository: z.string().min(1), number: z.number().int().positive(), source: z.string(), watch: z.unknown().optional(),
+      }).passthrough()).default([]) }).passthrough(),
+      runs: z.array(z.object({ id: z.string().min(1), status: z.enum(['preparing', 'queued', 'starting', 'running', 'waiting', 'completed', 'interrupted', 'failed', 'cancelled', 'rolled_back']) }).passthrough()),
+      providerThreads: z.array(z.object({ id: z.string(), pendingBackgroundTasks: z.array(z.object({ taskId: z.string() }).passthrough()).nullish() }).passthrough()),
+      turnItems: z.array(z.object({ type: z.string(), status: z.string(), runId: z.string().nullish(), input: z.unknown().optional() }).passthrough()),
+    }).passthrough() }).parse(await this.request(`/api/orchestration/threads/${encodeURIComponent(id)}/bounded`));
+    const { thread, runs, providerThreads, turnItems } = projection;
+    let run = runs.findLast(r => ['preparing', 'starting', 'running', 'waiting'].includes(r.status));
+    if (!run) {
+      const latest = runs.at(-1);
+      const rolledBack = new Set(runs.filter(r => r.status === 'rolled_back').map(r => r.id));
+      // The public client excludes persistent tools, abandoned items, and inactive provider rosters.
+      const pending = providerThreads.some(p => (thread.activeProviderThreadId == null || p.id === thread.activeProviderThreadId) && p.pendingBackgroundTasks?.some(t => t.taskId.length > 0)) ||
+        turnItems.some(item => ['command_execution', 'dynamic_tool', 'subagent'].includes(item.type) && ['pending', 'running', 'waiting'].includes(item.status) &&
+          !(item.type === 'dynamic_tool' && item.input != null && typeof item.input === 'object' && !Array.isArray(item.input) && Reflect.get(item.input, 'persistent') === true) &&
+          (item.runId == null || !rolledBack.has(item.runId)));
+      if (latest && ['cancelled', 'completed', 'failed', 'interrupted', 'waiting'].includes(latest.status) && pending) run = latest;
+    }
+    if (run) {
+      await this.dispatch({ type: 'run.interrupt', commandId: randomUUID(), threadId: id, runId: run.id, holdQueue: true });
+      return;
+    }
+    for (const link of thread.pullRequests) {
+      if (link.source === 'stack-dismissed' || link.watch === undefined) continue;
+      await this.dispatch({ type: 'thread.pull-request.watch', commandId: randomUUID(), threadId: id, host: link.host, repository: link.repository, number: link.number, watching: false });
+    }
   }
   async launch(input: unknown) {
     // Thread launch prepares the worktree and runs the project setup script; plain dispatch does not.

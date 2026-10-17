@@ -69,6 +69,8 @@ The scheduler records a dispatch before submitting it to T3. Restarting reconcil
 
 Explicitly settling an inactive factory task in T3 dismisses it from the factory view and releases its ticket claim. A later launch creates a fresh task and worktree. The old worktree is preserved; open PRs, changed branches, or uncommitted changes still block duplicate work. Automatic T3 settled status alone is not a dismissal.
 
+Use Stop run in the run detail view or `t3-factory job-stop <jobId>` to request interruption. Factory resolves the current owning run from T3 and holds its queue while interrupting it, including remaining background work. If only PR watches remain, it ends those watches. A thread with no work is an accepted no-op. Success means the request was accepted; the scheduler keeps the job until a later T3 snapshot confirms its state. A rejection or lost response leaves ownership intact and reports an error. Inspect T3 before requesting Stop again after an uncertain outcome. Stop does not resume a queue, change a workspace, or grant merge authorization.
+
 Stopping the service does not stop T3 work. Preserve the ledger, reports, tasks, and worktrees when investigating an uncertain run. T3 remains the place for notifications, human questions, and manual resumption.
 
 ## Review and merge

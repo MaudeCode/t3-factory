@@ -41,9 +41,9 @@ import { execFileSync } from 'node:child_process';
 import { configSchema } from '../src/config.ts';
 import { T3, Kaneo } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
-import { v2Thread } from './v2-fixture.ts';
+import { publicStopCommand, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
-import { cycle } from '../src/scheduler.ts';
+import { cycle, stopJob } from '../src/scheduler.ts';
 
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 
@@ -140,16 +140,22 @@ test('a prioritized stop uses T3 settings changed while the active pass was bloc
   });
   const next = { ...f.c, t3: { ...f.c.t3, url: 'http://127.0.0.1:4773', credentialFile: join(f.dir, 'new-unused-credential') } };
   t.mock.method(T3.prototype, 'dispatch', async function(this: T3, command: any) {
-    assert.equal(command.type, 'thread.stop');
+    publicStopCommand.parse(command);
+    assert.equal(command.type, 'run.interrupt');
+    assert.equal(command.runId, 'fresh-run');
+    assert.equal(command.holdQueue, true);
     assert.deepEqual(this.config, next.t3, 'stop must use the current endpoint and credential path');
     events.push('stop');
   });
+  t.mock.method(T3.prototype, 'request', async () => ({ projection: { thread: { id: f.thread.id, activeProviderThreadId: null, pullRequests: [] }, runs: [{ id: 'fresh-run', status: 'waiting' }], providerThreads: [], turnItems: [] } }));
   try {
     await service.start(); await entered.promise;
     internal.store.save({ ...f.job, state: 'running', completedAt: null });
     writeFileSync(f.path, JSON.stringify(next)); service.wake('config');
     const stopping = internal.handle({ type: 'job-stop', jobId: f.job.id });
     release.resolve(); assert.equal((await stopping).code, 0); await internal.queue;
+    assert.equal(internal.store.job(f.job.id).state, 'running');
+    assert.match(internal.store.job(f.job.id).reason, /Stop requested/);
     assert.deepEqual(events, ['start', 'stop', 'config']);
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
@@ -508,4 +514,21 @@ test('manual submission checks stay FIFO and serial across a refusal and an erro
     assert.deepEqual(seen, ['FIX-1', 'FIX-2', 'FIX-3']);
     assert.equal(maximum, 1);
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('rejected or uncertain Stops preserve ownership and never record a false success or retry', async t => {
+  const f = await maintenanceFixture(t), store = new Store(f.c.stateDir), t3 = new T3(f.c.t3);
+  const job = { ...f.job, state: 'running' as const, completedAt: null };
+  t.mock.method(t3, 'request', async () => ({ projection: { thread: { id: f.thread.id, activeProviderThreadId: null, pullRequests: [] }, runs: [{ id: 'fresh-run', status: 'running' }], providerThreads: [], turnItems: [] } }));
+  try {
+    for (const error of [new Error('Connection lost; outcome unknown'), { _tag: 'StopRejected', detail: 'Public command rejected' }]) {
+      store.save(job); let attempts = 0;
+      t.mock.method(t3, 'dispatch', async (command: unknown) => { publicStopCommand.parse(command); attempts++; throw error; });
+      await assert.rejects(stopJob(f.c, store, t3, job.id), /Stop not confirmed: (Connection lost; outcome unknown|StopRejected: Public command rejected)/);
+      assert.equal(attempts, 1);
+      assert.equal(store.job(job.id)!.state, 'running');
+      assert.equal(store.job(job.id)!.reason, job.reason);
+      assert.equal(store.events().some(e => e.kind === 'job.stop'), false);
+    }
+  } finally { store.close(); rmSync(f.dir, { recursive: true, force: true }); }
 });
