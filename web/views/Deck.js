@@ -188,12 +188,12 @@ export function UpNext({ limit = 5, children }) {
               </span>
               <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(preset?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
             </a>
-            <${Button} size="sm" class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!preset || pending() || started}
+            <${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!preset || pending() || started}
               title=${!preset ? "No automatic model fits. Choose a model in Start run." : pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run or active chain." : "Override limits and start this ticket now."}
               onClick=${() => {
                 if (!preset || pending() || started) return;
                 startRun({ ticket: t.key, model: preset.id, overrideLimits: true });
-              }}>Run now<//>
+              }}><${Icon} name="play" /><//>
             </div>`;
           })
         : html`<${Empty}>Nothing is ready to start.<//>`}
