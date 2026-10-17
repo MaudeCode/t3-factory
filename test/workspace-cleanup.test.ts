@@ -11,7 +11,9 @@ import type { Config } from '../src/config.ts';
 import { T3, type Kaneo } from '../src/clients.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
-for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent'] as const) {
+const commandScenarios = ['command', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
+
+for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', ...commandScenarios] as const) {
   test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -28,6 +30,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
     const c = { monitoringTimeoutMinutes: 30, projects: [project] } as Config;
     const job: Job = { id: 'job', kind: scenario === 'discovery' ? 'discovery' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Verified complete', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: scenario.startsWith('no-pr') ? [] : ['https://github.com/fixture/repo/pull/1'], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, latestRunCompletedAt: job.createdAt, status: 'completed', activeRunId: null });
+    const isCommand = scenario.startsWith('command');
     let threads = [thread], attempts = 0, detachAttempts = 0, shellReads = 0;
     const commands: any[] = [], closes: any[] = [];
     let terminalReads = 0, terminalProcess: ReturnType<typeof spawn> | undefined;
@@ -37,7 +40,24 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       'busy-terminal': [terminal('thread', 'running', true)], 'starting-terminal': [terminal('thread', 'starting', false)],
       'other-thread-terminal': [terminal('another-thread', 'running', false)], 'dry-run': [terminal('thread', 'running', false)],
     } as Record<string, unknown[]>)[scenario] ?? [];
-    const t3 = { stop: T3.prototype.stop, request: async (path: string) => ({ projection: v2Projection(threads.find(t => path.includes(`/threads/${t.id}/`))!) }), shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.pull-request.watch') { publicStopCommand.parse(command); threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
+    const t3 = { stop: T3.prototype.stop, request: async (path: string) => {
+      if (scenario === 'command-bounded-unavailable') throw new Error('Bounded state unavailable');
+      if (scenario === 'command-race-run') thread.activeRunId = 'resumed';
+      if (scenario === 'command-race-request') thread.pendingRuntimeRequest = { kind: 'dynamic_tool_call', createdAt: thread.updatedAt };
+      if (scenario === 'command-race-message') thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
+      if (scenario === 'command-race-worker') thread.pendingBackgroundTasks.push({ taskId: 'worker', kind: 'future_kind' });
+      if (scenario === 'command-race-child') threads.push(v2Thread({ id: 'child', lineage: { parentThreadId: thread.id, relationshipToParent: 'subagent' }, activeRunId: 'child-run' }));
+      if (scenario === 'command-race-shared') threads.push(v2Thread({ ...thread, id: 'foreign' }));
+      if (scenario === 'command-race-owner') { const changed = store.job(job.id)!; changed.threadId = 'foreign'; store.save(changed); }
+      if (scenario === 'command-race-binding') thread.worktreePath = repo;
+      if (scenario === 'command-race-dirty') writeFileSync(join(tree, 'new-work'), 'keep');
+      if (scenario === 'command-race-report') writeFileSync(job.reportPath, '{}');
+      return { projection: v2Projection(threads.find(t => path.includes(`/threads/${t.id}/`))!, {
+        runs: isCommand ? [{ id: 'completed-run', status: 'completed' }, ...(scenario === 'command-race-queued' ? [{ id: 'follow-up', status: 'queued' }] : [])] : [],
+        providerThreads: isCommand ? [{ id: 'provider', pendingBackgroundTasks: thread.pendingBackgroundTasks }] : [],
+        messages: scenario === 'command-bounded-message' ? [{ role: 'user', createdAt: '2026-01-03T00:00:00Z' }] : [], runtimeRequests: scenario === 'command-bounded-request' ? [{ status: 'pending', resolvedAt: null }] : [], turnItems: scenario === 'command-bounded-worker' ? [{ type: 'future_kind', status: 'running' }] : [], subagents: scenario === 'command-bounded-child' ? [{ status: 'running' }] : [],
+      }) };
+    }, shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'run.interrupt') { publicStopCommand.parse(command); if (scenario === 'command-error') throw new Error('Transport outcome unknown'); if (scenario === 'command-rejected') throw { _tag: 'CommandRejected', detail: 'Request was rejected' }; return; } if (command.type === 'thread.pull-request.watch') { publicStopCommand.parse(command); threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
       attempts++; assert.equal(cwd, repo); assert.equal(path, realTree);
       if (scenario === 'retry' && attempts === 1) throw { _tag: 'GitCommandError', operation: 'removeWorktree', command: 'git worktree remove', cwd, detail: 'temporary removal failure' }; // T3's RPC error, decoded as a plain object
       if (scenario === 'retry-unusual-error' && attempts === 1) { const error = new Error(); Object.defineProperty(error, 'message', { value: undefined }); throw error; }
@@ -74,7 +94,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'grandchild-subagent') threads.push(subagent('subagent', thread.id), subagent('grandchild', 'subagent'));
       if (scenario === 'orphaned-run-subagent') threads.push(subagent('subagent', thread.id, { status: 'running', activeRunId: 'subagent-run', orphanedRun: true }));
       if (scenario === 'monitor-subagent') threads.push(subagent('subagent', thread.id, { pendingBackgroundTasks: [{ taskId: 'pr-watch', kind: 'monitor' }] }));
-      if (scenario === 'process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
+      if (scenario === 'process' || scenario === 'command-process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
       if (scenario.endsWith('-terminal')) { terminalProcess = spawn('sleep', ['60'], { cwd: tree }); await once(terminalProcess, 'spawn'); }
       // A blocked cleanup makes no T3, Kaneo, Git or process call until its retry window passes.
       const skipsUntilRetry = async () => {
@@ -84,7 +104,39 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         assert.ok(store.jobs()[0].workspaceCleanupBlockedAt, 'record when cleanup was blocked');
         const saved = store.jobs()[0]; saved.workspaceCleanupBlockedAt = new Date(Date.now() - 16 * 60_000).toISOString(); store.save(saved);
       };
+      if (isCommand) {
+        thread.pendingBackgroundTasks = [{ taskId: 'server', kind: 'command' }];
+        if (scenario === 'command-mixed-monitor') thread.pendingBackgroundTasks.push({ taskId: 'watch', kind: 'monitor' });
+        if (scenario === 'command-dismissed') { job.state = 'dismissed'; thread.settledOverride = 'settled'; }
+        if (scenario === 'command-settled-running') { job.state = 'running'; job.completedAt = null; thread.settledOverride = 'settled'; }
+        const report = { jobId: job.id, status: scenario === 'command-awaiting-report' ? 'awaiting-human' : 'complete', reason: 'Finished', prUrls: job.prUrls };
+        if (scenario !== 'command-missing-report') writeFileSync(job.reportPath, JSON.stringify(scenario === 'command-invalid-report' ? {} : report));
+      }
       store.save(job);
+      if (isCommand) {
+        const eligible = ['command', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process'].includes(scenario);
+        // Settled jobs first retain dismissal semantics, then maintenance verifies their report.
+        await runReconcile(); await runReconcile();
+        const stops = () => commands.filter(c => c.type === 'run.interrupt');
+        assert.equal(stops().length, eligible ? 1 : 0, 'stop only verified, freshly owned command-only work');
+        assert.equal(existsSync(tree), true, 'accepted Stop is not process exit confirmation');
+        store.close(); store = new Store(join(dir, 'state'));
+        const saved = store.job(job.id)!; saved.workspaceCleanupBlockedAt = undefined; store.save(saved);
+        await runReconcile();
+        assert.equal(stops().length, eligible ? 1 : 0, 'restart never repeats an unconfirmed mutation');
+        if (eligible) {
+          assert.ok(store.job(job.id)!.commandStop?.requestedAt, 'persist the request before mutation');
+          if (scenario === 'command-error' || scenario === 'command-rejected') assert.equal(store.job(job.id)!.commandStop?.status, 'uncertain');
+          if (scenario !== 'command-pending') {
+            thread.pendingBackgroundTasks = [];
+            const retry = store.job(job.id)!; retry.workspaceCleanupBlockedAt = undefined; store.save(retry);
+            await runReconcile(); await runReconcile(); await runReconcile();
+            assert.equal(store.job(job.id)!.commandStop?.status, 'confirmed');
+            assert.equal(existsSync(tree), scenario === 'command-process', 'process CWD still holds cleanup after T3 settlement');
+          }
+        } else assert.ok(store.job(job.id)!.workspaceCleanupError, 'retain a cleanup hold diagnostic');
+        return;
+      }
       await runReconcile(scenario !== 'dry-run');
       if (mode === 'deferred') { store.close(); store = new Store(join(dir, 'state')); }
       if (scenario === 'retry-detach') await skipsUntilRetry();

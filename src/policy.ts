@@ -24,9 +24,10 @@ export type Thread = z.infer<typeof threadSchema>;
 export const DEFAULT_MONITORING_TIMEOUT_MINUTES = 30;
 /** How long a thread must be unchanged before its active run is checked for stopped provider sessions. */
 export const ORPHANED_RUN_GRACE_MINUTES = 30;
+const workerTask = (task: { kind: string }) => task.kind !== 'monitor' && task.kind !== 'command';
 function background(t: Thread): 'working' | 'monitoring' | null {
   const tasks = t.pendingBackgroundTasks ?? [];
-  return tasks.some(task => task.kind !== 'monitor') ? 'working' : tasks.length ? 'monitoring' : null;
+  return tasks.some(workerTask) ? 'working' : tasks.some(task => task.kind === 'monitor') ? 'monitoring' : null;
 }
 export function humanRequest(kind: string): boolean { return !['dynamic_tool_call', 'auth_refresh'].includes(kind); }
 function awaitingInput(t: Thread): boolean { return t.pendingRuntimeRequest != null && humanRequest(t.pendingRuntimeRequest.kind); }
@@ -35,17 +36,20 @@ function active(t: Thread): boolean {
   return t.pendingRuntimeRequest != null || t.activeRunId != null || t.status === 'waiting' || (activeStatuses as readonly string[]).includes(t.status);
 }
 export function waiting(t: Thread): boolean { return awaitingInput(t) && background(t) !== 'working'; }
-export function stalledMonitor(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES): boolean {
+function expiredMonitor(t: Thread, timeoutMinutes: number): boolean {
   if (background(t) !== 'monitoring' || active(t) || !['idle', 'completed'].includes(t.status)) return false;
   const lastActivity = Math.max(Date.parse(t.updatedAt), Date.parse(t.latestRunCompletedAt ?? t.updatedAt));
   return Number.isFinite(lastActivity) && Date.now() - lastActivity >= timeoutMinutes * 60_000;
+}
+export function stalledMonitor(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES): boolean {
+  return !t.pendingBackgroundTasks.some(task => task.kind === 'command') && expiredMonitor(t, timeoutMinutes);
 }
 export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, includeMonitoring = true): boolean {
   if (background(t) === 'working') return true;
   if (waiting(t) || t.orphanedRun) return false;
   if (active(t)) return true;
   if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
-  return includeMonitoring && background(t) === 'monitoring' && !stalledMonitor(t, timeoutMinutes);
+  return includeMonitoring && background(t) === 'monitoring' && !expiredMonitor(t, timeoutMinutes);
 }
 /** Threads reachable from `rootId` through subagent lineage, transitively. Lineage cycles cannot repeat or include the root. */
 export function subagentDescendants(threads: readonly Thread[], rootId: string): Thread[] {
@@ -64,7 +68,7 @@ export function providerExecuting(t: Thread, threads: ReadonlyMap<string, Thread
   seen.add(t.id);
   if (!awaitingInput(t) && !t.orphanedRun && active(t)) return true;
   for (const task of t.pendingBackgroundTasks) {
-    if (task.kind === 'monitor' || task.kind === 'command') continue;
+    if (!workerTask(task)) continue;
     if (task.kind === 'subagent' && typeof task.childThreadId === 'string') {
       const child = threads.get(task.childThreadId);
       if (child) {

@@ -24,6 +24,8 @@ export interface Job {
   prUrls: string[]; completedAt: string | null;
   // Snapshot of the T3 thread from the last reconcile, for the web app.
   thread?: { title: string; status: string; branch: string | null; worktreePath: string | null; updatedAt: string; pending: string | null; background: string[] };
+  // A persisted request is never retried until T3 confirms its command roster is empty.
+  commandStop?: { status: 'requested' | 'uncertain' | 'confirmed'; requestedAt: string; confirmedAt?: string; error?: string };
   workspaceCleanup?: { path: string; branch: string; head: string };
   workspaceCleanedAt?: string;
   workspaceCleanupError?: string;

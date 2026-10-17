@@ -91,3 +91,23 @@ test('runtime handoffs and a waiting snapshot without a human request never jour
     }
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+for (const variant of ['report', 'missing', 'settled', 'worker', 'active', 'human'] as const) test(`command-only reconciliation: ${variant}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-command-')), store = new Store(dir);
+  const old = '2026-01-01T00:00:00Z';
+  const job: Job = { id: 'job', kind: 'discovery', projectId: 'project', taskId: null, ticketKey: null, threadId: 'owned', messageId: 'initial', state: 'running', reason: 'executing', createdAt: old, reportPath: join(dir, 'report'), prUrls: [], lastPersonalActivity: null, command: null, completedAt: null };
+  const thread = v2Thread({ id: 'owned', pendingBackgroundTasks: [{ taskId: 'server', kind: 'command' }] });
+  if (variant === 'settled') thread.settledOverride = 'settled';
+  if (variant === 'worker') thread.pendingBackgroundTasks.push({ taskId: 'worker', kind: 'future_kind' });
+  if (variant === 'active') thread.activeRunId = 'active';
+  if (variant === 'human') thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: old };
+  const c = { projects: [{ kaneoId: 'project' }], monitoringTimeoutMinutes: 30, discovery: { emptyCooldownHours: 1 } } as Config;
+  try {
+    if (variant !== 'missing') writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Finished', prUrls: [] }));
+    store.save(job);
+    await reconcile(c, store, {} as T3, {} as Kaneo, [thread], false);
+    assert.equal(store.job(job.id)!.state, ({ report: 'complete', missing: 'waiting', settled: 'dismissed', worker: 'running', active: 'running', human: 'waiting' })[variant]);
+    if (variant === 'missing') assert.match(store.job(job.id)!.reason, /without a completion report/);
+    assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, ['worker', 'active'].includes(variant) ? 1 : 0);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
