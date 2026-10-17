@@ -41,7 +41,7 @@ import { execFileSync } from 'node:child_process';
 import { configSchema } from '../src/config.ts';
 import { T3, Kaneo } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
-import { publicStopCommand, v2Thread } from './v2-fixture.ts';
+import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, stopJob } from '../src/scheduler.ts';
 
@@ -531,4 +531,48 @@ test('rejected or uncertain Stops preserve ownership and never record a false su
       assert.equal(store.events().some(e => e.kind === 'job.stop'), false);
     }
   } finally { store.close(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('command Stop is deferred behind dispatch, serialized, and confirmed after restart without resending', { timeout: 15000 }, async t => {
+  const f = await maintenanceFixture(t), tree = join(f.dir, 'tree'), branch = 'chore/FIX-1-factory';
+  const git = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim();
+  git('init', '-q', '-b', 'main'); writeFileSync(join(f.dir, 'file'), 'released'); git('add', 'file');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'released');
+  git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD')); git('worktree', 'add', '-qb', branch, tree);
+  Object.assign(f.thread, { branch, worktreePath: tree, pendingBackgroundTasks: [{ taskId: 'server', kind: 'command' }] });
+  f.job.command = { workspaceStrategy: { branch } };
+  writeFileSync(f.job.reportPath, JSON.stringify({ jobId: f.job.id, status: 'complete', reason: 'Finished', prUrls: [] }));
+  const entered = deferred(), release = deferred(); let stops = 0;
+  t.mock.method(T3.prototype, 'request', async () => ({ projection: v2Projection(f.thread, {
+    runs: [{ id: 'completed-run', status: 'completed' }], providerThreads: [{ id: 'provider', pendingBackgroundTasks: f.thread.pendingBackgroundTasks }], messages: [], runtimeRequests: [],
+  }) }));
+  t.mock.method(T3.prototype, 'dispatch', async (command: any) => {
+    if (command.type === 'run.interrupt') { publicStopCommand.parse(command); stops++; entered.resolve(); await release.promise; }
+    else if (command.type === 'thread.metadata.update') { f.thread.worktreePath = null; f.thread.branch = null; }
+    else throw new Error(command.type);
+  });
+  let service = new FactoryService(f.path), internal = service as any;
+  try {
+    await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
+    internal.store.save(f.job);
+    const dispatch = internal.handle({ type: 'dispatch', options: {} });
+    assert.equal(await Promise.race([dispatch.then(() => 'dispatch'), entered.promise.then(() => 'stop')]), 'dispatch');
+    await entered.promise;
+    assert.equal(internal.store.job(f.job.id).commandStop.status, 'requested');
+    let commandFinished = false;
+    const queued = internal.handle({ type: 'once', options: { dryRun: true } }).then(() => { commandFinished = true; });
+    assert.equal(commandFinished, false, 'maintenance retains the one service writer');
+    release.resolve(); await queued; await service.stop();
+    service = new FactoryService(f.path); internal = service as any;
+    await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
+    assert.equal(stops, 1);
+    const saved = internal.store.job(f.job.id); saved.workspaceCleanupBlockedAt = '2026-01-01T00:00:00Z'; internal.store.save(saved);
+    f.thread.pendingBackgroundTasks = [];
+    const confirmed = deferred(), original = Store.prototype.save;
+    t.mock.method(Store.prototype, 'save', function(this: Store, job: Job) {
+      const result = original.call(this, job); if (job.commandStop?.status === 'confirmed') confirmed.resolve(); return result;
+    });
+    await internal.handle({ type: 'once', options: {} }); await confirmed.promise;
+    assert.equal(stops, 1, 'restart observes settlement instead of repeating interruption');
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });

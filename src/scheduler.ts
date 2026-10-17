@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, sep } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -17,7 +17,7 @@ const exec = promisify(execFile);
 const CLEANUP_RETRY_MINUTES = 15;
 // An unrecorded or unreadable block time retries now.
 const cleanupDue = (job: Job) => !(Date.now() - Date.parse(job.workspaceCleanupBlockedAt ?? '') < CLEANUP_RETRY_MINUTES * 60_000);
-const cleanupPending = (job: Job) => (job.state === 'complete' || (job.state === 'dismissed' && !!job.completedAt) || !!job.workspaceCleanup) && !job.workspaceCleanedAt && cleanupDue(job);
+const cleanupPending = (job: Job) => (job.state === 'complete' || job.state === 'dismissed' || !!job.workspaceCleanup) && !job.workspaceCleanedAt && cleanupDue(job);
 const reportSchema = z.object({
   jobId: z.string(), status: z.enum(['complete', 'awaiting-human', 'no-work']), reason: z.string(),
   prUrls: z.array(z.url()).default([]), createdTaskIds: z.array(z.string()).default([]),
@@ -117,8 +117,34 @@ async function verifyClosedWithoutDelivery(c: Config, project: Project, kaneo: K
   if (!branch || !await branchTip(project, branch)) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
   if (!await untouchedHead(project, branch, worktree)) throw unmerged;
 }
+function readCompletionReport(job: Job) {
+  if (!existsSync(job.reportPath)) throw new Error('Turn ended without a completion report; inspect in T3');
+  const report = reportSchema.parse(JSON.parse(readFileSync(job.reportPath, 'utf8')));
+  if (report.jobId !== job.id) throw new Error('Completion report job ID mismatch');
+  return report;
+}
+async function verifyCompletionReport(c: Config, kaneo: Kaneo, job: Job, t: Thread, report: z.infer<typeof reportSchema>) {
+  const project = projectFor(c, job);
+  if (job.kind === 'ticket') {
+    if (report.status !== 'complete' && report.prUrls.length) throw new Error('Ticket cannot finish as no-work');
+    const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
+    if (!report.prUrls.length) await verifyClosedWithoutDelivery(c, project, kaneo, task, job, t);
+    else {
+      if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket not yet verified Done in Kaneo');
+      await verifyMerged(project, report.prUrls);
+    }
+  } else {
+    // An upstream review that created nothing reports no-work, so a truncated report cannot mark a release reviewed.
+    if (job.kind === 'upstream' && report.status === 'complete' && !report.createdTaskIds.length) throw new Error('Upstream review reported complete without created tickets; report no-work if none were needed');
+    for (const id of report.createdTaskIds) {
+      const task = taskSchema.parse(await kaneo.call('get_task', { taskId: id }));
+      if (task.projectId !== project.kaneoId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : 'Discovery'} report includes another project`);
+      if (job.kind === 'upstream' && Date.parse(task.createdAt) < Date.parse(job.createdAt)) throw new Error('Upstream review report lists a ticket created before the review started');
+    }
+  }
+}
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true, allowCleanup = true) {
-  for (const job of store.jobs().filter(j => j.state !== 'dismissed' || ((j.workspaceCleanup || j.completedAt) && !j.workspaceCleanedAt))) {
+  for (const job of store.jobs().filter(j => j.state !== 'dismissed' || !j.workspaceCleanedAt)) {
     const t = threads.find(t => t.id === job.threadId);
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
     if (job.state === 'dismissed') continue;
@@ -162,32 +188,13 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
     else if (executing(t, c.monitoringTimeoutMinutes)) { job.state = 'running'; job.reason = 'Claude is executing'; }
     else {
       try {
-        if (!existsSync(job.reportPath)) throw new Error('Turn ended without a completion report; inspect in T3');
-        const report = reportSchema.parse(JSON.parse(readFileSync(job.reportPath, 'utf8')));
-        if (report.jobId !== job.id) throw new Error('Completion report job ID mismatch');
+        const report = readCompletionReport(job);
         job.prUrls = report.prUrls;
         if (report.status === 'awaiting-human') { job.state = 'waiting'; job.reason = report.reason; }
         else {
-          const project = projectFor(c, job);
-          if (job.kind === 'ticket') {
-            if (report.status !== 'complete' && report.prUrls.length) throw new Error('Ticket cannot finish as no-work');
-            const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
-            if (!report.prUrls.length) await verifyClosedWithoutDelivery(c, project, kaneo, task, job, t);
-            else {
-              if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket not yet verified Done in Kaneo');
-              await verifyMerged(project, report.prUrls);
-            }
-          } else {
-            // An upstream review that created nothing reports no-work, so a truncated report cannot mark a release reviewed.
-            if (job.kind === 'upstream' && report.status === 'complete' && !report.createdTaskIds.length) throw new Error('Upstream review reported complete without created tickets; report no-work if none were needed');
-            for (const id of report.createdTaskIds) {
-              const task = taskSchema.parse(await kaneo.call('get_task', { taskId: id }));
-              if (task.projectId !== project.kaneoId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : 'Discovery'} report includes another project`);
-              if (job.kind === 'upstream' && Date.parse(task.createdAt) < Date.parse(job.createdAt)) throw new Error('Upstream review report lists a ticket created before the review started');
-            }
-            if (job.kind === 'upstream') store.set(`upstreamReviewed:${job.upstream!.repo}`, job.upstream!.candidate);
-            else if (!report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
-          }
+          await verifyCompletionReport(c, kaneo, job, t, report);
+          if (job.kind === 'upstream') store.set(`upstreamReviewed:${job.upstream!.repo}`, job.upstream!.candidate);
+          else if (job.kind === 'discovery' && !report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
           job.state = 'complete'; job.reason = report.reason; job.completedAt = new Date().toISOString();
           log('job-complete', { jobId: job.id, ticket: job.ticketKey, prUrls: job.prUrls });
         }
@@ -200,7 +207,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
 // One existing cleanup step per job per sweep. Re-read durable state after every queued command;
 // intermediate steps resume on the next pass, even after a service restart.
 export async function cleanupNextWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, visited: Set<string>): Promise<boolean> {
-  const job = store.jobs().find(job => !visited.has(job.id) && job.completedAt && cleanupPending(job));
+  const job = store.jobs().find(job => !visited.has(job.id) && cleanupPending(job));
   if (!job) return false;
   visited.add(job.id);
   await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
@@ -218,20 +225,44 @@ function assignedBranch(job: Job): string | undefined {
 function canonicalPath(path: string): string { return existsSync(path) ? realpathSync(path) : join(canonicalPath(dirname(path)), basename(path)); }
 
 async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, job: Job) {
+  const identity = (j: Job) => JSON.stringify([j.threadId, j.projectId, j.taskId, j.messageId, j.command, j.reportPath, j.state, j.createdAt]);
+  const ownership = identity(job);
+  const checkOwner = () => {
+    const current = store.job(job.id);
+    if (!current || identity(current) !== ownership) throw new Error('Factory ownership changed before command stop');
+  };
   try {
-    if (!job.completedAt) return;
-    const project = projectFor(c, job), fresh = await t3.shell(), thread = fresh.threads.find(t => t.id === job.threadId);
+    const project = projectFor(c, job), fresh = await t3.shell(), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
     if (!thread) return;
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');
+    const commands = thread.pendingBackgroundTasks.some(t => t.kind === 'command');
+    let reportText: string | undefined, reportWrittenAt = Infinity;
+    if (commands || job.commandStop || !job.completedAt) {
+      reportText = readFileSync(job.reportPath, 'utf8');
+      reportWrittenAt = statSync(job.reportPath).mtimeMs;
+      const report = readCompletionReport(job);
+      if (report.status === 'awaiting-human') throw new Error('Completion is awaiting human input');
+      await verifyCompletionReport(c, kaneo, job, thread, report);
+      if (job.kind === 'ticket') {
+        const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
+        if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
+      }
+      checkOwner();
+      job.prUrls = report.prUrls;
+      job.completedAt ??= job.dismissedAt ?? new Date().toISOString();
+      store.save(job);
+    }
     const snapshotAt = thread.updatedAt;
-    const completedAt = Date.parse(job.completedAt);
-    const busy = (t: Thread) => executing(t, c.monitoringTimeoutMinutes, false) || waiting(t) || !!t.orphanedRun || t.pendingBackgroundTasks.some(t => t.kind !== 'monitor');
-    const resumed = (t: Thread) => Date.parse(t.latestUserMessageAt ?? job.createdAt) > completedAt || Date.parse(t.latestRunCompletedAt ?? job.createdAt) > completedAt;
+    const completedAt = Date.parse(job.completedAt!);
+    const userCompletedAt = Math.min(completedAt, reportWrittenAt);
+    const busy = (t: Thread) => executing(t, c.monitoringTimeoutMinutes, false) || waiting(t) || !!t.orphanedRun || t.pendingBackgroundTasks.some(task => task.kind !== 'monitor' && !(t.id === job.threadId && task.kind === 'command'));
+    const resumed = (t: Thread) => Date.parse(t.latestUserMessageAt ?? job.createdAt) > userCompletedAt || Date.parse(t.latestRunCompletedAt ?? job.createdAt) > completedAt;
     // T3 could still recover an orphaned run, so its workspace stays until T3 ends the run.
     if (thread.orphanedRun) throw new Error('Thread has an orphaned T3 run; settle it in T3 before workspace cleanup');
     if (busy(thread)) throw new Error('Workspace still has active or pending work');
     if (resumed(thread)) throw new Error('Completed thread has resumed since completion');
     const pending = job.workspaceCleanup, workspace = pending?.path ?? thread.worktreePath;
+    if (!workspace && commands) throw new Error('Command workspace ownership cannot be verified');
     if (!workspace) { job.workspaceCleanedAt = new Date().toISOString(); store.save(job); return; }
     const path = canonicalPath(workspace);
     const assigned = assignedBranch(job);
@@ -261,6 +292,46 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (pending && pending.head !== head) throw new Error('Verified workspace head changed');
     if (existsSync(path)) {
       if (await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || (checkoutBranch !== branch && checkoutBranch !== 'HEAD')) throw new Error('Preserve dirty or changed workspace');
+    }
+    if (commands) {
+      if (job.commandStop && job.commandStop.status !== 'confirmed') throw new Error(`Command stop ${job.commandStop.status}; awaiting T3 confirmation`);
+      await t3.stop(thread.id, async raw => {
+        const bounded = z.object({
+          thread: z.object({ id: z.literal(thread.id), projectId: z.literal(thread.projectId), worktreePath: z.literal(thread.worktreePath), branch: z.literal(thread.branch) }).passthrough(),
+          runs: z.array(z.object({ status: z.string() })),
+          messages: z.array(z.object({ role: z.string(), createdAt: z.iso.datetime({ offset: true }) })),
+          runtimeRequests: z.array(z.object({ status: z.string(), resolvedAt: z.string().nullable() })),
+          turnItems: z.array(z.object({ type: z.string(), status: z.string() })),
+          providerThreads: z.array(z.object({ pendingBackgroundTasks: z.array(z.object({ kind: z.string() })).nullish() })),
+          subagents: z.array(z.object({ status: z.string() })),
+        }).parse(raw);
+        // Persisted todo lists display the plan; their item status is not background execution.
+        if (bounded.runs.some(r => !['completed', 'failed', 'interrupted', 'cancelled', 'rolled_back'].includes(r.status)) ||
+            bounded.runtimeRequests.some(r => r.status === 'pending' || (r.resolvedAt && Date.parse(r.resolvedAt) > completedAt)) ||
+            bounded.messages.some(m => m.role === 'user' && Date.parse(m.createdAt) > userCompletedAt) ||
+            bounded.turnItems.some(i => !['completed', 'failed', 'cancelled', 'interrupted'].includes(i.status) && !['command_execution', 'todo_list'].includes(i.type)) ||
+            bounded.providerThreads.some(p => p.pendingBackgroundTasks?.some(t => t.kind !== 'command')) ||
+            bounded.subagents.some(a => !['completed', 'failed', 'cancelled', 'interrupted'].includes(a.status))) throw new Error('Bounded thread has new or non-command work');
+        await verifyCompletionReport(c, kaneo, job, thread, readCompletionReport(job));
+        if (readFileSync(job.reportPath, 'utf8') !== reportText || await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch) throw new Error('Completion report or workspace changed before command stop');
+        const latest = await t3.shell(), confirmed = latest.threads.find(t => t.id === thread.id), children = subagentDescendants(latest.threads, thread.id);
+        checkOwner();
+        if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.projectId !== thread.projectId || confirmed.worktreePath !== thread.worktreePath || confirmed.branch !== thread.branch || busy(confirmed) || resumed(confirmed) || confirmed.activeRunId || confirmed.pendingRuntimeRequest || confirmed.pendingBackgroundTasks.some(t => t.kind !== 'command') || shared(latest.threads, children) || children.some(t => busy(t) || resumed(t) || t.pendingBackgroundTasks.length)) throw new Error('Thread or workspace changed before command stop');
+        job.commandStop = { status: 'requested', requestedAt: new Date().toISOString() };
+        job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
+        log('job-command-stop-requested', { jobId: job.id, threadId: thread.id });
+      });
+      const confirmation = (await t3.shell()).threads.find(t => t.id === thread.id);
+      checkOwner();
+      if (!confirmation || confirmation.pendingBackgroundTasks.length || busy(confirmation) || resumed(confirmation)) throw new Error('Command stop requested; awaiting T3 confirmation');
+      // Even immediate confirmation advances removal only on a subsequent maintenance pass.
+      job.commandStop!.status = 'confirmed'; job.commandStop!.confirmedAt = new Date().toISOString(); store.save(job);
+      return;
+    }
+    if (job.commandStop && job.commandStop.status !== 'confirmed') {
+      job.commandStop.status = 'confirmed'; job.commandStop.confirmedAt = new Date().toISOString();
+      job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
+      log('job-command-stop-confirmed', { jobId: job.id, threadId: thread.id });
     }
     const monitored = [thread, ...subagents].filter(t => t.pendingBackgroundTasks.length);
     if (monitored.length) {
@@ -296,6 +367,14 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     log('job-workspace-cleaned', { jobId: job.id, threadId: job.threadId, path });
   } catch (error) {
     const reason = safeError(error);
+    const current = store.job(job.id);
+    if (!current) { log('job-workspace-cleanup-blocked', { jobId: job.id, reason }); return; }
+    if (identity(current) !== ownership) {
+      current.workspaceCleanupError = reason; current.workspaceCleanupBlockedAt = new Date().toISOString(); store.save(current); return;
+    }
+    if (job.commandStop?.status === 'requested' && !reason.startsWith('Command stop requested;')) {
+      job.commandStop.status = 'uncertain'; job.commandStop.error = reason;
+    }
     if (job.workspaceCleanupError !== reason) log('job-workspace-cleanup-blocked', { jobId: job.id, reason });
     job.workspaceCleanupError = reason; job.workspaceCleanupBlockedAt = new Date().toISOString(); store.save(job);
   }

@@ -75,7 +75,7 @@ test('internal requests hold execution capacity; only human requests wait for a 
     }
   }
   const localCommand = v2Thread({ status: 'waiting', pendingRuntimeRequest: { kind: 'user_input', createdAt: new Date().toISOString() }, pendingBackgroundTasks: [{ taskId: 'local', kind: 'command' }] });
-  assert.equal(executing(localCommand), true);
+  assert.equal(executing(localCommand), false);
   assert.equal(providerExecuting(localCommand, new Map()), false, 'local commands never count as provider execution');
 });
 test('a pending runtime request releases the slot; a resume or background worker takes it', () => {
@@ -85,7 +85,7 @@ test('a pending runtime request releases the slot; a resume or background worker
   t.pendingRuntimeRequest = null; assert.equal(executing(t), true);
   t.pendingRuntimeRequest = request; t.status = 'completed'; t.activeRunId = null;
   t.pendingBackgroundTasks = [{ taskId: 'bash-1', kind: 'command' }];
-  assert.equal(waiting(t), false); assert.equal(executing(t), true);
+  assert.equal(waiting(t), true); assert.equal(executing(t), false);
   for (const kind of ['subagent', 'background_task', 'future_kind']) {
     assert.equal(executing(v2Thread({ pendingBackgroundTasks: [{ taskId: 'task-1', kind }] })), true, kind);
   }
@@ -116,7 +116,7 @@ test('an old passive monitor is not execution, but a live run or background work
   t.latestRunCompletedAt = old; t.status = 'running'; t.activeRunId = 'run-2';
   assert.equal(executing(t), true); assert.equal(stalledMonitor(t), false);
   t.status = 'completed'; t.activeRunId = null; t.pendingBackgroundTasks = [...monitor, { taskId: 'bash-1', kind: 'command' }];
-  assert.equal(executing(t), true); assert.equal(stalledMonitor(t), false);
+  assert.equal(executing(t), false); assert.equal(stalledMonitor(t), false, 'mixed local commands never authorize monitor timeout cancellation');
   t.status = 'interrupted'; t.pendingBackgroundTasks = monitor;
   assert.equal(executing(t), false); assert.equal(stalledMonitor(t), false, 'a stopped thread has nothing left to stop');
   t.status = 'idle'; assert.equal(stalledMonitor(t), true, 'a watch on a thread without runs can stall too');
@@ -162,4 +162,21 @@ test('branch prefixes follow the ticket kind label in conventional-commit terms'
   assert.equal(branchKind(labels('perf')), 'perf');
   assert.equal(branchKind(labels('docs')), 'docs');
   assert.equal(branchKind(labels('high', 'app')), 'chore', 'no kind label falls back to chore');
+});
+
+test('terminal command-only work releases execution while workers and handoffs stay protected', () => {
+  const command = { taskId: 'server', kind: 'command' };
+  const t = v2Thread({ pendingBackgroundTasks: [command] });
+  assert.equal(executing(t), false, 'a completed run with only a local command is not executing');
+  assert.equal(providerExecuting(t, new Map()), false);
+  for (const kind of ['subagent', 'background_task', 'future_kind']) {
+    t.pendingBackgroundTasks = [command, { taskId: 'worker', kind }];
+    assert.equal(executing(t), true, kind);
+  }
+  t.pendingBackgroundTasks = [command]; t.activeRunId = 'run';
+  assert.equal(executing(t), true);
+  t.activeRunId = null; t.pendingRuntimeRequest = { kind: 'dynamic_tool_call', createdAt: t.updatedAt };
+  assert.equal(executing(t), true);
+  t.pendingRuntimeRequest.kind = 'user_input';
+  assert.equal(waiting(t), true); assert.equal(executing(t), false);
 });

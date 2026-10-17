@@ -92,7 +92,7 @@ export class T3 {
     return callT3Rpc(await this.socketUrl(), { type: 'dispatch', command });
   }
   /** Match T3's public interruptThreadTurn: resolve fresh work, hold the queue, or end runless watches. */
-  async stop(id: string) {
+  async stop(id: string, beforeStop?: (projection: unknown) => Promise<void>) {
     const { projection } = z.object({ projection: z.object({
       thread: z.object({ id: z.literal(id), activeProviderThreadId: z.string().nullable(), pullRequests: z.array(z.object({
         host: z.string().min(1), repository: z.string().min(1), number: z.number().int().positive(), source: z.string(), watch: z.unknown().optional(),
@@ -112,6 +112,10 @@ export class T3 {
           !(item.type === 'dynamic_tool' && item.input != null && typeof item.input === 'object' && !Array.isArray(item.input) && Reflect.get(item.input, 'persistent') === true) &&
           (item.runId == null || !rolledBack.has(item.runId)));
       if (latest && ['cancelled', 'completed', 'failed', 'interrupted', 'waiting'].includes(latest.status) && pending) run = latest;
+    }
+    if (beforeStop) {
+      if (!run) throw new Error('No interruptible run owns the remaining background work');
+      await beforeStop(projection);
     }
     if (run) {
       await this.dispatch({ type: 'run.interrupt', commandId: randomUUID(), threadId: id, runId: run.id, holdQueue: true });
