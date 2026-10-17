@@ -80,21 +80,35 @@ struct FactoryPanel: View {
                 if model.selectedModelUsesCodex { Text("Codex runs ignore idle time and reserves.").font(.system(size: 11)).foregroundStyle(Theme.muted) }
                 else { Toggle("Ignore idle time and reserves", isOn: $model.overrideLimits).font(.system(size: 11)).foregroundStyle(Theme.muted) }
                 Spacer()
-                Button { Task { await model.dispatch() } } label: { Label("Start run", systemImage: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty || model.busy != nil)
+                Button { Task { await model.dispatch() } } label: { Label("Start run", systemImage: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty)
+            }
+            ForEach(model.requests) { request in
+                HStack(alignment: .top, spacing: 8) {
+                    if request.state == "running" { ProgressView().controlSize(.small) }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(request.ticket) · \(request.model) · \(request.arguments.contains("--override-limits") ? "Override limits" : "Respect limits")").font(.system(size: 11, weight: .medium))
+                        Text(request.message).font(.system(size: 11)).foregroundStyle(request.state == "error" ? Theme.danger : Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    if let prompt = request.prompt { Button("Review") { model.prompt = prompt }.buttonStyle(QuietButton()).accessibilityLabel("Review \(request.ticket)") }
+                    if !["queued", "running"].contains(request.state) {
+                        Button { model.dismissRequest(request.id) } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss \(request.ticket)")
+                    }
+                }.padding(.vertical, 4)
             }
         }
     }
 
     private var promptTitle: String {
         switch model.prompt {
-        case .blocked(let ticket, let tree, _): return "\(ticket) waits on \((tree["tickets"] as? [[String: Any]])?.count ?? 0) tickets"
-        case .readiness(let ticket, let label, _): return "Run \(ticket) without \(label)?"
+        case .blocked(_, let ticket, let tree): return "\(ticket) waits on \((tree["tickets"] as? [[String: Any]])?.count ?? 0) tickets"
+        case .readiness(_, let ticket, let label): return "Run \(ticket) without \(label)?"
         case nil: return ""
         }
     }
     @ViewBuilder private func promptActions(_ prompt: RunPrompt) -> some View {
         switch prompt {
-        case .blocked(_, let tree, _):
+        case .blocked(_, _, let tree):
             let tickets = tree["tickets"] as? [[String: Any]] ?? []
             let now = tickets.contains { ($0["blockedBy"] as? [String] ?? []).isEmpty && $0["runnable"] as? Bool == true }
             Button("Run the first blocker") { Task { await model.answer(prompt, with: ["--chain", "first"]) } }.disabled(!now)
@@ -107,7 +121,7 @@ struct FactoryPanel: View {
     }
     private func promptMessage(_ prompt: RunPrompt) -> some View {
         switch prompt {
-        case .blocked(let ticket, let tree, _):
+        case .blocked(_, let ticket, let tree):
             let tickets = tree["tickets"] as? [[String: Any]] ?? []
             let byId = Dictionary(uniqueKeysWithValues: tickets.compactMap { t in (t["id"] as? String).map { ($0, t["key"] as? String ?? "?") } })
             let lines = tickets.map { t -> String in
@@ -116,7 +130,7 @@ struct FactoryPanel: View {
                 return "\(t["key"] as? String ?? "") \(t["title"] as? String ?? "") — \(state)\(t["readyLabel"] as? Bool == false ? ", no ready label" : "")"
             }
             return Text("The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs \(ticket) last. Tickets without the ready label run anyway.\n\n" + lines.joined(separator: "\n"))
-        case .readiness(_, let label, _):
+        case .readiness(_, _, let label):
             return Text("This ticket is not marked \(label). Running it skips only that label check; dependency, difficulty, quota, and duplicate checks still apply.")
         }
     }

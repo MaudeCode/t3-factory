@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import Darwin
 
-private struct CommandResult { let text: String; let code: Int32 }
+struct CommandResult { let text: String; let code: Int32 }
 private func runCLI(_ arguments: [String], input: Data? = nil) throws -> CommandResult {
     let process = Process(), output = Pipe(), stdin = Pipe()
     process.executableURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/t3-factory")
@@ -96,11 +96,22 @@ enum Words {
 
 // What the user must answer before a manual run can go ahead.
 enum RunPrompt: Identifiable {
-    case blocked(ticket: String, tree: [String: Any], arguments: [String])
-    case readiness(ticket: String, label: String, arguments: [String])
+    case blocked(id: String, ticket: String, tree: [String: Any])
+    case readiness(id: String, ticket: String, label: String)
     var id: String {
-        switch self { case .blocked(let t, _, _): return "blocked-\(t)"; case .readiness(let t, _, _): return "readiness-\(t)" }
+        switch self { case .blocked(let id, _, _), .readiness(let id, _, _): return id }
     }
+}
+
+// A prompt is only one possible result; retain the captured command and its lifecycle in the same row.
+struct RunRequest: Identifiable {
+    let id = UUID().uuidString
+    let arguments: [String]
+    var state = "queued"
+    var message = "Queued"
+    var prompt: RunPrompt?
+    var ticket: String { arguments.firstIndex(of: "--ticket").map { arguments[$0 + 1] } ?? "Next eligible ticket" }
+    var model: String { arguments.firstIndex(of: "--model").map { arguments[$0 + 1] } ?? "auto" }
 }
 
 @MainActor final class FactoryModel: ObservableObject {
@@ -113,6 +124,8 @@ enum RunPrompt: Identifiable {
     @Published var error: String?
     @Published var notice: String?
     @Published var prompt: RunPrompt?
+    @Published var requests: [RunRequest] = []
+    private var drainingRequests = false
     @Published var ticket = ""
     @Published var selectedModel = "auto"
     @Published var overrideLimits = true
@@ -127,9 +140,12 @@ enum RunPrompt: Identifiable {
     private var watcher: DispatchSourceFileSystemObject?
     private var watchedDir = ""
     private var pendingRefresh: DispatchWorkItem?
+    private let command: (([String], Data?) async throws -> CommandResult)?
     let home = FileManager.default.homeDirectoryForCurrentUser
 
-    init() {
+    init(start: Bool = true, command: (([String], Data?) async throws -> CommandResult)? = nil) {
+        self.command = command
+        guard start else { return }
         Task { await reload(); await refreshModels() }
         refreshStatus()
         clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -254,7 +270,8 @@ enum RunPrompt: Identifiable {
         watcher = source
     }
     private func execute(_ arguments: [String], input: Data? = nil) async throws -> CommandResult {
-        try await Task.detached(priority: .userInitiated) { try runCLI(arguments, input: input) }.value
+        if let command { return try await command(arguments, input) }
+        return try await Task.detached(priority: .userInitiated) { try runCLI(arguments, input: input) }.value
     }
     func refreshModels() async {
         guard !catalogLoading else { return }
@@ -373,40 +390,70 @@ enum RunPrompt: Identifiable {
             refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
-    // A manual run. The scheduler may answer with a question (a blocked ticket, a missing ready label) instead of a result.
+    // Accept immediately, before awaiting the serialized command drain, and leave newer drafts alone.
     func dispatch() async {
-        guard busy == nil else { return }
+        guard !config.isEmpty else { return }
         var args = ["dispatch", "--model", selectedModel]
         let key = ticket.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if !key.isEmpty { args += ["--ticket", key] }
         if overrideLimits { args.append("--override-limits") }
-        await send(args)
+        requests.append(RunRequest(arguments: args))
+        ticket = ""
+        await drainRequests()
     }
-    // The answer re-sends the same request with the chosen flag; the scheduler may ask the next question (a ticket can lack its label and be blocked).
     func answer(_ prompt: RunPrompt, with extra: [String]) async {
-        guard busy == nil else { error = "Wait for the current action to finish, then choose again."; return }
-        self.prompt = nil
-        let args: [String]
-        switch prompt { case .blocked(_, _, let a), .readiness(_, _, let a): args = a + extra }
-        await send(args)
+        guard let index = requests.firstIndex(where: { $0.id == prompt.id }), requests[index].prompt != nil else { return }
+        let args = requests[index].arguments + extra
+        requests[index].prompt = nil
+        requests[index].message = "Choice submitted; a new check is queued below."
+        if self.prompt?.id == prompt.id { self.prompt = nil }
+        requests.append(RunRequest(arguments: args))
+        await drainRequests()
     }
-    private func send(_ args: [String]) async {
-        busy = "Checking the ticket and starting its T3 run"; error = nil; notice = nil; defer { busy = nil }
-        let key = (args.firstIndex(of: "--ticket").map { args[$0 + 1] }) ?? ""
+    func dismissRequest(_ id: String) {
+        requests.removeAll { $0.id == id && !["queued", "running"].contains($0.state) }
+        if prompt?.id == id { prompt = nil }
+    }
+    private func drainRequests() async {
+        guard !drainingRequests else { return }
+        drainingRequests = true
+        defer { drainingRequests = false }
+        while let index = requests.firstIndex(where: { $0.state == "queued" }) {
+            requests[index].state = "running"
+            requests[index].message = "Checking the ticket and starting its T3 run"
+            await send(requests[index])
+        }
+    }
+    private func send(_ request: RunRequest) async {
+        let args = request.arguments
+        var resultPrompt: RunPrompt?
+        let message: String
         do {
             let result = try await execute(args), object = jsonObject(result.text) ?? [:]
             switch object["reason"] as? String {
             case "dispatched":
-                notice = "Started \(object["ticket"] as? String ?? "a run") on \(object["model"] as? String ?? selectedModel)."
-                if let chain = object["chain"] as? [String: Any], let picked = chain["picked"] as? String, let target = chain["target"] as? String { notice = "Started \(picked), the first ticket in the chain to \(target)." }
-                ticket = ""
-            case "plan-started": notice = object["message"] as? String ?? "Chain started."; ticket = ""
-            case "blocked-ticket-plan-required": prompt = .blocked(ticket: object["ticket"] as? String ?? key, tree: object["tree"] as? [String: Any] ?? [:], arguments: args)
-            case "ready-label-confirmation-required": prompt = .readiness(ticket: object["ticket"] as? String ?? key, label: object["requiredLabel"] as? String ?? "ready", arguments: args)
+                if let chain = object["chain"] as? [String: Any], let picked = chain["picked"] as? String, let target = chain["target"] as? String {
+                    message = "Started \(picked), the first ticket in the chain to \(target)."
+                } else { message = "Started \(object["ticket"] as? String ?? "a run") on \(object["model"] as? String ?? request.model)." }
+            case "plan-started": message = object["message"] as? String ?? "Chain started."
+            case "blocked-ticket-plan-required":
+                message = "Choose how to run this chain."
+                resultPrompt = .blocked(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, tree: object["tree"] as? [String: Any] ?? [:])
+            case "ready-label-confirmation-required":
+                message = "Readiness confirmation required."
+                resultPrompt = .readiness(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, label: object["requiredLabel"] as? String ?? "ready")
             default: throw failure(result)
             }
-            refreshStatus()
-        } catch { self.error = error.localizedDescription; refreshStatus() }
+        } catch {
+            if let index = requests.firstIndex(where: { $0.id == request.id }) {
+                requests[index].state = "error"; requests[index].message = error.localizedDescription
+            }
+            refreshStatus(); return
+        }
+        if let index = requests.firstIndex(where: { $0.id == request.id }) {
+            requests[index].state = "done"; requests[index].message = message; requests[index].prompt = resultPrompt
+        }
+        refreshStatus()
     }
     func stop(_ job: [String: Any]) async {
         guard busy == nil, let id = job["id"] as? String else { return }; busy = "Stopping"; defer { busy = nil }

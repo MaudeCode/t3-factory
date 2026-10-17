@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+const saved = new Map<string, string>();
+Object.defineProperty(globalThis, 'localStorage', { value: {
+  getItem: (key: string) => saved.get(key) ?? null,
+  setItem: (key: string, value: string) => saved.set(key, value),
+  removeItem: (key: string) => saved.delete(key),
+}, configurable: true });
+
 // The browser store and helpers run unchanged in Node: no DOM is touched until a view renders.
 const store = await import('../web/lib/store.js');
 const { api } = await import('../web/lib/api.js');
@@ -15,6 +22,46 @@ const fixture = () => ({
     projects: [{ name: 'Fixture', kaneoId: 'p', readyStatuses: ['todo'], doneStatuses: ['done'], priorityLabels: ['security', 'compatibility'] }],
   },
   status: { jobs: [] },
+});
+
+const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+async function untilChecked(predicate: () => boolean) {
+  for (let n = 0; n < 100 && !predicate(); n++) await turn();
+  assert.ok(predicate(), 'dispatch state settled');
+}
+
+test('manual submissions queue behind a deferred check with captured inputs and keep draining after refusal', async () => {
+  store.applyState(fixture(), true);
+  const calls: any[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url !== '/api/dispatch') return Response.json(fixture());
+    const input = JSON.parse(init!.body as string);
+    const id = (init!.headers as any)['Idempotency-Key'];
+    calls.push({ id, input });
+    if (input.ticket === 'APP-1') await held;
+    return Response.json({ id, input, state: 'done', result: { data: { reason: input.ticket === 'APP-1' ? 'quota-exhausted' : 'dispatched', ticket: input.ticket } } });
+  };
+  const first = store.startRun({ ticket: 'APP-1', model: 'sol', overrideLimits: false });
+  const second = { ticket: 'APP-2', model: 'opus', overrideLimits: true };
+  store.startRun(second);
+  store.startRun({ ticket: 'APP-3', model: 'auto', overrideLimits: false });
+  second.ticket = 'APP-99'; second.model = 'changed'; second.overrideLimits = false;
+  try {
+    const rows = store.operations?.value ?? [store.operation.value];
+    assert.deepEqual(rows.map((op: any) => op.input.ticket), ['APP-1', 'APP-2', 'APP-3'], 'later submissions must be accepted while A is checking');
+    assert.deepEqual(rows.map((op: any) => op.state), ['running', 'queued', 'queued']);
+    assert.equal(calls.length, 1, 'only one check may be in flight');
+  } finally { release(); await first; }
+  await untilChecked(() => calls.length === 3 && store.operations.value.every((op: any) => op.state === 'done'));
+  assert.deepEqual(calls.map(c => c.input), [
+    { ticket: 'APP-1', model: 'sol', overrideLimits: false },
+    { ticket: 'APP-2', model: 'opus', overrideLimits: true },
+    { ticket: 'APP-3', model: 'auto', overrideLimits: false },
+  ]);
+  assert.equal(new Set(calls.map(c => c.id)).size, 3);
+  store.operations.value = [];
 });
 
 test('config edits are immutable updates that mark the save bar dirty', () => {
@@ -72,21 +119,23 @@ test('missing-label confirmation cancels safely and binds Run anyway to the orig
     return Response.json(fixture());
   };
   store.applyState(fixture(), true);
-  store.operation.value = { id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'ready-label-confirmation-required', requiredLabel: 'sf' } } };
-  store.showReadinessConfirmation();
+  store.operations.value = [{ id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'ready-label-confirmation-required', requiredLabel: 'sf' } } }];
+  store.showReadinessConfirmation('original');
   assert.equal(store.readiness.value?.label, 'sf');
   store.readiness.value = null; // Cancel
   await store.runWithoutReadyLabel();
   assert.equal(started.length, 0, 'Cancel cannot dispatch');
-  store.showReadinessConfirmation();
-  store.operation.value = { ...store.operation.value, id: 'different' };
+  store.showReadinessConfirmation('original');
+  store.operations.value = [{ ...store.operations.value[0], id: 'different' }];
   await store.runWithoutReadyLabel();
   assert.equal(started.length, 0, 'stale confirmation cannot dispatch');
-  store.operation.value = { ...store.operation.value, id: 'original' };
-  store.showReadinessConfirmation();
+  store.operations.value = [{ ...store.operations.value[0], id: 'original' }];
+  store.showReadinessConfirmation('original');
   await store.runWithoutReadyLabel();
+  await untilChecked(() => store.operations.value.at(-1).state === 'done');
   assert.deepEqual(started, [{ ticket: 'APP-1', model: 'opus', overrideLimits: true, allowMissingReadyLabel: true }]);
   assert.equal(store.readiness.value, null);
+  store.operations.value = [];
 });
 
 test('backdrop clicks close a dialog; clicks on its content do not', () => {
@@ -174,4 +223,130 @@ test('a project added from the catalogs starts with its path, prefix, and column
   assert.equal(store.config.value.projects[0].upstreams[0].name, 'T3 Code');
   store.actions.removeUpstream(0, 0);
   assert.deepEqual(store.config.value.projects[0].upstreams, []);
+});
+
+test('readiness and chain answers remain bound to older rows after later checks finish', async () => {
+  store.operations.value = []; store.readiness.value = null; store.blocked.value = null;
+  store.applyState(fixture(), true);
+  const calls: any[] = [];
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url !== '/api/dispatch') return Response.json(fixture());
+    const input = JSON.parse(init!.body as string), id = (init!.headers as any)['Idempotency-Key'];
+    calls.push(input);
+    const reason = input.allowMissingReadyLabel || input.chain ? 'dispatched' : input.ticket === 'APP-1' ? 'ready-label-confirmation-required' : input.ticket === 'APP-2' ? 'blocked-ticket-plan-required' : 'quota-exhausted';
+    return Response.json({ id, input, state: 'done', result: { data: { reason, ticket: input.ticket, requiredLabel: 'sf', tree: { tickets: [] } } } });
+  };
+  const a = store.startRun({ ticket: 'APP-1', model: 'sol', overrideLimits: false });
+  const b = store.startRun({ ticket: 'APP-2', model: 'opus', overrideLimits: true });
+  store.startRun({ ticket: 'APP-3', model: 'auto', overrideLimits: true });
+  await untilChecked(() => calls.length === 3 && store.operations.value.at(-1).state === 'done');
+  assert.equal(store.readiness.value.id, a);
+  store.readiness.value = null; // Cancel leaves the row available to review later.
+  store.showBlockedChoice(b);
+  assert.equal(store.blocked.value.id, b);
+  store.runChain('all'); store.runChain('first');
+  store.showReadinessConfirmation(a);
+  store.runWithoutReadyLabel(); store.runWithoutReadyLabel();
+  await untilChecked(() => calls.length === 5 && store.operations.value.at(-1).state === 'done');
+  assert.deepEqual(calls.slice(3), [
+    { ticket: 'APP-2', model: 'opus', overrideLimits: true, chain: 'all' },
+    { ticket: 'APP-1', model: 'sol', overrideLimits: false, allowMissingReadyLabel: true },
+  ]);
+  store.showReadinessConfirmation(a);
+  assert.equal(store.readiness.value, null, 'an answered row cannot be submitted twice');
+  store.operations.value = [];
+});
+
+test('recovery migrates one saved operation and restores queued order without resending accepted or uncertain writes', async () => {
+  store.operations.value = []; saved.clear();
+  const input = { ticket: 'APP-1', model: 'sol', overrideLimits: false };
+  saved.set('factoryOperation', JSON.stringify({ id: 'legacy', input, state: 'running' }));
+  const writes: any[] = [], reads: string[] = [];
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url === '/api/state') return Response.json(fixture());
+    if (url === '/api/dispatch') {
+      const id = (init!.headers as any)['Idempotency-Key'], input = JSON.parse(init!.body as string);
+      writes.push({ id, input });
+      return Response.json({ id, input, state: 'done', result: { data: { reason: 'dispatched' } } });
+    }
+    reads.push(url);
+    return Response.json({ id: url.split('/').at(-1), input, state: 'done', result: { data: { reason: 'dispatched' } } });
+  };
+  store.applyState(fixture(), true);
+  await store.restoreOperation();
+  assert.deepEqual(reads, ['/api/operations/legacy']);
+  assert.equal(writes.length, 0);
+  assert.equal(saved.has('factoryOperation'), false);
+  assert.equal(JSON.parse(saved.get('factoryOperations')!)[0].id, 'legacy');
+
+  saved.set('factoryOperations', JSON.stringify([
+    { id: 'uncertain', input, state: 'uncertain' },
+    { id: 'accepted', input, state: 'running' },
+    { id: 'b', input: { ...input, ticket: 'APP-2' }, state: 'queued' },
+    { id: 'c', input: { ...input, ticket: 'APP-3', model: 'auto' }, state: 'queued' },
+  ]));
+  saved.set('factoryOperation', '{corrupt legacy value');
+  // A fresh module is a fresh page. It must use only the persisted identities and captured inputs.
+  const path = '../web/lib/store.js?reloaded-queue';
+  const restored = await import(path);
+  restored.applyState(fixture(), true);
+  await restored.restoreOperation();
+  assert.deepEqual(reads, ['/api/operations/legacy', '/api/operations/accepted']);
+  assert.deepEqual(writes.map(w => [w.id, w.input.ticket]), [['b', 'APP-2'], ['c', 'APP-3']]);
+  assert.deepEqual(restored.operations.value.map((op: any) => [op.id, op.state]), [['uncertain', 'uncertain'], ['accepted', 'done'], ['b', 'done'], ['c', 'done']]);
+  store.operations.value = []; saved.clear();
+});
+
+test('lost POST responses are reconciled by ID and a missing request retries only explicitly with that ID', async () => {
+  store.operations.value = []; store.readiness.value = null; store.blocked.value = null;
+  store.applyState(fixture(), true);
+  const posts: any[] = [];
+  let first = true;
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url === '/api/state') return Response.json(fixture());
+    if (url === '/api/dispatch') {
+      const id = (init!.headers as any)['Idempotency-Key'], input = JSON.parse(init!.body as string);
+      posts.push({ id, input });
+      if (first) { first = false; throw new Error('lost response'); }
+      return Response.json({ id, input, state: 'done', result: { data: { reason: 'dispatched' } } });
+    }
+    return Response.json({ message: 'Not found' }, { status: 404 });
+  };
+  const a = store.startRun({ ticket: 'APP-1', model: 'sol', overrideLimits: true });
+  store.startRun({ ticket: 'APP-2', model: 'auto', overrideLimits: false });
+  await untilChecked(() => posts.length === 2 && store.operations.value.at(-1).state === 'done');
+  assert.equal(store.operations.value[0].state, 'uncertain');
+  assert.equal(posts.filter(p => p.id === a).length, 1, 'no automatic resend');
+  store.retryRequest(a); store.retryRequest(a);
+  await untilChecked(() => store.operations.value.at(-1).state === 'done');
+  assert.deepEqual(posts.map(p => p.input.ticket), ['APP-1', 'APP-2', 'APP-1']);
+  assert.equal(posts[2].id, a);
+  store.operations.value = []; saved.clear();
+});
+
+test('an accepted request keeps the next check queued until polling settles its own ID', async () => {
+  store.operations.value = []; store.applyState(fixture(), true);
+  const posts: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let polling = false;
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url === '/api/state') return Response.json(fixture());
+    if (url === '/api/dispatch') {
+      const input = JSON.parse(init!.body as string), id = (init!.headers as any)['Idempotency-Key'];
+      posts.push(input.ticket);
+      return Response.json({ id, input, state: input.ticket === 'APP-1' ? 'running' : 'done', result: { data: { reason: 'dispatched' } } });
+    }
+    polling = true; await held;
+    return Response.json({ id: url.split('/').at(-1), state: 'done', result: { data: { reason: 'dispatched' } } });
+  };
+  store.startRun({ ticket: 'APP-1', model: 'sol', overrideLimits: true });
+  store.startRun({ ticket: 'APP-2', model: 'auto', overrideLimits: false });
+  try {
+    await untilChecked(() => polling);
+    assert.deepEqual(posts, ['APP-1'], 'HTTP acceptance alone cannot advance the queue');
+    assert.deepEqual(store.operations.value.map((op: any) => op.state), ['running', 'queued']);
+  } finally { release(); }
+  await untilChecked(() => posts.length === 2 && store.operations.value.at(-1).state === 'done');
+  store.operations.value = []; saved.clear();
 });
