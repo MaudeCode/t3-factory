@@ -143,6 +143,24 @@ export function isBackdropClick(event, dialog) {
   return event.clientX < b.left || event.clientX > b.right || event.clientY < b.top || event.clientY > b.bottom;
 }
 
+// Fixed top-layer menu placement in the visible viewport, including a zoomed viewport's offsets.
+export function selectPosition(trigger, viewport, contentHeight) {
+  const edge = 8, gap = 4;
+  const left = (viewport.offsetLeft ?? 0) + edge, top = (viewport.offsetTop ?? 0) + edge;
+  const right = left + viewport.width - edge * 2, bottom = top + viewport.height - edge * 2;
+  const width = Math.min(trigger.width, Math.max(0, right - left));
+  const below = Math.max(0, bottom - trigger.bottom - gap), above = Math.max(0, trigger.top - gap - top);
+  const desired = Math.min(280, contentHeight);
+  const down = below >= desired || below >= above;
+  const height = Math.min(desired, down ? below : above);
+  return {
+    left: Math.max(left, Math.min(trigger.left, right - width)),
+    top: Math.max(top, Math.min(down ? trigger.bottom + gap : trigger.top - gap - height, bottom - height)),
+    width,
+    height,
+  };
+}
+
 // Guess owner/repo from a checkout path like /Users/me/git/owner/repo.
 export const repoFromPath = (path) => {
   const parts = (path || "").split("/").filter(Boolean);

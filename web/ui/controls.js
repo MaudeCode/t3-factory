@@ -1,7 +1,7 @@
 // Form controls. Inputs with a `path` bind straight to the config signal.
-import { html, useEffect, useRef, useState } from "../lib/h.js";
+import { html, useEffect, useLayoutEffect, useRef, useState, useId } from "../lib/h.js";
 import { at, set } from "../lib/store.js";
-import { coerce } from "../lib/format.js";
+import { coerce, selectPosition } from "../lib/format.js";
 
 const cls = (...parts) => parts.filter(Boolean).join(" ");
 
@@ -141,44 +141,98 @@ export function Budget({ label, remaining, reserved, note, reservePath, floorPat
 // Custom dropdown. `options` is a list of [value, name]; `onChange` receives the value.
 export function Select({ path, value, options, onChange, label, size, class: extra }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef();
+  const [active, setActive] = useState(0);
+  const ref = useRef(), menu = useRef(), button = useRef();
+  const id = useId();
   const current = path ? at(path) : value;
   const index = options.findIndex(([v]) => v === current);
+  const show = () => { setActive(Math.max(0, index)); setOpen(true); };
   const choose = (v) => {
     setOpen(false);
+    button.current.focus({ preventScroll: true });
     if (v !== current) (onChange ?? ((x) => set(path, x)))(v);
   };
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
-    const outside = (e) => !ref.current.contains(e.target) && setOpen(false);
+    const list = menu.current, trigger = button.current, wrapper = ref.current;
+    const dialog = wrapper.closest("dialog"), viewport = window.visualViewport;
+    const close = () => setOpen(false);
+    const position = () => {
+      const p = selectPosition(trigger.getBoundingClientRect(), viewport ?? { width: innerWidth, height: innerHeight }, list.scrollHeight + 2);
+      Object.assign(list.style, { left: `${p.left}px`, top: `${p.top}px`, width: `${p.width}px`, maxHeight: `${p.height}px` });
+    };
+    const outside = (e) => !wrapper.contains(e.target) && close();
+    const escape = (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      trigger.focus({ preventScroll: true });
+    };
+    list.showPopover();
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(trigger);
+    observer.observe(list);
     document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
+    document.addEventListener("focusin", outside);
+    document.addEventListener("keydown", escape, true);
+    window.addEventListener("scroll", position, true);
+    window.addEventListener("resize", position);
+    viewport?.addEventListener("resize", position);
+    viewport?.addEventListener("scroll", position);
+    dialog?.addEventListener("close", close);
+    return () => {
+      list.hidePopover();
+      observer.disconnect();
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("focusin", outside);
+      document.removeEventListener("keydown", escape, true);
+      window.removeEventListener("scroll", position, true);
+      window.removeEventListener("resize", position);
+      viewport?.removeEventListener("resize", position);
+      viewport?.removeEventListener("scroll", position);
+      dialog?.removeEventListener("close", close);
+    };
   }, [open]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const list = menu.current, item = list.children[active];
+    if (!item) return;
+    if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
+    else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight;
+  }, [open, active]);
   const onKeyDown = (e) => {
     const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
-    if (step) {
+    if (step || e.key === "Home" || e.key === "End") {
       e.preventDefault();
-      const next = options[Math.max(0, Math.min(options.length - 1, index + step))];
-      if (next) choose(next[0]);
+      setActive(e.key === "Home" ? 0 : e.key === "End" ? options.length - 1 : open ? Math.max(0, Math.min(options.length - 1, active + step)) : Math.max(0, index));
       setOpen(true);
-    } else if (e.key === "Escape") setOpen(false);
+    } else if (open && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      if (options[active]) choose(options[active][0]);
+    } else if (e.key === "Tab") setOpen(false);
   };
   return html`<div class=${cls("select", size && `select-${size}`, open && "open", extra)} ref=${ref}>
     <button
+      ref=${button}
       type="button"
+      role="combobox"
       aria-haspopup="listbox"
       aria-expanded=${open}
+      aria-controls=${open ? id : undefined}
+      aria-activedescendant=${open && options[active] ? `${id}-${active}` : undefined}
       aria-label=${`${label}: ${options[index]?.[1] ?? current ?? ""}`}
-      onClick=${() => setOpen(!open)}
+      onClick=${() => open ? setOpen(false) : show()}
       onKeyDown=${onKeyDown}
     >
       <span>${options[index]?.[1] ?? current ?? ""}</span>
     </button>
     ${open &&
-    html`<ul role="listbox" aria-label=${label}>
+    html`<ul ref=${menu} id=${id} popover="manual" role="listbox" aria-label=${label} onPointerDown=${(e) => e.preventDefault()} onClick=${(e) => e.preventDefault()}>
       ${options.map(
-        ([v, name]) =>
-          html`<li key=${v} role="option" aria-selected=${v === current} onClick=${() => choose(v)}>${name}</li>`,
+        ([v, name], i) =>
+          html`<li key=${v} id=${`${id}-${i}`} role="option" aria-selected=${v === current} data-active=${i === active} onClick=${() => choose(v)}>${name}</li>`,
       )}
     </ul>`}
   </div>`;
