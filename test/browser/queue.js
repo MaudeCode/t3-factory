@@ -60,6 +60,13 @@ async function run() {
     status.value = { ...state.status, jobs: [{ taskId: "t1", state: "running" }] };
     await pause();
     assert(button(1).disabled, "an open run disables a stale queue row");
+    status.value = { ...state.status, plans: [{ state: "active", target: { id: "t1" } }] };
+    await pause();
+    assert(button(1).disabled, "an active chain disables its target before the target has a job");
+    assert(!button(2).disabled, "an active chain leaves other tickets available");
+    status.value = { ...state.status, plans: [{ state: "cancelled", target: { id: "t1" } }] };
+    await pause();
+    assert(!button(1).disabled, "a cancelled chain does not hold its target");
     const b = button(2).getBoundingClientRect();
     assert(b.left >= 0 && b.right <= innerWidth && b.height >= 44, "action fits viewport with usable target");
     assert(document.documentElement.scrollWidth <= innerWidth, "queue has no horizontal overflow");

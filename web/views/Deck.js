@@ -175,7 +175,7 @@ export function UpNext({ limit = 5, children }) {
         ? tickets.slice(0, limit).map((t, i) => {
             const preset = presetFor(c, t);
             const pending = () => operations.value.some((op) => op.input.ticket?.trim().toUpperCase() === t.key.toUpperCase() && ["queued", "running", "uncertain"].includes(op.state));
-            const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j));
+            const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
             return html`<div class="next" key=${t.id}>
             <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
               <span class="rank">${i + 1}</span>
@@ -189,7 +189,7 @@ export function UpNext({ limit = 5, children }) {
               <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(preset?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
             </a>
             <${Button} size="sm" class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!preset || pending() || started}
-              title=${!preset ? "No automatic model fits. Choose a model in Start run." : pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run." : "Override limits and start this ticket now."}
+              title=${!preset ? "No automatic model fits. Choose a model in Start run." : pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run or active chain." : "Override limits and start this ticket now."}
               onClick=${() => {
                 if (!preset || pending() || started) return;
                 startRun({ ticket: t.key, model: preset.id, overrideLimits: true });
