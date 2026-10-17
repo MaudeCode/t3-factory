@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operation, dispatching, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -87,23 +87,21 @@ function Machine({ provider }) {
   </section>`;
 }
 
-function Operation() {
-  const op = operation.value;
-  if (!op) return null;
+function Operation({ op }) {
   const d = op.result?.data,
     running = op.state === "running";
-  const text = running
+  const text = op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
     ? "Checking the ticket and starting its T3 run"
     : d?.reason === "dispatched"
       ? `Started ${d.ticket || "ticket"} with ${d.model}.`
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
   return html`<div class=${`operation ${op.state}`} role="status">
     ${running && html`<i class="spinner"></i>`}
-    <span>${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
-    ${d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${showReadinessConfirmation}>Review and run anyway<//>`}
-    ${d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${showBlockedChoice}>Choose how to run it<//>`}
-    ${op.notReceived && html`<${Button} size="sm" onClick=${retryRequest}>Retry saved request<//>`}
-    ${!running && html`<${Button} variant="ghost" size="sm" icon aria-label="Dismiss" onClick=${actions.dismissOperation}>×<//>`}
+    <span><b class="key">${op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    ${!op.choiceHandled && d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${() => showReadinessConfirmation(op.id)}>Review and run anyway<//>`}
+    ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
+    ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
+    ${!running && op.state !== "queued" && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}
   </div>`;
 }
 
@@ -113,14 +111,13 @@ export function Composer() {
   const [override, setOverride] = useState(true);
   const submit = (e) => {
     e.preventDefault();
-    startRun({ ticket: ticket.trim(), model, overrideLimits: override });
-    setTicket("");
+    if (startRun({ ticket: ticket.trim(), model, overrideLimits: override })) setTicket("");
   };
   return html`<form class="composer" onSubmit=${submit}>
     <input class="mono" value=${ticket} onInput=${(e) => setTicket(e.target.value)} placeholder="Next eligible ticket" aria-label="Ticket key" autocapitalize="characters" spellcheck="false" />
     <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Automatic model"], ...config.value.models.map((m) => [m.id, m.name])]} />
     <${Check} label="Override limits" checked=${override} onChange=${(e) => setOverride(e.target.checked)} hint="Skips idle and reserve thresholds. Readiness, difficulty, duplicate checks, and merge rules still apply." />
-    <${Button} variant="primary" type="submit" disabled=${busy.value || dispatching.value}>Start run<//>
+    <${Button} variant="primary" type="submit">Start run<//>
   </form>`;
 }
 
@@ -266,7 +263,7 @@ export function Deck() {
         <section class="group">
           <header><h2>Start a run</h2></header>
           <${Composer} />
-          <${Operation} />
+          ${operations.value.map((op) => html`<${Operation} key=${op.id} op=${op} />`)}
         </section>
         <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
           ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}

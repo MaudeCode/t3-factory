@@ -1049,15 +1049,16 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
-  margin-top: var(--space-2);
-  border-radius: var(--radius);
-  background: var(--surface);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
   font-size: 13px;
   animation: fade-in 0.3s var(--ease);
 }
-.operation span {
-  flex: 1;
+.operation > span {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .operation .spinner {
   width: 14px;

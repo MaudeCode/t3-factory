@@ -479,3 +479,33 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('manual submission checks stay FIFO and serial across a refusal and an error', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), seen: string[] = [];
+  let active = 0, maximum = 0;
+  t.mock.method(internal, 'pass', async (options: any, reason: string) => {
+    if (reason !== 'dispatch') return { reason: 'disabled' };
+    maximum = Math.max(maximum, ++active); seen.push(options.ticket);
+    try {
+      if (options.ticket === 'FIX-1') { entered.resolve(); await release.promise; return { reason: 'quota-exhausted', ticket: options.ticket }; }
+      if (options.ticket === 'FIX-2') throw new Error('fixture failure');
+      return { reason: 'dispatched', ticket: options.ticket };
+    } finally { active--; }
+  });
+  try {
+    await service.start(); await internal.queue;
+    const a = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
+    await entered.promise;
+    const b = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-2' } });
+    const bFailed = assert.rejects(b, /fixture failure/);
+    const c = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-3' } });
+    assert.deepEqual(seen, ['FIX-1']);
+    release.resolve();
+    assert.equal((await a).data.reason, 'quota-exhausted');
+    await bFailed;
+    assert.equal((await c).data.ticket, 'FIX-3');
+    assert.deepEqual(seen, ['FIX-1', 'FIX-2', 'FIX-3']);
+    assert.equal(maximum, 1);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});

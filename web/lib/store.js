@@ -21,7 +21,7 @@ export const instanceDriver = (instanceId) => providers.value.find((p) => p.inst
 export const sources = signal(null); // T3 projects, Kaneo projects with columns, and labels; loaded on demand
 export const live = signal({ enabled: false, upstream: false, concurrency: { claude: 1, codex: 1 } });
 export const busy = signal(false);
-export const operation = signal(null);
+export const operations = signal([]);
 export const readiness = signal(null);
 export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
@@ -35,7 +35,6 @@ export const dirty = computed(
   () => !!config.value && JSON.stringify(config.value) !== JSON.stringify(base.value),
 );
 export const jobs = computed(() => status.value.jobs || []);
-export const dispatching = computed(() => operation.value?.state === "running");
 
 api.onUnauthorized = () => (authenticated.value = false);
 
@@ -184,9 +183,13 @@ export const actions = {
       await load();
       message("Stop requested. T3 confirms on the next check.");
     }),
-  dismissOperation: () => {
-    operation.value = null;
-    storage?.removeItem("factoryOperation");
+  dismissOperation: (id) => {
+    const op = operations.value.find((op) => op.id === id);
+    if (!op || ["queued", "running"].includes(op.state)) return;
+    operations.value = operations.value.filter((op) => op.id !== id);
+    if (readiness.value?.id === id) readiness.value = null;
+    if (blocked.value?.id === id) blocked.value = null;
+    saveOperations();
   },
   moveModel: (from, to) => {
     update((c) => (c.models = moveItem(c.models, from, to)));
@@ -292,87 +295,107 @@ export function setModelOption(index, id, value) {
 
 // Dispatch --------------------------------------------------------------
 const storage = globalThis.localStorage;
-const saveOperation = () => storage?.setItem("factoryOperation", JSON.stringify(operation.value));
+const saveOperations = () => storage?.setItem("factoryOperations", JSON.stringify(operations.value));
+const request = (id) => operations.value.find((op) => op.id === id);
+function updateOperation(id, patch) {
+  operations.value = operations.value.map((op) => op.id === id ? { ...op, ...patch, id, input: op.input } : op);
+  saveOperations();
+}
 export function restoreOperation() {
   try {
-    operation.value = JSON.parse(storage?.getItem("factoryOperation") ?? "null");
+    const saved = storage?.getItem("factoryOperations");
+    const legacy = saved ? null : JSON.parse(storage?.getItem("factoryOperation") ?? "null");
+    const restored = saved ? JSON.parse(saved) : legacy ? [legacy] : [];
+    if (Array.isArray(restored)) operations.value = restored;
+    saveOperations();
+    storage?.removeItem("factoryOperation");
   } catch {}
-  pollOperation();
+  return drainOperations();
 }
-async function dispatch(id, input) {
-  operation.value = await post("/api/dispatch", input, { "Idempotency-Key": id });
-  saveOperation();
-}
-export async function pollOperation() {
-  if (operation.value?.state !== "running") return;
+// One drain owns both sending and reconciliation. A running request is never re-sent on recovery.
+let draining = false;
+async function drainOperations() {
+  if (draining) return;
+  draining = true;
   try {
-    operation.value = await api("/api/operations/" + operation.value.id);
-    saveOperation();
-    if (operation.value.state !== "running") {
-      await load();
-      showReadinessConfirmation();
-      showBlockedChoice();
+    while (authenticated.value) {
+      const op = operations.value.find((op) => ["queued", "running"].includes(op.state));
+      if (!op) break;
+      if (op.state === "queued") {
+        // Persist the send intent first: an interrupted write must be reconciled, never replayed.
+        updateOperation(op.id, { state: "running", notReceived: false });
+        try {
+          updateOperation(op.id, await post("/api/dispatch", op.input, { "Idempotency-Key": op.id }));
+        } catch (error) {
+          message(error.message, true);
+        }
+      }
+      if (request(op.id)?.state === "running") await pollOperation(op.id);
+      if (request(op.id)?.state === "running") {
+        if (!authenticated.value) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+      showReadinessConfirmation(op.id);
+      showBlockedChoice(op.id);
+      void load().catch(() => {});
     }
+  } finally { draining = false; }
+}
+export async function pollOperation(id) {
+  if (request(id)?.state !== "running") return;
+  try {
+    updateOperation(id, await api("/api/operations/" + id));
   } catch (error) {
-    if (!authenticated.value) return;
     if (error.status === 404) {
-      operation.value = {
-        ...operation.value,
-        state: "uncertain",
-        notReceived: true,
-        result: {
-          data: {
-            message: "The server has no record of this request. You can retry it with the same request ID.",
-          },
-        },
-      };
-      saveOperation();
+      updateOperation(id, {
+        state: "uncertain", notReceived: true,
+        result: { data: { message: "The server has no record of this request. You can retry it with the same request ID." } },
+      });
     }
     message("Checking dispatch status: " + error.message, true);
   }
-  if (operation.value?.state === "running") setTimeout(pollOperation, 1000);
 }
-export async function startRun(input) {
-  if (busy.value || dispatching.value) return;
+export function startRun(input) {
   const id = uuid();
-  operation.value = { id, input, state: "running" };
-  saveOperation();
-  await run(() => dispatch(id, input));
-  pollOperation();
+  operations.value = [...operations.value, { id, input: clone(input), state: "queued" }];
+  saveOperations();
+  void drainOperations();
+  return id;
 }
-export const retryRequest = () =>
-  run(async () => {
-    await dispatch(operation.value.id, operation.value.input);
-    pollOperation();
-  });
-export function showReadinessConfirmation() {
-  const op = operation.value;
-  if (
-    op?.result?.data?.reason !== "ready-label-confirmation-required" ||
-    !op.input?.ticket ||
-    op.input.allowMissingReadyLabel
-  )
-    return;
+export function retryRequest(id) {
+  const op = request(id);
+  if (!op?.notReceived || op.state !== "uncertain") return;
+  operations.value = [...operations.value.filter((op) => op.id !== id), { ...op, state: "queued", notReceived: false }];
+  saveOperations();
+  void drainOperations();
+}
+export function showReadinessConfirmation(id) {
+  const op = request(id);
+  if (readiness.value || blocked.value || op?.choiceHandled || op?.result?.data?.reason !== "ready-label-confirmation-required" || !op.input?.ticket || op.input.allowMissingReadyLabel) return;
   readiness.value = { id: op.id, input: clone(op.input), label: op.result.data.requiredLabel };
 }
-export function showBlockedChoice() {
-  const op = operation.value, d = op?.result?.data;
-  if (d?.reason !== "blocked-ticket-plan-required" || !op.input?.ticket || op.input.chain) return;
+export function showBlockedChoice(id) {
+  const op = request(id), d = op?.result?.data;
+  if (readiness.value || blocked.value || op?.choiceHandled || d?.reason !== "blocked-ticket-plan-required" || !op.input?.ticket || op.input.chain) return;
   blocked.value = { id: op.id, input: clone(op.input), ticket: d.ticket, tree: d.tree, message: d.message };
 }
-// Run the first blocker that can start, or the whole chain and then the ticket.
-export async function runChain(mode) {
-  const choice = blocked.value;
-  if (!choice || choice.id !== operation.value?.id) { blocked.value = null; return; }
-  if (busy.value || dispatching.value) { message("Wait for the current action to finish, then choose again.", true); return; }
-  blocked.value = null;
-  await startRun({ ...choice.input, chain: mode });
+function answerRequest(choice, reason, extra) {
+  const op = request(choice?.id);
+  if (!op || op.choiceHandled || op.result?.data?.reason !== reason) return;
+  updateOperation(op.id, { choiceHandled: true });
+  return startRun({ ...op.input, ...extra });
 }
-export async function runWithoutReadyLabel() {
-  const confirmation = readiness.value;
+export function runChain(mode) {
+  const choice = blocked.value;
+  blocked.value = null;
+  if (!["first", "all"].includes(mode)) return;
+  return answerRequest(choice, "blocked-ticket-plan-required", { chain: mode });
+}
+export function runWithoutReadyLabel() {
+  const choice = readiness.value;
   readiness.value = null;
-  if (!confirmation || confirmation.id !== operation.value?.id) return;
-  await startRun({ ...confirmation.input, allowMissingReadyLabel: true });
+  return answerRequest(choice, "ready-label-confirmation-required", { allowMissingReadyLabel: true });
 }
 
 // Session ---------------------------------------------------------------
