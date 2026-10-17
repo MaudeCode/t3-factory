@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join, sep } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -236,10 +236,10 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (!thread) return;
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');
     const commands = thread.pendingBackgroundTasks.some(t => t.kind === 'command');
-    let reportText: string | undefined;
+    let reportText: string | undefined, reportWrittenAt = Infinity;
     if (commands || job.commandStop || !job.completedAt) {
-      if (!commands && !job.completedAt) return;
       reportText = readFileSync(job.reportPath, 'utf8');
+      reportWrittenAt = statSync(job.reportPath).mtimeMs;
       const report = readCompletionReport(job);
       if (report.status === 'awaiting-human') throw new Error('Completion is awaiting human input');
       await verifyCompletionReport(c, kaneo, job, thread, report);
@@ -254,8 +254,9 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     }
     const snapshotAt = thread.updatedAt;
     const completedAt = Date.parse(job.completedAt!);
+    const userCompletedAt = Math.min(completedAt, reportWrittenAt);
     const busy = (t: Thread) => executing(t, c.monitoringTimeoutMinutes, false) || waiting(t) || !!t.orphanedRun || t.pendingBackgroundTasks.some(task => task.kind !== 'monitor' && !(t.id === job.threadId && task.kind === 'command'));
-    const resumed = (t: Thread) => Date.parse(t.latestUserMessageAt ?? job.createdAt) > completedAt || Date.parse(t.latestRunCompletedAt ?? job.createdAt) > completedAt;
+    const resumed = (t: Thread) => Date.parse(t.latestUserMessageAt ?? job.createdAt) > userCompletedAt || Date.parse(t.latestRunCompletedAt ?? job.createdAt) > completedAt;
     // T3 could still recover an orphaned run, so its workspace stays until T3 ends the run.
     if (thread.orphanedRun) throw new Error('Thread has an orphaned T3 run; settle it in T3 before workspace cleanup');
     if (busy(thread)) throw new Error('Workspace still has active or pending work');
@@ -304,10 +305,11 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
           providerThreads: z.array(z.object({ pendingBackgroundTasks: z.array(z.object({ kind: z.string() })).nullish() })),
           subagents: z.array(z.object({ status: z.string() })),
         }).parse(raw);
+        // Persisted todo lists display the plan; their item status is not background execution.
         if (bounded.runs.some(r => !['completed', 'failed', 'interrupted', 'cancelled', 'rolled_back'].includes(r.status)) ||
             bounded.runtimeRequests.some(r => r.status === 'pending' || (r.resolvedAt && Date.parse(r.resolvedAt) > completedAt)) ||
-            bounded.messages.some(m => m.role === 'user' && Date.parse(m.createdAt) > completedAt) ||
-            bounded.turnItems.some(i => !['completed', 'failed', 'cancelled', 'interrupted'].includes(i.status) && i.type !== 'command_execution') ||
+            bounded.messages.some(m => m.role === 'user' && Date.parse(m.createdAt) > userCompletedAt) ||
+            bounded.turnItems.some(i => !['completed', 'failed', 'cancelled', 'interrupted'].includes(i.status) && !['command_execution', 'todo_list'].includes(i.type)) ||
             bounded.providerThreads.some(p => p.pendingBackgroundTasks?.some(t => t.kind !== 'command')) ||
             bounded.subagents.some(a => !['completed', 'failed', 'cancelled', 'interrupted'].includes(a.status))) throw new Error('Bounded thread has new or non-command work');
         await verifyCompletionReport(c, kaneo, job, thread, readCompletionReport(job));

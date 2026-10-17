@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, realpathSync, rmSync, utimesSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
@@ -11,9 +11,9 @@ import type { Config } from '../src/config.ts';
 import { T3, type Kaneo } from '../src/clients.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
-const commandScenarios = ['command', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
+const commandScenarios = ['command', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
 
-for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', ...commandScenarios] as const) {
+for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', ...commandScenarios] as const) {
   test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -54,8 +54,8 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'command-race-report') writeFileSync(job.reportPath, '{}');
       return { projection: v2Projection(threads.find(t => path.includes(`/threads/${t.id}/`))!, {
         runs: isCommand ? [{ id: 'completed-run', status: 'completed' }, ...(scenario === 'command-race-queued' ? [{ id: 'follow-up', status: 'queued' }] : [])] : [],
-        providerThreads: isCommand ? [{ id: 'provider', pendingBackgroundTasks: thread.pendingBackgroundTasks }] : [],
-        messages: scenario === 'command-bounded-message' ? [{ role: 'user', createdAt: '2026-01-03T00:00:00Z' }] : [], runtimeRequests: scenario === 'command-bounded-request' ? [{ status: 'pending', resolvedAt: null }] : [], turnItems: scenario === 'command-bounded-worker' ? [{ type: 'future_kind', status: 'running' }] : [], subagents: scenario === 'command-bounded-child' ? [{ status: 'running' }] : [],
+        providerThreads: isCommand ? [{ id: 'provider', pendingBackgroundTasks: scenario === 'command-todos' ? [] : thread.pendingBackgroundTasks }] : [],
+        messages: scenario === 'command-bounded-message' ? [{ role: 'user', createdAt: '2026-01-03T00:00:00Z' }] : [], runtimeRequests: scenario === 'command-bounded-request' ? [{ status: 'pending', resolvedAt: null }] : [], turnItems: scenario === 'command-bounded-worker' ? [{ type: 'future_kind', status: 'running' }] : scenario === 'command-todos' ? [{ type: 'todo_list', status: 'running' }, { type: 'command_execution', status: 'running' }, { type: 'command_execution', status: 'running' }, { type: 'todo_list', status: 'running' }] : [], subagents: scenario === 'command-bounded-child' ? [{ status: 'running' }] : [],
       }) };
     }, shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'run.interrupt') { publicStopCommand.parse(command); if (scenario === 'command-error') throw new Error('Transport outcome unknown'); if (scenario === 'command-rejected') throw { _tag: 'CommandRejected', detail: 'Request was rejected' }; return; } if (command.type === 'thread.pull-request.watch') { publicStopCommand.parse(command); threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
       attempts++; assert.equal(cwd, repo); assert.equal(path, realTree);
@@ -72,8 +72,8 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
     let childProcess: ReturnType<typeof spawn> | undefined;
     try {
       if (scenario.startsWith('renamed')) { execFileSync('git', ['-C', tree, 'branch', '-m', mergedBranch]); if (scenario === 'renamed') thread.branch = mergedBranch; }
-      if (scenario === 'new-completion') { job.state = 'running'; job.completedAt = null; writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Merged', prUrls: job.prUrls, createdTaskIds: [] })); }
-      if (scenario === 'settled') thread.settledOverride = 'settled';
+      if (scenario === 'new-completion' || scenario === 'settled-report') { job.state = 'running'; job.completedAt = null; writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Merged', prUrls: job.prUrls, createdTaskIds: [] })); }
+      if (scenario === 'settled' || scenario === 'settled-report') thread.settledOverride = 'settled';
       if (scenario === 'monitor') thread.pendingBackgroundTasks = [{ taskId: 'pr-watch', kind: 'monitor' }];
       if (scenario.endsWith('dirty')) writeFileSync(join(tree, 'untracked'), 'keep me');
       if (scenario.endsWith('extra-commit')) { writeFileSync(join(tree, 'file'), 'new work'); execFileSync('git', ['-C', tree, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qam', 'unmerged']); }
@@ -111,10 +111,15 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         if (scenario === 'command-settled-running') { job.state = 'running'; job.completedAt = null; thread.settledOverride = 'settled'; }
         const report = { jobId: job.id, status: scenario === 'command-awaiting-report' ? 'awaiting-human' : 'complete', reason: 'Finished', prUrls: job.prUrls };
         if (scenario !== 'command-missing-report') writeFileSync(job.reportPath, JSON.stringify(scenario === 'command-invalid-report' ? {} : report));
+        if (scenario === 'command-settled-resumed') {
+          job.state = 'dismissed'; job.completedAt = null; thread.settledOverride = 'settled';
+          thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
+          utimesSync(job.reportPath, new Date('2026-01-02T00:00:00Z'), new Date('2026-01-02T00:00:00Z'));
+        }
       }
       store.save(job);
       if (isCommand) {
-        const eligible = ['command', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process'].includes(scenario);
+        const eligible = ['command', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process'].includes(scenario);
         // Settled jobs first retain dismissal semantics, then maintenance verifies their report.
         await runReconcile(); await runReconcile();
         const stops = () => commands.filter(c => c.type === 'run.interrupt');
@@ -146,9 +151,9 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'path-change-after-detach') thread.worktreePath = repo;
       await runReconcile(scenario !== 'dry-run');
       if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); if (scenario === 'retry') assert.equal(store.jobs()[0].workspaceCleanupError, 'GitCommandError: temporary removal failure'); await skipsUntilRetry(); await runReconcile(); }
-      if (scenario === 'new-completion' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await runReconcile();
+      if (scenario === 'new-completion' || scenario === 'settled-report' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await runReconcile();
       if (scenario === 'monitor-subagent') await runReconcile();
-      const removed = ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done'].includes(scenario);
+      const removed = ['clean', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done'].includes(scenario);
       if (removed) assert.deepEqual([store.jobs()[0].workspaceCleanupError, store.jobs()[0].workspaceCleanupBlockedAt], [undefined, undefined], 'cleanup completes without a recorded error');
       else if (store.jobs()[0].workspaceCleanupError) await skipsUntilRetry();
       if (scenario === 'idle-terminal') assert.deepEqual(closes, [{ threadId: 'thread', terminalId: 'setup-install-dependencies' }], 'close only the thread\'s idle live terminal, once');
@@ -159,7 +164,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'orphaned-run') assert.deepEqual([store.jobs()[0].workspaceCleanupError, commands], ['Thread has an orphaned T3 run; settle it in T3 before workspace cleanup', []], 'hold the workspace without mutating the run');
       if (scenario === 'dry-run') assert.equal(terminalReads, 0, 'dry runs send no terminal RPCs');
       assert.equal(existsSync(tree), !removed, 'remove only a verified complete, clean, unchanged and inactive worktree');
-      assert.equal(store.jobs()[0].state, scenario === 'settled' ? 'dismissed' : 'complete', 'cleanup preserves completion history and explicit settling');
+      assert.equal(store.jobs()[0].state, ['settled', 'settled-report'].includes(scenario) ? 'dismissed' : 'complete', 'cleanup preserves completion history and explicit settling');
       if (removed) {
         assert.equal(thread.worktreePath, null); assert.equal(thread.branch, null);
         assert.ok(!git('worktree', 'list', '--porcelain').includes(realTree)); assert.ok(store.jobs()[0].workspaceCleanedAt);
