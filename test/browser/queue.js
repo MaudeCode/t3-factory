@@ -33,6 +33,7 @@ async function run() {
     };
     await show(limit);
     assert(button(1), "queue row exposes Run now");
+    assert(button(1).textContent.trim() === "" && button(1).querySelector(".icon-play"), "Run now is an icon-only play button");
     assert(!button(1).closest("a"), "Run now is separate from the tracker link");
     const href = location.href;
     try {
