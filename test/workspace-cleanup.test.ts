@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import { reconcile, cleanupNextWorkspace } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
-import type { T3, Kaneo } from '../src/clients.ts';
-import { v2Thread } from './v2-fixture.ts';
+import { T3, type Kaneo } from '../src/clients.ts';
+import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
 for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent'] as const) {
   test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
@@ -37,7 +37,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       'busy-terminal': [terminal('thread', 'running', true)], 'starting-terminal': [terminal('thread', 'starting', false)],
       'other-thread-terminal': [terminal('another-thread', 'running', false)], 'dry-run': [terminal('thread', 'running', false)],
     } as Record<string, unknown[]>)[scenario] ?? [];
-    const t3 = { shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.stop') { threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
+    const t3 = { stop: T3.prototype.stop, request: async (path: string) => ({ projection: v2Projection(threads.find(t => path.includes(`/threads/${t.id}/`))!) }), shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'thread.pull-request.watch') { publicStopCommand.parse(command); threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, removeWorktree: async (cwd: string, path: string) => {
       attempts++; assert.equal(cwd, repo); assert.equal(path, realTree);
       if (scenario === 'retry' && attempts === 1) throw { _tag: 'GitCommandError', operation: 'removeWorktree', command: 'git worktree remove', cwd, detail: 'temporary removal failure' }; // T3's RPC error, decoded as a plain object
       if (scenario === 'retry-unusual-error' && attempts === 1) { const error = new Error(); Object.defineProperty(error, 'message', { value: undefined }); throw error; }
@@ -117,7 +117,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario.endsWith('subagent')) {
         const detached = commands.filter(command => command.type === 'thread.metadata.update').map(command => command.threadId);
         const owned = scenario === 'grandchild-subagent' ? ['subagent', 'grandchild'] : ['subagent'];
-        assert.deepEqual(commands.filter(command => command.type === 'thread.stop').map(command => command.threadId), scenario === 'monitor-subagent' ? ['subagent'] : [], 'stop owned subagent monitors before detaching');
+        assert.deepEqual(commands.filter(command => command.type === 'thread.pull-request.watch').map(command => command.threadId), scenario === 'monitor-subagent' ? ['subagent'] : [], 'stop owned subagent monitors before detaching');
         if (removed) {
           assert.deepEqual(detached, [...owned, 'thread'], 'detach owned subagents before the job thread');
           for (const id of owned) assert.equal(threads.find(t => t.id === id)!.worktreePath, null);

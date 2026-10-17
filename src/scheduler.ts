@@ -146,7 +146,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
       // must not wake the agent in parallel with the next autonomous job.
       const fresh = (await t3.shell()).threads.find(x => x.id === job.threadId);
       if (fresh && stalledMonitor(fresh, c.monitoringTimeoutMinutes)) {
-        await t3.dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: job.threadId, reason: 'Stalled background monitor' });
+        await t3.stop(job.threadId);
         job.state = 'running'; job.reason = 'Stopping stalled background monitor; awaiting T3 confirmation';
         if (!existsSync(job.reportPath)) {
           writeFileSync(`${job.reportPath}.tmp`, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: `Background monitor made no turn progress for ${c.monitoringTimeoutMinutes} minutes. Session stopped; inspect review results and resume this thread. Merge authorization and required human validation still apply.`, prUrls: job.prUrls, createdTaskIds: [] }) + '\n', { mode: 0o600 });
@@ -264,7 +264,7 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     }
     const monitored = [thread, ...subagents].filter(t => t.pendingBackgroundTasks.length);
     if (monitored.length) {
-      for (const t of monitored) await t3.dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: t.id, reason: 'Verified Factory completion; close passive monitors before workspace cleanup' });
+      for (const t of monitored) await t3.stop(t.id);
       return;
     }
     const boundSubagents = subagents.filter(bound);
@@ -891,7 +891,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
 export async function stopJob(c: Config, store: Store, t3: T3, jobId: string) {
   const job = store.job(jobId);
   if (!job || ['complete', 'dismissed'].includes(job.state)) throw new Error('That run is not active');
-  await t3.dispatch({ type: 'thread.stop', commandId: randomUUID(), threadId: job.threadId, reason: 'Stopped from the factory web app' });
+  try { await t3.stop(job.threadId); }
+  catch (error) { throw new Error(`Stop not confirmed: ${safeError(error)}`); }
   job.reason = 'Stop requested from the web app; waiting for T3 to confirm'; store.save(job);
   store.record('job.stop', `${jobLabel(job)} stop requested`, { ticketKey: job.ticketKey, projectId: job.projectId }, job.id);
   return { ok: true, jobId: job.id };

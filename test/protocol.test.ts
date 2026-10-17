@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { T3 } from '../src/clients.ts';
 import { executing, providerExecuting } from '../src/policy.ts';
-import { v2Shell, v2Thread } from './v2-fixture.ts';
+import { publicStopCommand, v2Shell, v2Thread } from './v2-fixture.ts';
 
 function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestInit) => Response>) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-protocol-'));
@@ -122,7 +122,7 @@ test('old internal requests undergo orphan probing without exposing human reques
   }
 });
 
-function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string }) => unknown[]) {
+function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string; payload: unknown }) => unknown[]) {
   const requests: { tag: string; payload: unknown }[] = [];
   class FixtureSocket extends EventTarget {
     readyState = 1;
@@ -167,4 +167,108 @@ test('a malformed terminal snapshot is rejected', async t => {
     const { t3 } = fixtureRpc(t, reply);
     await assert.rejects(t3.terminals(), { name: 'ZodError' });
   }
+});
+
+// Model the public RPC server: internal thread.stop and malformed public commands are rejected.
+function stopRpc(t: test.TestContext, projection: unknown, reject = false) {
+  const { t3, requests } = fixtureRpc(t, request => {
+    const parsed = publicStopCommand.safeParse(request.payload);
+    if (request.tag !== 'orchestration.dispatchCommand' || !parsed.success || reject) return [{
+      _tag: 'Exit', requestId: request.id, exit: { _tag: 'Failure', cause: [{ _tag: 'Fail', error: { _tag: 'StopRejected', message: 'Public stop rejected' } }] },
+    }];
+    return [success(request)];
+  });
+  const paths: string[] = [];
+  t.mock.method(t3, 'request', async (path: string) => { paths.push(path); return { projection }; });
+  return { t3, requests, paths };
+}
+const stopProjection = (runs: { id: string; status: string }[] = [], extra: Record<string, unknown> = {}) => ({
+  thread: { id: 'thread-1', activeProviderThreadId: null, pullRequests: [] }, runs, providerThreads: [], turnItems: [], ...extra,
+});
+const watchedLink = { host: 'github.com', repository: 'fixture/repo', number: 1, source: 'explicit', watch: {} };
+
+test('Stop resolves fresh work and emits only schema-valid public interruption commands', async t => {
+  for (const status of ['preparing', 'starting', 'running', 'waiting']) {
+    const { t3, requests, paths } = stopRpc(t, stopProjection([{ id: 'old-run', status: 'completed' }, { id: 'fresh-run', status }, { id: 'queued-run', status: 'queued' }]));
+    await t3.stop('thread-1');
+    assert.deepEqual(paths, ['/api/orchestration/threads/thread-1/bounded']);
+    assert.equal(requests().length, 1);
+    assert.deepEqual(publicStopCommand.parse(requests()[0].payload), { type: 'run.interrupt', commandId: (requests()[0].payload as any).commandId, threadId: 'thread-1', runId: 'fresh-run', holdQueue: true });
+  }
+});
+
+test('Stop interrupts settled runs with pending provider work or active background items', async t => {
+  for (const extra of [
+    { providerThreads: [{ id: 'provider-1', pendingBackgroundTasks: [{ taskId: 'worker', kind: 'background_task' }] }] },
+    ...['command_execution', 'dynamic_tool', 'subagent'].map(type => ({ turnItems: [{ id: 'item', type, status: 'running', runId: 'run-1' }] })),
+    { turnItems: [{ id: 'item', type: 'command_execution', status: 'pending', runId: null }] },
+    { turnItems: [{ id: 'item', type: 'subagent', status: 'waiting', runId: 'run-1' }] },
+  ]) {
+    const { t3, requests } = stopRpc(t, stopProjection([{ id: 'run-1', status: 'completed' }], extra));
+    await t3.stop('thread-1');
+    assert.equal((requests()[0].payload as any).runId, 'run-1');
+    assert.equal(requests().length, 1);
+  }
+});
+
+test('Stop treats queued-only, finished and excluded background work as no-ops without inventing runs', async t => {
+  for (const projection of [
+    stopProjection(), stopProjection([{ id: 'run-1', status: 'queued' }]), stopProjection([{ id: 'run-1', status: 'completed' }]),
+    stopProjection([{ id: 'run-1', status: 'rolled_back' }], { providerThreads: [{ id: 'p', pendingBackgroundTasks: [{ taskId: 'abandoned' }] }] }),
+    stopProjection([{ id: 'run-1', status: 'completed' }], { turnItems: [{ id: 'item', type: 'dynamic_tool', status: 'running', input: { persistent: true } }] }),
+    stopProjection([{ id: 'old', status: 'rolled_back' }, { id: 'new', status: 'completed' }], { turnItems: [{ id: 'item', type: 'command_execution', status: 'running', runId: 'old' }] }),
+    stopProjection([{ id: 'run-1', status: 'completed' }], { thread: { id: 'thread-1', activeProviderThreadId: 'current', pullRequests: [] }, providerThreads: [{ id: 'old', pendingBackgroundTasks: [{ taskId: 'stale' }] }] }),
+    stopProjection([{ id: 'run-1', status: 'completed' }], { turnItems: [{ id: 'item', type: 'command_execution', status: 'completed' }] }),
+  ]) {
+    const { t3, requests } = stopRpc(t, projection);
+    await t3.stop('thread-1');
+    assert.deepEqual(requests(), []);
+  }
+});
+
+test('Stop ends visible linked PR watches when no interruptible run owns background work', async t => {
+  for (const runs of [[], [{ id: 'run-1', status: 'completed' }], [{ id: 'run-1', status: 'queued' }]]) {
+    const { t3, requests } = stopRpc(t, stopProjection(runs, { thread: { id: 'thread-1', activeProviderThreadId: null, pullRequests: [watchedLink, { ...watchedLink, number: 2 }, { ...watchedLink, number: 3, watch: undefined }, { ...watchedLink, number: 4, source: 'stack-dismissed' }] } }));
+    await t3.stop('thread-1');
+    assert.deepEqual(requests().map(r => { const command = publicStopCommand.parse(r.payload); return [command.type, 'number' in command && command.number, 'watching' in command && command.watching]; }), [['thread.pull-request.watch', 1, false], ['thread.pull-request.watch', 2, false]]);
+    assert.notEqual((requests()[0].payload as any).commandId, (requests()[1].payload as any).commandId);
+  }
+});
+
+test('Stop propagates missing or incompatible projections and rejected or uncertain mutations without retry', async t => {
+  for (const projection of [null, stopProjection([], { thread: { id: 'another-thread', activeProviderThreadId: null, pullRequests: [] } }), stopProjection([], { runs: undefined })]) {
+    const { t3, requests } = stopRpc(t, projection);
+    await assert.rejects(t3.stop('thread-1'));
+    assert.deepEqual(requests(), []);
+  }
+  const publicServer = stopRpc(t, stopProjection());
+  await assert.rejects(publicServer.t3.dispatch({ type: 'thread.stop', commandId: 'invalid-internal-command', threadId: 'thread-1' }));
+  assert.equal(publicServer.requests().length, 1, 'the server rejects internal thread.stop');
+  const { t3, requests } = stopRpc(t, stopProjection([{ id: 'run-1', status: 'running' }]), true);
+  await assert.rejects(t3.stop('thread-1'));
+  assert.equal(requests().length, 1, 'a rejected public RPC is not retried');
+  let attempts = 0;
+  t.mock.method(t3, 'dispatch', async () => { attempts++; throw new Error('Connection lost; outcome unknown'); });
+  await assert.rejects(t3.stop('thread-1'), /outcome unknown/);
+  assert.equal(attempts, 1);
+});
+
+test('Stop accepts work finishing before its fresh read and surfaces a dispatch race without retargeting', async t => {
+  const { t3, requests } = stopRpc(t, stopProjection([{ id: 'run-1', status: 'completed' }]));
+  await t3.stop('thread-1'); assert.deepEqual(requests(), []);
+  t.mock.method(t3, 'request', async () => ({ projection: stopProjection([{ id: 'run-2', status: 'running' }]) }));
+  let attempts = 0;
+  t.mock.method(t3, 'dispatch', async (command: unknown) => { attempts++; assert.equal((command as any).runId, 'run-2'); throw new Error('Run finished during Stop'); });
+  await assert.rejects(t3.stop('thread-1'), /Run finished/);
+  assert.equal(attempts, 1, 'do not retry against a newer run');
+});
+
+
+test('Stop surfaces a missing thread without dispatching any mutation', async t => {
+  const { t3, requests } = fixtureT3(t, {});
+  let dispatched = false;
+  t.mock.method(t3, 'dispatch', async () => { dispatched = true; });
+  await assert.rejects(t3.stop('missing/thread'), /HTTP 404/);
+  assert.equal(dispatched, false);
+  assert.deepEqual(requests.map(r => r.path), ['/api/orchestration/threads/missing%2Fthread/bounded']);
 });

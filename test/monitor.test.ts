@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { reconcile, busyProviders } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
-import type { T3, Kaneo } from '../src/clients.ts';
-import { v2Thread } from './v2-fixture.ts';
+import { T3, type Kaneo } from '../src/clients.ts';
+import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
 test('stalled monitor is stopped and confirmed before parking; dry runs and active turns are preserved', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-monitor-')), store = new Store(dir);
@@ -16,15 +16,20 @@ test('stalled monitor is stopped and confirmed before parking; dry runs and acti
   const job: Job = { id: 'job', taskId: 'ticket', kind: 'ticket', projectId: 'project', ticketKey: 'FIX-1', threadId: 'owned-thread', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: old, reportPath, prUrls: [], lastExecutionAt: old, lastPersonalActivity: null, command: null, completedAt: null };
   const thread = v2Thread({ id: job.threadId, updatedAt: old, status: 'completed', latestRunCompletedAt: old, pendingBackgroundTasks: [{ taskId: 'pull-request-watch:1', kind: 'monitor' }] });
   const commands: unknown[] = [];
-  const t3 = { shell: async () => ({ threads: [thread] }), dispatch: async (command: unknown) => { commands.push(command); } } as unknown as T3;
+  let fresh = thread;
+  const t3 = { stop: T3.prototype.stop, request: async () => ({ projection: v2Projection(thread) }), shell: async () => ({ threads: [fresh] }), dispatch: async (command: unknown) => { publicStopCommand.parse(command); commands.push(command); } } as unknown as T3;
   const c = { monitoringTimeoutMinutes: 30 } as Config;
   try {
     store.save(job);
     await reconcile(c, store, t3, {} as Kaneo, [thread], false);
     assert.equal(commands.length, 0); assert.equal(existsSync(reportPath), false);
+    fresh = v2Thread({ ...thread, status: 'running', activeRunId: 'resumed-run' });
+    await reconcile(c, store, t3, {} as Kaneo, [thread]);
+    assert.equal(commands.length, 0, 'a fresh shell showing resumed work prevents automatic monitor stop');
+    fresh = thread;
     await reconcile(c, store, t3, {} as Kaneo, [thread]);
     assert.equal(commands.length, 1);
-    assert.equal((commands[0] as { type: string }).type, 'thread.stop');
+    assert.equal((commands[0] as { type: string }).type, 'thread.pull-request.watch');
     assert.equal((commands[0] as { threadId: string }).threadId, job.threadId);
     assert.equal(store.jobs()[0].state, 'running', 'keep the slot until T3 confirms the stop');
     thread.status = 'interrupted'; thread.pendingBackgroundTasks = [];
