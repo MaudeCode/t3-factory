@@ -1294,18 +1294,25 @@ h2 .icon,
   justify-content: flex-end;
 }
 .next {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  border-top: 1px solid var(--line);
+}
+.next-ticket {
+  flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
   gap: var(--space-3);
   align-items: center;
   padding: 8px var(--space-2);
   margin: 0 calc(var(--space-2) * -1);
-  border-top: 1px solid var(--line);
   border-radius: var(--radius);
   color: inherit;
   transition: background var(--fast);
 }
-.next:hover {
+.next-ticket:hover {
   background: var(--surface);
   text-decoration: none;
 }
@@ -1337,6 +1344,19 @@ h2 .icon,
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+}
+.next-run {
+  flex-shrink: 0;
+  min-height: 44px;
+}
+@media (max-width: 600px) {
+  .next-ticket {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+  .next-model {
+    grid-column: 2;
+    white-space: normal;
+  }
 }
 .chain-row {
   display: grid;

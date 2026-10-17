@@ -121,6 +121,10 @@ export function Composer() {
   </form>`;
 }
 
+export function Operations() {
+  return operations.value.map((op) => html`<${Operation} key=${op.id} op=${op} />`);
+}
+
 // Chains the user started: each ticket's state, and what the next one waits for.
 export function Chains() {
   clock.value;
@@ -168,8 +172,12 @@ export function UpNext({ limit = 5, children }) {
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
-        ? tickets.slice(0, limit).map(
-            (t, i) => html`<a class="next" key=${t.id} href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
+        ? tickets.slice(0, limit).map((t, i) => {
+            const preset = presetFor(c, t);
+            const pending = () => operations.value.some((op) => op.input.ticket?.trim().toUpperCase() === t.key.toUpperCase() && ["queued", "running", "uncertain"].includes(op.state));
+            const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j));
+            return html`<div class="next" key=${t.id}>
+            <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
               <span class="rank">${i + 1}</span>
               <span class="next-body">
                 <span><b class="key">${t.key}</b> ${t.title}</span>
@@ -178,9 +186,16 @@ export function UpNext({ limit = 5, children }) {
                   ${t.labelRank != null && html`<${Tag} tone="on">${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}<//>`}
                 </small>
               </span>
-              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(presetFor(c, t)?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
-            </a>`,
-          )
+              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(preset?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
+            </a>
+            <${Button} size="sm" class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!preset || pending() || started}
+              title=${!preset ? "No automatic model fits. Choose a model in Start run." : pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run." : "Override limits and start this ticket now."}
+              onClick=${() => {
+                if (!preset || pending() || started) return;
+                startRun({ ticket: t.key, model: preset.id, overrideLimits: true });
+              }}>Run now<//>
+            </div>`;
+          })
         : html`<${Empty}>Nothing is ready to start.<//>`}
     ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
@@ -263,7 +278,7 @@ export function Deck() {
         <section class="group">
           <header><h2>Start a run</h2></header>
           <${Composer} />
-          ${operations.value.map((op) => html`<${Operation} key=${op.id} op=${op} />`)}
+          <${Operations} />
         </section>
         <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
           ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}

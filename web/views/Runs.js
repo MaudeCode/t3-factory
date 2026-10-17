@@ -26,7 +26,7 @@ import {
   PENDING_KINDS,
 } from "../lib/format.js";
 import { Button, Select, Segmented, Tag, Icon, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
-import { RunList, UpNext, Chains } from "./Deck.js";
+import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
 export function Runs() {
   clock.value;
@@ -63,7 +63,7 @@ export function Runs() {
       options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", counts.running + counts.dispatching + counts.waiting], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
     ${state === "next"
-      ? html`<${Chains} /><${UpNext} limit=${Infinity} />`
+      ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} />`
       : history.value === null && !jobs.value.length
         ? html`<${Empty}>Loading runs.<//>`
         : list.length
