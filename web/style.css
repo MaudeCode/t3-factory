@@ -383,11 +383,8 @@ h2 .help {
   transform: translateY(-30%) rotate(225deg);
 }
 .select ul {
-  position: absolute;
-  z-index: 15;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 100%;
+  position: fixed;
+  inset: auto;
   margin: 0;
   padding: var(--space-1);
   list-style: none;
@@ -397,6 +394,7 @@ h2 .help {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   max-height: 280px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   animation: pop 0.16s var(--ease);
   transform-origin: top;
 }
@@ -413,7 +411,8 @@ h2 .help {
   white-space: nowrap;
   position: relative;
 }
-.select li:hover {
+.select li:hover,
+.select li[data-active="true"] {
   background: var(--surface);
 }
 .select li[aria-selected="true"] {

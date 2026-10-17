@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // The browser store and helpers run unchanged in Node: no DOM is touched until a view renders.
 const store = await import('../web/lib/store.js');
 const { api } = await import('../web/lib/api.js');
-const { coerce, isBackdropClick, moveItem, decisionSentence, until, ago } = await import('../web/lib/format.js');
+const { coerce, isBackdropClick, selectPosition, moveItem, decisionSentence, until, ago } = await import('../web/lib/format.js');
 const { confirmation, confirmAction, finishConfirmation } = await import('../web/lib/confirmation.js');
 
 const fixture = () => ({
@@ -94,6 +94,14 @@ test('backdrop clicks close a dialog; clicks on its content do not', () => {
   assert.equal(isBackdropClick({ target: dialog, clientX: 150, clientY: 150 }, dialog), false);
   assert.equal(isBackdropClick({ target: {}, clientX: 50, clientY: 50 }, dialog), false);
   assert.equal(isBackdropClick({ target: dialog, clientX: 50, clientY: 50 }, dialog), true);
+});
+
+test('Select placement uses the available viewport below or above and clamps narrow or zoomed views', () => {
+  const trigger = { left: 100, top: 100, bottom: 140, width: 240 };
+  assert.deepEqual(selectPosition(trigger, { width: 1280, height: 800 }, 500), { left: 100, top: 144, width: 240, height: 280 });
+  assert.deepEqual(selectPosition({ ...trigger, top: 740, bottom: 780 }, { width: 1280, height: 800 }, 500), { left: 100, top: 456, width: 240, height: 280 });
+  assert.deepEqual(selectPosition({ left: 300, top: 150, bottom: 190, width: 400 }, { width: 390, height: 400 }, 500), { left: 8, top: 194, width: 374, height: 198 });
+  assert.deepEqual(selectPosition(trigger, { width: 300, height: 200, offsetLeft: 50, offsetTop: 80 }, 40), { left: 100, top: 144, width: 240, height: 40 });
 });
 
 test('confirmation defers the original action, cancels safely, and accepts only once', () => {
