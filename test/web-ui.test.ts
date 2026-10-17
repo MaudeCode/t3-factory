@@ -61,6 +61,7 @@ test('manual submissions queue behind a deferred check with captured inputs and 
     { ticket: 'APP-3', model: 'auto', overrideLimits: false },
   ]);
   assert.equal(new Set(calls.map(c => c.id)).size, 3);
+  assert.deepEqual(store.operations.value.map((op: any) => op.input.ticket), ['APP-1'], 'the refusal stays visible while successful checks leave');
   store.operations.value = [];
 });
 
@@ -132,7 +133,7 @@ test('missing-label confirmation cancels safely and binds Run anyway to the orig
   store.operations.value = [{ ...store.operations.value[0], id: 'original' }];
   store.showReadinessConfirmation('original');
   await store.runWithoutReadyLabel();
-  await untilChecked(() => store.operations.value.at(-1).state === 'done');
+  await untilChecked(() => started.length === 1 && store.operations.value.length === 0);
   assert.deepEqual(started, [{ ticket: 'APP-1', model: 'opus', overrideLimits: true, allowMissingReadyLabel: true }]);
   assert.equal(store.readiness.value, null);
   store.operations.value = [];
@@ -260,6 +261,7 @@ test('readiness and chain answers remain bound to older rows after later checks 
     { ticket: 'APP-2', model: 'opus', overrideLimits: true, chain: 'all' },
     { ticket: 'APP-1', model: 'sol', overrideLimits: false, allowMissingReadyLabel: true },
   ]);
+  assert.deepEqual(store.operations.value.map((op: any) => op.input.ticket), ['APP-3'], 'answered prompts are replaced by their check, which leaves on success');
   store.showReadinessConfirmation(a);
   assert.equal(store.readiness.value, null, 'an answered row cannot be submitted twice');
   store.operations.value = [];
@@ -285,7 +287,7 @@ test('recovery migrates one saved operation and restores queued order without re
   assert.deepEqual(reads, ['/api/operations/legacy']);
   assert.equal(writes.length, 0);
   assert.equal(saved.has('factoryOperation'), false);
-  assert.equal(JSON.parse(saved.get('factoryOperations')!)[0].id, 'legacy');
+  assert.deepEqual(JSON.parse(saved.get('factoryOperations')!), []);
 
   saved.set('factoryOperations', JSON.stringify([
     { id: 'uncertain', input, state: 'uncertain' },
@@ -301,7 +303,7 @@ test('recovery migrates one saved operation and restores queued order without re
   await restored.restoreOperation();
   assert.deepEqual(reads, ['/api/operations/legacy', '/api/operations/accepted']);
   assert.deepEqual(writes.map(w => [w.id, w.input.ticket]), [['b', 'APP-2'], ['c', 'APP-3']]);
-  assert.deepEqual(restored.operations.value.map((op: any) => [op.id, op.state]), [['uncertain', 'uncertain'], ['accepted', 'done'], ['b', 'done'], ['c', 'done']]);
+  assert.deepEqual(restored.operations.value.map((op: any) => [op.id, op.state]), [['uncertain', 'uncertain']]);
   store.operations.value = []; saved.clear();
 });
 
@@ -322,11 +324,11 @@ test('lost POST responses are reconciled by ID and a missing request retries onl
   };
   const a = store.startRun({ ticket: 'APP-1', model: 'sol', overrideLimits: true });
   store.startRun({ ticket: 'APP-2', model: 'auto', overrideLimits: false });
-  await untilChecked(() => posts.length === 2 && store.operations.value.at(-1).state === 'done');
+  await untilChecked(() => posts.length === 2 && store.operations.value.every((op: any) => op.state === 'uncertain'));
   assert.equal(store.operations.value[0].state, 'uncertain');
   assert.equal(posts.filter(p => p.id === a).length, 1, 'no automatic resend');
   store.retryRequest(a); store.retryRequest(a);
-  await untilChecked(() => store.operations.value.at(-1).state === 'done');
+  await untilChecked(() => posts.length === 3 && store.operations.value.length === 0);
   assert.deepEqual(posts.map(p => p.input.ticket), ['APP-1', 'APP-2', 'APP-1']);
   assert.equal(posts[2].id, a);
   store.operations.value = []; saved.clear();
@@ -355,6 +357,39 @@ test('an accepted request keeps the next check queued until polling settles its 
     assert.deepEqual(posts, ['APP-1'], 'HTTP acceptance alone cannot advance the queue');
     assert.deepEqual(store.operations.value.map((op: any) => op.state), ['running', 'queued']);
   } finally { release(); }
-  await untilChecked(() => posts.length === 2 && store.operations.value.at(-1).state === 'done');
+  await untilChecked(() => posts.length === 2 && store.operations.value.length === 0);
+  store.operations.value = []; saved.clear();
+});
+
+
+test('confirmed launches leave the manual queue and saved successes are retired without replay', async () => {
+  store.operations.value = []; saved.clear(); store.applyState(fixture(), true);
+  let posts = 0;
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url !== '/api/dispatch') return Response.json(fixture());
+    posts++;
+    const id = (init!.headers as any)['Idempotency-Key'], input = JSON.parse(init!.body as string);
+    return Response.json({ id, input, state: 'done', result: { data: { reason: input.chain ? 'plan-started' : 'dispatched' } } });
+  };
+  const input = { ticket: 'APP-1', model: 'sol', overrideLimits: true };
+  const a = store.startRun(input);
+  const b = store.startRun({ ...input, ticket: 'APP-2', chain: 'all' });
+  await untilChecked(() => posts === 2 && store.operations.value.every((op: any) => op.state === 'done'));
+  assert.deepEqual(store.operations.value, [], 'confirmed runs and chains must leave the visible queue');
+  assert.deepEqual(JSON.parse(saved.get('factoryOperations')!), [], 'successful rows must leave persisted state');
+  assert.notEqual(a, b);
+
+  const row = (id: string, state: string, reason: string) => ({ id, input, state, result: { data: { reason } } });
+  const retained = [row('refused', 'done', 'quota-exhausted'), row('error', 'error', 'dispatched'), row('uncertain', 'uncertain', 'dispatched'), row('ready', 'done', 'ready-label-confirmation-required'), row('blocked', 'done', 'blocked-ticket-plan-required')];
+  saved.set('factoryOperations', JSON.stringify([row('started', 'done', 'dispatched'), ...retained, { ...row('answered', 'done', 'ready-label-confirmation-required'), choiceHandled: true }, row('plan', 'done', 'plan-started')]));
+  await store.restoreOperation();
+  assert.deepEqual(store.operations.value, retained, 'recovery retires only confirmed successes');
+  assert.deepEqual(JSON.parse(saved.get('factoryOperations')!), retained);
+  saved.delete('factoryOperations');
+  saved.set('factoryOperation', JSON.stringify(row('legacy', 'done', 'dispatched')));
+  await store.restoreOperation();
+  assert.deepEqual(store.operations.value, [], 'legacy successful rows must also be retired');
+  assert.equal(saved.has('factoryOperation'), false);
+  assert.equal(posts, 2, 'retired rows must never be replayed');
   store.operations.value = []; saved.clear();
 });

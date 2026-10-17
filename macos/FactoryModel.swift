@@ -404,8 +404,7 @@ struct RunRequest: Identifiable {
     func answer(_ prompt: RunPrompt, with extra: [String]) async {
         guard let index = requests.firstIndex(where: { $0.id == prompt.id }), requests[index].prompt != nil else { return }
         let args = requests[index].arguments + extra
-        requests[index].prompt = nil
-        requests[index].message = "Choice submitted; a new check is queued below."
+        requests.remove(at: index)
         if self.prompt?.id == prompt.id { self.prompt = nil }
         requests.append(RunRequest(arguments: args))
         await drainRequests()
@@ -431,11 +430,9 @@ struct RunRequest: Identifiable {
         do {
             let result = try await execute(args), object = jsonObject(result.text) ?? [:]
             switch object["reason"] as? String {
-            case "dispatched":
-                if let chain = object["chain"] as? [String: Any], let picked = chain["picked"] as? String, let target = chain["target"] as? String {
-                    message = "Started \(picked), the first ticket in the chain to \(target)."
-                } else { message = "Started \(object["ticket"] as? String ?? "a run") on \(object["model"] as? String ?? request.model)." }
-            case "plan-started": message = object["message"] as? String ?? "Chain started."
+            case "dispatched", "plan-started":
+                requests.removeAll { $0.id == request.id }
+                refreshStatus(); return
             case "blocked-ticket-plan-required":
                 message = "Choose how to run this chain."
                 resultPrompt = .blocked(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, tree: object["tree"] as? [String: Any] ?? [:])

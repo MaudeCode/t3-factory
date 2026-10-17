@@ -297,8 +297,9 @@ export function setModelOption(index, id, value) {
 const storage = globalThis.localStorage;
 const saveOperations = () => storage?.setItem("factoryOperations", JSON.stringify(operations.value));
 const request = (id) => operations.value.find((op) => op.id === id);
+const needsOperation = (op) => !op.choiceHandled && !(op.state === "done" && ["dispatched", "plan-started"].includes(op.result?.data?.reason));
 function updateOperation(id, patch) {
-  operations.value = operations.value.map((op) => op.id === id ? { ...op, ...patch, id, input: op.input } : op);
+  operations.value = operations.value.map((op) => op.id === id ? { ...op, ...patch, id, input: op.input } : op).filter(needsOperation);
   saveOperations();
 }
 export function restoreOperation() {
@@ -306,7 +307,7 @@ export function restoreOperation() {
     const saved = storage?.getItem("factoryOperations");
     const legacy = saved ? null : JSON.parse(storage?.getItem("factoryOperation") ?? "null");
     const restored = saved ? JSON.parse(saved) : legacy ? [legacy] : [];
-    if (Array.isArray(restored)) operations.value = restored;
+    if (Array.isArray(restored)) operations.value = restored.filter(needsOperation);
     saveOperations();
     storage?.removeItem("factoryOperation");
   } catch {}
