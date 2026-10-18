@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory, instanceDriver } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -15,7 +15,6 @@ import {
   providerOf,
   providerName,
   providerIcon,
-  presetFor,
   isActive,
   stateLabel,
   toneOf,
@@ -172,27 +171,24 @@ export function UpNext({ limit = 5, children }) {
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
-        ? tickets.slice(0, limit).map((t, i) => {
-            const preset = presetFor(c, t);
+        ? tickets.slice(0, limit).map((t) => {
             const pending = () => operations.value.some((op) => op.input.ticket?.trim().toUpperCase() === t.key.toUpperCase() && ["queued", "running", "uncertain"].includes(op.state));
             const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
             return html`<div class="next" key=${t.id}>
             <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
-              <span class="rank">${i + 1}</span>
               <span class="next-body">
                 <span><b class="key">${t.key}</b> ${t.title}</span>
-                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.priority} priority
+                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.priority}
                   ${t.difficulty ? html`<${Tag} title=${`${difficultyLabel(t.difficulty)} difficulty`}>${t.difficulty}<//>` : html`<${Tag} tone="attention">no difficulty<//>`}
                   ${t.labelRank != null && html`<${Tag} tone="on">${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}<//>`}
                 </small>
               </span>
-              <span class=${`next-model ${t.model ? "" : "tone-attention"}`}>${t.model ? html`<${Icon} name=${providerIcon(instanceDriver(preset?.model.instanceId))} /> ${t.model}` : "no automatic model fits"}</span>
             </a>
-            <${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!preset || pending() || started}
-              title=${!preset ? "No automatic model fits. Choose a model in Start run." : pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run or active chain." : "Override limits and start this ticket now."}
+            <${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${pending() || started}
+              title=${pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run or active chain." : "Override limits and start this ticket now."}
               onClick=${() => {
-                if (!preset || pending() || started) return;
-                startRun({ ticket: t.key, model: preset.id, overrideLimits: true });
+                if (pending() || started) return;
+                startRun({ ticket: t.key, model: "auto", overrideLimits: true });
               }}><${Icon} name="play" /><//>
             </div>`;
           })
