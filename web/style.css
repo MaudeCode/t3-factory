@@ -1230,10 +1230,6 @@ h2 .icon,
   margin-left: 4px;
   vertical-align: 1px;
 }
-.next-model .icon {
-  color: var(--muted);
-  font-size: 13px;
-}
 .run-meta .icon {
   font-size: 13px;
   color: var(--muted);
@@ -1302,10 +1298,7 @@ h2 .icon,
 .next-ticket {
   flex: 1;
   min-width: 0;
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  gap: var(--space-3);
-  align-items: center;
+  display: block;
   padding: 8px var(--space-2);
   margin: 0 calc(var(--space-2) * -1);
   border-radius: var(--radius);
@@ -1316,12 +1309,8 @@ h2 .icon,
   background: var(--surface);
   text-decoration: none;
 }
-.next .rank {
-  color: var(--muted);
-  font-size: 12px;
-  text-align: right;
-}
 .next-body {
+  display: block;
   min-width: 0;
 }
 .next-body > span {
@@ -1340,25 +1329,11 @@ h2 .icon,
   font-weight: 600;
   margin-right: 4px;
 }
-.next-model {
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-}
 .next-run {
   flex-shrink: 0;
   min-height: 44px;
   min-width: 44px;
   font-size: 18px;
-}
-@media (max-width: 600px) {
-  .next-ticket {
-    grid-template-columns: 20px minmax(0, 1fr);
-  }
-  .next-model {
-    grid-column: 2;
-    white-space: normal;
-  }
 }
 .chain-row {
   display: grid;
