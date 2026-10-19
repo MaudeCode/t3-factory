@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { reconcile, busyProviders } from '../src/scheduler.ts';
@@ -136,5 +136,35 @@ for (const variant of commandVariants) test(`command-only reconciliation: ${vari
     if (variant === 'mismatch') assert.equal(saved.reason, 'Completion report job ID mismatch');
     if (variant === 'unverified') assert.equal(saved.reason, 'Discovery report includes another project');
     assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, ['worker', 'active', 'monitor'].includes(variant) ? 1 : 0, 'local commands hold no provider slot');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const answer of ['structured-input', 'message'] as const) test(`an answered awaiting-human report does not describe a later command wait: ${answer}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-answered-')), store = new Store(dir);
+  const old = '2026-01-01T00:00:00Z', asked = new Date(Date.now() - 60_000);
+  const job: Job = { id: 'job', kind: 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'owned', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: old, reportPath: join(dir, 'report'), prUrls: [], lastPersonalActivity: null, command: null, completedAt: null };
+  const c = { projects: [{ kaneoId: 'project' }], monitoringTimeoutMinutes: 30 } as Config;
+  const t3 = { shell: async () => { throw new Error('reconcile must not read T3'); }, dispatch: async () => { throw new Error('reconcile must not stop or launch'); } } as unknown as T3;
+  const thread = v2Thread({ id: 'owned', status: 'running', activeRunId: 'run-1' });
+  const needsYou = () => store.events().filter(e => e.text === 'FIX-1 needs you').length;
+  try {
+    store.save(job);
+    writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: 'Choose a layout', prUrls: [] }));
+    utimesSync(job.reportPath, asked, asked);
+    if (answer === 'structured-input') thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: asked.toISOString() };
+    else Object.assign(thread, { status: 'completed', activeRunId: null });
+    await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    assert.deepEqual([store.job(job.id)!.state, needsYou()], ['waiting', 1], 'the open question is a human wait');
+    // The answer resumes the turn; T3 may not record a structured-input answer as a user message.
+    if (answer === 'message') thread.latestUserMessageAt = new Date().toISOString();
+    Object.assign(thread, { status: 'running', activeRunId: 'run-2', pendingRuntimeRequest: null });
+    if (answer === 'structured-input') await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    Object.assign(thread, { status: 'completed', activeRunId: null, pendingBackgroundTasks: [{ taskId: 'validation', kind: 'command' }] });
+    await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    assert.equal(needsYou(), 1, 'the answered report never journals needs you again');
+    assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason], ['running', 'Waiting for background commands']);
+    writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: 'Approve the migration', prUrls: [] }));
+    await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason, needsYou()], ['waiting', 'Approve the migration', 2], 'a new awaiting-human report is a human wait');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -12,6 +12,8 @@ export interface Job {
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
   lastPersonalActivity: string | null; reportPath: string; command: unknown;
   lastExecutionAt?: string;
+  // When reconciliation last saw the job resume from waiting; an awaiting-human report written earlier has been answered.
+  resumedAt?: string;
   automationMessageIds?: string[];
   dismissedAt?: string;
   dismissedHead?: string;
