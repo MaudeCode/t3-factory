@@ -188,6 +188,9 @@ async function runProjects() {
     assert(queueKeys() === "APP-6", "queue search matches ticket keys");
     button(6).click(); await pause();
     assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: "APP-6", model: "auto", overrideLimits: true }), "filtered Run now retains the original dispatch input");
+    search.value = "APP-4"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
+    assert(queueKeys() === "" && heldKeys() === "APP-4", "search can match only a held ticket");
+    assert(!root.textContent.includes("No tickets match."), "matching held tickets must not be described as no matches");
     search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
     byText('[role="radio"]', "Open3").click(); await pause();
     assert(root.querySelectorAll(".run").length === 1, "ordinary runs use the same metadata filters");

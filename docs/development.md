@@ -56,6 +56,8 @@ Runs has a Filter button for projects, tags, difficulty and priority. Multiple p
 
 Queue projections carry actual ticket labels, project, difficulty and effective queue priority, including held and dependency-projected tickets. New ticket jobs store labels and priority from final tracker validation. Historical jobs without these snapshots remain visible with filters cleared and do not match a selected value they lack. No tracker lookup or historical backfill is performed for filtering.
 
+When only held tickets match, the queue says no ready tickets match and still shows those held results. It reports no ticket matches only when neither list has a match.
+
 Serve the repository root and open `/test/browser/queue.html`; run `await queueTests.run()` at 1280 × 800 and 390 × 844. It mounts the real shared queue and dispatch store with synthetic data, checking compact rows, order, dispatch-time automatic model selection, request serialization, duplicate prevention, refusals, stale or missing model predictions, tracker-link separation, and viewport bounds. `await queueTests.layout()` runs the layout assertions alone.
 
 Run `await queueTests.runProjects()` in the same fixture and viewports to exercise the real Runs filter dialog, project selection, tag AND/OR, combined metadata filters, held rows, counts, live updates, search, run-tab/provider filtering, reset and filtered Run now. Use `await queueTests.showProjects()` and `await queueTests.openFilters()` for screenshots. `test/run-filters.test.ts` covers metadata projection and fresh dispatch snapshots; `test/web-ui.test.ts` covers the shared matcher and missing historical metadata.
