@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
+import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, commandWait, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { configSchema } from '../src/config.ts';
@@ -77,6 +77,26 @@ test('internal requests hold execution capacity; only human requests wait for a 
   const localCommand = v2Thread({ status: 'waiting', pendingRuntimeRequest: { kind: 'user_input', createdAt: new Date().toISOString() }, pendingBackgroundTasks: [{ taskId: 'local', kind: 'command' }] });
   assert.equal(executing(localCommand), false);
   assert.equal(providerExecuting(localCommand, new Map()), false, 'local commands never count as provider execution');
+});
+test('pending commands on a settled turn are a background wait, never a human or provider wait', () => {
+  const now = new Date().toISOString(), command = { taskId: 'validation', kind: 'command' };
+  const cases: [string, Record<string, unknown>, boolean][] = [
+    ['command only', {}, true],
+    ['expired monitor', { pendingBackgroundTasks: [command, { taskId: 'watch', kind: 'monitor' }] }, true],
+    ['no commands', { pendingBackgroundTasks: [] }, false],
+    ['human request', { pendingRuntimeRequest: { kind: 'user_input', createdAt: now } }, false],
+    ['internal handoff', { status: 'waiting', pendingRuntimeRequest: { kind: 'dynamic_tool_call', createdAt: now } }, false],
+    ['active turn', { status: 'running', activeRunId: 'run-2' }, false],
+    ['worker', { pendingBackgroundTasks: [command, { taskId: 'worker', kind: 'future_kind' }] }, false],
+    ['fresh monitor', { updatedAt: now, latestRunCompletedAt: now, pendingBackgroundTasks: [command, { taskId: 'watch', kind: 'monitor' }] }, false],
+    ['stopped run', { status: 'interrupted' }, false],
+    ['orphaned run', { status: 'queued', activeRunId: 'run-1', orphanedRun: true }, false],
+  ];
+  for (const [name, overrides, expected] of cases) {
+    const t = v2Thread({ pendingBackgroundTasks: [command], ...overrides });
+    assert.equal(commandWait(t), expected, name);
+    if (expected) assert.equal(providerExecuting(t, new Map()), false, `${name} holds no provider slot`);
+  }
 });
 test('a pending runtime request releases the slot; a resume or background worker takes it', () => {
   const request = { id: 'request-1', kind: 'user_input', createdAt: '2026-01-01T00:00:00.000Z' };

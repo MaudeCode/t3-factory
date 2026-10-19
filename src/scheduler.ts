@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
-import { executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
+import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
@@ -186,6 +186,8 @@ export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, t
     job.thread = { title: t.title, status: t.status, branch: t.branch, worktreePath: t.worktreePath, updatedAt: t.updatedAt, pending: t.pendingRuntimeRequest?.kind ?? null, background: t.pendingBackgroundTasks.map(b => b.kind) };
     if (waiting(t)) { job.state = 'waiting'; job.reason = 'T3 is awaiting human input'; }
     else if (executing(t, c.monitoringTimeoutMinutes)) { job.state = 'running'; job.reason = 'Claude is executing'; }
+    // An unfinished turn yielded to its commands; their notification resumes it. A written report is still verified below.
+    else if (commandWait(t, c.monitoringTimeoutMinutes) && !existsSync(job.reportPath)) { job.state = 'running'; job.reason = 'Waiting for background commands'; }
     else {
       try {
         const report = readCompletionReport(job);
@@ -696,6 +698,7 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
   const counts = new Map(planned);
   for (const job of jobs.filter(j => !['complete', 'dismissed'].includes(j.state))) {
     const thread = threads.find(t => t.id === job.threadId);
+    if (thread && commandWait(thread, timeout)) continue;
     if (!['running', 'dispatching'].includes(job.state) && !(thread && executing(thread, timeout))) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
