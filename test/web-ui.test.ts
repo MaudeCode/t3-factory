@@ -25,6 +25,21 @@ const fixture = () => ({
 });
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+test('run filters combine categories, support tag AND/OR, and preserve missing metadata', async () => {
+  const { matchesRunFilters } = await import('../web/lib/format.js');
+  assert.equal(typeof matchesRunFilters, 'function', 'one shared matcher owns queue and run filtering');
+  const row = { projectId: 'p', key: 'APP-1', title: 'Fix uploads', labels: ['bug', 'web'], difficulty: 'med', priority: 'high' };
+  assert.equal(matchesRunFilters(row), true);
+  assert.equal(matchesRunFilters(row, { projects: ['q', 'p'], tags: ['web', 'absent'], tagMode: 'or', difficulties: ['med'], priorities: ['high'] }, ' UPLOADS '), true);
+  assert.equal(matchesRunFilters(row, { tags: ['web', 'absent'], tagMode: 'and' }), false);
+  assert.equal(matchesRunFilters(row, { tags: ['web', 'bug'], tagMode: 'and' }), true);
+  for (const filters of [{ projects: ['q'] }, { difficulties: ['low'] }, { priorities: ['urgent'] }, { tags: ['absent'] }]) assert.equal(matchesRunFilters(row, filters), false);
+  assert.equal(matchesRunFilters(row, {}, 'app-1'), true);
+  assert.equal(matchesRunFilters(row, {}, 'other'), false);
+  assert.equal(matchesRunFilters({ label: 'APP-1' }, {}, 'app-1'), true);
+  assert.equal(matchesRunFilters({}), true);
+  for (const filters of [{ tags: ['bug'] }, { difficulties: ['med'] }, { priorities: ['high'] }]) assert.equal(matchesRunFilters({}, filters), false, 'unknown is not a known value');
+});
 test('launch links select exactly one named ticket and never submit during routing', async () => {
   const { match } = await import('../web/lib/router.js');
   assert.deepEqual(match('/start?ticket=app-123'), { page: '/start', param: 'APP-123', path: '/start' });

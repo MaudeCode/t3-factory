@@ -31,7 +31,7 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
-  const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
+  const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
   // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
   const viaService = async (args: string[], input?: unknown) => {
     const command = commandFor(args);
