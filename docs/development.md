@@ -30,6 +30,8 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | `web/`, `macos/` | Browser and native interfaces |
 | `scripts/`, `deploy/` | macOS installation and optional proxy launcher |
 
+The optional LAN DNS updater lives in `scripts/update-dns.ts`, separate from scheduler configuration and lifecycle. `test/dns.test.ts` covers changing LAN addresses, offline and mid-read transitions, policy identity, failed writes, and credential transport. Its installer reuses `scripts/launchd.ts`; see [web access](web-access.md#follow-a-macs-lan-address) for the private configuration.
+
 ### Web interface
 
 The browser app is plain ES modules served by `src/web.ts`; there is no bundler or build step. Preact, signals, and htm live in `web/vendor/` with their imports rewritten to relative paths, so the page needs no import map. The same script writes `web/vendor/icons.js` with the provider glyphs from `@lobehub/icons-static-svg` and the pull request glyph from `@primer/octicons` as path data. After changing those versions in `package.json`, run `npm run vendor:web` and commit the result. The font is bundled in `web/fonts/` so the installed app works offline. Colours are CSS variables set by `web/lib/theme.js`; `web/lib/themes.js` is generated from a T3 Code checkout by `npm run vendor:themes -- <path>` and holds T3 Code's palettes, so the Theme picker offers the same themes as T3 Code in light and dark.

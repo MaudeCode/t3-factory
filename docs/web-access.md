@@ -56,6 +56,33 @@ node scripts/run-caddy.ts
 
 The launcher reads `.env` without evaluating it as shell code. DNS challenges do not require a public inbound HTTP listener. Certificate issuance still needs DNS-provider and certificate-authority access. Manage Caddy with your own service manager if it should stay running; the factory installers do not install Caddy or create DNS records. Other DNS providers need a different Caddy configuration.
 
+### Follow a Mac's LAN address
+
+For a Mac that changes networks, the optional DNS updater changes an existing UniFi A record to the active LAN IPv4 address. It does not require client devices to run VPN software. DNS does not create network routes: a client must still be able to reach the Mac's current network.
+
+This requires the UniFi Network [DNS Policies API](https://developer.ui.com/network/v10.6.106/getdnspolicypage), an existing enabled A record, and an API key authorized to update it. Store the key in its own mode-0600 file owned by the user running Factory. Both the installer and updater reject files owned by another user or accessible to other users. Use an HTTPS API endpoint reachable from the networks the Mac uses. The UniFi cloud connector is an option when the local gateway API is not reachable from another network. TLS verification stays enabled; for a private certificate authority, set `NODE_EXTRA_CA_CERTS` before running the updater or its installer.
+
+Create `~/.config/t3-factory/dns.json` with mode `0600`, using the record's actual site and policy IDs:
+
+```json
+{
+  "recordUrl": "https://gateway.example.com/proxy/network/integration/v1/sites/SITE_ID/dns/policies/POLICY_ID",
+  "hostname": "factory.example.com",
+  "apiKeyFile": "/absolute/path/to/unifi-api-key"
+}
+```
+
+After installing the base Factory runtime, run and install the updater:
+
+```sh
+node scripts/update-dns.ts
+node scripts/install-dns.ts
+```
+
+Both commands accept an absolute configuration path as their first argument. The installer reads `.env` for the service label, reuses the existing launchd helpers, and installs a separate `.dns` LaunchAgent. It runs at login and checks every 30 seconds, including after wake. It does not restart the scheduler, website, or proxy. Logs are `~/Library/Logs/t3-factory-dns.log` and `t3-factory-dns-error.log`.
+
+Each pass reads the current policy rather than trusting a saved address. It preserves the TTL, skips matching records, and confirms writes with another API read. It refuses a disabled record, a different hostname or record type, VPN addresses, and ambiguous interface aliases. With no active private LAN IPv4 address, or if the network changes during the read, it leaves DNS alone and retries on the next pass. Failures exit nonzero without logging credentials or response bodies. DNS caches can retain the previous address until its existing TTL expires; use a short TTL on this record if it must follow changes promptly.
+
 ## Install and verify
 
 After the base scheduler setup and web environment configuration:
