@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { reconcile, busyProviders } from '../src/scheduler.ts';
@@ -92,22 +92,79 @@ test('runtime handoffs and a waiting snapshot without a human request never jour
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-for (const variant of ['report', 'missing', 'settled', 'worker', 'active', 'human'] as const) test(`command-only reconciliation: ${variant}`, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'factory-command-')), store = new Store(dir);
-  const old = '2026-01-01T00:00:00Z';
+// A settled turn with pending local commands is waiting for their completion notification, not for a person.
+const commandVariants = ['report', 'missing', 'settled', 'worker', 'active', 'human', 'monitor', 'expired-monitor', 'awaiting', 'invalid', 'mismatch', 'unverified', 'stopped', 'orphaned', 'empty'] as const;
+for (const variant of commandVariants) test(`command-only reconciliation: ${variant}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-command-'));
+  let store = new Store(dir);
+  const old = '2026-01-01T00:00:00Z', fresh = new Date().toISOString();
   const job: Job = { id: 'job', kind: 'discovery', projectId: 'project', taskId: null, ticketKey: null, threadId: 'owned', messageId: 'initial', state: 'running', reason: 'executing', createdAt: old, reportPath: join(dir, 'report'), prUrls: [], lastPersonalActivity: null, command: null, completedAt: null };
-  const thread = v2Thread({ id: 'owned', pendingBackgroundTasks: [{ taskId: 'server', kind: 'command' }] });
+  const thread = v2Thread({ id: 'owned', pendingBackgroundTasks: variant === 'empty' ? [] : [{ taskId: 'server', kind: 'command' }] });
   if (variant === 'settled') thread.settledOverride = 'settled';
   if (variant === 'worker') thread.pendingBackgroundTasks.push({ taskId: 'worker', kind: 'future_kind' });
   if (variant === 'active') thread.activeRunId = 'active';
   if (variant === 'human') thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: old };
+  if (variant === 'monitor' || variant === 'expired-monitor') thread.pendingBackgroundTasks.push({ taskId: 'pull-request-watch:1', kind: 'monitor' });
+  if (variant === 'monitor') thread.updatedAt = thread.latestRunCompletedAt = fresh;
+  if (variant === 'stopped') thread.status = 'interrupted';
+  if (variant === 'orphaned') Object.assign(thread, { status: 'queued', activeRunId: 'run-1', orphanedRun: true });
+  const report = { jobId: job.id, status: 'complete', reason: 'Finished', prUrls: [], createdTaskIds: [] as string[] };
+  if (variant === 'awaiting') report.status = 'awaiting-human';
+  if (variant === 'mismatch') report.jobId = 'another-job';
+  if (variant === 'unverified') report.createdTaskIds = ['foreign'];
   const c = { projects: [{ kaneoId: 'project' }], monitoringTimeoutMinutes: 30, discovery: { emptyCooldownHours: 1 } } as Config;
+  const kaneo = { call: async () => ({ id: 'foreign', projectId: 'elsewhere', number: 1, title: 'Fixture', createdAt: old, priority: 'low', status: 'to-do' }) } as unknown as Kaneo;
+  const t3 = { shell: async () => { throw new Error('reconcile must not read T3'); }, dispatch: async () => { throw new Error('reconcile must not stop or launch'); } } as unknown as T3;
+  const reported = !['missing', 'stopped', 'orphaned', 'empty', 'expired-monitor', 'monitor'].includes(variant);
   try {
-    if (variant !== 'missing') writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Finished', prUrls: [] }));
+    if (reported) writeFileSync(job.reportPath, JSON.stringify(variant === 'invalid' ? {} : report));
     store.save(job);
-    await reconcile(c, store, {} as T3, {} as Kaneo, [thread], false);
-    assert.equal(store.job(job.id)!.state, ({ report: 'complete', missing: 'waiting', settled: 'dismissed', worker: 'running', active: 'running', human: 'waiting' })[variant]);
-    if (variant === 'missing') assert.match(store.job(job.id)!.reason, /without a completion report/);
-    assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, ['worker', 'active'].includes(variant) ? 1 : 0);
+    // Repeat across a store reopen: a background wait never decays into a human wait.
+    for (let pass = 0; pass < 2; pass++) {
+      await reconcile(c, store, t3, kaneo, [thread], false);
+      if (pass === 0) { store.close(); store = new Store(dir); }
+    }
+    const saved = store.job(job.id)!;
+    const expected = ({ report: 'complete', missing: 'running', settled: 'dismissed', worker: 'running', active: 'running', human: 'waiting', monitor: 'running', 'expired-monitor': 'running', awaiting: 'waiting', invalid: 'waiting', mismatch: 'waiting', unverified: 'waiting', stopped: 'waiting', orphaned: 'waiting', empty: 'waiting' })[variant];
+    if (['missing', 'expired-monitor'].includes(variant)) {
+      assert.deepEqual(store.events().filter(e => e.text.endsWith('needs you')).map(e => e.text), [], 'a background wait never journals needs you');
+      assert.equal(saved.reason, 'Waiting for background commands');
+    }
+    assert.equal(saved.state, expected);
+    if (['stopped', 'orphaned', 'empty'].includes(variant)) assert.equal(saved.reason, 'Turn ended without a completion report; inspect in T3');
+    if (variant === 'invalid') assert.match(saved.reason, /invalid|expected/i);
+    if (variant === 'mismatch') assert.equal(saved.reason, 'Completion report job ID mismatch');
+    if (variant === 'unverified') assert.equal(saved.reason, 'Discovery report includes another project');
+    assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, ['worker', 'active', 'monitor'].includes(variant) ? 1 : 0, 'local commands hold no provider slot');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const answer of ['structured-input', 'message'] as const) test(`an answered awaiting-human report does not describe a later command wait: ${answer}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-answered-')), store = new Store(dir);
+  const old = '2026-01-01T00:00:00Z', asked = new Date(Date.now() - 60_000);
+  const job: Job = { id: 'job', kind: 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'owned', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: old, reportPath: join(dir, 'report'), prUrls: [], lastPersonalActivity: null, command: null, completedAt: null };
+  const c = { projects: [{ kaneoId: 'project' }], monitoringTimeoutMinutes: 30 } as Config;
+  const t3 = { shell: async () => { throw new Error('reconcile must not read T3'); }, dispatch: async () => { throw new Error('reconcile must not stop or launch'); } } as unknown as T3;
+  const thread = v2Thread({ id: 'owned', status: 'running', activeRunId: 'run-1' });
+  const needsYou = () => store.events().filter(e => e.text === 'FIX-1 needs you').length;
+  try {
+    store.save(job);
+    writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: 'Choose a layout', prUrls: [] }));
+    utimesSync(job.reportPath, asked, asked);
+    if (answer === 'structured-input') thread.pendingRuntimeRequest = { kind: 'user_input', createdAt: asked.toISOString() };
+    else Object.assign(thread, { status: 'completed', activeRunId: null });
+    await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    assert.deepEqual([store.job(job.id)!.state, needsYou()], ['waiting', 1], 'the open question is a human wait');
+    // The answer resumes the turn; T3 may not record a structured-input answer as a user message.
+    if (answer === 'message') thread.latestUserMessageAt = new Date().toISOString();
+    Object.assign(thread, { status: 'running', activeRunId: 'run-2', pendingRuntimeRequest: null });
+    if (answer === 'structured-input') await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    Object.assign(thread, { status: 'completed', activeRunId: null, pendingBackgroundTasks: [{ taskId: 'validation', kind: 'command' }] });
+    await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    assert.equal(needsYou(), 1, 'the answered report never journals needs you again');
+    assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason], ['running', 'Waiting for background commands']);
+    writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: 'Approve the migration', prUrls: [] }));
+    await reconcile(c, store, t3, {} as Kaneo, [thread], false);
+    assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason, needsYou()], ['waiting', 'Approve the migration', 2], 'a new awaiting-human report is a human wait');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

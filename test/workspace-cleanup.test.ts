@@ -5,13 +5,13 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { reconcile, cleanupNextWorkspace } from '../src/scheduler.ts';
+import { reconcile, cleanupNextWorkspace, busyProviders } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
 import { T3, type Kaneo } from '../src/clients.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
-const commandScenarios = ['command', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
+const commandScenarios = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
 
 for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', ...commandScenarios] as const) {
   test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
@@ -109,8 +109,9 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         if (scenario === 'command-mixed-monitor') thread.pendingBackgroundTasks.push({ taskId: 'watch', kind: 'monitor' });
         if (scenario === 'command-dismissed') { job.state = 'dismissed'; thread.settledOverride = 'settled'; }
         if (scenario === 'command-settled-running') { job.state = 'running'; job.completedAt = null; thread.settledOverride = 'settled'; }
+        if (scenario === 'command-lifecycle') { job.state = 'running'; job.completedAt = null; Object.assign(thread, { status: 'running', activeRunId: 'first-run', pendingBackgroundTasks: [] }); }
         const report = { jobId: job.id, status: scenario === 'command-awaiting-report' ? 'awaiting-human' : 'complete', reason: 'Finished', prUrls: job.prUrls };
-        if (scenario !== 'command-missing-report') writeFileSync(job.reportPath, JSON.stringify(scenario === 'command-invalid-report' ? {} : report));
+        if (!['command-missing-report', 'command-lifecycle'].includes(scenario)) writeFileSync(job.reportPath, JSON.stringify(scenario === 'command-invalid-report' ? {} : report));
         if (scenario === 'command-settled-resumed') {
           job.state = 'dismissed'; job.completedAt = null; thread.settledOverride = 'settled';
           thread.latestUserMessageAt = '2026-01-03T00:00:00Z';
@@ -118,8 +119,26 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         }
       }
       store.save(job);
+      if (scenario === 'command-lifecycle') {
+        // Incident shape: a turn yields to a background validation command, its notification resumes the turn, delivery finishes.
+        const state = () => [store.job(job.id)!.state, store.job(job.id)!.reason];
+        await runReconcile();
+        assert.deepEqual(state(), ['running', 'Claude is executing']);
+        Object.assign(thread, { status: 'completed', activeRunId: null, latestRunCompletedAt: '2026-01-01T06:00:00Z', pendingBackgroundTasks: [{ taskId: 'validation', kind: 'command' }] });
+        for (let pass = 0; pass < 2; pass++) { await runReconcile(); store.close(); store = new Store(join(dir, 'state')); }
+        assert.deepEqual(state(), ['running', 'Waiting for background commands']);
+        assert.equal(busyProviders(store.jobs(), threads, new Map(), 30).size, 0, 'a command wait holds no provider slot');
+        assert.deepEqual(commands, [], 'a missing report authorizes no Stop, cleanup or launch');
+        assert.equal(existsSync(tree), true);
+        Object.assign(thread, { status: 'running', activeRunId: 'resumed-run', pendingBackgroundTasks: [] });
+        await runReconcile();
+        assert.deepEqual(state(), ['running', 'Claude is executing']);
+        Object.assign(thread, { status: 'completed', activeRunId: null, latestRunCompletedAt: '2026-01-01T12:00:00Z', pendingBackgroundTasks: [{ taskId: 'server', kind: 'command' }] });
+        writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Merged', prUrls: job.prUrls, createdTaskIds: [] }));
+        assert.equal(store.events().some(e => e.text === 'FIX-1 needs you'), false, 'no intermediate wait asks the user');
+      }
       if (isCommand) {
-        const eligible = ['command', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process'].includes(scenario);
+        const eligible = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process'].includes(scenario);
         // Settled jobs first retain dismissal semantics, then maintenance verifies their report.
         await runReconcile(); await runReconcile();
         const stops = () => commands.filter(c => c.type === 'run.interrupt');

@@ -51,6 +51,11 @@ export function executing(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT
   if ((stoppedStatuses as readonly string[]).includes(t.status)) return false;
   return includeMonitoring && background(t) === 'monitoring' && !expiredMonitor(t, timeoutMinutes);
 }
+/** A settled turn whose pending local commands will notify and resume it. The job continues; no provider slot or human is held. */
+export function commandWait(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES): boolean {
+  return t.pendingBackgroundTasks.some(task => task.kind === 'command') && !t.orphanedRun && !(stoppedStatuses as readonly string[]).includes(t.status) &&
+    !waiting(t) && !executing(t, timeoutMinutes);
+}
 /** Threads reachable from `rootId` through subagent lineage, transitively. Lineage cycles cannot repeat or include the root. */
 export function subagentDescendants(threads: readonly Thread[], rootId: string): Thread[] {
   const found = new Map<string, Thread>(), queue = [rootId];
