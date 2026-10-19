@@ -13,7 +13,7 @@ import { Capacity } from "./Capacity.js";
 import { Projects } from "./Projects.js";
 import { Upstream } from "./Upstream.js";
 
-const pages = { "/": Deck, "/runs": Runs, "/runs/:id": RunDetail, "/activity": Activity, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream };
+const pages = { "/": Deck, "/start": Deck, "/runs": Runs, "/runs/:id": RunDetail, "/activity": Activity, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream };
 const CONNECTION = { connecting: "Connecting", live: "Live", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.
@@ -94,7 +94,7 @@ function Shell() {
     <a class="wordmark" href="/" onClick=${follow}>FACTORY</a>
     <nav aria-label="Pages">
       ${PAGES.map(
-        ([path, name]) => html`<a key=${path} href=${path} onClick=${follow} aria-current=${page === path || (path === "/runs" && page === "/runs/:id") ? "page" : undefined}>
+        ([path, name]) => html`<a key=${path} href=${path} onClick=${follow} aria-current=${page === path || (path === "/" && page === "/start") || (path === "/runs" && page === "/runs/:id") ? "page" : undefined}>
           ${name}${path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`}
         </a>`,
       )}
@@ -107,7 +107,7 @@ function Shell() {
   </header>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />
   <div ref=${ptr} class="ptr" aria-live="polite"></div>
-  <main key=${page + param}><${Page} id=${param} /></main>`;
+  <main key=${page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>`;
 }
 
 function Readiness() {

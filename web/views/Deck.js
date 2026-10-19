@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -19,6 +19,7 @@ import {
   stateLabel,
   toneOf,
   ticketLink,
+  ticketKey,
   safeLink,
   prLabel,
   threadLink,
@@ -104,19 +105,24 @@ function Operation({ op }) {
   </div>`;
 }
 
-export function Composer() {
-  const [ticket, setTicket] = useState("");
+export function Composer({ initialTicket } = {}) {
+  const linked = initialTicket !== undefined;
+  const [ticket, setTicket] = useState(initialTicket ?? "");
   const [model, setModel] = useState("auto");
   const [override, setOverride] = useState(true);
+  const key = ticketKey(ticket);
+  const invalid = linked && !key;
+  const pending = pendingRun(ticket);
   const submit = (e) => {
     e.preventDefault();
-    if (startRun({ ticket: ticket.trim(), model, overrideLimits: override })) setTicket("");
+    if (invalid || pending) return;
+    if (startRun({ ticket: linked ? key : ticket.trim(), model, overrideLimits: override }) && !linked) setTicket("");
   };
-  return html`<form class="composer" onSubmit=${submit}>
-    <input class="mono" value=${ticket} onInput=${(e) => setTicket(e.target.value)} placeholder="Next eligible ticket" aria-label="Ticket key" autocapitalize="characters" spellcheck="false" />
+  return html`${invalid && html`<p class="alert" role="alert">Invalid ticket link. Enter a ticket key to continue.</p>`}<form class="composer" onSubmit=${submit}>
+    <input class="mono" value=${ticket} onInput=${(e) => setTicket(e.target.value)} placeholder=${linked ? "Ticket key" : "Next eligible ticket"} required=${linked} pattern="[A-Za-z0-9]+-[0-9]+" aria-label="Ticket key" autocapitalize="characters" spellcheck="false" />
     <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Automatic model"], ...config.value.models.map((m) => [m.id, m.name])]} />
     <${Check} label="Override limits" checked=${override} onChange=${(e) => setOverride(e.target.checked)} hint="Skips idle and reserve thresholds. Readiness, difficulty, duplicate checks, and merge rules still apply." />
-    <${Button} variant="primary" type="submit">Start run<//>
+    <${Button} variant="primary" type="submit" disabled=${invalid || pending}>${linked && key ? `Start ${key}` : "Start run"}<//>
   </form>`;
 }
 
@@ -172,7 +178,7 @@ export function UpNext({ limit = 5, children }) {
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
         ? tickets.slice(0, limit).map((t) => {
-            const pending = () => operations.value.some((op) => op.input.ticket?.trim().toUpperCase() === t.key.toUpperCase() && ["queued", "running", "uncertain"].includes(op.state));
+            const pending = () => pendingRun(t.key);
             const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
             return html`<div class="next" key=${t.id}>
             <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
@@ -256,7 +262,7 @@ export function RunGroup({ title, list, limit = 8, empty, children }) {
   </section>`;
 }
 
-export function Deck() {
+export function Deck({ initialTicket } = {}) {
   useEffect(() => {
     if (!history.value) loadHistory().catch(() => {});
   }, []);
@@ -273,7 +279,7 @@ export function Deck() {
       <div class="deck-main">
         <section class="group">
           <header><h2>Start a run</h2></header>
-          <${Composer} />
+          <${Composer} initialTicket=${initialTicket} />
           <${Operations} />
         </section>
         <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">

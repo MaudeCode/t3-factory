@@ -56,6 +56,7 @@ export async function createOidc(
     nonce: string;
     verifier: string;
     expires: number;
+    returnTo: string;
   };
   const sessionSchema = z
     .object({
@@ -148,7 +149,12 @@ export async function createOidc(
         state = client.randomState(),
         nonce = client.randomNonce(),
         verifier = client.randomPKCECodeVerifier();
-      flows.set(id, { state, nonce, verifier, expires: now() + 600_000 });
+      const destination = new URL(req.url!, origin).searchParams.get("returnTo") ?? "/";
+      const target = URL.parse(destination, origin);
+      const returnTo = destination.startsWith("/") && !destination.startsWith("//") && !destination.includes("\\") && target?.origin === origin
+        ? target.pathname + target.search
+        : "/";
+      flows.set(id, { state, nonce, verifier, expires: now() + 600_000, returnTo });
       const url = client.buildAuthorizationUrl(provider, {
         redirect_uri: callback,
         scope: "openid profile email groups offline_access",
@@ -204,7 +210,7 @@ export async function createOidc(
       });
       persist();
       res.writeHead(302, {
-        Location: "/",
+        Location: flow.returnTo,
         "Set-Cookie": [
           setCookie(flowCookie, "", 0),
           setCookie(sessionCookie, session, settings.sessionHours * 3600),

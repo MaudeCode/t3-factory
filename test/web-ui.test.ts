@@ -25,6 +25,64 @@ const fixture = () => ({
 });
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+test('launch links select exactly one named ticket and never submit during routing', async () => {
+  const { match } = await import('../web/lib/router.js');
+  assert.deepEqual(match('/start?ticket=app-123'), { page: '/start', param: 'APP-123', path: '/start' });
+  for (const query of ['', '?ticket=', '?ticket=bad', '?ticket=APP-1&ticket=APP-2', '?ticket=%3Cscript%3E', '?ticket=APP-1?extra'])
+    assert.deepEqual(match('/start' + query), { page: '/start', param: '', path: '/start' });
+  assert.equal(match('/start?ticket=APP-1&chain=all&allowMissingReadyLabel=true').param, 'APP-1');
+  assert.equal(match('/runs?state=next').page, '/runs');
+});
+
+test('launch pairing preserves the ticket query without dispatching', async () => {
+  const destination = '/start?ticket=APP-123';
+  const originalFetch = globalThis.fetch;
+  const writes: string[] = [];
+  let replaced = '';
+  Object.defineProperty(globalThis, 'location', { value: { pathname: '/start', search: '?ticket=APP-123', hash: '#pair=example' }, configurable: true });
+  Object.defineProperty(globalThis, 'history', { value: { replaceState: (_a: unknown, _b: string, path: string) => { replaced = path; } }, configurable: true });
+  saved.clear();
+  store.operations.value = [];
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (init?.method === 'POST') writes.push(url);
+    if (url === '/api/session') return Response.json({ ok: true });
+    return Response.json(fixture());
+  };
+  try {
+    await store.connect('example');
+    assert.equal(replaced, destination, 'pairing must retain the launch ticket');
+    assert.deepEqual(writes, ['/api/session'], 'authentication cannot submit a run');
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, 'location');
+    Reflect.deleteProperty(globalThis, 'history');
+  }
+});
+
+test('launch repeated submissions retain one request through an uncertain response', async () => {
+  store.applyState(fixture(), true);
+  store.operations.value = [];
+  const calls: any[] = [];
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (String(url).startsWith('/api/operations/')) return Response.json({ id: String(url).split('/').at(-1), state: 'uncertain' });
+    if (url !== '/api/dispatch') return Response.json(fixture());
+    calls.push(JSON.parse(init!.body as string));
+    await held;
+    throw new Error('response lost');
+  };
+  try {
+    store.startRun({ ticket: 'APP-123', model: 'auto', overrideLimits: true });
+    assert.equal(store.startRun({ ticket: ' app-123 ', model: 'auto', overrideLimits: true }), null, 'a second named submission is rejected at the shared dispatch boundary');
+  } finally { release(); }
+  await untilChecked(() => store.operations.value.every((op: any) => op.state === 'uncertain'));
+  assert.equal(store.startRun({ ticket: 'APP-123', model: 'auto', overrideLimits: true }), null);
+  assert.equal(calls.length, 1);
+  store.operations.value = [];
+  saved.clear();
+});
+
 async function untilChecked(predicate: () => boolean) {
   for (let n = 0; n < 100 && !predicate(); n++) await turn();
   assert.ok(predicate(), 'dispatch state settled');

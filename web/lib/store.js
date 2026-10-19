@@ -3,7 +3,7 @@
 // event stream, the poll fallback, and every action that reloads all feed the same path.
 import { signal, computed, batch } from "./h.js";
 import { api, post } from "./api.js";
-import { clone, uuid, moveItem, repoFromPath } from "./format.js";
+import { clone, uuid, moveItem, repoFromPath, ticketKey } from "./format.js";
 
 // State -----------------------------------------------------------------
 export const auth = signal({ mode: "pairing", loginUrl: "" });
@@ -357,7 +357,12 @@ export async function pollOperation(id) {
     message("Checking dispatch status: " + error.message, true);
   }
 }
+export function pendingRun(ticket) {
+  const key = ticketKey(ticket);
+  return !!key && operations.value.some((op) => ticketKey(op.input.ticket) === key && ["queued", "running", "uncertain"].includes(op.state));
+}
 export function startRun(input) {
+  if (pendingRun(input.ticket)) return null;
   const id = uuid();
   operations.value = [...operations.value, { id, input: clone(input), state: "queued" }];
   saveOperations();
@@ -403,7 +408,7 @@ export function runWithoutReadyLabel() {
 export async function connect(code) {
   const match = code.match(/[#&]pair=([^&]+)/);
   await post("/api/session", { code: match ? decodeURIComponent(match[1]) : code.trim() });
-  globalThis.history.replaceState(null, "", location.pathname);
+  globalThis.history.replaceState(null, "", location.pathname + location.search);
   await load(true);
   restoreOperation();
 }
@@ -416,7 +421,7 @@ export async function initialize() {
       globalThis.history.replaceState(null, "", "/");
     }
     const pair = new URLSearchParams(location.hash.slice(1)).get("pair");
-    if (pair) globalThis.history.replaceState(null, "", location.pathname);
+    if (pair) globalThis.history.replaceState(null, "", location.pathname + location.search);
     if (pair && !sso) await connect(pair);
     else {
       await load(true);

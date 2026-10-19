@@ -95,4 +95,10 @@ Visit `FACTORY_PUBLIC_ORIGIN` and sign in or pair. Verify that an unauthenticate
 
 The page saves settings through the CLI's validation and stale-edit checks. Manual runs retain the [dispatch guards](operations.md#manual-runs). Web dispatches have persistent request IDs; a lost response should be investigated in status before trying a different request.
 
+### Ticket-launch links
+
+Agents can link to `/start?ticket=APP-123` on `FACTORY_PUBLIC_ORIGIN`, for example `https://factory.example/start?ticket=APP-123`. The link opens the existing manual-run form with the ticket selected and a **Start APP-123** button. Sign in or pair first when required; the ticket stays selected after authentication.
+
+Opening the link, previewing it, reloading or using browser history never starts a run. Click Start to submit through the normal authenticated request queue. The form defaults to automatic model selection and the visible Override limits choice. Only the ticket comes from the URL; readiness waivers, chain choices and merge permission cannot be supplied by a link. Missing, invalid or repeated ticket parameters require a valid ticket before submission. Pending or uncertain requests for the same ticket prevent another submission until their outcome is known or the request is explicitly dismissed.
+
 The page retries a status read once after HTTP 502, 503, or 504, and handles empty or HTML proxy errors without losing the HTTP status. It never automatically resends a dispatch POST. Keep the proxy's upstream idle timeout shorter than the backend's keep-alive timeout; the Caddy template uses two seconds, below Node's five-second default.
