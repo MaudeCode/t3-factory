@@ -60,7 +60,7 @@ The launcher reads `.env` without evaluating it as shell code. DNS challenges do
 
 For a Mac that changes networks, the optional DNS updater changes an existing UniFi A record to the active LAN IPv4 address. It does not require client devices to run VPN software. DNS does not create network routes: a client must still be able to reach the Mac's current network.
 
-This requires the UniFi Network [DNS Policies API](https://developer.ui.com/network/v10.6.106/getdnspolicypage), an existing enabled A record, and an API key authorized to update it. Store the key in its own mode-0600 file. Use an HTTPS API endpoint reachable from the networks the Mac uses. The UniFi cloud connector is an option when the local gateway API is not reachable from another network. TLS verification stays enabled; for a private certificate authority, set `NODE_EXTRA_CA_CERTS` before running the updater or its installer.
+This requires the UniFi Network [DNS Policies API](https://developer.ui.com/network/v10.6.106/getdnspolicypage), an existing enabled A record, and an API key authorized to update it. Store the key in its own mode-0600 file owned by the user running Factory. Both the installer and updater reject files owned by another user or accessible to other users. Use an HTTPS API endpoint reachable from the networks the Mac uses. The UniFi cloud connector is an option when the local gateway API is not reachable from another network. TLS verification stays enabled; for a private certificate authority, set `NODE_EXTRA_CA_CERTS` before running the updater or its installer.
 
 Create `~/.config/t3-factory/dns.json` with mode `0600`, using the record's actual site and policy IDs:
 

@@ -1,9 +1,9 @@
-import { accessSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { bootout, bootstrap } from "./launchd.ts";
-import { readDnsConfig } from "./update-dns.ts";
+import { readDnsApiKey, readDnsConfig } from "./update-dns.ts";
 import { loadEnvironment } from "../src/env.ts";
 
 loadEnvironment();
@@ -11,7 +11,7 @@ const userDir = homedir(), app = join(userDir, ".local/share/t3-factory/app");
 const configPath = process.argv[2] ?? join(userDir, ".config/t3-factory/dns.json");
 if (!isAbsolute(configPath)) throw new Error("Use an absolute DNS configuration path");
 const config = readDnsConfig(configPath);
-if (!readFileSync(config.apiKeyFile, "utf8").trim()) throw new Error("The UniFi API key file is empty");
+readDnsApiKey(config.apiKeyFile);
 // Like install-web, use the existing installed runtime and its dependencies.
 accessSync(join(app, "node_modules/zod/package.json"));
 const label = `${process.env.T3_FACTORY_SERVICE_LABEL ?? "local.t3-factory"}.dns`;

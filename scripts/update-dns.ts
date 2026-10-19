@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { homedir, networkInterfaces } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -16,6 +16,20 @@ const configSchema = z.object({
 
 export function readDnsConfig(path: string) {
   return configSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+}
+
+export function readDnsApiKey(path: string) {
+  const file = openSync(path, "r");
+  try {
+    const stat = fstatSync(file);
+    if (!stat.isFile() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)
+      throw new Error("UniFi API key file must be owned by the current user and accessible only to that user");
+    const key = readFileSync(file, "utf8").trim();
+    if (!key || /[\r\n]/.test(key)) throw new Error("Invalid UniFi API key");
+    return key;
+  } finally {
+    closeSync(file);
+  }
 }
 
 export function selectLanAddress(
@@ -61,7 +75,8 @@ export async function updateDns(
   };
   const read = async () => {
     const parsed = z.object({
-      type: z.literal("A_RECORD"), enabled: z.literal(true), domain: z.literal(config.hostname),
+      type: z.literal("A_RECORD"), enabled: z.literal(true),
+      domain: z.string().refine(value => value.toLowerCase() === config.hostname.toLowerCase()),
       ipv4Address: z.string().refine(isIPv4), ttlSeconds: z.number().int().min(0).max(86400),
     }).safeParse(await (await call("GET")).json());
     if (!parsed.success) throw new Error("UniFi policy is not the configured enabled A record");
@@ -78,7 +93,7 @@ export async function updateDns(
 if (import.meta.main) {
   try {
     const config = readDnsConfig(process.argv[2] ?? join(homedir(), ".config/t3-factory/dns.json"));
-    const result = await updateDns(config, readFileSync(config.apiKeyFile, "utf8").trim());
+    const result = await updateDns(config, readDnsApiKey(config.apiKeyFile));
     if (result !== "unchanged") console.log(`Factory DNS: ${result}`);
   } catch (error) {
     // Do not log response bodies, configuration, or transport errors that may contain credentials.

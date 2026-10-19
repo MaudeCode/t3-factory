@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { selectLanAddress, updateDns } from "../scripts/update-dns.ts";
+import fs, { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readDnsApiKey, selectLanAddress, updateDns } from "../scripts/update-dns.ts";
 
 const config = {
   recordUrl: "https://gateway.example.com/proxy/network/integration/v1/sites/site/dns/policies/record",
@@ -11,6 +15,51 @@ const original = {
   id: "record", type: "A_RECORD", enabled: true, domain: config.hostname,
   ipv4Address: "10.20.0.8", ttlSeconds: 30, metadata: { origin: "USER_DEFINED" },
 };
+
+test("requires a private, current-user-owned API key file in both entry points", t => {
+  const directory = mkdtempSync(join(tmpdir(), "factory-dns-key-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const key = join(directory, "key");
+  writeFileSync(key, "test-key\n", { mode: 0o600 });
+  assert.equal(readDnsApiKey(key), "test-key");
+  chmodSync(key, 0o400);
+  assert.equal(readDnsApiKey(key), "test-key");
+  for (const mode of [0o644, 0o640, 0o620]) {
+    chmodSync(key, mode);
+    assert.throws(() => readDnsApiKey(key), /owned by the current user and accessible only to that user/);
+  }
+  chmodSync(key, 0o600);
+  const fstat = fs.fstatSync;
+  const mock = t.mock.method(fs, "fstatSync", (fd: number) =>
+    Object.assign(fstat(fd), { uid: process.getuid!() + 1 }));
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => readDnsApiKey(key), /owned by the current user and accessible only to that user/);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+  writeFileSync(key, "\n");
+  assert.throws(() => readDnsApiKey(key), /Invalid UniFi API key/);
+});
+
+test("compares policy hostnames without case sensitivity while preserving the policy's spelling", async () => {
+  for (const [hostname, domain] of [
+    ["Factory.example.com", "factory.example.com"],
+    ["factory.example.com", "FACTORY.EXAMPLE.COM"],
+  ]) {
+    let record = { ...original, domain };
+    const request: typeof fetch = async (_url, options) => {
+      if (options?.method === "PUT") {
+        const body = JSON.parse(String(options.body));
+        assert.equal(body.domain, domain);
+        record = { ...record, ...body };
+      }
+      return Response.json(record);
+    };
+    assert.equal(await updateDns({ ...config, hostname }, "key", () => "10.0.10.21", request), "updated 10.0.10.21");
+  }
+});
 
 test("uses the active physical LAN interface, excluding VPNs and disconnected adapters", () => {
   const interfaces = {
