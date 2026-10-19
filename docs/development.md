@@ -60,6 +60,8 @@ Serve the repository root and open `/test/browser/queue.html`; run `await queueT
 
 Run `await queueTests.runProjects()` in the same fixture and viewports to exercise the real Runs filter dialog, project selection, tag AND/OR, combined metadata filters, held rows, counts, live updates, search, run-tab/provider filtering, reset and filtered Run now. Use `await queueTests.showProjects()` and `await queueTests.openFilters()` for screenshots. `test/run-filters.test.ts` covers metadata projection and fresh dispatch snapshots; `test/web-ui.test.ts` covers the shared matcher and missing historical metadata.
 
+`test/web-live.test.ts` also starts the actual web CLI against temporary state to verify its compact job projection. State, history and run-report responses must retain labels and priority so recorded runs match the same filters as the queue. Callback-injected server fixtures alone do not cover this composition boundary.
+
 Web confirmations for cancelling a chain, stopping a run, and discarding edits on sign-out share the themed `Confirmation` overlay and `web/lib/confirmation.js`. The action runs only after confirmation; Cancel, Escape, and backdrop clicks dismiss it. The browser's tab-close warning for unsaved edits remains browser-managed.
 
 The shared `Select` keeps its listbox inside the control's DOM tree and uses a native top-layer popover so a dialog cannot clip it. It opens below or above its trigger to fit the visible viewport, follows scrolling and resizing, and scrolls its own choices. Arrow keys, Home and End move the active choice; Enter or Space commits it. Escape closes the list before the containing dialog; Tab and outside clicks dismiss the list.
