@@ -69,9 +69,28 @@ async function run() {
   } finally { release?.(); }
   await pause();
   assert(root.querySelector('.operation')?.textContent.includes('quota-exhausted'), 'existing request row shows refusals');
+  await whitespace();
   await show();
   assert(document.documentElement.scrollWidth <= innerWidth, 'launch form fits viewport');
   return { passed: true, viewport: [innerWidth, innerHeight], dispatches: calls.length };
 }
-window.startTests = { show, run };
+async function whitespace() {
+  for (const path of ['/', '/start?ticket=APP-123']) {
+    calls = []; release = null;
+    await show(path);
+    const input = root.querySelector('[aria-label="Ticket key"]');
+    input.value = ' APP-123 ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await pause();
+    root.querySelector('button[type="submit"]').click();
+    await pause();
+    try {
+      assert(calls.length === 1, `pasted whitespace submits once on ${path}`);
+      assert(calls[0].input.ticket === 'APP-123', 'the submitted ticket is trimmed');
+    } finally { release?.(); }
+    await pause();
+  }
+  return { passed: true, contexts: ['manual', 'linked'] };
+}
+window.startTests = { show, run, whitespace };
 await show();

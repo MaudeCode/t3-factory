@@ -119,7 +119,7 @@ export function Composer({ initialTicket } = {}) {
     if (startRun({ ticket: linked ? key : ticket.trim(), model, overrideLimits: override }) && !linked) setTicket("");
   };
   return html`${invalid && html`<p class="alert" role="alert">Invalid ticket link. Enter a ticket key to continue.</p>`}<form class="composer" onSubmit=${submit}>
-    <input class="mono" value=${ticket} onInput=${(e) => setTicket(e.target.value)} placeholder=${linked ? "Ticket key" : "Next eligible ticket"} required=${linked} pattern="[A-Za-z0-9]+-[0-9]+" aria-label="Ticket key" autocapitalize="characters" spellcheck="false" />
+    <input class="mono" value=${ticket} onInput=${(e) => setTicket(e.target.value)} placeholder=${linked ? "Ticket key" : "Next eligible ticket"} required=${linked} aria-label="Ticket key" autocapitalize="characters" spellcheck="false" />
     <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Automatic model"], ...config.value.models.map((m) => [m.id, m.name])]} />
     <${Check} label="Override limits" checked=${override} onChange=${(e) => setOverride(e.target.checked)} hint="Skips idle and reserve thresholds. Readiness, difficulty, duplicate checks, and merge rules still apply." />
     <${Button} variant="primary" type="submit" disabled=${invalid || pending}>${linked && key ? `Start ${key}` : "Start run"}<//>
