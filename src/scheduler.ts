@@ -664,7 +664,15 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   const verdicts: Verdict[] = new Array(potential.length);
   let next = 0;
   await readAll(Array.from({ length: Math.min(READ_CONCURRENCY, potential.length) }, async () => { for (let i = next++; i < potential.length; i = next++) verdicts[i] = await examine(potential[i]); }));
-  for (const v of verdicts) 'candidate' in v ? ready.push(v.candidate) : skipped.push(v);
+  for (const v of verdicts) {
+    if ('candidate' in v) ready.push(v.candidate);
+    else {
+      const task = all.get(v.id!)!;
+      let difficulty: Candidate['difficulty'];
+      try { difficulty = ticketDifficulty(task.labels ?? []); } catch { /* Keep the classification refusal. */ }
+      skipped.push({ ...v, ticket: { id: task.id, key: v.key, projectId: task.projectId, title: task.title, createdAt: task.createdAt, priority: task.priority, difficulty, ...v.ticket, labels: task.labels ?? [] } });
+    }
+  }
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kaneoId)) };
 }
 
@@ -959,6 +967,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kaneo.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');
     const now = new Date().toISOString(), id = randomUUID();
     const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: review ? 'upstream' : queue.selected ? 'ticket' : 'discovery', ...(review ? { upstream: review.upstream } : {}), projectId: project.kaneoId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
+    if (checked) {
+      job.labels = checked.labels.map(l => l.name);
+      job.priority = checked.task.priority;
+    }
     const u = job.upstream;
     const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : `Factory discovery: ${project.name}`;
     // Ticket branches carry the ticket's kind (fix, feat, perf, ...) so release tooling can bump versions from them.
@@ -1123,9 +1135,9 @@ export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'sk
     at: new Date().toISOString(),
     tickets: order.map(t => {
       const preset = c.models.find(m => m.automatic && acceptsDifficulty(m, t));
-      return { id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labelRank: t.labelRank, after: t.after ?? [], model: preset?.name ?? null, modelId: preset?.id ?? null };
+      return { id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labels: (t.labels ?? []).map(l => l.name), labelRank: t.labelRank, after: t.after ?? [], model: preset?.name ?? null, modelId: preset?.id ?? null };
     }),
-    held: queue.skipped.filter(s => !s.id || !projected.has(s.id)).map(s => ({ key: s.key, reason: s.reason })),
+    held: queue.skipped.filter(s => !s.id || !projected.has(s.id)).map(s => ({ key: s.key, reason: s.reason, ...(s.ticket ? { projectId: s.ticket.projectId, title: s.ticket.title, priority: s.ticket.priority, difficulty: s.ticket.difficulty, labels: (s.ticket.labels ?? []).map(l => l.name) } : {}) })),
   };
 }
 

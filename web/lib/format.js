@@ -1,6 +1,18 @@
 // Pure formatting helpers and vocabulary shared by views and the store.
 export const clone = (value) => structuredClone(value);
 
+// The same ticket metadata is projected on queued tickets, held rows, and recorded runs.
+export function matchesRunFilters(row, filters = {}, query = "") {
+  const includes = (values, value) => !values?.length || values.includes(value);
+  const tags = filters.tags ?? [], labels = row.labels ?? [];
+  const text = query.trim().toLowerCase();
+  return includes(filters.projects, row.projectId) &&
+    includes(filters.difficulties, row.difficulty) &&
+    includes(filters.priorities, row.priority) &&
+    (!tags.length || (filters.tagMode === "and" ? tags.every(tag => labels.includes(tag)) : tags.some(tag => labels.includes(tag)))) &&
+    (!text || [row.key, row.label, row.title].some(value => value?.toLowerCase().includes(text)));
+}
+
 export function ticketKey(value) {
   const key = value?.trim().toUpperCase() ?? "";
   return /^[A-Z0-9]+-\d+$/.test(key) ? key : "";

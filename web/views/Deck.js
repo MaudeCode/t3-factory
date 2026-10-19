@@ -26,6 +26,7 @@ import {
   modelName,
   projectOf,
   difficultyLabel,
+  matchesRunFilters,
   byNewest,
   byFinished,
   isFinished,
@@ -164,16 +165,16 @@ export function Chains() {
 }
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
-export function UpNext({ limit = 5, children }) {
+export function UpNext({ limit = 5, children, filters, query = "" }) {
   clock.value;
   const c = config.value,
     q = status.value.upNext,
-    tickets = q?.tickets ?? [],
-    held = q?.held ?? [],
+    tickets = (q?.tickets ?? []).filter(t => matchesRunFilters(t, filters, query)),
+    held = (q?.held ?? []).filter(t => matchesRunFilters(t, filters, query)),
     all = limit === Infinity;
   const project = (id) => c.projects.find((p) => p.kaneoId === id);
   return html`<section class="group">
-    <header><h2>Up next ${tickets.length > 0 && html`<small>${tickets.length}</small>`}</h2>${children}</header>
+    <header><h2>Up next ${q && html`<small>${tickets.length}</small>`}</h2>${children}</header>
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
@@ -198,7 +199,7 @@ export function UpNext({ limit = 5, children }) {
               }}><${Icon} name="play" /><//>
             </div>`;
           })
-        : html`<${Empty}>Nothing is ready to start.<//>`}
+        : html`<${Empty}>${query.trim() || ["projects", "tags", "difficulties", "priorities"].some(key => filters?.[key]?.length) ? "No tickets match." : "Nothing is ready to start."}<//>`}
     ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
   </section>`;

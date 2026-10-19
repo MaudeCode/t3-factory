@@ -1,8 +1,9 @@
 // Synthetic data, actual queue component and dispatch store. No live dispatches.
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status } from "../../web/lib/store.js";
+import { applyState, operations, status, history } from "../../web/lib/store.js";
 import * as Deck from "../../web/views/Deck.js";
+import { Runs } from "../../web/views/Runs.js";
 
 const root = document.querySelector("#root");
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -103,5 +104,122 @@ async function layout() {
   }
   return { passed: true, viewport: [innerWidth, innerHeight], contexts: ["deck", "runs"] };
 }
-window.queueTests = { run, layout, show };
+const filterState = {
+  config: { ...state.config, projects: [{ kaneoId: "p", key: "APP", name: "Alpha" }, { kaneoId: "q", key: "WEB", name: "Beta" }, { kaneoId: "empty", key: "EMPTY", name: "Empty" }] },
+  status: { jobs: [], upNext: { at: new Date().toISOString(), tickets: [
+    { ...ticket(1), title: "Fix uploads", labels: ["bug", "web"], difficulty: "med", priority: "high" },
+    { ...ticket(2), projectId: "q", key: "WEB-2", labels: ["bug"], difficulty: "low", priority: "low" },
+    { ...ticket(3), labels: ["web"], difficulty: "high", priority: "urgent" },
+  ], held: [
+    { key: "APP-4", projectId: "p", title: "Held upload", labels: ["bug", "web"], difficulty: "med", priority: "high", reason: "Already owned" },
+    { key: "WEB-5", projectId: "q", labels: ["bug"], difficulty: "low", priority: "low", reason: "Needs classification" },
+  ] } },
+};
+const runFixture = (id, projectId, labels, difficulty, priority, providerDriver = "codex") => ({ id, kind: "ticket", label: `APP-${id}`, projectId, labels, difficulty, priority, providerDriver, state: "running", createdAt: new Date().toISOString(), prUrls: [] });
+const filterJobs = [runFixture("1", "p", ["bug", "web"], "med", "high"), runFixture("2", "q", ["bug"], "low", "low", "claudeAgent"), runFixture("old", "p")];
+async function showProjects() {
+  const oldFetch = window.fetch;
+  window.fetch = (url, init) => url === "/api/history" ? Promise.resolve(Response.json(filterJobs)) : oldFetch(url, init);
+  operations.value = [];
+  history.value = filterJobs;
+  applyState({ ...filterState, status: { ...filterState.status, jobs: filterJobs } }, true);
+  window.history.replaceState(null, "", "?state=next");
+  render(null, root);
+  render(html`<${Runs} />`, root);
+  await pause();
+  window.fetch = oldFetch;
+}
+const queueKeys = () => [...root.querySelectorAll(".next .key")].map(e => e.textContent).join();
+const heldKeys = () => [...root.querySelectorAll(".held .key")].map(e => e.textContent).join();
+const dialog = () => root.querySelector('dialog[aria-label="Filters"]');
+const byText = (selector, text, scope = root) => [...scope.querySelectorAll(selector)].find(e => e.textContent.trim() === text);
+async function openFilters() {
+  const button = root.querySelector('[aria-label^="Filter runs"]');
+  assert(button, "Runs exposes a Filter button");
+  button.click(); await pause();
+}
+async function pickFilter(group, name) {
+  byText("button", name, dialog().querySelector(`[role="group"][aria-label="${group}"]`)).click();
+  await pause();
+}
+async function closeFilters() { byText("button", "Done", dialog()).click(); await pause(); }
+async function clearFilters() { byText("button", "Clear filters", dialog()).click(); await pause(); }
+async function runProjects() {
+  const oldFetch = window.fetch, oldUrl = location.href;
+  const dispatches = [];
+  window.fetch = async (url, init) => {
+    if (url === "/api/history") return Response.json(filterJobs);
+    if (url === "/api/dispatch") {
+      const input = JSON.parse(init.body), id = init.headers["Idempotency-Key"];
+      dispatches.push(input);
+      return Response.json({ id, input, state: "done", result: { data: { reason: "quota-exhausted" } } });
+    }
+    return Response.json({ ...filterState, status: status.value });
+  };
+  try {
+    await showProjects();
+    assert(queueKeys() === "APP-1,WEB-2,APP-3", "all projects preserve scheduler order");
+    await openFilters();
+    assert(!dialog().querySelector('[aria-label="Provider"]'), "queue does not filter predicted providers");
+    await pickFilter("Project", "Alpha");
+    assert(queueKeys() === "APP-1,APP-3", `Project Alpha must show only its queue tickets; got ${queueKeys()}`);
+    assert(heldKeys() === "APP-4", "held tickets follow project filtering");
+    assert(root.querySelector("h2 small").textContent === "2", "queue count follows filters");
+    await pickFilter("Project", "Beta");
+    assert(queueKeys() === "APP-1,WEB-2,APP-3", "multiple projects use OR");
+    await pickFilter("Project", "Beta");
+    await pickFilter("Tags", "bug");
+    await pickFilter("Tags", "web");
+    assert(queueKeys() === "APP-1,APP-3", "tag OR matches either selected label");
+    byText('[role="radio"]', "AND", dialog()).click(); await pause();
+    assert(queueKeys() === "APP-1", "tag AND requires all selected labels");
+    await pickFilter("Difficulty", "Medium");
+    await pickFilter("Priority", "High");
+    assert(queueKeys() === "APP-1" && heldKeys() === "APP-4", "categories combine for queue and held tickets");
+    await closeFilters();
+    assert(root.querySelector('[aria-label="Filter runs, 4 active"]').textContent.includes("4"), "button reports active categories");
+    status.value = { ...status.value, upNext: { ...status.value.upNext, tickets: [...filterState.status.upNext.tickets, { ...filterState.status.upNext.tickets[0], id: "t6", key: "APP-6" }] } };
+    await pause();
+    assert(queueKeys() === "APP-1,APP-6", "live updates retain filters and order");
+    const search = root.querySelector('[aria-label="Find a ticket"]');
+    search.value = "uploads"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
+    assert(queueKeys() === "APP-1,APP-6", "queue search matches titles");
+    search.value = "APP-6"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
+    assert(queueKeys() === "APP-6", "queue search matches ticket keys");
+    button(6).click(); await pause();
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: "APP-6", model: "auto", overrideLimits: true }), "filtered Run now retains the original dispatch input");
+    search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
+    byText('[role="radio"]', "Open3").click(); await pause();
+    assert(root.querySelectorAll(".run").length === 1, "ordinary runs use the same metadata filters");
+    await openFilters();
+    assert(dialog().querySelector('[aria-label="Provider"]'), "recorded runs retain provider filtering");
+    await clearFilters();
+    await closeFilters();
+    assert(root.querySelectorAll(".run").length === 3, "legacy runs stay visible with no metadata filters");
+    await openFilters();
+    await pickFilter("Provider", "Claude");
+    await closeFilters();
+    assert(root.querySelectorAll(".run").length === 1, "provider filters actual recorded runs");
+    byText('[role="radio"]', "Up next4").click(); await pause();
+    await openFilters();
+    await pickFilter("Project", "Empty");
+    assert(queueKeys() === "" && heldKeys() === "" && root.textContent.includes("No tickets match."), "no matching project has an empty result");
+    await clearFilters();
+    await closeFilters();
+    assert(queueKeys() === "APP-1,WEB-2,APP-3,APP-6", "clear restores the complete ordered queue");
+    assert(document.documentElement.scrollWidth <= innerWidth, "Runs fits the viewport");
+    await openFilters();
+    const bounds = dialog().getBoundingClientRect();
+    assert(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, "filter dialog fits the viewport");
+    status.value = { ...status.value, upNext: { ...status.value.upNext, tickets: [{ ...filterState.status.upNext.tickets[0], labels: Array.from({ length: 50 }, (_, i) => `scope-${i}`) }] } };
+    await pause();
+    dialog().scrollTop = dialog().scrollHeight;
+    assert(dialog().scrollWidth <= dialog().clientWidth, "large tag catalogs do not overflow the dialog");
+    const done = byText("button", "Done", dialog()).getBoundingClientRect();
+    assert(done.bottom <= innerHeight && done.top >= 0, "dialog scrolling reaches its actions with many tags");
+    await closeFilters();
+    return { passed: true, viewport: [innerWidth, innerHeight], filters: ["project", "tags OR/AND", "difficulty", "priority", "search", "provider on runs"] };
+  } finally { window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); }
+}
+window.queueTests = { run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters };
 await show();

@@ -24,8 +24,10 @@ import {
   projectOf,
   difficultyLabel,
   PENDING_KINDS,
+  DIFFICULTIES,
+  matchesRunFilters,
 } from "../lib/format.js";
-import { Button, Select, Segmented, Tag, Icon, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
+import { Button, Chips, Field, Dialog, Segmented, Tag, Icon, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
 import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
 export function Runs() {
@@ -34,9 +36,12 @@ export function Runs() {
     loadHistory().catch((e) => message(e.message, true));
   }, []);
   const [state, setState] = useState(new URLSearchParams(location.search).get("state") ?? "open");
-  const [project, setProject] = useState("all");
-  const [provider, setProvider] = useState("all");
+  const [filters, setFilters] = useState({});
+  const [filterOpen, setFilterOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const next = state === "next";
+  const change = (key, value) => setFilters(previous => ({ ...previous, [key]: value }));
+  const active = ["projects", "tags", "difficulties", "priorities", ...(!next ? ["providers"] : [])].filter(key => filters[key]?.length).length;
   // Live jobs win over the history snapshot for anything still open.
   const liveById = new Map(jobs.value.map((j) => [j.id, j]));
   const all = (history.value ?? jobs.value).map((j) => liveById.get(j.id) ?? j);
@@ -45,17 +50,26 @@ export function Runs() {
   const list = all.filter(
     (j) =>
       (state === "all" || (state === "open" ? isOpen(j) : j.state === state)) &&
-      (project === "all" || j.projectId === project) &&
-      (provider === "all" || providerOf(j) === provider) &&
-      (!query || j.label.toLowerCase().includes(query.toLowerCase())),
+      matchesRunFilters(j, filters, query) &&
+      (!filters.providers?.length || filters.providers.includes(providerOf(j))),
   );
+  const tags = [...new Set([...all, ...(status.value.upNext?.tickets ?? []), ...(status.value.upNext?.held ?? [])].flatMap(row => row.labels ?? []))].sort();
+  const choices = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
   return html`<div class="page">
     <div class="page-head">
       <div><h1>Runs<${Help} text="Every run the factory has started, newest first." /></h1></div>
       <input class="mono search" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
-      <${Select} label="Project" size="sm" value=${project} onChange=${setProject} options=${[["all", "All projects"], ...config.value.projects.map((p) => [p.kaneoId, p.name])]} />
-      <${Select} label="Provider" size="sm" value=${provider} onChange=${setProvider} options=${[["all", "Both providers"], ...PROVIDERS.map((p) => [p.driver, p.name])]} />
+      <${Button} size="sm" aria-label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-haspopup="dialog" aria-expanded=${filterOpen} onClick=${() => setFilterOpen(true)}>Filter${active ? ` · ${active}` : ""}<//>
     </div>
+    <${Dialog} open=${filterOpen} onClose=${() => setFilterOpen(false)} title="Filters"
+      actions=${html`<${Button} variant="ghost" onClick=${() => { setFilters({}); setQuery(""); }}>Clear filters<//><${Button} onClick=${() => setFilterOpen(false)}>Done<//>`}>
+      ${choices("projects", "Project", config.value.projects.map(p => [p.kaneoId, p.name]))}
+      ${choices("tags", "Tags", tags.map(tag => [tag, tag]))}
+      <${Field} group label="Match tags"><${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "OR"], ["and", "AND"]]} /><//>
+      ${choices("difficulties", "Difficulty", DIFFICULTIES)}
+      ${choices("priorities", "Priority", [["urgent", "Urgent"], ["high", "High"], ["medium", "Medium"], ["low", "Low"], ["no-priority", "No priority"]])}
+      ${!next && choices("providers", "Provider", PROVIDERS.map(p => [p.driver, p.name]))}
+    <//>
     <${Segmented}
       label="State"
       value=${state}
@@ -63,7 +77,7 @@ export function Runs() {
       options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", counts.running + counts.dispatching + counts.waiting], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
     ${state === "next"
-      ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} />`
+      ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} />`
       : history.value === null && !jobs.value.length
         ? html`<${Empty}>Loading runs.<//>`
         : list.length
