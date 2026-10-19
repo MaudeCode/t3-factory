@@ -16,7 +16,7 @@ export function Login() {
       <h1>T3 Factory</h1>
       <p>${sso ? "Sign in with an authorized account to control the factory." : "Pair this device with your Mac to control the factory."}</p>
       ${sso
-        ? html`<${Button} variant="primary" onClick=${() => (location.href = auth.value.loginUrl)}>Sign in with SSO<//>`
+        ? html`<${Button} variant="primary" onClick=${() => (location.href = auth.value.loginUrl + "?returnTo=" + encodeURIComponent(location.pathname + location.search))}>Sign in with SSO<//>`
         : html`<form onSubmit=${submit}>
             <${Field} label="Pairing code or link">
               <input value=${code} onInput=${(e) => setCode(e.target.value)} autocomplete="off" autocapitalize="off" spellcheck="false" required />

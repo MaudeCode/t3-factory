@@ -175,8 +175,8 @@ test("SSO validates the OIDC flow and enforces group membership on every control
       r.on("error", reject);
       r.end(method === "POST" ? "{}" : undefined);
     });
-  const login = async () => {
-    const start = await req("/auth/login");
+  const login = async (destination = "") => {
+    const start = await req("/auth/login" + (destination ? `?returnTo=${encodeURIComponent(destination)}` : ""));
     assert.equal(start.status, 302);
     flow = new URL(start.headers.location!);
     assert.equal(flow.searchParams.get("code_challenge_method"), "S256");
@@ -252,6 +252,14 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     for (groups of [undefined, "factory-admins", [], ["factory-admins-extra"]])
       assert.equal((await signIn()).headers.location, "/?auth_error=denied");
     groups = ["factory-admins"];
+    const destination = '/start?ticket=APP-123';
+    const launch = await login(destination);
+    const returned = await req(launch.callback + '&returnTo=https://evil.example', 'GET', launch.transaction);
+    assert.equal(returned.headers.location, destination, 'SSO must return to the transaction-bound launch URL');
+    for (const unsafe of ['https://evil.example/start', '//evil.example', '//factory.example.test/start', '/\\evil.example', 'javascript:alert(1)', 'http://[']) {
+      const attempt = await login(unsafe);
+      assert.equal((await req(attempt.callback, 'GET', attempt.transaction)).headers.location, '/');
+    }
     const success = await signIn();
     assert.equal(success.headers.location, "/");
     const sessionHeader = success.headers["set-cookie"]!.find((v) =>
@@ -275,7 +283,7 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     assert.equal((await req("/api/state", "GET", session)).status, 200);
     assert.equal(refreshed, 1);
     assert.equal(
-      JSON.parse(readFileSync(sessionFile, "utf8")).sessions[0][1].refresh,
+      JSON.parse(readFileSync(sessionFile, "utf8")).sessions.find(([id]: [string]) => session.endsWith(id))[1].refresh,
       "next-refresh",
     );
     await restart();

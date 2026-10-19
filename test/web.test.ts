@@ -74,6 +74,10 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
       req.end(options.body as string | undefined);
     });
   try {
+    for (const path of ['/start?ticket=APP-123', '/start', '/start?ticket=bad']) {
+      assert.equal((await request(path)).status, 200, 'launch GET serves only the app shell');
+    }
+    assert.equal(calls.length, 0, 'launch GETs cannot dispatch');
     assert.equal((await request("/api/state")).status, 401);
     assert.equal((await request("/api/pair", { method: "POST" })).status, 401);
     assert.equal(

@@ -1,6 +1,11 @@
 // Pure formatting helpers and vocabulary shared by views and the store.
 export const clone = (value) => structuredClone(value);
 
+export function ticketKey(value) {
+  const key = value?.trim().toUpperCase() ?? "";
+  return /^[A-Z0-9]+-\d+$/.test(key) ? key : "";
+}
+
 export const uuid = () =>
   crypto.randomUUID?.() ??
   "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
