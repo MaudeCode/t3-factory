@@ -61,6 +61,8 @@ export interface SessionRef { kind: 'key' | 'task'; value: string; messageId: st
 export interface SessionThread {
   id: string; projectId: string; title: string; createdAt: string; updatedAt?: string; lastOrdinal?: number;
   backfill?: { cursor: string; updatedAt: string; top: number }; pending: SessionRef[];
+  // Undefined until the session's own history has established whether it launches a release review.
+  upstreamReview?: boolean;
   // A failed read leaves progress untouched and waits for this deadline before the session is read again.
   retryAfter?: string; error?: string;
 }
