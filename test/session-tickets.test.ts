@@ -156,34 +156,78 @@ function collectorFixture(t: test.TestContext) {
   return f;
 }
 
-test('session ticket keys resolve through the pinned MCP tool registry', async t => {
-  const f = collectorFixture(t);
-  f.tasks.push(task('task-7', 7));
-  f.sessions.push(f.session('s1'));
-  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
-  const paths: string[] = [];
+async function packagedTracker(t: test.TestContext, f: ReturnType<typeof collectorFixture>, readTask: (url: URL) => unknown) {
   t.mock.method(TrackerClient.prototype, 'json', async (path: string) => {
-    paths.push(path);
     const url = new URL(path, 'https://tracker.example');
     if (url.pathname === '/api/project') return f.projects;
     if (url.pathname.startsWith('/api/column/')) return [{ slug: 'ready', isFinal: false, position: 0 }];
-    if (url.pathname === '/api/task/by-ticket-id/FIX-7') {
-      assert.equal(url.searchParams.get('workspaceId'), 'workspace');
-      assert.equal(url.searchParams.get('projectId'), 'FIX');
-      return f.tasks[0];
-    }
     if (url.pathname === '/api/label/workspace/workspace') return [];
-    throw new Error(`Unexpected tracker path ${path}`);
+    return readTask(url);
   });
   const server = createMcpServer();
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), f.kaneo.client.connect(clientTransport)]);
   t.after(async () => { await f.kaneo.close(); await server.close(); });
   t.mock.method(f.kaneo, 'call', KaneoClient.prototype.call);
+}
+
+test('session ticket keys resolve through the pinned MCP tool registry', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  const paths: string[] = [];
+  await packagedTracker(t, f, url => {
+    paths.push(url.pathname);
+    if (url.pathname === '/api/task/by-ticket-id/FIX-7') {
+      assert.equal(url.searchParams.get('workspaceId'), 'workspace');
+      assert.equal(url.searchParams.get('projectId'), 'FIX');
+      return f.tasks[0];
+    }
+    throw new Error(`Unexpected tracker path ${url.pathname}`);
+  });
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'reported ticket is confirmed using tools available in the pinned MCP');
   assert.equal(f.status().error, null);
-  assert.ok(paths.some(path => path.startsWith('/api/task/by-ticket-id/FIX-7?')), 'key lookup uses the tracker endpoint directly');
+  assert.ok(paths.includes('/api/task/by-ticket-id/FIX-7'), 'key lookup uses the tracker endpoint directly');
+});
+
+test('missing session ticket references stop retrying without losing the known list', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  const rec = f.store.sessionThread('s1')!;
+  // Persisted failures from before the client could distinguish absence from an outage.
+  rec.pending = [{ kind: 'key', value: 'FIX-404' }, { kind: 'task', value: 'missing-task' }].map(ref => ({ ...ref, kind: ref.kind as 'key' | 'task', messageId: 'missing', at: AT.reported, attempts: 4, error: 'Old generic connection error', retryAfter: '2000-01-01T00:00:00Z' }));
+  f.store.saveSessionThread(rec);
+  await packagedTracker(t, f, url => { throw new Error(`${url.pathname}: Task not found (NOT_FOUND)`); });
+  await f.collect();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'existing rows survive absent creation references');
+  assert.equal(f.store.sessionThread('s1')!.pending.length, 0, 'explicitly missing task and key references are retired');
+  assert.equal(f.status().error, null, 'definitive absence is not a collection failure');
+  const row = f.store.sessionTicket('task-7')!;
+  f.store.saveSessionTicket({ ...row, refreshAfter: '2000-01-01T00:00:00Z' });
+  await f.collect();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'absence on refresh preserves an already listed row');
+  assert.equal(f.store.sessionTicket('task-7')!.refreshedAt, row.refreshedAt);
+  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7: Kaneo get_task: task not found/);
+});
+
+test('task lookup errors without explicit absence remain retryable', async t => {
+  for (const detail of ['Task not found', 'HTTP 404', 'Unauthorized (UNAUTHORIZED)', 'Forbidden (FORBIDDEN)', 'Connection failed', 'Tool not found', 'Task not found (NOT_FOUND) trailing data']) await t.test(detail, async t => {
+    const f = collectorFixture(t);
+    f.sessions.push(f.session('s1'));
+    f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+    await packagedTracker(t, f, () => { throw new Error(detail); });
+    await f.collect();
+    const pending = f.store.sessionThread('s1')!.pending;
+    assert.equal(pending.length, 1, 'the candidate remains available for retry');
+    assert.equal(pending[0].attempts, 1);
+    assert.ok(pending[0].retryAfter);
+    assert.match(f.status().error?.message ?? '', /Confirming FIX-7/);
+  });
 });
 
 test('reports across projects become one row per confirmed task, in priority order, with their provenance', async t => {
