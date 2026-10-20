@@ -19,19 +19,27 @@ interface CatalogProject { id: string; name: string; slug: string; ready: string
 interface Catalog { at: number; projects: Record<string, CatalogProject> }
 export interface Budget { reads?: number; lookups?: number; refreshes?: number }
 
-// Creation reports: a block of an assistant message that says it created, filed or opened something, naming
-// tracker keys or task links. Quoted lines, tables, code and negated sentences are not reports.
+// Creation reports: a block of an assistant message with a clause that says it created, filed or opened something,
+// naming tracker keys or task links. Quoted lines, tables and code are not reports. A negator counts only against
+// the creation verb in its own clause, so "did not find one, so I created X" reports X and "did not create X" does not.
 const CREATED = /\b(?:creat(?:ed|ing)|filed|filing|opened|opening)\b/i;
 const NEGATED = /\b(?:not|no|never|without|didn't|did not|wasn't|was not|cannot|can't|could not|couldn't)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
+const CLAUSE = /[,;:]|\s(?:so|but|and|then|yet)\s/i;
 const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/dashboard\/workspace\/([^/\s)]+)\/project\/[^/\s)]+\/task\/([\w-]+)/g;
 const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
+// 'yes' when a sentence affirms a creation, 'no' when its only creation clauses are negated, else neutral.
+function creationSense(sentence: string): 'yes' | 'no' | null {
+  const clauses = sentence.split(CLAUSE);
+  if (clauses.some(clause => CREATED.test(clause) && !NEGATED.test(clause))) return 'yes';
+  return clauses.some(clause => NEGATED.test(clause) || CREATED.test(clause)) ? 'no' : null;
+}
 export function creationReports(text: string, workspaceId: string): Pick<SessionRef, 'kind' | 'value'>[] {
   const refs = new Map<string, Pick<SessionRef, 'kind' | 'value'>>();
   for (const block of text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').split(/\n\s*\n/)) {
-    // A negated sentence drops out on its own; the rest of the block still counts as a report.
-    const body = block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n').split(/(?<=[.!?])\s+|\n+/).filter(sentence => !NEGATED.test(sentence)).join('\n');
-    if (!CREATED.test(body)) continue;
+    const sentences = block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n').split(/(?<=[.!?])\s+|\n+/);
+    if (!sentences.some(sentence => creationSense(sentence) === 'yes')) continue;
+    const body = sentences.filter(sentence => creationSense(sentence) !== 'no').join('\n');
     for (const [, workspace, taskId] of body.matchAll(LINK)) if (decoded(workspace) === workspaceId) refs.set(`task:${taskId}`, { kind: 'task', value: taskId });
     for (const [, key] of body.replace(LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
   }
@@ -42,9 +50,9 @@ export function creationReports(text: string, workspaceId: string): Pick<Session
 export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
 
 // Projects and their columns, cached in the Store; configured projects keep their configured statuses.
-async function catalog(c: Config, store: Store, kaneo: Kaneo): Promise<Catalog> {
+async function catalog(c: Config, store: Store, kaneo: Kaneo, reread = false): Promise<Catalog> {
   const cached = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
-  if (cached && Date.now() - cached.at < CATALOG_MS) return cached;
+  if (cached && !reread && Date.now() - cached.at < CATALOG_MS) return cached;
   const projects = z.array(z.object({ id: z.string(), name: z.string(), slug: z.string(), archivedAt: z.string().nullish() }).passthrough()).parse(await kaneo.call('list_projects', { workspaceId: c.kaneo.workspaceId })).filter(p => !p.archivedAt);
   const column = z.object({ slug: z.string(), isFinal: z.boolean(), position: z.number() }).passthrough();
   const entries = await Promise.all(projects.map(async (p): Promise<CatalogProject> => {
@@ -121,13 +129,15 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   if (due.length) {
     try { cat = await catalog(c, store, kaneo); } catch (error) { errors.push(`Reading tracker projects: ${safeError(error)}`); }
   }
-  let lookups = 0;
+  let lookups = 0, refreshedCatalog = false;
   for (const rec of cat ? due : []) {
     for (const ref of [...rec.pending]) {
       if (ref.retryAfter && Date.parse(ref.retryAfter) > now) continue;
       if (lookups++ >= limits.lookups) { more = true; break; }
       try {
-        const task = await lookup(c, kaneo, cat!, ref);
+        let task = await lookup(c, kaneo, cat!, ref);
+        // A project created since the catalog was cached is read once, fresh, before its reference is discarded.
+        if (!task && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kaneo, true); task = await lookup(c, kaneo, cat, ref); }
         const created = task ? Date.parse(task.createdAt) : NaN;
         // Creation evidence: the ticket came into being during this session, no later than the report.
         if (task && created >= Date.parse(rec.createdAt) - CLOCK_SKEW_MS && created <= Date.parse(ref.at) + CLOCK_SKEW_MS) {

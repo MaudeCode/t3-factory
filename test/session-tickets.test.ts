@@ -93,6 +93,9 @@ test('creation reports name keys and task links, not mentions, prompts, examples
   assert.deepEqual(refs('```\nCreated FIX-6\n```\n\nUse a key such as `FIX-6` when creating one.'), [], 'code and inline examples are not reports');
   assert.deepEqual(refs('No ticket was created for FIX-2; it already exists.'), [], 'a negated sentence is not a report');
   assert.deepEqual(refs("I couldn't create FIX-1 because it exists. I opened FIX-2 instead."), ['key:FIX-2'], 'negation covers only its own sentence');
+  assert.deepEqual(refs('I did not find an existing ticket, so I created FIX-2.'), ['key:FIX-2'], 'negation binds to the creation clause, not an earlier phrase');
+  assert.deepEqual(refs('Created FIX-5 without a difficulty label.'), ['key:FIX-5'], 'a negator after the verb does not negate it');
+  assert.deepEqual(refs("I didn't create FIX-1 and FIX-3 after all."), [], 'a negated creation drops every key it names');
   assert.deepEqual(refs(`Created [FIX-8](${LINK('task-8', 'elsewhere')}).`), ['key:FIX-8'], 'a link into another workspace is ignored');
   assert.deepEqual(refs('Created FIX-7.\n\nCreated FIX-7 again.'), ['key:FIX-7'], 'one reference per message');
 });
@@ -114,6 +117,7 @@ function collectorFixture(t: test.TestContext) {
     dir, c, store: new Store(c.stateDir), t3: new T3Client(c.t3), kaneo: new KaneoClient(c.kaneo),
     sessions: [] as Record<string, unknown>[], bounded: new Map<string, Page>(), history: new Map<string, Page>(),
     tasks: [] as Record<string, unknown>[], labels: new Map<string, string[]>(), failing: new Set<string>(), calls: [] as string[],
+    projects: [{ id: 'FIX', name: 'Fixture', slug: 'FIX' }, { id: 'OTH', name: 'Other', slug: 'OTH' }] as Record<string, unknown>[],
     session, task, message, LINK,
     collect: (budget?: { reads?: number; lookups?: number; refreshes?: number }) => collectSessionTickets(c, f.store, f.t3, f.kaneo, budget),
     status: () => sessionTicketStatus(c, f.store),
@@ -135,7 +139,7 @@ function collectorFixture(t: test.TestContext) {
     f.calls.push(name);
     if (f.failing.has(name)) { f.failing.delete(name); throw new Error(`Kaneo ${name} failed; check its authenticated connection`); }
     if (name === 'list_workspace_labels') return [...f.labels].flatMap(([taskId, names]) => names.map(n => ({ name: n, taskId, workspaceId: 'workspace' })));
-    if (name === 'list_projects') return [{ id: 'FIX', name: 'Fixture', slug: 'FIX' }, { id: 'OTH', name: 'Other', slug: 'OTH' }];
+    if (name === 'list_projects') return structuredClone(f.projects);
     if (name === 'list_project_columns') return [{ slug: 'ready', name: 'Ready', isFinal: false, position: 0 }, { slug: 'done', name: 'Done', isFinal: true, position: 1 }];
     if (name === 'get_task_by_ticket_id') { const found = f.tasks.find(x => `${x.projectId}-${x.number}` === args.ticketId && x.projectId === args.projectId); if (!found) throw new Error('Kaneo get_task_by_ticket_id failed; check its authenticated connection'); return structuredClone(found); }
     if (name === 'get_task') { const found = f.tasks.find(x => x.id === args.taskId); if (!found) throw new Error('Kaneo get_task failed; check its authenticated connection'); return structuredClone(found); }
@@ -307,4 +311,24 @@ test('a collection batch that cannot start still records the failure for the pag
     const published = await f.until(s => s.sessionTickets?.error);
     assert.match(published.sessionTickets?.error?.message ?? '', /Kaneo MCP process exited/, 'a setup failure reaches status.sessionTickets.error');
   } finally { await service.stop(); }
+});
+
+test('a reference to a project the cached catalog does not know forces one fresh catalog read before it is dropped', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7']);
+  // A project created after the catalog was cached, and a ticket in it reported by a new session.
+  f.projects.push({ id: 'NEW', name: 'Newcomer', slug: 'NEW' });
+  f.tasks.push(task('task-n1', 1, 'NEW', { status: 'ready' }), task('task-n2', 2, 'NEW', { status: 'ready', priority: 'low' }));
+  f.sessions.push(f.session('s2'));
+  f.bounded.set('s2', { items: [message('b1', 'assistant_message', `Created NEW-1 and [NEW-2](${LINK('task-n2')}); the SHA-256 digest is unchanged.`, 1, AT.reported, 's2')], cursor: null, more: false });
+  const catalogReads = () => f.calls.filter(x => x === 'list_projects').length;
+  const before = catalogReads();
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7', 'NEW-1', 'NEW-2'], 'tickets in a newly listed project are kept');
+  assert.equal(catalogReads(), before + 1, 'one uncached catalog read per batch, not one per miss');
+  assert.deepEqual(f.store.sessionThread('s2')?.pending, [], 'a key that is still not a project after the refresh is dropped, not retried');
 });
