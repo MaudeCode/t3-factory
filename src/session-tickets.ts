@@ -27,6 +27,8 @@ const NEGATED = /\b(?:not|no|never|without|didn't|did not|wasn't|was not|cannot|
 const CLAUSE = /[,;:]|\s(?:so|but|and|then|yet)\s/i;
 const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/dashboard\/workspace\/([^/\s)]+)\/project\/[^/\s)]+\/task\/([\w-]+)/g;
+// Explicit skill commands and the legacy release-review launch request, not titles or discussion of the skill.
+const UPSTREAM_REVIEW_REQUEST = /^(?:[$/](?:skills[:/])?upstream-release-review\b|Review [^\n]+?\bfrom\b[^\n]+?\bto\b[^\n]+?\bwith\b[^\n]*\bupstream-release-review`?\s+skill(?=[.!?](?:\s|$)|\s*$))/i;
 const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
 // Walk a block clause by clause. A clause with a creation verb sets the polarity (affirmed, or negated when a
 // negator precedes the verb); a clause without one keeps the polarity before it. A new sentence starts neutral
@@ -59,9 +61,9 @@ export function creationReports(text: string, workspaceId: string): Pick<Session
 // A Factory start counts once T3 has the thread; a dispatch that was only prepared, or whose outcome is unknown, does not.
 export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
 
-// Persisted job ownership identifies review sessions even after they finish or leave T3's current shell.
-function sessionSourceFilter(jobs: Job[]) {
-  const upstream = new Set(jobs.filter(job => job.kind === 'upstream').map(job => job.threadId));
+// Job ownership and explicit kickoff provenance survive finished and legacy review sessions.
+function sessionSourceFilter(jobs: Job[], sessions: SessionThread[]) {
+  const upstream = new Set([...jobs.filter(job => job.kind === 'upstream').map(job => job.threadId), ...sessions.filter(session => session.upstreamReview).map(session => session.id)]);
   return (threadId: string) => !upstream.has(threadId);
 }
 
@@ -85,6 +87,13 @@ async function catalog(c: Config, store: Store, kaneo: Kaneo, reread = false): P
 // Read one page of a session and record what it reports. Progress is written only with its candidates.
 async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Session, workspaceId: string) {
   const page = await t3.conversation(session.id, rec.backfill?.cursor);
+  if (page.items.some(item => item.type === 'user_message' && item.text && UPSTREAM_REVIEW_REQUEST.test(item.text.trim()))) {
+    rec.upstreamReview = true; rec.updatedAt = session.updatedAt; delete rec.backfill;
+    store.saveSessionThread(rec);
+    return;
+  }
+  if (rec.upstreamReview === undefined && page.more && !page.cursor) throw new Error('T3 session history has no cursor for origin classification');
+  if (!page.more) rec.upstreamReview = false;
   const unseen = page.items.filter(i => rec.lastOrdinal === undefined || i.ordinal > rec.lastOrdinal);
   for (const item of unseen) {
     if (item.type !== 'assistant_message' || !item.text) continue;
@@ -93,7 +102,7 @@ async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Se
       if (!rec.pending.some(p => p.messageId === messageId && p.kind === ref.kind && p.value === ref.value)) rec.pending.push({ ...ref, messageId, at: item.updatedAt ?? item.startedAt, attempts: 0 });
     }
   }
-  const reachedKnown = rec.lastOrdinal !== undefined && page.items.some(i => i.ordinal <= rec.lastOrdinal!);
+  const reachedKnown = rec.upstreamReview !== undefined && rec.lastOrdinal !== undefined && page.items.some(i => i.ordinal <= rec.lastOrdinal!);
   if (rec.backfill) {
     if (!page.more || !page.cursor || reachedKnown) { rec.lastOrdinal = rec.backfill.top; rec.updatedAt = rec.backfill.updatedAt; delete rec.backfill; }
     else rec.backfill.cursor = page.cursor;
@@ -131,7 +140,7 @@ async function lookup(c: Config, kaneo: Kaneo, cat: Catalog, ref: SessionRef) {
 export async function collectSessionTickets(c: Config, store: Store, t3: T3, kaneo: Kaneo, budget: Budget = {}): Promise<boolean> {
   const limits = { reads: 8, lookups: 10, refreshes: 10, ...budget };
   const now = Date.now(), at = new Date(now).toISOString(), errors: string[] = [];
-  const includeSource = sessionSourceFilter(store.jobs());
+  let includeSource = sessionSourceFilter(store.jobs(), store.sessionThreads());
   let more = false;
   let labels: ReturnType<typeof listTaskLabels> | undefined;
   const labelsOf = async (taskId: string) => ((await (labels ??= listTaskLabels(kaneo))).get(taskId) ?? []).map(l => l.name);
@@ -142,7 +151,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     listed = new Set(sessions.map(s => s.id));
     for (const session of sessions) {
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
-      if (!rec.backfill && rec.updatedAt === session.updatedAt) continue;
+      if (rec.upstreamReview !== undefined && !rec.backfill && rec.updatedAt === session.updatedAt) continue;
       if (rec.retryAfter && Date.parse(rec.retryAfter) > now) continue;
       if (reads++ >= limits.reads) { more = true; break; }
       try { delete rec.retryAfter; delete rec.error; await scanSession(t3, store, rec, session, c.kaneo.workspaceId); }
@@ -154,8 +163,9 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (store.sessionThread(session.id)?.backfill) more = true;
     }
   } catch (error) { errors.push(`Listing sessions: ${safeError(error)}`); }
+  includeSource = sessionSourceFilter(store.jobs(), store.sessionThreads());
   let cat: Catalog | undefined;
-  const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now));
+  const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now));
   if (due.length) {
     try { cat = await catalog(c, store, kaneo); } catch (error) { errors.push(`Reading tracker projects: ${safeError(error)}`); }
   }
@@ -234,7 +244,7 @@ export function dismissSessionTicket(store: Store, taskId: string) {
 // The list as the page shows it: actionable, not dismissed, not consumed by a confirmed Factory start, in priority order.
 export function sessionTicketStatus(c: Config, store: Store) {
   const jobs = store.jobs(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
-  const includeSource = sessionSourceFilter(jobs);
+  const includeSource = sessionSourceFilter(jobs, store.sessionThreads());
   const rows = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
     const sources = r.sources.filter(s => includeSource(s.threadId));
     if (!sources.length) return [];

@@ -115,6 +115,67 @@ test('upstream release-review sources are excluded from collection and existing 
   assert.equal(f.status().error, null, 'excluded source failures do not keep the collection notice alive');
 });
 
+const reviewKickoff = "Review Example (`example/project`) from `v1.0` to `v2.0` with Example's `upstream-release-review` skill.";
+test('legacy review kickoff requests classify upstream sources without job records', async t => {
+  for (const kickoff of [reviewKickoff, '$upstream-release-review example/project v1.0..v2.0']) await t.test(kickoff, async t => {
+    const f = collectorFixture(t);
+    f.tasks.push(task('task-7', 7), task('task-8', 8));
+    f.labels.set('task-8', ['upstream']);
+    f.sessions.push(f.session('review', { title: 'Ordinary title' }), f.session('ordinary', { title: 'Upstream release: Example' }));
+    f.bounded.set('review', { items: [message('u1', 'user_message', kickoff, 1, AT.threadStart, 'review'), message('a1', 'assistant_message', 'Created FIX-7.', 2, AT.reported, 'review')], cursor: null, more: false });
+    f.bounded.set('ordinary', { items: [message('u2', 'user_message', `Review docs from start to finish with upstream-release-review skill examples.\n\n> ${reviewKickoff}`, 1, AT.threadStart, 'ordinary'), message('a2', 'assistant_message', 'Created FIX-8.', 2, AT.reported, 'ordinary')], cursor: null, more: false });
+    await f.drain();
+    assert.deepEqual(f.keys(), ['FIX-8'], 'explicit review kickoff sources are excluded without relying on titles or labels');
+    assert.equal(f.store.sessionThread('review')!.upstreamReview, true);
+    assert.equal(f.store.sessionThread('ordinary')!.upstreamReview, false);
+    assert.equal(f.calls.filter(c => c === 'get_task_by_ticket_id').length, 1, 'excluded review candidates are not confirmed');
+  });
+});
+
+test('cached legacy origins backfill past known history and retain rows across read failures', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('legacy'));
+  f.bounded.set('legacy', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 50, AT.reported, 'legacy')], cursor: null, more: false });
+  await f.collect();
+  const rec = f.store.sessionThread('legacy')!;
+  delete rec.upstreamReview; f.store.saveSessionThread(rec); // old persisted scan without origin classification
+  f.bounded.set('legacy', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 50, AT.reported, 'legacy')], cursor: null, more: true });
+  await f.collect();
+  assert.match(f.status().error?.message ?? '', /no cursor for origin classification/);
+  assert.equal(f.store.sessionThread('legacy')!.upstreamReview, undefined, 'incomplete history is not an ordinary-origin verdict');
+  f.store.saveSessionThread({ ...f.store.sessionThread('legacy')!, retryAfter: undefined });
+  f.bounded.set('legacy', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 50, AT.reported, 'legacy')], cursor: 'origin', more: true });
+  f.history.set('origin', { items: [message('u1', 'user_message', reviewKickoff, 1, AT.threadStart, 'legacy')], cursor: null, more: false });
+  assert.equal(await f.collect({ reads: 1 }), true, 'an unchanged legacy scan still classifies its older origin');
+  assert.deepEqual(f.keys(), ['FIX-7'], 'unknown origin preserves the last known list');
+  f.failing.add('/api/orchestration/threads/legacy/history?cursor=origin&view=conversation');
+  await f.collect();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'a failed origin read does not erase the last known row');
+  assert.match(f.status().error?.message ?? '', /Reading session/);
+  const { retryAfter, ...ready } = f.store.sessionThread('legacy')!;
+  assert.ok(retryAfter); f.store.saveSessionThread(ready);
+  await f.drain();
+  assert.deepEqual(f.keys(), [], 'the completed origin backfill removes the legacy review source');
+  assert.equal(f.store.sessionThread('legacy')!.upstreamReview, true);
+  assert.equal(f.store.sessionTicket('task-7')!.sources.length, 1, 'stored provenance is preserved');
+  assert.equal(f.status().error, null);
+});
+
+test('new ticket confirmations wait until an older origin is classified', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('review'));
+  f.bounded.set('review', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 50, AT.reported, 'review')], cursor: 'origin', more: true });
+  f.history.set('origin', { items: [message('u1', 'user_message', reviewKickoff, 1, AT.threadStart, 'review')], cursor: null, more: false });
+  assert.equal(await f.collect({ reads: 1 }), true);
+  assert.deepEqual(f.keys(), [], 'an unclassified review cannot briefly publish new tickets');
+  assert.equal(f.calls.includes('get_task_by_ticket_id'), false);
+  await f.drain();
+  assert.deepEqual(f.keys(), []);
+  assert.equal(f.status().error, null);
+});
+
 test('creation reports name keys and task links, not mentions, prompts, examples, quotes, tables, code or negations', () => {
   const refs = (text: string) => creationReports(text, 'workspace').map(r => `${r.kind}:${r.value}`);
   assert.deepEqual(refs('Created FIX-7: Fix uploads.'), ['key:FIX-7']);
@@ -313,6 +374,7 @@ test('backfill follows history past the bounded window and catch-up covers downt
 
 test('a failed read or lookup is retried without losing candidates, duplicating rows or hiding the last list', async t => {
   const f = collectorFixture(t);
+  f.store.saveSessionThread({ id: 's1', projectId: 'FIX', title: 'Session s1', createdAt: AT.threadStart, pending: [], upstreamReview: false }); // origin already classified for this retry scenario
   f.tasks.push(task('task-7', 7), task('task-8', 8));
   f.sessions.push(f.session('s1'));
   f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 10, AT.reported, 's1')], cursor: 'older-1', more: true });
