@@ -28,9 +28,10 @@ export function SessionTickets() {
         ? html`<${Empty}>Sessions have not been read yet.<//>`
         : rows.length
           ? rows.map((t) => {
-              const ticket = { ...t, id: t.taskId }, hold = startHold(ticket) ?? t.unavailable;
+              // One session action per row, for the latest report; the facet line names every session.
+              const ticket = { ...t, id: t.taskId }, hold = startHold(ticket) ?? t.unavailable, latest = t.sources.reduce((a, b) => (b.at > a.at ? b : a));
               return html`<${TicketRow} key=${t.taskId} ticket=${ticket} project=${project(t.projectId)}
-                actions=${html`${t.sources.map((src) => html`<a key=${src.threadId} class="btn btn-sm btn-icon next-run" href=${`t3-thread://v1/${src.threadId}`} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${`Open in T3 Code: ${src.title || "session"}, reported ${ago(src.at, now)}`}><${Icon} name="commentDiscussion" /></a>`)}
+                actions=${html`<a class="btn btn-sm btn-icon next-run" href=${`t3-thread://v1/${latest.threadId}`} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${`Open in T3 Code: ${latest.title || "session"}, reported ${ago(latest.at, now)}${t.sources.length > 1 ? `; ${t.sources.length - 1} more ${t.sources.length === 2 ? "session" : "sessions"} reported it` : ""}`}><${Icon} name="commentDiscussion" /></a>
                   <${RunNow} ticket=${ticket} hold=${hold} />
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss(t)}>×<//>`}>
                 <span title="The T3 session that reported creating this ticket">from ${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>

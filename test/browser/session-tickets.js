@@ -16,7 +16,7 @@ const rows = [
   row("t9", "WEB-9", "urgent", { projectId: "q", project: "Other project", labels: ["bug"], difficulty: "low", unavailable: "Project not configured in Factory" }),
   row("t2", "APP-2", "high"),
   row("t5", "APP-5", "medium", { labels: ["chore"], difficulty: null, refreshError: "Kaneo get_task failed; check its authenticated connection" }),
-  row("t1", "APP-1", "low", { title: "Dismissed later in the test" }),
+  row("t1", "APP-1", "low", { title: "Dismissed later in the test", sources: [{ threadId: "thread-t1", messageId: "m-t1", title: "Plan APP-1", at }, { threadId: "thread-t1b", messageId: "m-t1b", title: "Second look", at }, { threadId: "thread-t1c", messageId: "m-t1c", title: "Third look", at }] }),
 ];
 const base = {
   config: { enabled: false, kaneo: { url: "https://tracker.example", workspaceId: "w" }, models: [{ id: "preset-sol", name: "Sol", model: { instanceId: "codex", model: "sol" } }], projects: [{ kaneoId: "p", key: "APP", name: "Example", enabled: true, priorityLabels: ["agent-compat"] }] },
@@ -65,6 +65,9 @@ async function run() {
   assert(first.textContent.includes("from Plan WEB-9"), "the originating session is named");
   assert(root.querySelector(".next:nth-of-type(3)").textContent.includes("tracker read failed"), "a failed refresh is not shown as fresh");
   assert(!button("Run APP-2 now").closest("a") && !button("Remove APP-2 from Session tickets").closest("a"), "actions sit beside the tracker link, not inside it");
+  const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
+  assert(many.querySelectorAll('a[href^="t3-thread://"]').length === 1 && many.querySelector('a[href^="t3-thread://"]').title.includes("2 more"), "several sources collapse into one session action");
+  assert(many.getBoundingClientRect().right <= innerWidth && many.textContent.includes("Third look"), "all sources are named without widening the row");
   button("Run APP-2 now").click();
   await pause();
   assert(button("Run APP-2 now").disabled, "a pending request disables its row");

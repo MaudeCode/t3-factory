@@ -98,6 +98,8 @@ test('creation reports name keys and task links, not mentions, prompts, examples
   assert.deepEqual(refs("I didn't create FIX-1 and FIX-3 after all."), [], 'a negated creation drops every key it names');
   assert.deepEqual(refs("I couldn't create FIX-1, but I opened FIX-2 instead."), ['key:FIX-2'], 'only the affirmative clause of a mixed sentence reports');
   assert.deepEqual(refs('FIX-3 was already there. Created FIX-7.'), ['key:FIX-7'], 'a key before any creation clause is a mention');
+  assert.deepEqual(refs('Created FIX-1. FIX-2 is related.'), ['key:FIX-1'], 'a new sentence starts neutral');
+  assert.deepEqual(refs('Created these:\n1. FIX-1\n2. FIX-2\n\nFIX-3 is related.'), ['key:FIX-1', 'key:FIX-2'], 'a numbered list continues its header');
   assert.deepEqual(refs(`Created [FIX-8](${LINK('task-8', 'elsewhere')}).`), ['key:FIX-8'], 'a link into another workspace is ignored');
   assert.deepEqual(refs('Created FIX-7.\n\nCreated FIX-7 again.'), ['key:FIX-7'], 'one reference per message');
 });
@@ -352,4 +354,7 @@ test('failed session reads back off before the batch continues, so an outage nei
   assert.equal(reads(), 9, 'a T3 outage does not loop on the same sessions');
   assert.match(f.status().error?.message ?? '', /Reading session/);
   assert.ok(f.store.sessionThreads().every(r => r.retryAfter && r.updatedAt === undefined), 'failed sessions keep no progress and carry a retry deadline');
+  f.sessions.length = 0;
+  await f.collect();
+  assert.equal(f.status().error, null, 'failures of sessions T3 no longer lists do not keep the notice up');
 });

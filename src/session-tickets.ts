@@ -29,14 +29,21 @@ const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/dashboard\/workspace\/([^/\s)]+)\/project\/[^/\s)]+\/task\/([\w-]+)/g;
 const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
 // Walk a block clause by clause. A clause with a creation verb sets the polarity (affirmed, or negated when a
-// negator precedes the verb); a clause without one keeps the polarity before it, which is how a list under
-// "Created two tickets:" is read. Only clauses under an affirmed creation yield references.
+// negator precedes the verb); a clause without one keeps the polarity before it. A new sentence starts neutral
+// unless it continues a header ("Created two tickets:") or is a list item. Only clauses under an affirmed creation
+// yield references.
 function* affirmedClauses(block: string) {
-  let polarity: 'yes' | 'no' | null = null;
-  for (const sentence of block.split(/(?<=[.!?])\s+|\n+/)) for (const clause of sentence.split(CLAUSE)) {
-    if (CREATED.test(clause) && !NEGATED.test(clause)) polarity = 'yes';
-    else if (NEGATED.test(clause) || CREATED.test(clause)) polarity = 'no';
-    if (polarity === 'yes') yield clause;
+  let polarity: 'yes' | 'no' | null = null, header = false;
+  for (const sentence of block.split(/(?<=[.!?])\s+|\n+/)) {
+    const marker = /^\s*(?:[-*+•]|\d+[.)])(?:\s|$)/.test(sentence);
+    if (!header && !marker) polarity = null;
+    // A header, or a bare list number the sentence split left on its own, carries its polarity into the next fragment.
+    header = /:\s*$/.test(sentence) || /^\s*(?:[-*+•]|\d+[.)])\s*$/.test(sentence);
+    for (const clause of sentence.split(CLAUSE)) {
+      if (CREATED.test(clause) && !NEGATED.test(clause)) polarity = 'yes';
+      else if (NEGATED.test(clause) || CREATED.test(clause)) polarity = 'no';
+      if (polarity === 'yes') yield clause;
+    }
   }
 }
 export function creationReports(text: string, workspaceId: string): Pick<SessionRef, 'kind' | 'value'>[] {
@@ -116,9 +123,12 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   let more = false;
   let labels: ReturnType<typeof listTaskLabels> | undefined;
   const labelsOf = async (taskId: string) => ((await (labels ??= listTaskLabels(kaneo))).get(taskId) ?? []).map(l => l.name);
+  let listed: Set<string> | undefined;
   try {
     let reads = 0;
-    for (const session of await t3.sessions()) {
+    const sessions = await t3.sessions();
+    listed = new Set(sessions.map(s => s.id));
+    for (const session of sessions) {
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
       if (!rec.backfill && rec.updatedAt === session.updatedAt) continue;
       if (rec.retryAfter && Date.parse(rec.retryAfter) > now) continue;
@@ -186,7 +196,8 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   else {
     store.set('sessionTickets:at', at);
     // A reference whose last lookup failed is still unresolved; the notice stays until a retry succeeds or the read is dropped.
-    const lingering = store.sessionThreads().flatMap(rec => [...rec.pending.filter(ref => ref.error).map(ref => `Confirming ${ref.value}: ${ref.error}`), ...(rec.error ? [rec.error] : [])]);
+    // A session T3 no longer lists is never read again, so its old read failure is not a current one.
+    const lingering = store.sessionThreads().flatMap(rec => [...rec.pending.filter(ref => ref.error).map(ref => `Confirming ${ref.value}: ${ref.error}`), ...(rec.error && listed?.has(rec.id) ? [rec.error] : [])]);
     store.set('sessionTickets:error', lingering.length ? JSON.stringify({ at: JSON.parse(store.get('sessionTickets:error') || 'null')?.at ?? at, message: lingering.slice(0, 3).join('; ') }) : '');
   }
   return more;
