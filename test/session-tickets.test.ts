@@ -96,6 +96,8 @@ test('creation reports name keys and task links, not mentions, prompts, examples
   assert.deepEqual(refs('I did not find an existing ticket, so I created FIX-2.'), ['key:FIX-2'], 'negation binds to the creation clause, not an earlier phrase');
   assert.deepEqual(refs('Created FIX-5 without a difficulty label.'), ['key:FIX-5'], 'a negator after the verb does not negate it');
   assert.deepEqual(refs("I didn't create FIX-1 and FIX-3 after all."), [], 'a negated creation drops every key it names');
+  assert.deepEqual(refs("I couldn't create FIX-1, but I opened FIX-2 instead."), ['key:FIX-2'], 'only the affirmative clause of a mixed sentence reports');
+  assert.deepEqual(refs('FIX-3 was already there. Created FIX-7.'), ['key:FIX-7'], 'a key before any creation clause is a mention');
   assert.deepEqual(refs(`Created [FIX-8](${LINK('task-8', 'elsewhere')}).`), ['key:FIX-8'], 'a link into another workspace is ignored');
   assert.deepEqual(refs('Created FIX-7.\n\nCreated FIX-7 again.'), ['key:FIX-7'], 'one reference per message');
 });
@@ -116,7 +118,7 @@ function collectorFixture(t: test.TestContext) {
   const f = {
     dir, c, store: new Store(c.stateDir), t3: new T3Client(c.t3), kaneo: new KaneoClient(c.kaneo),
     sessions: [] as Record<string, unknown>[], bounded: new Map<string, Page>(), history: new Map<string, Page>(),
-    tasks: [] as Record<string, unknown>[], labels: new Map<string, string[]>(), failing: new Set<string>(), calls: [] as string[],
+    tasks: [] as Record<string, unknown>[], labels: new Map<string, string[]>(), failing: new Set<string>(), down: new Set<string>(), calls: [] as string[],
     projects: [{ id: 'FIX', name: 'Fixture', slug: 'FIX' }, { id: 'OTH', name: 'Other', slug: 'OTH' }] as Record<string, unknown>[],
     session, task, message, LINK,
     collect: (budget?: { reads?: number; lookups?: number; refreshes?: number }) => collectSessionTickets(c, f.store, f.t3, f.kaneo, budget),
@@ -127,7 +129,7 @@ function collectorFixture(t: test.TestContext) {
   };
   t.mock.method(f.t3, 'request', async (route: string) => {
     f.calls.push(route);
-    if (f.failing.has(route)) { f.failing.delete(route); throw new Error(`T3 ${route} returned HTTP 503`); }
+    if (f.failing.has(route) || f.down.has(route)) { f.failing.delete(route); throw new Error(`T3 ${route} returned HTTP 503`); }
     if (route === '/api/orchestration/shell') return { threads: f.sessions, archivedThreads: [], projects: [] };
     const bounded = route.match(/^\/api\/orchestration\/threads\/([^/]+)\/bounded$/);
     if (bounded) { const page = f.bounded.get(bounded[1]) ?? { items: [], cursor: null, more: false }; return { historyCursor: page.cursor, hasMoreHistory: page.more, projection: { turnItems: page.items } }; }
@@ -212,12 +214,17 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   assert.match(f.status().error?.message ?? '', /Confirming FIX-7/);
   const pending = f.store.sessionThread('s1')!.pending;
   assert.equal(pending.length, 1); assert.equal(pending[0].attempts, 1); assert.ok(pending[0].retryAfter);
+  await f.collect({ reads: 0 });
+  assert.match(f.status().error?.message ?? '', /Confirming FIX-7/, 'an unresolved lookup failure stays visible before its retry is due');
   pending[0].retryAfter = '2000-01-01T00:00:00.000Z'; f.store.saveSessionThread({ ...f.store.sessionThread('s1')!, pending });
   f.failing.add('/api/orchestration/threads/s1/history?cursor=older-1&view=conversation');
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'the retried lookup succeeds while the page read fails');
   assert.match(f.status().error?.message ?? '', /Reading session/);
   assert.deepEqual(f.store.sessionThread('s1')!.backfill?.cursor, 'older-1', 'an interrupted page is read again from the same cursor');
+  await f.collect();
+  assert.equal(f.calls.filter(x => x.endsWith('cursor=older-1&view=conversation')).length, 1, 'the failed page waits for its retry deadline');
+  const { retryAfter, ...rested } = f.store.sessionThread('s1')!; assert.ok(retryAfter); f.store.saveSessionThread(rested); // the deadline passes
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8']);
   assert.equal(f.status().error, null, 'a clean batch clears the failure');
@@ -331,4 +338,18 @@ test('a reference to a project the cached catalog does not know forces one fresh
   assert.deepEqual(f.keys(), ['FIX-7', 'NEW-1', 'NEW-2'], 'tickets in a newly listed project are kept');
   assert.equal(catalogReads(), before + 1, 'one uncached catalog read per batch, not one per miss');
   assert.deepEqual(f.store.sessionThread('s2')?.pending, [], 'a key that is still not a project after the refresh is dropped, not retried');
+});
+
+test('failed session reads back off before the batch continues, so an outage neither loops nor starves later sessions', async t => {
+  const f = collectorFixture(t);
+  for (let n = 1; n <= 9; n++) { f.sessions.push(f.session(`s${n}`)); f.down.add(`/api/orchestration/threads/s${n}/bounded`); }
+  const reads = () => f.calls.filter(x => x.endsWith('/bounded')).length;
+  assert.equal(await f.collect(), true, 'the ninth session is still unread after eight failed reads');
+  assert.equal(reads(), 8);
+  assert.equal(await f.collect(), false, 'the ninth session gets its read while the failed eight wait for their retry deadline');
+  assert.equal(reads(), 9);
+  assert.equal(await f.collect(), false);
+  assert.equal(reads(), 9, 'a T3 outage does not loop on the same sessions');
+  assert.match(f.status().error?.message ?? '', /Reading session/);
+  assert.ok(f.store.sessionThreads().every(r => r.retryAfter && r.updatedAt === undefined), 'failed sessions keep no progress and carry a retry deadline');
 });

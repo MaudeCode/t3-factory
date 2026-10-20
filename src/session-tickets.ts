@@ -28,18 +28,21 @@ const CLAUSE = /[,;:]|\s(?:so|but|and|then|yet)\s/i;
 const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/dashboard\/workspace\/([^/\s)]+)\/project\/[^/\s)]+\/task\/([\w-]+)/g;
 const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
-// 'yes' when a sentence affirms a creation, 'no' when its only creation clauses are negated, else neutral.
-function creationSense(sentence: string): 'yes' | 'no' | null {
-  const clauses = sentence.split(CLAUSE);
-  if (clauses.some(clause => CREATED.test(clause) && !NEGATED.test(clause))) return 'yes';
-  return clauses.some(clause => NEGATED.test(clause) || CREATED.test(clause)) ? 'no' : null;
+// Walk a block clause by clause. A clause with a creation verb sets the polarity (affirmed, or negated when a
+// negator precedes the verb); a clause without one keeps the polarity before it, which is how a list under
+// "Created two tickets:" is read. Only clauses under an affirmed creation yield references.
+function* affirmedClauses(block: string) {
+  let polarity: 'yes' | 'no' | null = null;
+  for (const sentence of block.split(/(?<=[.!?])\s+|\n+/)) for (const clause of sentence.split(CLAUSE)) {
+    if (CREATED.test(clause) && !NEGATED.test(clause)) polarity = 'yes';
+    else if (NEGATED.test(clause) || CREATED.test(clause)) polarity = 'no';
+    if (polarity === 'yes') yield clause;
+  }
 }
 export function creationReports(text: string, workspaceId: string): Pick<SessionRef, 'kind' | 'value'>[] {
   const refs = new Map<string, Pick<SessionRef, 'kind' | 'value'>>();
   for (const block of text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').split(/\n\s*\n/)) {
-    const sentences = block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n').split(/(?<=[.!?])\s+|\n+/);
-    if (!sentences.some(sentence => creationSense(sentence) === 'yes')) continue;
-    const body = sentences.filter(sentence => creationSense(sentence) !== 'no').join('\n');
+    const body = [...affirmedClauses(block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n'))].join('\n');
     for (const [, workspace, taskId] of body.matchAll(LINK)) if (decoded(workspace) === workspaceId) refs.set(`task:${taskId}`, { kind: 'task', value: taskId });
     for (const [, key] of body.replace(LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
   }
@@ -118,9 +121,14 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     for (const session of await t3.sessions()) {
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
       if (!rec.backfill && rec.updatedAt === session.updatedAt) continue;
+      if (rec.retryAfter && Date.parse(rec.retryAfter) > now) continue;
       if (reads++ >= limits.reads) { more = true; break; }
-      try { await scanSession(t3, store, rec, session, c.kaneo.workspaceId); }
-      catch (error) { errors.push(`Reading session ${session.title}: ${safeError(error)}`); }
+      try { delete rec.retryAfter; delete rec.error; await scanSession(t3, store, rec, session, c.kaneo.workspaceId); }
+      catch (error) {
+        // Progress is untouched; the session waits before its next read so an outage cannot loop on the same sessions.
+        rec.error = `Reading session ${session.title}: ${safeError(error)}`; rec.retryAfter = new Date(now + RETRY_MS).toISOString();
+        store.saveSessionThread(rec); errors.push(rec.error);
+      }
       if (store.sessionThread(session.id)?.backfill) more = true;
     }
   } catch (error) { errors.push(`Listing sessions: ${safeError(error)}`); }
@@ -175,7 +183,12 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     if (job) { row.consumed = { jobId: job.id, at }; store.saveSessionTicket(row); }
   }
   if (errors.length) recordSessionTicketsFailure(store, errors.slice(0, 3).join('; '));
-  else { store.set('sessionTickets:error', ''); store.set('sessionTickets:at', at); }
+  else {
+    store.set('sessionTickets:at', at);
+    // A reference whose last lookup failed is still unresolved; the notice stays until a retry succeeds or the read is dropped.
+    const lingering = store.sessionThreads().flatMap(rec => [...rec.pending.filter(ref => ref.error).map(ref => `Confirming ${ref.value}: ${ref.error}`), ...(rec.error ? [rec.error] : [])]);
+    store.set('sessionTickets:error', lingering.length ? JSON.stringify({ at: JSON.parse(store.get('sessionTickets:error') || 'null')?.at ?? at, message: lingering.slice(0, 3).join('; ') }) : '');
+  }
   return more;
 }
 

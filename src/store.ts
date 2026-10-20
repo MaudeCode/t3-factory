@@ -61,6 +61,8 @@ export interface SessionRef { kind: 'key' | 'task'; value: string; messageId: st
 export interface SessionThread {
   id: string; projectId: string; title: string; createdAt: string; updatedAt?: string; lastOrdinal?: number;
   backfill?: { cursor: string; updatedAt: string; top: number }; pending: SessionRef[];
+  // A failed read leaves progress untouched and waits for this deadline before the session is read again.
+  retryAfter?: string; error?: string;
 }
 const STATE_TEXT: Record<Job['state'], string> = { dispatching: 'is starting', running: 'is running', waiting: 'needs you', complete: 'finished', dismissed: 'was dismissed' };
 const STREAM_TEXT: Record<string, string> = {
