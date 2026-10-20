@@ -103,7 +103,8 @@ function Operation({ op }) {
 // Start bar: project key, dash, ticket number; model; override; start. An empty number means the next eligible ticket.
 export function Composer({ initialTicket } = {}) {
   const linked = initialTicket !== undefined;
-  const keys = [...new Set(config.value.projects.map((p) => p.key).filter(Boolean))];
+  // Only enabled projects: the scheduler refuses a named ticket from a disabled one.
+  const keys = [...new Set(config.value.projects.filter((p) => p.enabled && p.key).map((p) => p.key))];
   const [linkKey = "", linkNumber = ""] = (ticketKey(initialTicket ?? "") || "").split("-");
   const [project, setProject] = useState(linkKey || keys[0] || "");
   const [number, setNumber] = useState(linkNumber);
@@ -111,7 +112,8 @@ export function Composer({ initialTicket } = {}) {
   const [override, setOverride] = useState(true);
   const ticket = number.trim() ? `${project}-${number.trim()}` : "";
   const key = ticketKey(ticket);
-  const invalid = linked && !ticketKey(initialTicket);
+  // A bad launch link starts invalid, but picking a project and typing a number repairs it.
+  const invalid = linked && !key;
   const pending = pendingRun(ticket);
   const submit = (e) => {
     e.preventDefault();

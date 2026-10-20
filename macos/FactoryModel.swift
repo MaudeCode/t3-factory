@@ -221,7 +221,8 @@ struct RunRequest: Identifiable {
         parts += (row["labels"] as? [String] ?? [])
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
-    var projectKeys: [String] { Array(NSOrderedSet(array: projects.compactMap { $0["key"] as? String }.filter { !$0.isEmpty })) as? [String] ?? [] }
+    // Keys of enabled projects only; the scheduler refuses a named ticket from a disabled one.
+    var projectKeys: [String] { Array(NSOrderedSet(array: projects.filter { $0["enabled"] as? Bool == true }.compactMap { $0["key"] as? String }.filter { !$0.isEmpty })) as? [String] ?? [] }
     func projectName(_ kaneoId: String?) -> String { projects.first { $0["kaneoId"] as? String == kaneoId }?["name"] as? String ?? "" }
     func modelName(_ job: [String: Any]) -> String {
         let slug = (job["modelSelection"] as? [String: Any])?["model"] as? String ?? ""

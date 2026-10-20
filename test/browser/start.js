@@ -6,7 +6,7 @@ import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
 
 const state = {
-  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kaneoId: "p", key: "APP", name: "Example" }], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
+  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kaneoId: "p", key: "APP", name: "Example", enabled: true }, { kaneoId: "off", key: "OFF", name: "Disabled", enabled: false }], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
   status: { jobs: [], journal: [] },
 };
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -59,6 +59,19 @@ async function run() {
     await pause();
     assert(calls.length === 0, 'invalid launch cannot fall back to the next eligible ticket');
   }
+  // A bad link is repaired by typing a number; only enabled projects are offered.
+  await show('/start?ticket=bad');
+  const picker = root.querySelector('[aria-label^="Ticket project"]');
+  picker.click(); await pause();
+  assert([...document.getElementById(picker.getAttribute('aria-controls')).children].map(li => li.textContent).join() === 'APP', 'disabled projects are not offered as ticket keys');
+  picker.click(); await pause();
+  const number = root.querySelector('[aria-label="Ticket number"]');
+  number.value = '7'; number.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(!root.querySelector('[role="alert"]') && !root.querySelector('button[type="submit"]').disabled, 'a typed ticket repairs an invalid link');
+  root.querySelector('button[type="submit"]').click(); await pause();
+  try { assert(calls.length === 1 && calls[0].input.ticket === 'APP-7', 'the repaired link dispatches the typed ticket'); } finally { release?.(); }
+  await pause();
+  calls = []; release = null;
   await show('/start?ticket=APP-123&chain=all&allowMissingReadyLabel=true&model=evil');
   const button = root.querySelector('button[type="submit"]');
   button.click(); button.click();
