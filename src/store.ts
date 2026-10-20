@@ -49,7 +49,8 @@ export interface FactoryEvent { id: number; time: string; kind: string; jobId: s
 export interface SessionSource { threadId: string; messageId: string; projectId: string; title: string; at: string }
 export interface SessionTicket {
   taskId: string; projectId: string; key: string; number: number; title: string; priority: string; status: string; labels: string[]; createdAt: string;
-  firstSeenAt: string; refreshedAt: string; refreshError?: string; sources: SessionSource[];
+  // `refreshedAt` is the last successful tracker read; `refreshAfter` is when the next read is due, later after a failure.
+  firstSeenAt: string; refreshedAt: string; refreshAfter?: string; refreshError?: string; sources: SessionSource[];
   // Tombstones: a dismissed or consumed entry never returns to the list, whatever a rescan or refresh finds.
   dismissedAt?: string; consumed?: { jobId: string; at: string };
 }

@@ -29,8 +29,9 @@ const decoded = (value: string) => { try { return decodeURIComponent(value); } c
 export function creationReports(text: string, workspaceId: string): Pick<SessionRef, 'kind' | 'value'>[] {
   const refs = new Map<string, Pick<SessionRef, 'kind' | 'value'>>();
   for (const block of text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').split(/\n\s*\n/)) {
-    const body = block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n');
-    if (!CREATED.test(body) || NEGATED.test(body)) continue;
+    // A negated sentence drops out on its own; the rest of the block still counts as a report.
+    const body = block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n').split(/(?<=[.!?])\s+|\n+/).filter(sentence => !NEGATED.test(sentence)).join('\n');
+    if (!CREATED.test(body)) continue;
     for (const [, workspace, taskId] of body.matchAll(LINK)) if (decoded(workspace) === workspaceId) refs.set(`task:${taskId}`, { kind: 'task', value: taskId });
     for (const [, key] of body.replace(LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
   }
@@ -132,7 +133,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         if (task && created >= Date.parse(rec.createdAt) - CLOCK_SKEW_MS && created <= Date.parse(ref.at) + CLOCK_SKEW_MS) {
           const project = cat!.projects[task.projectId];
           const row: SessionTicket = store.sessionTicket(task.id) ?? { taskId: task.id, projectId: task.projectId, key: `${project.slug}-${task.number}`, number: task.number, title: task.title, priority: task.priority, status: task.status, labels: [], createdAt: task.createdAt, firstSeenAt: at, refreshedAt: at, sources: [] };
-          Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: await labelsOf(task.id), refreshedAt: at, refreshError: undefined });
+          Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: await labelsOf(task.id), refreshedAt: at, refreshAfter: new Date(now + REFRESH_MS).toISOString(), refreshError: undefined });
           if (!row.sources.some(s => s.threadId === rec.id && s.messageId === ref.messageId)) row.sources.push({ threadId: rec.id, messageId: ref.messageId, projectId: rec.projectId, title: rec.title, at: ref.at });
           const first = !store.sessionTicket(task.id);
           store.saveSessionTicket(row);
@@ -147,13 +148,15 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       store.saveSessionThread(rec);
     }
   }
-  const stale = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && now - Date.parse(r.refreshedAt) >= REFRESH_MS).toSorted((a, b) => a.refreshedAt.localeCompare(b.refreshedAt));
+  // A failed read keeps the row's last honest reading and waits before trying again, so an outage cannot loop on the same rows.
+  const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
+  const stale = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
   if (stale.length > limits.refreshes) more = true;
   for (const row of stale.slice(0, limits.refreshes)) {
     try {
       const task = trackerTask.parse(await kaneo.call('get_task', { taskId: row.taskId }));
-      Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: await labelsOf(task.id), refreshedAt: at, refreshError: undefined });
-    } catch (error) { row.refreshError = safeError(error); errors.push(`Refreshing ${row.key}: ${row.refreshError}`); }
+      Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: await labelsOf(task.id), refreshedAt: at, refreshAfter: new Date(now + REFRESH_MS).toISOString(), refreshError: undefined });
+    } catch (error) { row.refreshError = safeError(error); row.refreshAfter = new Date(now + RETRY_MS).toISOString(); errors.push(`Refreshing ${row.key}: ${row.refreshError}`); }
     store.saveSessionTicket(row);
   }
   const jobs = store.jobs();
@@ -161,9 +164,15 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     const job = jobs.find(j => j.taskId === row.taskId && launched(j));
     if (job) { row.consumed = { jobId: job.id, at }; store.saveSessionTicket(row); }
   }
-  if (errors.length) { store.set('sessionTickets:error', JSON.stringify({ at, message: errors.slice(0, 3).join('; ') })); log('session-tickets-failed', { message: errors.slice(0, 3).join('; ') }); }
+  if (errors.length) recordSessionTicketsFailure(store, errors.slice(0, 3).join('; '));
   else { store.set('sessionTickets:error', ''); store.set('sessionTickets:at', at); }
   return more;
+}
+
+// A failure the page must show: from a batch, or from the service when a batch could not start at all.
+export function recordSessionTicketsFailure(store: Store, message: string) {
+  store.set('sessionTickets:error', JSON.stringify({ at: new Date().toISOString(), message }));
+  log('session-tickets-failed', { message });
 }
 
 // Remove an entry from the list, and keep it out. The ticket, its runs and automatic scheduling are untouched.

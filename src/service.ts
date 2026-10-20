@@ -8,7 +8,7 @@ import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kaneo, listTasks } from './clients.ts';
 import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, readAll, type CycleOptions } from './scheduler.ts';
-import { collectSessionTickets, dismissSessionTicket } from './session-tickets.ts';
+import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
@@ -161,7 +161,11 @@ export class FactoryService {
         const c = this.configure(), kaneo = await this.ensureKaneo(c);
         more = await collectSessionTickets(c, this.store, this.t3, kaneo);
         writeStatus(c, this.store);
-      } catch (error) { log('session-tickets-failed', { message: safeError(error) }); }
+      } catch (error) {
+        // A batch that could not even start (bad config, no tracker client) is a failure the page must show too.
+        recordSessionTicketsFailure(this.store, safeError(error));
+        try { writeStatus(loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
+      }
       finally {
         this.collectionQueued = false;
         if (more) this.scheduleCollection();

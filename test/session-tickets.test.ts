@@ -92,6 +92,7 @@ test('creation reports name keys and task links, not mentions, prompts, examples
   assert.deepEqual(refs('> Created FIX-6 earlier\n\nNothing else.'), [], 'quoted text is not this session\'s report');
   assert.deepEqual(refs('```\nCreated FIX-6\n```\n\nUse a key such as `FIX-6` when creating one.'), [], 'code and inline examples are not reports');
   assert.deepEqual(refs('No ticket was created for FIX-2; it already exists.'), [], 'a negated sentence is not a report');
+  assert.deepEqual(refs("I couldn't create FIX-1 because it exists. I opened FIX-2 instead."), ['key:FIX-2'], 'negation covers only its own sentence');
   assert.deepEqual(refs(`Created [FIX-8](${LINK('task-8', 'elsewhere')}).`), ['key:FIX-8'], 'a link into another workspace is ignored');
   assert.deepEqual(refs('Created FIX-7.\n\nCreated FIX-7 again.'), ['key:FIX-7'], 'one reference per message');
 });
@@ -262,15 +263,48 @@ test('only a confirmed Factory start consumes an entry, including starts made el
   assert.equal(f.store.sessionTicket('task-7')?.consumed?.jobId, 'job-task-7', 'the collector records the consumption');
   f.store.save({ ...job('complete', 'Done'), completedAt: AT.threadEnd });
   f.tasks[0] = task('task-7', 7, 'FIX', { status: 'to-do' });
-  for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshedAt: '2000-01-01T00:00:00.000Z' });
+  for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' });
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-8'], 'a consumed entry stays consumed after its run finishes and the ticket returns to ready');
   // Tracker status drives membership for the remaining entry; a failed refresh keeps the old reading and says so.
-  const refresh = async (status: string) => { f.tasks[1] = task('task-8', 8, 'FIX', { status }); f.store.saveSessionTicket({ ...f.store.sessionTicket('task-8')!, refreshedAt: '2000-01-01T00:00:00.000Z' }); await f.drain(); };
+  const refresh = async (status: string) => { f.tasks[1] = task('task-8', 8, 'FIX', { status }); f.store.saveSessionTicket({ ...f.store.sessionTicket('task-8')!, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' }); await f.drain(); };
   await refresh('in-progress'); assert.deepEqual(f.keys(), [], 'in-progress tickets are hidden');
   await refresh('to-do'); assert.deepEqual(f.keys(), ['FIX-8'], 'a ticket back in the ready column returns');
   f.failing.add('get_task'); await refresh('done');
   const stale = f.status().rows[0];
   assert.equal(stale.key, 'FIX-8'); assert.match(stale.refreshError ?? '', /get_task failed/); assert.equal(stale.refreshedAt, '2000-01-01T00:00:00.000Z', 'a failed read is not presented as fresh');
   await refresh('done'); assert.deepEqual(f.keys(), [], 'completed tickets leave the list');
+});
+
+test('failed refreshes back off instead of looping, and rows behind them still get their turn', async t => {
+  const f = collectorFixture(t);
+  const keys = Array.from({ length: 12 }, (_, i) => i + 1);
+  for (const n of keys) f.tasks.push(task(`task-${n}`, n));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', `Created ${keys.map(n => `FIX-${n}`).join(', ')}.`, 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.drain();
+  assert.equal(f.keys().length, 12);
+  for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' });
+  const failing = () => { f.failing.add('get_task'); };
+  t.mock.method(f.kaneo, 'call', async (name: string, args: Record<string, unknown>) => { f.calls.push(name); if (name === 'get_task') throw new Error('Kaneo get_task failed; check its authenticated connection'); if (name === 'list_workspace_labels') return []; throw new Error(name); });
+  failing();
+  const reads = () => f.calls.filter(x => x === 'get_task').length;
+  assert.equal(await f.collect(), true, 'two rows remain due after the first ten failures');
+  assert.equal(reads(), 10);
+  assert.equal(await f.collect(), false, 'the remaining rows are tried once and nothing else is due');
+  assert.equal(reads(), 12, 'every stale row got one attempt; failed rows wait for their retry deadline');
+  assert.equal(await f.collect(), false);
+  assert.equal(reads(), 12, 'a tracker outage does not loop on the same rows');
+  assert.ok(f.store.sessionTickets().every(r => r.refreshError && r.refreshedAt === '2000-01-01T00:00:00.000Z'), 'failed rows keep their honest last read and the error');
+});
+
+test('a collection batch that cannot start still records the failure for the page', { timeout: 20000 }, async t => {
+  const f = serviceFixture(t);
+  t.mock.method(Kaneo.prototype, 'connect', async () => { throw new Error('Kaneo MCP process exited'); });
+  const service = new FactoryService(f.path, { kaneoPollMs: 600_000 });
+  try {
+    await service.start();
+    const published = await f.until(s => s.sessionTickets?.error);
+    assert.match(published.sessionTickets?.error?.message ?? '', /Kaneo MCP process exited/, 'a setup failure reaches status.sessionTickets.error');
+  } finally { await service.stop(); }
 });
