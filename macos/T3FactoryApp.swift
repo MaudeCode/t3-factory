@@ -25,10 +25,13 @@ enum FactoryIcon {
     }()
 }
 
-@MainActor final class FactoryAppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class FactoryAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var badge: AnyCancellable?
+    // A transient popover only closes itself when the click lands in another app. Once a control inside has
+    // taken focus the app stays active, so clicks on the desktop or the menu bar are watched here instead.
+    private var outsideClick: Any?
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
         let appMenu = NSMenu()
@@ -54,6 +57,7 @@ enum FactoryIcon {
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         popover.behavior = .transient
+        popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: FactoryPanel(model: FactoryModel.shared))
         popover.contentSize = panelSize()
         // Runs that need you show as a count beside the icon.
@@ -95,9 +99,16 @@ enum FactoryIcon {
             NSApp.activate(ignoringOtherApps: true)
             popover.contentSize = panelSize()
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            outsideClick = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                Task { @MainActor in self?.closePopover() }
+            }
         }
     }
     func closePopover() { popover.performClose(nil) }
+    func popoverDidClose(_ notification: Notification) {
+        if let outsideClick { NSEvent.removeMonitor(outsideClick) }
+        outsideClick = nil
+    }
     @objc private func showSettings() { FactoryModel.shared.openSettings() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         FactoryModel.shared.openSettings(); return true

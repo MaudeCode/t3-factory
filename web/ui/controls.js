@@ -2,15 +2,22 @@
 import { html, useEffect, useLayoutEffect, useRef, useState, useId } from "../lib/h.js";
 import { at, set } from "../lib/store.js";
 import { coerce, selectPosition } from "../lib/format.js";
+import { Icon } from "./data.js";
 
 const cls = (...parts) => parts.filter(Boolean).join(" ");
 
-export const Button = ({ variant, size, icon, class: extra, type = "button", ...props }) =>
+// `icon` names a glyph; with `label` and no children the button is icon-only and `label` is its name and tooltip.
+export const Button = ({ variant, size, icon, label, class: extra, type = "button", children, ...props }) =>
   html`<button
     type=${type}
-    class=${cls("btn", variant && `btn-${variant}`, size && `btn-${size}`, icon && "btn-icon", extra)}
+    class=${cls("btn", variant && `btn-${variant}`, size && `btn-${size}`, icon && (icon === true || !children) && "btn-icon", extra)}
+    aria-label=${props["aria-label"] ?? label}
+    title=${props.title ?? label}
     ...${props}
-  />`;
+  >${typeof icon === "string" && html`<${Icon} name=${icon} />`}${children}</button>`;
+
+// Icon-only link to a fuller page, for section headers.
+export const More = ({ href, label, onClick }) => html`<a class="more" href=${href} onClick=${onClick} aria-label=${label} title=${label}><${Icon} name="arrowRight" /></a>`;
 
 export const Switch = ({ checked, onChange, disabled, label }) =>
   html`<input
@@ -89,6 +96,7 @@ export function Chips({ path, value, onChange, options = [], ordered, custom, la
   const current = picked ?? [];
   const [draft, setDraft] = useState("");
   const names = new Map(options.map(([v, name]) => [v, name]));
+  const titles = new Map(options.map(([v, , title]) => [v, title]));
   const all = ordered ? [...current, ...[...names.keys()].filter((v) => !current.includes(v))] : [...names.keys(), ...current.filter((v) => !names.has(v))];
   const toggle = (v) => change(current.includes(v) ? current.filter((x) => x !== v) : [...current, v]);
   const add = () => {
@@ -99,7 +107,7 @@ export function Chips({ path, value, onChange, options = [], ordered, custom, la
   return html`<div class="chips" role="group" aria-label=${label}>
     ${all.map((v) => {
       const i = current.indexOf(v);
-      return html`<button key=${v} type="button" aria-pressed=${i >= 0} onClick=${() => toggle(v)}>${ordered && i >= 0 && html`<b>${i + 1}</b>`}${names.get(v) ?? v}</button>`;
+      return html`<button key=${v} type="button" aria-pressed=${i >= 0} title=${titles.get(v)} aria-label=${titles.get(v)} onClick=${() => toggle(v)}>${ordered && i >= 0 && html`<b>${i + 1}</b>`}${names.get(v) ?? v}</button>`;
     })}
     ${custom && html`<input class="chip-input" placeholder=${custom} aria-label=${custom} value=${draft} onInput=${(e) => setDraft(e.target.value)} onBlur=${add} onKeyDown=${(e) => e.key === "Enter" && (e.preventDefault(), add())} />`}
   </div>`;
@@ -139,18 +147,26 @@ export function Budget({ label, remaining, reserved, note, reservePath, floorPat
 }
 
 // Custom dropdown. `options` is a list of [value, name]; `onChange` receives the value.
-export function Select({ path, value, options, onChange, label, size, class: extra }) {
+// `multiple` makes it a multi-pick: `value` is an array, the menu stays open while picking, and the
+// trigger reads the placeholder (or label) until something is picked, then "A" or "A +2".
+export function Select({ path, value, options, onChange, label, size, multiple, placeholder, class: extra }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const ref = useRef(), menu = useRef(), button = useRef();
   const id = useId();
   const current = path ? at(path) : value;
-  const index = options.findIndex(([v]) => v === current);
+  const picked = multiple ? current ?? [] : [];
+  const selected = (v) => (multiple ? picked.includes(v) : v === current);
+  const index = multiple ? options.findIndex(([v]) => picked.includes(v)) : options.findIndex(([v]) => v === current);
+  const names = options.filter(([v]) => picked.includes(v)).map(([, name]) => name);
+  const text = multiple ? (names.length ? `${names[0]}${names.length > 1 ? ` +${names.length - 1}` : ""}` : "") : options[index]?.[1] ?? current ?? "";
   const show = () => { setActive(Math.max(0, index)); setOpen(true); };
   const choose = (v) => {
+    const change = onChange ?? ((x) => set(path, x));
+    if (multiple) return change(picked.includes(v) ? picked.filter((x) => x !== v) : [...picked, v]);
     setOpen(false);
     button.current.focus({ preventScroll: true });
-    if (v !== current) (onChange ?? ((x) => set(path, x)))(v);
+    if (v !== current) change(v);
   };
   useLayoutEffect(() => {
     if (!open) return;
@@ -222,17 +238,18 @@ export function Select({ path, value, options, onChange, label, size, class: ext
       aria-expanded=${open}
       aria-controls=${open ? id : undefined}
       aria-activedescendant=${open && options[active] ? `${id}-${active}` : undefined}
-      aria-label=${`${label}: ${options[index]?.[1] ?? current ?? ""}`}
+      aria-label=${multiple ? label : `${label}: ${text}`}
+      data-on=${multiple && picked.length > 0}
       onClick=${() => open ? setOpen(false) : show()}
       onKeyDown=${onKeyDown}
     >
-      <span>${options[index]?.[1] ?? current ?? ""}</span>
+      <span>${multiple ? (text ? html`<b>${text}</b>` : placeholder ?? label) : text}</span>
     </button>
     ${open &&
-    html`<ul ref=${menu} id=${id} popover="manual" role="listbox" aria-label=${label} onPointerDown=${(e) => e.preventDefault()} onClick=${(e) => e.preventDefault()}>
+    html`<ul ref=${menu} id=${id} popover="manual" role="listbox" aria-label=${label} aria-multiselectable=${multiple || undefined} onPointerDown=${(e) => e.preventDefault()} onClick=${(e) => e.preventDefault()}>
       ${options.map(
         ([v, name], i) =>
-          html`<li key=${v} id=${`${id}-${i}`} role="option" aria-selected=${v === current} data-active=${i === active} onClick=${() => choose(v)}>${name}</li>`,
+          html`<li key=${v} id=${`${id}-${i}`} role="option" aria-selected=${selected(v)} data-active=${i === active} onClick=${() => choose(v)}>${name}</li>`,
       )}
     </ul>`}
   </div>`;

@@ -79,7 +79,7 @@ async function run() {
     await pause();
     assert(!button(1).disabled, "a cancelled chain does not hold its target");
     const b = button(2).getBoundingClientRect();
-    assert(b.left >= 0 && b.right <= innerWidth && b.height >= 44, "action fits viewport with usable target");
+    assert(b.left >= 0 && b.right <= innerWidth && b.height >= (matchMedia("(pointer: coarse)").matches ? 44 : 32), "action fits viewport with usable target");
     assert(document.documentElement.scrollWidth <= innerWidth, "queue has no horizontal overflow");
   }
   await layout();
@@ -93,12 +93,12 @@ async function layout() {
     assert(rows.map(row => row.querySelector(".key").textContent).join() === "APP-1,APP-2,APP-3", "queue order is preserved");
     assert(root.querySelector("h2 small").textContent === "3", "queue total is retained");
     assert(!rows.some(row => row.querySelector(".rank")), "queue order needs no row numbers");
-    assert(!rows.some(row => /Sol|no automatic model|priority/.test(row.textContent)), "queue omits predicted models and the priority suffix");
-    assert(rows[0].querySelector("small").textContent.includes("Example · high"), "priority stays concise beside the project");
-    assert(rows[0].querySelectorAll(".tag").length === 2, "difficulty and routing tags remain visible");
+    assert(!rows.some(row => /Sol|no automatic model/.test(row.textContent)), "queue omits predicted models");
+    assert(rows[0].querySelector(".meta-project").textContent === "Example", "project sits beside the ticket");
+    assert(rows[0].querySelector('.tag[title^="Priority"]').textContent === "Phigh" && rows[0].querySelector('.tag[title^="Difficulty"]').textContent === "Dmed", "priority and difficulty tags say which field they are");
     assert(rows.every(row => {
       const link = row.querySelector(".next-ticket");
-      return row.querySelector(".next-body").getBoundingClientRect().left === link.getBoundingClientRect().left + parseFloat(getComputedStyle(link).paddingLeft);
+      return row.querySelector(".row-body").getBoundingClientRect().left === link.getBoundingClientRect().left + parseFloat(getComputedStyle(link).paddingLeft);
     }), "ticket text uses the former rank column");
     assert(document.documentElement.scrollWidth <= innerWidth, "compact queue fits the viewport");
   }
@@ -131,19 +131,32 @@ async function showProjects() {
 }
 const queueKeys = () => [...root.querySelectorAll(".next .key")].map(e => e.textContent).join();
 const heldKeys = () => [...root.querySelectorAll(".held .key")].map(e => e.textContent).join();
-const dialog = () => root.querySelector('dialog[aria-label="Filters"]');
-const byText = (selector, text, scope = root) => [...scope.querySelectorAll(selector)].find(e => e.textContent.trim() === text);
-async function openFilters() {
-  const button = root.querySelector('[aria-label^="Filter runs"]');
-  assert(button, "Runs exposes a Filter button");
-  button.click(); await pause();
+const dialog = () => document.querySelector('.popover[aria-label="Filters"]');
+const picker = (group) => dialog().querySelector(`[role="combobox"][aria-label="${group}"]`);
+// The names a dropdown facet offers right now; opens it if needed and leaves it open.
+async function choicesOf(group) {
+  const button = picker(group);
+  if (button.getAttribute("aria-expanded") !== "true") { button.click(); await pause(); }
+  return [...document.getElementById(button.getAttribute("aria-controls")).children].map(li => li.textContent).join();
 }
+const byText = (selector, text, scope = root) => [...scope.querySelectorAll(selector)].find(e => e.textContent.trim() === text);
+const filterButton = () => root.querySelector('[aria-label^="Filter runs"]');
+async function openFilters() {
+  assert(filterButton(), "Runs exposes a Filter button");
+  if (!dialog()) { filterButton().click(); await pause(); }
+  assert(dialog(), "the Filter button opens the filter popover");
+}
+// Buttons toggle directly; dropdown facets open their picker if needed and leave it open like a user mid-pick.
 async function pickFilter(group, name) {
-  byText("button", name, dialog().querySelector(`[role="group"][aria-label="${group}"]`)).click();
+  const row = dialog().querySelector(`[role="group"][aria-label="${group}"]`);
+  if (row) { [...row.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? b.textContent.trim()) === name).click(); await pause(); return; }
+  const button = picker(group);
+  if (button.getAttribute("aria-expanded") !== "true") { button.click(); await pause(); }
+  byText('[role="option"]', name, document.getElementById(button.getAttribute("aria-controls"))).click();
   await pause();
 }
-async function closeFilters() { byText("button", "Done", dialog()).click(); await pause(); }
-async function clearFilters() { byText("button", "Clear filters", dialog()).click(); await pause(); }
+async function closeFilters() { if (dialog()) { filterButton().click(); await pause(); } assert(!dialog(), "the filter popover closes"); }
+async function clearFilters() { byText("button", "Clear all", dialog()).click(); await pause(); }
 async function runProjects() {
   const oldFetch = window.fetch, oldUrl = location.href;
   const dispatches = [];
@@ -159,10 +172,13 @@ async function runProjects() {
   try {
     await showProjects();
     assert(queueKeys() === "APP-1,WEB-2,APP-3", "all projects preserve scheduler order");
+    assert([...root.querySelectorAll(".next .tag-label")].map(e => e.textContent).join() === "bug,web,bug,web", "queue rows show their tracker labels");
+    assert(root.querySelector(".held .tag-label"), "held rows show their tracker labels");
     await openFilters();
     assert(!dialog().querySelector('[aria-label="Provider"]'), "queue does not filter predicted providers");
     await pickFilter("Project", "Alpha");
     assert(queueKeys() === "APP-1,APP-3", `Project Alpha must show only its queue tickets; got ${queueKeys()}`);
+    assert(await choicesOf("Tags") === "bug,web", "tag choices come from the chosen projects");
     assert(heldKeys() === "APP-4", "held tickets follow project filtering");
     assert(root.querySelector("h2 small").textContent === "2", "queue count follows filters");
     await pickFilter("Project", "Beta");
@@ -171,13 +187,21 @@ async function runProjects() {
     await pickFilter("Tags", "bug");
     await pickFilter("Tags", "web");
     assert(queueKeys() === "APP-1,APP-3", "tag OR matches either selected label");
-    byText('[role="radio"]', "AND", dialog()).click(); await pause();
+    assert(await choicesOf("Project") === "Alpha,Beta", "project choices come from the chosen tags");
+    byText('[role="radio"]', "ALL", dialog()).click(); await pause();
     assert(queueKeys() === "APP-1", "tag AND requires all selected labels");
+    assert(await choicesOf("Project") === "Alpha", "project choices follow the tag match mode");
     await pickFilter("Difficulty", "Medium");
     await pickFilter("Priority", "High");
     assert(queueKeys() === "APP-1" && heldKeys() === "APP-4", "categories combine for queue and held tickets");
+    assert(picker("Tags").textContent === "bug +1", "the tag picker summarises its picks");
+    assert(dialog().querySelectorAll('[aria-pressed="true"]').length === 2, "difficulty and priority buttons show their state");
+    byText("button", "×", dialog()).click(); await pause();
+    assert(picker("Tags").textContent === "Any" && dialog().querySelectorAll('[aria-pressed="true"]').length === 2, "the tag clear button empties only tags");
+    await pickFilter("Tags", "bug"); await pickFilter("Tags", "web");
+    byText('[role="radio"]', "ALL", dialog()).click(); await pause();
     await closeFilters();
-    assert(root.querySelector('[aria-label="Filter runs, 4 active"]').textContent.includes("4"), "button reports active categories");
+    assert(filterButton().textContent.trim() === "4", "button reports active categories");
     status.value = { ...status.value, upNext: { ...status.value.upNext, tickets: [...filterState.status.upNext.tickets, { ...filterState.status.upNext.tickets[0], id: "t6", key: "APP-6" }] } };
     await pause();
     assert(queueKeys() === "APP-1,APP-6", "live updates retain filters and order");
@@ -194,8 +218,9 @@ async function runProjects() {
     search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
     byText('[role="radio"]', "Open3").click(); await pause();
     assert(root.querySelectorAll(".run").length === 1, "ordinary runs use the same metadata filters");
+    assert([...root.querySelectorAll(".run .tag-label")].map(e => e.textContent).join() === "bug,web", "run rows show their tracker labels");
     await openFilters();
-    assert(dialog().querySelector('[aria-label="Provider"]'), "recorded runs retain provider filtering");
+    assert(dialog().querySelector('[role="group"][aria-label="Provider"] .icon'), "recorded runs filter by provider with icon buttons");
     await clearFilters();
     await closeFilters();
     assert(root.querySelectorAll(".run").length === 3, "legacy runs stay visible with no metadata filters");
@@ -213,13 +238,13 @@ async function runProjects() {
     assert(document.documentElement.scrollWidth <= innerWidth, "Runs fits the viewport");
     await openFilters();
     const bounds = dialog().getBoundingClientRect();
-    assert(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, "filter dialog fits the viewport");
+    assert(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, "filter popover fits the viewport");
     status.value = { ...status.value, upNext: { ...status.value.upNext, tickets: [{ ...filterState.status.upNext.tickets[0], labels: Array.from({ length: 50 }, (_, i) => `scope-${i}`) }] } };
     await pause();
-    dialog().scrollTop = dialog().scrollHeight;
-    assert(dialog().scrollWidth <= dialog().clientWidth, "large tag catalogs do not overflow the dialog");
-    const done = byText("button", "Done", dialog()).getBoundingClientRect();
-    assert(done.bottom <= innerHeight && done.top >= 0, "dialog scrolling reaches its actions with many tags");
+    await pickFilter("Tags", "scope-49");
+    const menu = document.getElementById(picker("Tags").getAttribute("aria-controls")).getBoundingClientRect();
+    assert(menu.right <= innerWidth && menu.bottom <= innerHeight, "a large tag catalog scrolls inside its menu");
+    await clearFilters();
     await closeFilters();
     return { passed: true, viewport: [innerWidth, innerHeight], filters: ["project", "tags OR/AND", "difficulty", "priority", "search", "provider on runs"] };
   } finally { window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); }

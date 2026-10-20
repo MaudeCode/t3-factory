@@ -126,7 +126,8 @@ struct RunRequest: Identifiable {
     @Published var prompt: RunPrompt?
     @Published var requests: [RunRequest] = []
     private var drainingRequests = false
-    @Published var ticket = ""
+    @Published var ticketProject = ""
+    @Published var ticketNumber = ""
     @Published var selectedModel = "auto"
     @Published var overrideLimits = true
     @Published var providers: [[String: Any]] = []
@@ -212,6 +213,16 @@ struct RunRequest: Identifiable {
             return (job["providerDriver"] as? String ?? providers.first { $0["instanceId"] as? String == instance }?["driver"] as? String ?? instance) == driver
         }
     }
+    // Facets of a ticket or run as one line: project, "P high", "D med", and its tracker labels.
+    func facets(_ row: [String: Any], model: String? = nil) -> String {
+        var parts = [projectName(row["projectId"] as? String), model ?? ""]
+        if let priority = row["priority"] as? String, priority != "no-priority", !priority.isEmpty { parts.append("P " + priority) }
+        if let difficulty = row["difficulty"] as? String, !difficulty.isEmpty { parts.append("D " + difficulty) }
+        parts += (row["labels"] as? [String] ?? [])
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+    // Keys of enabled projects only; the scheduler refuses a named ticket from a disabled one.
+    var projectKeys: [String] { Array(NSOrderedSet(array: projects.filter { $0["enabled"] as? Bool == true }.compactMap { $0["key"] as? String }.filter { !$0.isEmpty })) as? [String] ?? [] }
     func projectName(_ kaneoId: String?) -> String { projects.first { $0["kaneoId"] as? String == kaneoId }?["name"] as? String ?? "" }
     func modelName(_ job: [String: Any]) -> String {
         let slug = (job["modelSelection"] as? [String: Any])?["model"] as? String ?? ""
@@ -233,16 +244,12 @@ struct RunRequest: Identifiable {
     var decisionSentence: String {
         guard let reason = decision["reason"] as? String else { return "No check has run yet." }
         switch reason {
-        case "disabled":
-            let eligible = (decision["eligible"] as? NSNumber)?.intValue ?? 0
-            return "Automation is paused. Running work continues." + (eligible > 0 ? " \(eligible) ticket\(eligible == 1 ? "" : "s") ready to start." : "")
+        case "disabled": return ""
         case "error": return "The last check failed: \(decision["message"] as? String ?? "unknown error")"
         case "dispatched": return "Started \(decision["ticket"] as? String ?? (decision["project"] as? String).map { "discovery for \($0)" } ?? "a run") on \(decision["model"] as? String ?? "the assigned model")."
         default:
-            let parts = (decision["streams"] as? [[String: Any]] ?? []).map { "\($0["provider"] as? String ?? "") is \(Self.streamReasons[$0["reason"] as? String ?? ""] ?? ($0["reason"] as? String ?? ""))" }
             let eligible = (decision["eligible"] as? NSNumber)?.intValue ?? 0
-            let tail = eligible > 0 ? "\(eligible) ticket\(eligible == 1 ? "" : "s") eligible." : "Nothing eligible to start."
-            return parts.isEmpty ? tail : parts.joined(separator: "; ") + ". " + tail
+            return eligible > 0 ? "\(eligible) ticket\(eligible == 1 ? "" : "s") eligible." : "Nothing eligible to start."
         }
     }
     var lastCheck: String { decision["at"] == nil ? "no check yet" : "checked " + Words.ago(decision["at"] as? String, now: now) }
@@ -394,11 +401,15 @@ struct RunRequest: Identifiable {
     func dispatch() async {
         guard !config.isEmpty else { return }
         var args = ["dispatch", "--model", selectedModel]
-        let key = ticket.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if !key.isEmpty { args += ["--ticket", key] }
+        let number = ticketNumber.trimmingCharacters(in: .whitespaces)
+        guard number.isEmpty || number.allSatisfy(\.isNumber) else { error = "Ticket number must be digits only."; return }
+        if !number.isEmpty {
+            guard !ticketProject.isEmpty else { error = "Choose a project key before naming a ticket."; return }
+            args += ["--ticket", "\(ticketProject)-\(number)"]
+        }
         if overrideLimits { args.append("--override-limits") }
         requests.append(RunRequest(arguments: args))
-        ticket = ""
+        ticketNumber = ""
         await drainRequests()
     }
     func answer(_ prompt: RunPrompt, with extra: [String]) async {
@@ -498,6 +509,7 @@ struct RunRequest: Identifiable {
     func update(_ path: [String], _ value: Any?) { draft = replacing(draft, path, value) as? [String: Any] ?? draft; notice = nil }
     private func validateModelSelection() {
         if selectedModel != "auto" && selectedPreset == nil { selectedModel = "auto" }
+        if !projectKeys.contains(ticketProject) { ticketProject = projectKeys.first ?? "" }
     }
     func string(_ path: [String]) -> Binding<String> { Binding(get: { valueAt(self.draft, path) as? String ?? "" }, set: { self.update(path, $0) }) }
     func bool(_ path: [String]) -> Binding<Bool> { Binding(get: { valueAt(self.draft, path) as? Bool ?? false }, set: { self.update(path, $0) }) }

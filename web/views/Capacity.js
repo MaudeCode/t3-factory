@@ -1,7 +1,7 @@
 import { html } from "../lib/h.js";
 import { config, status, jobs, clock, serverNow } from "../lib/store.js";
 import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span } from "../lib/format.js";
-import { Field, Range, Stepper, Slots, Budget, Section, useReady, Help, Icon } from "../ui/index.js";
+import { Field, Range, Stepper, Slots, Budget, Section, useReady, Page, Icon } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
@@ -34,8 +34,7 @@ export function Capacity() {
   const running = Object.fromEntries(PROVIDERS.map((p) => [p.driver, jobs.value.filter((j) => providerOf(j) === p.driver && isActive(j)).length]));
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
   const limit = config.value.maxWaitingPRs;
-  return html`<div class="page">
-    <div class="page-head"><div><h1>Capacity<${Help} text="How many runs each provider may have open, how much allowance it must keep, and when it may start. Running work always finishes." /></h1></div></div>
+  return html`<${Page} title="Capacity" hint="Running work always finishes; limits only decide what may start.">
     <div class="cols">
       <div>
         <${Section} title="Runs at once" hint="Filled slots are running now. Runs waiting for you free their slot. A run you start by hand may exceed the limit.">
@@ -59,5 +58,5 @@ export function Capacity() {
         <${Allowance} provider=${PROVIDERS[1]} title="Codex allowance" windows=${[["weekly", WINDOW_NAMES.weekly]]} />
       </div>
     </div>
-  </div>`;
+  <//>`;
 }

@@ -4,6 +4,37 @@ import { isBackdropClick } from "../lib/format.js";
 import { Button } from "./controls.js";
 import { confirmation, finishConfirmation } from "../lib/confirmation.js";
 
+// Small panel anchored under `anchor` (a ref to the trigger); follows it while the page scrolls or resizes,
+// and closes on an outside pointer or Escape.
+export function Popover({ open, onClose, anchor, label, width = 300, children }) {
+  const ref = useRef();
+  useEffect(() => {
+    if (!open) return;
+    const panel = ref.current, trigger = anchor.current;
+    const position = () => {
+      const t = trigger.getBoundingClientRect(), edge = 8;
+      const w = Math.min(width, innerWidth - edge * 2);
+      Object.assign(panel.style, { width: `${w}px`, left: `${Math.max(edge, Math.min(t.right - w, innerWidth - edge - w))}px`, top: `${t.bottom + 4}px`, maxHeight: `${innerHeight - t.bottom - 12}px` });
+    };
+    const outside = (e) => !panel.contains(e.target) && !trigger.contains(e.target) && onClose();
+    const escape = (e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); trigger.focus({ preventScroll: true }); } };
+    panel.showPopover();
+    position();
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      panel.hidePopover();
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [open]);
+  return open && html`<div ref=${ref} class="popover" popover="manual" role="group" aria-label=${label}>${children}</div>`;
+}
+
 // Native <dialog>; closes on Escape, backdrop click, or the Done button.
 export function Dialog({ open, onClose, title, children, actions, descriptionId }) {
   const ref = useRef();

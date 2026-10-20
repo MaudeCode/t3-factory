@@ -1,13 +1,13 @@
 import { html, useEffect } from "../lib/h.js";
 import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption, instanceDriver } from "../lib/store.js";
 import { DIFFICULTIES, difficultyLabel, providerName, providerIcon, streamReason, isOpen } from "../lib/format.js";
-import { Button, Field, Input, Select, Segmented, Toggle, Tag, Icon, SortableList, Help } from "../ui/index.js";
+import { Button, Field, Input, Select, Segmented, Toggle, Tag, Icon, SortableList, Page, RowBody } from "../ui/index.js";
 
 // What the scheduler thinks of each model right now.
 function liveState(m) {
   const streams = status.value.streams || [];
   for (const s of streams) {
-    if (s.quota?.factoryRouting?.modelId === m.id) return { text: "next automatic run", tone: "ok" };
+    if (s.quota?.factoryRouting?.modelId === m.id) return { text: "next automatic run", tone: "ok", next: true };
     const entry = (s.models || []).find((x) => x.id === m.id);
     if (entry) return { text: streamReason(entry.reason), tone: entry.reason === "provider-running" ? "on" : "" };
   }
@@ -34,7 +34,7 @@ function Editor({ index }) {
   return html`<div class="detail">
     <div class="detail-head">
       <div><h2><${Icon} name=${providerIcon(instanceDriver(m.model.instanceId))} /> ${m.name}</h2><p class="muted">${live.text}${provider && provider.status && provider.status !== "ready" ? `. Provider ${provider.status}` : ""}</p></div>
-      <${Button} variant="danger" size="sm" disabled=${inUse || config.value.models.length === 1} title=${inUse ? "A run is still using this model" : undefined} onClick=${() => actions.removeModel(index)}>Remove<//>
+      <${Button} variant="danger" size="sm" disabled=${inUse || config.value.models.length === 1} icon="trash" label=${inUse ? "A run is still using this model" : "Remove model"} onClick=${() => actions.removeModel(index)} />
     </div>
     <${Toggle} path=${[...p, "automatic"]} label="Takes tickets automatically" hint=${m.automatic ? "The scheduler may pick this model when it is next in priority and inside its allowance." : "Only used when you start a run and choose it."} />
     <div class="grid-2">
@@ -57,12 +57,8 @@ export function Models() {
   useEffect(actions.ensureCatalog, []);
   const list = config.value.models;
   const index = Math.min(selectedModel.value, list.length - 1);
-  return html`<div class="page">
-    <div class="page-head">
-      <div><h1>Models<${Help} text="Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket." /></h1></div>
-      <${Button} variant="ghost" size="sm" onClick=${actions.catalog}>Refresh catalog<//>
-      <${Button} variant="primary" onClick=${actions.addModel}>Add model<//>
-    </div>
+  return html`<${Page} title="Models" hint="Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket."
+    actions=${html`<${Button} variant="ghost" size="sm" icon="sync" label="Refresh catalog" onClick=${actions.catalog} /><${Button} variant="primary" size="sm" icon="plus" label="Add model" onClick=${actions.addModel} />`}>
     <div class="split">
       <${SortableList}
         label="Models by priority"
@@ -75,16 +71,16 @@ export function Models() {
             onClick=${() => (selectedModel.value = i)} onKeyDown=${(e) => e.key === "Enter" && (selectedModel.value = i)}>
             ${grip}
             <span class="rank">${i + 1}</span>
-            <span class="item-body">
-              <b>${m.name}</b>
-              <small><${Icon} name=${providerIcon(instanceDriver(m.model.instanceId))} label=${providerName(instanceDriver(m.model.instanceId))} /> ${m.model.model || "no model"} · up to ${difficultyLabel(m.maxDifficulty).toLowerCase()}</small>
-              <small class=${live.tone ? `tone-${live.tone}` : ""}>${live.text}</small>
-            </span>
-            <${Tag} tone=${m.automatic ? "on" : ""}>${m.automatic ? "automatic" : "manual"}<//>
+            <${RowBody} title=${html`<b>${m.name}</b>`}>
+              <${Icon} name=${providerIcon(instanceDriver(m.model.instanceId))} label=${providerName(instanceDriver(m.model.instanceId))} /> ${m.model.model || "no model"}
+              <${Tag} title=${`Hardest ticket it may take: ${difficultyLabel(m.maxDifficulty).toLowerCase()}`}><small>D</small>${m.maxDifficulty}<//>
+              ${live.next ? html`<${Tag} tone="on" title="The next automatic run uses this model">next<//>` : live.tone === "on" ? html`<${Tag} tone="on">working<//>` : null}
+            <//>
+            <${Icon} name=${m.automatic ? "zap" : "person"} label=${m.automatic ? "Automatic: the scheduler may pick it" : "Manual: only when you choose it"} />
           </div>`;
         }}
       />
       <${Editor} key=${list[index]?.id} index=${index} />
     </div>
-  </div>`;
+  <//>`;
 }
