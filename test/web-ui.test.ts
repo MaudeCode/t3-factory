@@ -38,6 +38,10 @@ test('run filters combine categories, support tag AND/OR, and preserve missing m
   assert.equal(matchesRunFilters(row, {}, 'other'), false);
   assert.equal(matchesRunFilters({ label: 'APP-1' }, {}, 'app-1'), true);
   assert.equal(matchesRunFilters({}), true);
+  const reported = { ...row, sources: [{ threadId: 'first' }, { threadId: 'second' }] };
+  assert.equal(matchesRunFilters(reported, { sessions: ['second', 'other'], tags: ['bug'] }), true, 'any reported source can match, combined with metadata');
+  assert.equal(matchesRunFilters(reported, { sessions: ['other'] }), false);
+  assert.equal(matchesRunFilters({}, { sessions: ['first'] }), false, 'unknown provenance cannot match a chosen source');
   for (const filters of [{ tags: ['bug'] }, { difficulties: ['med'] }, { priorities: ['high'] }]) assert.equal(matchesRunFilters({}, filters), false, 'unknown is not a known value');
 });
 test('launch links select exactly one named ticket and never submit during routing', async () => {

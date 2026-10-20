@@ -117,10 +117,58 @@ async function run() {
   assert(root.querySelector(".empty")?.textContent.includes("No session has reported"), "an empty list says so");
   await show({ sessionTickets: undefined });
   assert(root.querySelector(".empty")?.textContent.includes("not been read yet"), "an unread state is not an empty list");
+  await controls();
   await show();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+async function showControls() {
+  const dates = ['2026-03-01T10:00:00Z', '2026-03-01T13:00:00Z', '2026-03-01T11:00:00Z', '2026-03-01T12:00:00Z'];
+  await show({ sessionTickets: { at, error: null, rows: rows.map((r, i) => ({ ...r, createdAt: dates[i] })) } });
+}
+async function choose(label, text) {
+  const trigger = root.querySelector(`button[aria-label^="${label}"]`);
+  assert(trigger, `${label} control exists`);
+  trigger.click(); await pause();
+  const list = document.getElementById(trigger.getAttribute('aria-controls'));
+  const option = [...list.querySelectorAll('[role="option"]')].find(o => o.textContent.trim() === text);
+  assert(option, `${text} is an available ${label} choice`);
+  option.click(); await pause();
+  if (trigger.getAttribute('aria-expanded') === 'true') { trigger.click(); await pause(); }
+}
+async function controls() {
+  await showControls();
+  assert(keys().join() === 'APP-2,APP-1,APP-5,WEB-9', 'default ordering follows ticket creation, not priority or report time');
+  await choose('Creation order', 'Oldest first');
+  assert(keys().join() === 'WEB-9,APP-5,APP-1,APP-2', 'oldest-first reverses ticket creation order');
+  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
+  await choose('Session', 'Second look');
+  assert(keys().join() === 'APP-1', 'a secondary reporting session matches its ticket');
+  await choose('Session', 'Plan APP-2');
+  assert(keys().join() === 'APP-1,APP-2', 'selected sessions match any source and retain the chosen order');
+  assert(root.querySelector('[aria-label^="Filter runs"]').getAttribute('aria-label').includes('1 active'), 'session picks count as one active facet');
+  const search = root.querySelector('[aria-label="Find a ticket"]');
+  search.value = 'APP-2'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(keys().join() === 'APP-2', 'session filters combine with search');
+  search.value = 'absent'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(root.querySelector('.empty')?.textContent.includes('No session tickets match'), 'an unmatched session/search combination says so');
+  [...document.querySelector('.popover[aria-label="Filters"]').querySelectorAll('button')].find(b => b.textContent.trim() === 'Clear all').click(); await pause();
+  assert(keys().join() === 'WEB-9,APP-5,APP-1,APP-2', 'Clear all resets session picks and search while preserving sort');
+  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
+  update({ sessionTickets: { ...state.status.sessionTickets, rows: [row('t7', 'APP-7', 'urgent', { createdAt: '2026-03-01T14:00:00Z' }), ...state.status.sessionTickets.rows] } }); await pause();
+  assert(keys().join() === 'WEB-9,APP-5,APP-1,APP-2,APP-7', 'live additions respect oldest-first order');
+  await choose('Creation order', 'Newest first');
+  assert(keys()[0] === 'APP-7', 'newest-first puts the live addition first');
+  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
+  await choose('Session', 'Plan APP-2');
+  update({ sessionTickets: { ...state.status.sessionTickets, rows: state.status.sessionTickets.rows.filter(r => r.taskId !== 't2') } }); await pause();
+  assert(!keys().length && root.querySelector('button[aria-label="Session"]').textContent.includes('Session no longer listed'), 'a disappearing session retains an honest active constraint');
+  update({ sessionTickets: { ...state.status.sessionTickets, rows: [row('t8', 'APP-8', 'low', { sources: rows[1].sources }), ...state.status.sessionTickets.rows] } }); await pause();
+  assert(keys().join() === 'APP-8', 'new tickets from the selected source appear without widening the filter');
+  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
+  assert(document.documentElement.scrollWidth <= innerWidth, 'sorting and filtering controls fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 async function showError() { await show({ sessionTickets: { at, error: { at, message: "T3 /api/orchestration/shell returned HTTP 503" }, rows } }); }
 async function showEmpty() { await show({ sessionTickets: { at, error: null, rows: [] } }); }
-window.sessionTests = { run, show, showError, showEmpty };
+window.sessionTests = { run, show, showControls, controls, showError, showEmpty };
 await show();

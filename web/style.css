@@ -2295,6 +2295,9 @@ h1 .crumb::after {
   .page-head > div:first-child {
     flex: 1 0 100%;
   }
+  .page-head .creation-order {
+    flex: 1 0 100%;
+  }
   input.search {
     flex: 1;
     width: auto;

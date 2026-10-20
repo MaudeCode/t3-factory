@@ -2,25 +2,26 @@
 import { html, useState } from "../lib/h.js";
 import { config, status, busy, clock, serverNow, actions } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, matchesRunFilters } from "../lib/format.js";
-import { Button, Icon, Empty, Page, Section } from "../ui/index.js";
+import { ago, byNewest, matchesRunFilters } from "../lib/format.js";
+import { Button, Select, Icon, Empty, Page, Section } from "../ui/index.js";
 import { TicketRow, RunNow, startHold, Operations } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 
-const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. This list is separate from the automatic queue: a ticket here still needs its readiness checks to start, and nothing starts on its own.";
+const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. Factory upstream release reviews are excluded. A ticket here still needs its readiness checks to start, and nothing starts on its own.";
 
 export function SessionTickets() {
   clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
+  const [order, setOrder] = useState("newest");
   const c = config.value,
     s = status.value.sessionTickets,
     now = serverNow();
-  const rows = (s?.rows ?? []).filter((t) => matchesRunFilters(t, filters, query));
-  const narrowed = query.trim() || ["projects", "tags", "difficulties", "priorities"].some((key) => filters[key]?.length);
+  const rows = (s?.rows ?? []).filter((t) => matchesRunFilters(t, filters, query)).toSorted((a, b) => order === "oldest" ? byNewest(b, a) : byNewest(a, b));
+  const narrowed = query.trim() || Object.values(filters).some(value => Array.isArray(value) && value.length);
   const project = (id) => c.projects.find((p) => p.kaneoId === id);
   const dismiss = (t) => confirmAction({ title: `Remove ${t.key} from Session tickets?`, message: "The ticket itself, its runs and automatic scheduling are unchanged. It does not come back when a session reports it again.", label: "Remove" }, () => actions.dismissSessionTicket(t.taskId));
-  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
+  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions />`}>
     ${s?.error && html`<p class="alert" role="alert">Collection failed ${ago(s.error.at, now)}: ${s.error.message}. Showing the last known list.</p>`}
     <${Operations} />
     <${Section} title="Reported by sessions" count=${s ? rows.length : null}>
@@ -35,6 +36,7 @@ export function SessionTickets() {
                   <${RunNow} ticket=${ticket} hold=${hold} />
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss(t)}>×<//>`}>
                 <span title="The T3 session that reported creating this ticket">from ${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
+                <span class="muted" title=${new Date(t.createdAt).toLocaleString()}>created ${ago(t.createdAt, now)}</span>
                 <span class="muted" title=${t.refreshError ? `Last read failed: ${t.refreshError}` : "When the tracker was last read for this ticket"}>${t.refreshError ? "tracker read failed, " : ""}checked ${ago(t.refreshedAt, now)}</span>
                 ${t.unavailable && html`<b class="tone-attention">${t.unavailable}</b>`}
               <//>`;
