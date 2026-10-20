@@ -11,6 +11,7 @@ struct FactoryPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     automation
+                    composer
                     HStack(alignment: .top, spacing: 12) { ProviderCard(model: model, driver: "claudeAgent"); ProviderCard(model: model, driver: "codex") }
                     if !model.waitingJobs.isEmpty { section("Needs you", count: model.waitingJobs.count) { ForEach(model.waitingJobs, id: \.rowId) { RunRow(model: model, job: $0) } } }
                     section("Running", count: model.activeJobs.count) {
@@ -18,7 +19,6 @@ struct FactoryPanel: View {
                     }
                     ForEach(model.chains, id: \.rowId) { ChainCard(model: model, plan: $0) }
                     UpNextCard(model: model, limit: 5)
-                    composer
                     if !model.recentJobs.isEmpty { section("Finished recently", count: nil) { ForEach(model.recentJobs.prefix(4), id: \.rowId) { RunRow(model: model, job: $0) } } }
                     if !model.journal.isEmpty { section("Activity", count: nil) { ForEach(model.journal.prefix(6), id: \.rowId) { JournalRow(model: model, event: $0) } } }
                 }.padding(14)
