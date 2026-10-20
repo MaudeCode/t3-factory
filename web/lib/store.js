@@ -177,11 +177,14 @@ export const actions = {
       await load();
       message("Chain cancelled. Tickets already running finish on their own.");
     }),
-  dismissSessionTicket: (id) =>
+  dismissSessionTicket: (ids) =>
     run(async () => {
-      await post(`/api/session-tickets/${id}/dismiss`, {});
-      await load();
-      message("Removed from Session tickets. The ticket itself is unchanged.");
+      try {
+        for (const id of new Set(Array.isArray(ids) ? ids : [ids])) await post(`/api/session-tickets/${encodeURIComponent(id)}/dismiss`, {});
+      } finally {
+        await load();
+      }
+      message("Removed from Session tickets. Kaneo tickets are unchanged.");
     }),
   stopJob: (id) =>
     run(async () => {

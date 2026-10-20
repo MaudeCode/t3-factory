@@ -23,6 +23,19 @@ function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestIn
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+test('desktop thread links resolve the configured environment and preserve opaque thread IDs', async t => {
+  const f = fixtureT3(t, { '/.well-known/t3/environment': () => json({ environmentId: 'environment-1', orchestrationProtocolVersion: 2 }) });
+  assert.equal(await f.t3.threadLink('mcp:thread/with %'), 't3code://threads/environment-1/mcp%3Athread%2Fwith%20%25');
+  assert.equal(f.requests[0].headers.has('authorization'), false, 'the public descriptor needs no scheduler credential');
+});
+
+test('desktop thread links fail explicitly when environment resolution is unavailable', async t => {
+  for (const [name, response] of [['missing ID', json({})], ['empty ID', json({ environmentId: '' })], ['unavailable', json({}, 503)]] as const) await t.test(name, async t => {
+    const f = fixtureT3(t, { '/.well-known/t3/environment': () => response });
+    await assert.rejects(f.t3.threadLink('thread'), /environment|Too small/);
+  });
+});
+
 test('every T3 request negotiates orchestration protocol v2 and reads the v2 shell', async t => {
   const { t3, requests } = fixtureT3(t, {
     '/api/orchestration/shell': init => new Headers(init?.headers).get('x-t3-orchestration-protocol') === '2' ? json(v2Shell()) : json({ _tag: 'HttpApiSchemaError' }, 400),

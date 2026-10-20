@@ -1,7 +1,7 @@
 // Synthetic session tickets, the actual page, store and dispatch path. No live sessions, tickets or dispatches.
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status } from "../../web/lib/store.js";
+import { applyState, operations, status, notice } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { route, match } from "../../web/lib/router.js";
 
@@ -43,6 +43,7 @@ const keys = () => [...root.querySelectorAll(".next .key")].map((e) => e.textCon
 const button = (label) => root.querySelector(`[aria-label="${label}"]`);
 async function show(patch = {}) {
   operations.value = [];
+  notice.value = null;
   state = structuredClone(base);
   Object.assign(state.status, patch);
   render(null, root);
@@ -61,12 +62,12 @@ async function run() {
   assert(first.querySelector(".meta-project").textContent === "Other project" && first.textContent.includes("not configured in Factory"), "an unmapped project says why it cannot start");
   assert(button("Run WEB-9 now").disabled && button("Run WEB-9 now").title.includes("not configured"), "Run is disabled with the reason as its tooltip");
   assert(root.querySelectorAll(".next .tag-label").length === 6, "rows show their attached labels");
-  assert(first.querySelector('a[href="t3-thread://v1/thread-t9"]')?.getAttribute("aria-label").includes("T3 Code"), "the source session opens in T3");
+  assert(first.querySelector('a[href="/api/threads/thread-t9/open"]')?.getAttribute("aria-label").includes("T3 Code"), "the source session opens through the desktop-link resolver");
   assert(first.textContent.includes("from Plan WEB-9"), "the originating session is named");
-  assert(root.querySelector(".next:nth-of-type(3)").textContent.includes("tracker read failed"), "a failed refresh is not shown as fresh");
+  assert(root.querySelectorAll(".next")[2].textContent.includes("tracker read failed"), "a failed refresh is not shown as fresh");
   assert(!button("Run APP-2 now").closest("a") && !button("Remove APP-2 from Session tickets").closest("a"), "actions sit beside the tracker link, not inside it");
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
-  assert(many.querySelectorAll('a[href^="t3-thread://"]').length === 1 && many.querySelector('a[href^="t3-thread://"]').title.includes("2 more"), "several sources collapse into one session action");
+  assert(many.querySelectorAll('a[href^="/api/threads/"]').length === 1 && many.querySelector('a[href^="/api/threads/"]').title.includes("2 more"), "several sources collapse into one session action");
   assert(many.getBoundingClientRect().right <= innerWidth && many.textContent.includes("Third look"), "all sources are named without widening the row");
   button("Run APP-2 now").click();
   await pause();
@@ -170,5 +171,44 @@ async function controls() {
 }
 async function showError() { await show({ sessionTickets: { at, error: { at, message: "T3 /api/orchestration/shell returned HTTP 503" }, rows } }); }
 async function showEmpty() { await show({ sessionTickets: { at, error: null, rows: [] } }); }
-window.sessionTests = { run, show, showControls, controls, showError, showEmpty };
+async function bulk() {
+  calls = [];
+  await show();
+  const pick = key => button(`Select ${key}`);
+  assert(pick('APP-2')?.type === 'checkbox', 'tickets have accessible selection checkboxes');
+  pick('APP-2').click(); pick('APP-5').click(); await pause();
+  button('Run selected tickets').click(); await pause();
+  assert(operations.value.length === 2 && operations.value.every(op => ['APP-2', 'APP-5'].includes(op.input.ticket)), 'bulk Run queues only selected keys through ordinary operations');
+  button('Run selected tickets').click(); release();
+  for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
+  assert(calls.filter(c => c.url === '/api/dispatch').length === 2, 'bulk Run does not duplicate requests');
+  assert(calls.filter(c => c.url === '/api/dispatch').every(c => c.input.model === 'auto' && c.input.overrideLimits === true), 'bulk Run uses the single-row dispatch contract');
+  await show();
+  pick('WEB-9').click(); await pause();
+  assert(button('Run selected tickets').disabled, 'an unavailable selected ticket blocks bulk Run with its ordinary hold');
+  button('Select visible tickets').click(); await pause();
+  assert([...root.querySelectorAll('.next input[type=checkbox]')].every(el => el.checked), 'Select visible selects the shown list');
+  const search = root.querySelector('[aria-label="Find a ticket"]');
+  search.value = 'APP-5'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(keys().join() === 'APP-5' && pick('APP-5').checked && root.textContent.includes('1 selected'), 'filter changes drop hidden selections');
+  calls = [];
+  button('Remove selected tickets').click(); await pause();
+  let dialog = document.querySelector('dialog[open]');
+  assert(dialog?.textContent.includes('APP-5') && dialog.textContent.includes('unchanged'), 'bulk Remove reviews captured keys and preserves tracker tickets');
+  [...dialog.querySelectorAll('button')].find(b => b.textContent.trim() === 'Cancel').click(); await pause();
+  assert(!calls.length && keys().includes('APP-5'), 'cancelled bulk Remove performs no writes');
+  button('Remove selected tickets').click(); await pause();
+  dialog = document.querySelector('dialog[open]');
+  [...dialog.querySelectorAll('button')].find(b => b.textContent.trim() === 'Remove').click();
+  for (let n = 0; n < 100 && keys().length; n++) await pause();
+  assert(calls.filter(c => c.url.includes('/dismiss')).map(c => c.url).join() === '/api/session-tickets/t5/dismiss', 'bulk Remove dismisses only the reviewed visible selection');
+  assert(!root.querySelector('.selection-bar'), 'a live-empty list clears its bulk controls');
+  await show();
+  button('Select visible tickets').click(); await pause();
+  button('Select visible tickets').click(); await pause();
+  assert([...root.querySelectorAll('.next input[type=checkbox]')].every(el => !el.checked), 'Select visible also clears selection');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'selection controls fit the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.sessionTests = { run, show, showControls, controls, bulk, showError, showEmpty };
 await show();

@@ -1444,6 +1444,16 @@ h2 .icon,
   align-items: center;
   border-top: 1px solid var(--line);
 }
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+.next > .check {
+  flex-shrink: 0;
+}
 .next-ticket {
   flex: 1;
   min-width: 0;
@@ -2216,6 +2226,13 @@ h1 .crumb::after {
 }
 
 @media (max-width: 900px) {
+  .selection-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .selection-bar > span {
+    text-align: right;
+  }
   :root {
     --gutter: var(--space-4);
   }

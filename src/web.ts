@@ -158,6 +158,7 @@ export function createFactoryWeb(options: {
   readState: () => unknown;
   history?: () => unknown;
   report?: (id: string) => unknown;
+  threadLink?: (id: string) => Promise<string>;
   watch?: (notify: () => void) => () => void;
   run?: typeof runFactory;
   assetDir?: string;
@@ -371,6 +372,12 @@ export function createFactoryWeb(options: {
         }
         if (path === "/api/history" && req.method === "GET")
           return json(res, 200, options.history?.() ?? []);
+        const thread = path.match(/^\/api\/threads\/([^/]{1,2048})\/open$/);
+        if (thread && req.method === "GET" && options.threadLink) {
+          const href = await options.threadLink(decodeURIComponent(thread[1]));
+          res.writeHead(302, { Location: href, "Cache-Control": "no-store" });
+          return res.end();
+        }
         const job = path.match(/^\/api\/jobs\/([\w-]{1,64})\/(report|stop)$/);
         if (job && job[2] === "report" && req.method === "GET") {
           const detail = options.report?.(job[1]);

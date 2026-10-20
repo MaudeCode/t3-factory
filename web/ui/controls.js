@@ -255,14 +255,15 @@ export function Select({ path, value, options, onChange, label, size, multiple, 
   </div>`;
 }
 
-export const Check = ({ path, label, checked, onChange, hint }) =>
+export const Check = ({ path, label, checked, onChange, hint, ...props }) =>
   html`<label class="check">
     <input
       type="checkbox"
       checked=${path ? !!at(path) : checked}
       onChange=${onChange ?? ((e) => set(path, e.target.checked))}
+      ...${props}
     />
-    <span>${label}</span><${Help} text=${hint} />
+    ${label && html`<span>${label}</span>`}<${Help} text=${hint} />
   </label>`;
 
 // Exclusive filter chips. `options` is a list of [value, name, count?].

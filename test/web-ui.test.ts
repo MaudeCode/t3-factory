@@ -44,6 +44,30 @@ test('run filters combine categories, support tag AND/OR, and preserve missing m
   assert.equal(matchesRunFilters({}, { sessions: ['first'] }), false, 'unknown provenance cannot match a chosen source');
   for (const filters of [{ tags: ['bug'] }, { difficulties: ['med'] }, { priorities: ['high'] }]) assert.equal(matchesRunFilters({}, filters), false, 'unknown is not a known value');
 });
+test('web thread links use the authenticated desktop-link resolver and encode opaque IDs', async () => {
+  const { threadLink } = await import('../web/lib/format.js');
+  assert.equal(threadLink({ threadId: 'mcp:thread/with %' }), '/api/threads/mcp%3Athread%2Fwith%20%25/open');
+  assert.equal(threadLink({}), '');
+});
+test('bulk session dismissal reconciles partial success and does not retry failed writes', async () => {
+  const original = globalThis.fetch, writes: string[] = [];
+  let loads = 0;
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      writes.push(String(url));
+      return url.includes('/two/') ? Response.json({ message: 'Removal failed' }, { status: 409 }) : Response.json({ ok: true });
+    }
+    loads++;
+    return Response.json(fixture());
+  };
+  try {
+    await store.actions.dismissSessionTicket(['one', 'one', 'two', 'three']);
+    assert.deepEqual(writes, ['/api/session-tickets/one/dismiss', '/api/session-tickets/two/dismiss']);
+    assert.equal(loads, 1, 'confirmed removals are reconciled even when a later removal fails');
+    assert.equal(store.busy.value, false);
+    assert.match(store.notice.value?.text ?? '', /Removal failed/);
+  } finally { globalThis.fetch = original; }
+});
 test('launch links select exactly one named ticket and never submit during routing', async () => {
   const { match } = await import('../web/lib/router.js');
   assert.deepEqual(match('/start?ticket=app-123'), { page: '/start', param: 'APP-123', path: '/start' });

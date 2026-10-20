@@ -172,9 +172,10 @@ export function startHold(t) {
 
 // One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
 // The queue and the session list share this row; `children` extends the facet line, `actions` the trailing buttons.
-export function TicketRow({ ticket: t, project, children, actions }) {
+export function TicketRow({ ticket: t, project, children, actions, selection }) {
   const c = config.value;
   return html`<div class="next" key=${t.id}>
+    ${selection}
     <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
       <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
         <${Meta} project=${project?.name ?? t.project ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
@@ -185,9 +186,10 @@ export function TicketRow({ ticket: t, project, children, actions }) {
 }
 
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled.
+export const runNow = (t, hold) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits: true }) : null;
 export const RunNow = ({ ticket: t, hold }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
   title=${hold ?? "Override limits and start this ticket now."}
-  onClick=${() => { if (!startHold(t) && !hold) startRun({ ticket: t.key, model: "auto", overrideLimits: true }); }}><${Icon} name="play" /><//>`;
+  onClick=${() => runNow(t, hold)}><${Icon} name="play" /><//>`;
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "" }) {
