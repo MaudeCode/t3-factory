@@ -4,7 +4,8 @@ import { isBackdropClick } from "../lib/format.js";
 import { Button } from "./controls.js";
 import { confirmation, finishConfirmation } from "../lib/confirmation.js";
 
-// Small panel anchored under `anchor` (a ref to the trigger); closes on outside pointer, Escape, or scroll away.
+// Small panel anchored under `anchor` (a ref to the trigger); follows it while the page scrolls or resizes,
+// and closes on an outside pointer or Escape.
 export function Popover({ open, onClose, anchor, label, width = 300, children }) {
   const ref = useRef();
   useEffect(() => {
@@ -22,11 +23,13 @@ export function Popover({ open, onClose, anchor, label, width = 300, children })
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);
     window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
     return () => {
       panel.hidePopover();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape);
       window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
     };
   }, [open]);
   return open && html`<div ref=${ref} class="popover" popover="manual" role="group" aria-label=${label}>${children}</div>`;

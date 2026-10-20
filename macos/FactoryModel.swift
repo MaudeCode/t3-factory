@@ -400,8 +400,12 @@ struct RunRequest: Identifiable {
     func dispatch() async {
         guard !config.isEmpty else { return }
         var args = ["dispatch", "--model", selectedModel]
-        let number = ticketNumber.filter(\.isNumber)
-        if !number.isEmpty, !ticketProject.isEmpty { args += ["--ticket", "\(ticketProject)-\(number)"] }
+        let number = ticketNumber.trimmingCharacters(in: .whitespaces)
+        guard number.isEmpty || number.allSatisfy(\.isNumber) else { error = "Ticket number must be digits only."; return }
+        if !number.isEmpty {
+            guard !ticketProject.isEmpty else { error = "Choose a project key before naming a ticket."; return }
+            args += ["--ticket", "\(ticketProject)-\(number)"]
+        }
         if overrideLimits { args.append("--override-limits") }
         requests.append(RunRequest(arguments: args))
         ticketNumber = ""
