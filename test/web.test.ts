@@ -21,6 +21,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     secret,
     dataDir: dir,
     readState: () => ({ config: { enabled: false }, status: { jobs: [] } }),
+    threadLink: async (id) => `t3code://threads/environment/${encodeURIComponent(id)}`,
     run: async (args, input) => {
       calls.push({ args, input });
       if (args[0] === "dispatch")
@@ -79,6 +80,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     }
     assert.equal(calls.length, 0, 'launch GETs cannot dispatch');
     assert.equal((await request("/api/state")).status, 401);
+    assert.equal((await request('/api/threads/mcp%3Athread/open')).status, 401, 'thread links require authentication');
     assert.equal((await request("/api/pair", { method: "POST" })).status, 401);
     assert.equal(
       (await request("/api/state", { headers: { Host: "attacker.example" } }))
@@ -100,6 +102,11 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     });
     assert.equal(signed.status, 200);
     const setCookie = signed.headers.get("set-cookie")!;
+    const opened = await request('/api/threads/mcp%3Athread%2Fwith%20%25/open', { headers: { Cookie: setCookie.split(';')[0] } });
+    assert.equal(opened.status, 302);
+    assert.equal(opened.headers.get('location'), 't3code://threads/environment/mcp%3Athread%2Fwith%20%25');
+    assert.equal(opened.headers.get('cache-control'), 'no-store');
+    assert.equal(calls.length, 0, 'resolving a thread link never dispatches');
     assert.match(setCookie, /HttpOnly/);
     assert.match(setCookie, /SameSite=Strict/);
     assert.match(setCookie, /Secure/);

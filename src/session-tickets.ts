@@ -4,7 +4,7 @@
 // resumes where it stopped. It never changes a ticket, starts work, or alters automatic scheduling.
 import { z } from 'zod';
 import { T3, Kaneo, KaneoTaskNotFound, taskSchema, listTaskLabels, type Session } from './clients.ts';
-import { Store, type Job, type SessionRef, type SessionThread, type SessionTicket } from './store.ts';
+import { Store, type Job, type SessionRef, type SessionSource, type SessionThread, type SessionTicket } from './store.ts';
 import { ticketDifficulty } from './policy.ts';
 import { log, safeError } from './scheduler.ts';
 import type { Config } from './config.ts';
@@ -61,10 +61,11 @@ export function creationReports(text: string, workspaceId: string): Pick<Session
 // A Factory start counts once T3 has the thread; a dispatch that was only prepared, or whose outcome is unknown, does not.
 export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
 
-// Job ownership and explicit kickoff provenance survive finished and legacy review sessions.
+// Job ownership and stored origin/title evidence cover current and legacy Factory sessions.
 function sessionSourceFilter(jobs: Job[], sessions: SessionThread[]) {
-  const upstream = new Set([...jobs.filter(job => job.kind === 'upstream').map(job => job.threadId), ...sessions.filter(session => session.upstreamReview).map(session => session.id)]);
-  return (threadId: string) => !upstream.has(threadId);
+  const discovery = (title: string) => /^Factory discovery:/i.test(title);
+  const excluded = new Set([...jobs.filter(job => job.kind === 'upstream' || job.kind === 'discovery').map(job => job.threadId), ...sessions.filter(session => session.upstreamReview || discovery(session.title)).map(session => session.id)]);
+  return (threadId: string, title = '') => !excluded.has(threadId) && !discovery(title);
 }
 
 // Projects and their columns, cached in the Store; configured projects keep their configured statuses.
@@ -147,7 +148,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   let listed: Set<string> | undefined;
   try {
     let reads = 0;
-    const sessions = (await t3.sessions()).filter(session => includeSource(session.id));
+    const sessions = (await t3.sessions()).filter(session => includeSource(session.id, session.title));
     listed = new Set(sessions.map(s => s.id));
     for (const session of sessions) {
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
@@ -199,7 +200,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   }
   // A failed read keeps the row's last honest reading and waits before trying again, so an outage cannot loop on the same rows.
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
-  const stale = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId)) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
+  const stale = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
   if (stale.length > limits.refreshes) more = true;
   for (const row of stale.slice(0, limits.refreshes)) {
     try {
@@ -246,7 +247,13 @@ export function sessionTicketStatus(c: Config, store: Store) {
   const jobs = store.jobs(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
   const includeSource = sessionSourceFilter(jobs, store.sessionThreads());
   const rows = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
-    const sources = r.sources.filter(s => includeSource(s.threadId));
+    const bySession = new Map<string, SessionSource>();
+    for (const source of r.sources) {
+      if (!includeSource(source.threadId, source.title)) continue;
+      const previous = bySession.get(source.threadId);
+      if (!previous || source.at > previous.at) bySession.set(source.threadId, source);
+    }
+    const sources = [...bySession.values()];
     if (!sources.length) return [];
     const project = c.projects.find(p => p.kaneoId === r.projectId), known = cat?.projects[r.projectId];
     const ready = project?.readyStatuses ?? known?.ready;

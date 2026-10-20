@@ -131,7 +131,7 @@ export const prLabel = (url) => {
   const m = url.match(/\/pull\/(\d+)$/);
   return m ? `PR #${m[1]}` : "PR";
 };
-export const threadLink = (job) => (job.threadId ? `t3-thread://v1/${job.threadId}` : "");
+export const threadLink = (job) => (job.threadId ? `/api/threads/${encodeURIComponent(job.threadId)}/open` : "");
 
 export const projectOf = (config, job) => config.projects.find((p) => p.kaneoId === job.projectId);
 export const modelName = (config, job) => {

@@ -46,12 +46,20 @@ export class T3 {
   private async assertProtocol() {
     let server: number;
     try {
-      const r = await fetch(new URL('/.well-known/t3/environment', this.config.url), { redirect: 'error', signal: AbortSignal.timeout(10_000) });
-      if (!r.ok) return;
       // Hosts from before protocol negotiation omit the version and speak v1.
-      server = z.object({ orchestrationProtocolVersion: z.number().int().optional() }).passthrough().parse(await r.json()).orchestrationProtocolVersion ?? 1;
+      server = (await this.environment()).orchestrationProtocolVersion ?? 1;
     } catch { return; }
     if (server !== ORCHESTRATION_PROTOCOL) throw new Error(`T3 orchestration protocol mismatch (scheduler speaks v${ORCHESTRATION_PROTOCOL}, server requires v${server})`);
+  }
+  async environment() {
+    const r = await fetch(new URL('/.well-known/t3/environment', this.config.url), { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+    if (!r.ok) throw new Error(`T3 environment descriptor returned HTTP ${r.status}`);
+    return z.object({ environmentId: z.string().min(1).optional(), orchestrationProtocolVersion: z.number().int().optional() }).parse(await r.json());
+  }
+  async threadLink(id: string) {
+    const { environmentId } = await this.environment();
+    if (!environmentId) throw new Error('T3 did not report its environment ID');
+    return `t3code://threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(id)}`;
   }
   async shell() {
     const shell = z.object({ threads: z.array(threadSchema), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));

@@ -48,6 +48,7 @@ if (command === 'web') {
       return { config, status, now: new Date().toISOString() };
     },
     history: () => store.jobs().map(compact).toReversed(),
+    threadLink: (id) => new T3(loadConfig(configPath).t3).threadLink(id),
     report: (id) => {
       const job = store.job(id);
       if (!job) return undefined;

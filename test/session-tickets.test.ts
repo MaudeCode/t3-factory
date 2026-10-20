@@ -85,6 +85,47 @@ const { Store } = await import('../src/store.ts');
 const { T3: T3Client, Kaneo: KaneoClient } = await import('../src/clients.ts');
 const LINK = (taskId: string, workspace = 'workspace') => `https://kaneo.example.test/dashboard/workspace/${workspace}/project/FIX/task/${taskId}`;
 
+test('session sources are unique by thread and retain the latest creation report', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'), f.session('s2', { title: 'Session s1' }));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1'), message('a2', 'assistant_message', 'Created FIX-7.', 2, AT.threadEnd, 's1')], cursor: null, more: false });
+  f.bounded.set('s2', { items: [message('b1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's2')], cursor: null, more: false });
+  await f.drain();
+  const row = f.store.sessionTicket('task-7')!;
+  // Older reports may arrive through backfill after a newer report was already stored.
+  f.store.saveSessionTicket({ ...row, sources: row.sources.toReversed() });
+  assert.deepEqual(f.status().rows[0].sources.map(s => [s.threadId, s.messageId, s.at]).toSorted(), [
+    ['s1', 'message-a2', AT.threadEnd], ['s2', 'message-b1', AT.reported],
+  ], 'each creating session appears once, using its latest report even when storage order differs');
+  assert.equal(f.store.sessionTicket('task-7')!.sources.length, 3, 'all message provenance remains stored');
+});
+
+test('Factory discovery threads are excluded from old rows, fresh scans, retries and refreshes', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9));
+  f.sessions.push(f.session('ordinary'), f.session('legacy'), f.session('owned'));
+  f.bounded.set('ordinary', { items: [message('a1', 'assistant_message', 'Created FIX-8.', 1, AT.reported, 'ordinary')], cursor: null, more: false });
+  f.bounded.set('legacy', { items: [message('b1', 'assistant_message', 'Created FIX-7 and FIX-8.', 1, AT.reported, 'legacy')], cursor: null, more: false });
+  f.bounded.set('owned', { items: [message('c1', 'assistant_message', 'Created FIX-9.', 1, AT.reported, 'owned')], cursor: null, more: false });
+  await f.drain();
+  const rec = f.store.sessionThread('legacy')!;
+  f.store.saveSessionThread({ ...rec, title: 'Factory Discovery: Fixture', pending: [{ kind: 'key', value: 'FIX-99', messageId: 'pending', at: AT.reported, attempts: 1, error: 'Old lookup error' }], error: 'Old history error' });
+  for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshAfter: '2000-01-01T00:00:00Z', sources: row.sources.map(s => s.threadId === 'legacy' ? { ...s, title: 'Factory Discovery: Fixture' } : s) });
+  f.store.save({ id: 'discovery-job', kind: 'discovery', projectId: 'FIX', taskId: null, ticketKey: null, threadId: 'owned', messageId: 'start', createdAt: AT.threadStart, completedAt: AT.threadEnd, state: 'complete', reason: 'Done', lastPersonalActivity: null, reportPath: join(f.dir, 'report'), command: null, prUrls: [] });
+  assert.deepEqual(f.keys(), ['FIX-8'], 'legacy discovery titles and retained job ownership exclude discovery-only tickets');
+  assert.deepEqual(f.status().rows[0].sources.map(s => s.threadId), ['ordinary'], 'mixed tickets keep their ordinary source');
+  assert.equal(f.store.sessionTicket('task-8')!.sources.length, 2, 'exclusion preserves stored provenance');
+  f.sessions.push(f.session('fresh', { title: 'factory discovery: New project' }), f.session('discussion', { title: 'Discuss Factory Discovery: settings' }));
+  f.calls.length = 0;
+  await f.drain();
+  assert.equal(f.calls.some(c => /\/threads\/(legacy|owned|fresh)\//.test(c)), false, 'discovery history is not scanned');
+  assert.equal(f.calls.filter(c => c === 'get_task_by_ticket_id').length, 0, 'discovery references are not confirmed');
+  assert.equal(f.calls.filter(c => c === 'get_task').length, 1, 'only the mixed ticket with an ordinary source is refreshed');
+  assert.equal(f.calls.some(c => c.includes('/threads/discussion/')), true, 'only the requested title prefix matches');
+  assert.equal(f.status().error, null, 'old discovery failures do not keep the collection error alive');
+});
+
 test('upstream release-review sources are excluded from collection and existing projections', async t => {
   const f = collectorFixture(t);
   f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9));
