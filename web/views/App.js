@@ -1,7 +1,7 @@
 import { html, useState, useEffect, useRef } from "../lib/h.js";
 import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, readiness, blocked, actions, runWithoutReadyLabel, runChain, message } from "../lib/store.js";
 import { route, PAGES, follow } from "../lib/router.js";
-import { Button, Dialog, Confirmation, Toast, Segmented, Tag } from "../ui/index.js";
+import { Button, Dialog, Confirmation, Toast, Segmented, Tag, Meta, RowBody } from "../ui/index.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { Login } from "./Login.js";
@@ -101,8 +101,8 @@ function Shell() {
     </nav>
     <span class="right">
       <span class=${`conn ${connection.value}`} title=${`Updates: ${CONNECTION[connection.value]}`}><i></i>${CONNECTION[connection.value]}</span>
-      <${Button} variant="ghost" size="sm" onClick=${() => setPicking(true)}>Theme<//>
-      <${Button} variant="ghost" size="sm" onClick=${() => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout()}>${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"}<//>
+      <${Button} variant="ghost" size="sm" icon="paintbrush" label="Theme" onClick=${() => setPicking(true)} />
+      <${Button} variant="ghost" size="sm" icon="signOut" label=${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"} onClick=${() => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout()} />
     </span>
   </header>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />
@@ -144,9 +144,9 @@ function Blocked() {
             const ahead = t.blockedBy.map((id) => byId.get(id)?.key).filter(Boolean);
             return html`<div class="chain-row" key=${t.id}>
               <${Tag} tone=${ahead.length ? "" : t.runnable ? "ok" : "attention"}>${ahead.length ? "waits" : t.runnable ? "can start" : "not included"}<//>
-              <span class="chain-body"><span><b class="key">${t.key}</b> ${t.title}</span>
-                <small>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}${t.priority ? ` · ${t.priority}` : ""}${t.difficulty ? ` · ${t.difficulty}` : " · no difficulty label"}${t.readyLabel ? "" : " · no ready label"}</small>
-              </span>
+              <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
+                <${Meta} priority=${t.priority} difficulty=${t.difficulty || false}>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}${!t.readyLabel && html`<${Tag} tone="attention" title="Runs with a waiver for the missing ready label">no ready label<//>`}<//>
+              <//>
             </div>`;
           },
         )}

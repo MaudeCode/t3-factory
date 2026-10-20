@@ -17,7 +17,7 @@ export function useReady() {
 }
 
 // Remaining allowance. `marker` draws the reserve line; `note` sits under the value.
-export const Meter = ({ label, value, marker, note, lowBelow }) => {
+export const Meter = ({ label, value, marker, note, noteTitle, lowBelow }) => {
   const n = pct(value),
     low = n < (lowBelow ?? marker ?? 20);
   return html`<div class=${`meter ${low ? "meter-low" : ""}`}>
@@ -26,14 +26,14 @@ export const Meter = ({ label, value, marker, note, lowBelow }) => {
       ${marker != null && html`<u style=${`left:${pct(marker)}%`} title=${`Reserve ${Math.round(marker)}%`}></u>`}
     </i>
     <em>${Math.round(n)}<small>%</small></em>
-    ${note && html`<span class="meter-note">${note}</span>`}
+    <span class="meter-note" title=${noteTitle}>${note}</span>
   </div>`;
 };
 
 // An inline glyph from the vendored set. With a `label` it is announced; without one it is decoration.
 export const Icon = ({ name, label }) => {
   const icon = ICONS[name];
-  return html`<svg class=${`icon icon-${name}`} viewBox=${`0 0 ${icon.box} ${icon.box}`} width="1em" height="1em" fill="currentColor" role=${label ? "img" : undefined} aria-label=${label} aria-hidden=${label ? undefined : "true"}><path d=${icon.d} /></svg>`;
+  return html`<svg class=${`icon icon-${name}`} viewBox=${`0 0 ${icon.box} ${icon.box}`} width="1em" height="1em" fill="currentColor" role=${label ? "img" : undefined} aria-label=${label} aria-hidden=${label ? undefined : "true"}>${label && html`<title>${label}</title>`}<path d=${icon.d} /></svg>`;
 };
 
 // Four-stop track of a run; the first `n` stops are lit.
@@ -44,12 +44,36 @@ export const Tag = ({ tone, children, title }) => html`<span class=${`tag ${tone
 
 export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;
 
-// Titled block of a page. `aside` sits on the title line; `hint` explains the block from a question mark beside the title.
-export const Section = ({ title, hint, aside, children }) =>
-  html`<section class="section">
-    <header><h2>${title}<${Help} text=${hint} /></h2>${aside}</header>
+// Facets of a ticket or run on one line. Priority and difficulty carry a one-letter field prefix (P, D) so
+// "low" is never ambiguous; `labels` are the tracker's tags, those in `highlight` (priority labels) are lit.
+// `difficulty: false` marks a ticket that still needs classifying.
+export const Meta = ({ project, kind, model, priority, difficulty, labels = [], highlight = [], class: extra, children }) => html`<span class=${`meta ${extra ?? ""}`}>
+  ${children}
+  ${project && html`<span class="meta-project" title="Project">${project}</span>`}
+  ${model}
+  ${kind && html`<${Tag} title="Kind of run">${kind}<//>`}
+  ${priority && priority !== "no-priority" && html`<${Tag} title=${`Priority: ${priority}`}><small>P</small>${priority}<//>`}
+  ${difficulty ? html`<${Tag} title=${`Difficulty: ${difficulty}`}><small>D</small>${difficulty}<//>` : difficulty === false ? html`<${Tag} tone="attention" title="Needs a difficulty label before it can run">no difficulty<//>` : null}
+  ${labels.map((l) => html`<${Tag} key=${l} tone=${highlight.includes(l) ? "on" : "label"} title=${highlight.includes(l) ? "Priority label: moves the ticket up the queue" : "Label"}>${l}<//>`)}
+</span>`;
+
+// Title line and detail line of a list row; both truncate to one line.
+export const RowBody = ({ title, children }) => html`<span class="row-body"><span>${title}</span>${children && html`<small>${children}</small>`}</span>`;
+
+// Titled block of a page. `aside` sits on the title line; `hint` explains the block from a question mark beside
+// the title; `count` follows the title.
+export const Section = ({ title, hint, count, aside, children, class: extra }) =>
+  html`<section class=${`section ${extra ?? ""}`}>
+    ${title && html`<header><h2>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h2>${aside}</header>`}
     ${children}
   </section>`;
+
+// Page frame: title, optional explanation, actions on the title line.
+export const Page = ({ title, hint, lead, actions, narrow, class: extra, children }) =>
+  html`<div class=${`page ${narrow ? "narrow" : ""} ${extra ?? ""}`}>
+    ${title && html`<div class="page-head"><div><h1>${title}<${Help} text=${hint} /></h1>${lead && html`<p>${lead}</p>`}</div>${actions}</div>`}
+    ${children}
+  </div>`;
 
 // `head` is a list of column labels; `rows` is a list of cell arrays (strings or nodes).
 export const Table = ({ head, rows, stack = true }) =>

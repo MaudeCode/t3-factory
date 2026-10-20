@@ -265,11 +265,11 @@ test('relative times accept ISO strings and millisecond numbers alike', () => {
 
 test('the deck explains the last check in one sentence', () => {
   assert.equal(decisionSentence(null), 'No check has run yet.');
-  assert.equal(decisionSentence({ reason: 'disabled' }), 'Automation is paused. Running work continues.');
+  assert.equal(decisionSentence({ reason: 'disabled', eligible: 168 }), '', 'the title already says paused');
   assert.equal(decisionSentence({ reason: 'dispatched', ticket: 'APP-1', model: 'claude-opus-5-5' }), 'Started APP-1 on claude-opus-5-5.');
   assert.equal(
     decisionSentence({ reason: 'no-eligible-ticket', eligible: 0, streams: [{ provider: 'Claude', reason: 'waiting-for-idle' }, { provider: 'Codex', reason: 'provider-disabled' }] }),
-    'Claude is waiting for idle time; Codex is automatic starts off. Nothing eligible to start.',
+    'Nothing eligible to start.',
   );
 });
 

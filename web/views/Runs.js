@@ -1,5 +1,5 @@
 // Every run the factory has made, and one run in full.
-import { html, useEffect, useState } from "../lib/h.js";
+import { html, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
@@ -24,10 +24,9 @@ import {
   projectOf,
   difficultyLabel,
   PENDING_KINDS,
-  DIFFICULTIES,
   matchesRunFilters,
 } from "../lib/format.js";
-import { Button, Chips, Field, Dialog, Segmented, Tag, Icon, Link, Empty, Facts, Timeline, Help } from "../ui/index.js";
+import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Link, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
 export function Runs() {
@@ -37,8 +36,9 @@ export function Runs() {
   }, []);
   const [state, setState] = useState(new URLSearchParams(location.search).get("state") ?? "open");
   const [filters, setFilters] = useState({});
-  const [filterOpen, setFilterOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterButton = useRef();
   const next = state === "next";
   const change = (key, value) => setFilters(previous => ({ ...previous, [key]: value }));
   const active = ["projects", "tags", "difficulties", "priorities", ...(!next ? ["providers"] : [])].filter(key => filters[key]?.length).length;
@@ -53,22 +53,29 @@ export function Runs() {
       matchesRunFilters(j, filters, query) &&
       (!filters.providers?.length || filters.providers.includes(providerOf(j))),
   );
-  const tags = [...new Set([...all, ...(status.value.upNext?.tickets ?? []), ...(status.value.upNext?.held ?? [])].flatMap(row => row.labels ?? []))].sort();
-  const choices = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
-  return html`<div class="page">
-    <div class="page-head">
-      <div><h1>Runs<${Help} text="Every run the factory has started, newest first." /></h1></div>
-      <input class="mono search" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
-      <${Button} size="sm" aria-label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-haspopup="dialog" aria-expanded=${filterOpen} onClick=${() => setFilterOpen(true)}>Filter${active ? ` · ${active}` : ""}<//>
-    </div>
-    <${Dialog} open=${filterOpen} onClose=${() => setFilterOpen(false)} title="Filters"
-      actions=${html`<${Button} variant="ghost" onClick=${() => { setFilters({}); setQuery(""); }}>Clear filters<//><${Button} onClick=${() => setFilterOpen(false)}>Done<//>`}>
-      ${choices("projects", "Project", config.value.projects.map(p => [p.kaneoId, p.name]))}
-      ${choices("tags", "Tags", tags.map(tag => [tag, tag]))}
-      <${Field} group label="Match tags"><${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "OR"], ["and", "AND"]]} /><//>
-      ${choices("difficulties", "Difficulty", DIFFICULTIES)}
-      ${choices("priorities", "Priority", [["urgent", "Urgent"], ["high", "High"], ["medium", "Medium"], ["low", "Low"], ["no-priority", "No priority"]])}
-      ${!next && choices("providers", "Provider", PROVIDERS.map(p => [p.driver, p.name]))}
+  // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
+  const rows = [...all, ...(status.value.upNext?.tickets ?? []), ...(status.value.upNext?.held ?? [])];
+  const picked = (key) => filters[key] ?? [];
+  const tags = [...new Set([...picked("tags"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
+  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kaneoId) || rows.some(row => row.projectId === p.kaneoId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode })));
+  // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
+  const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
+  const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
+  return html`<${Page} title="Runs" actions=${html`<input class="mono search" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
+      <span ref=${filterButton}><${Button} size="sm" icon="filter" label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-expanded=${filterOpen} aria-pressed=${active > 0} onClick=${() => setFilterOpen((v) => !v)}>${active || null}<//></span>`}>
+    <${Popover} open=${filterOpen} onClose=${() => setFilterOpen(false)} anchor=${filterButton} label="Filters" width=${340}>
+      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kaneoId, p.name])} onChange=${value => change("projects", value)} /><//>
+      <${Field} group label="Tags">
+        <div class="tags-pick">
+          <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tags.map(tag => [tag, tag])} onChange=${value => change("tags", value)} />
+          ${(filters.tags?.length ?? 0) > 1 && html`<${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "ANY"], ["and", "ALL"]]} />`}
+          ${(filters.tags?.length ?? 0) > 0 && html`<${Button} variant="ghost" size="sm" icon label="Clear tags" onClick=${() => change("tags", [])}>×<//>`}
+        </div>
+      <//>
+      ${chips("difficulties", "Difficulty", [glyph("low", "bars1", "Low"), glyph("med", "bars2", "Medium"), glyph("high", "bars3", "High")])}
+      ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("no-priority", "circleSlash", "No priority")])}
+      ${!next && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
+      ${active > 0 && html`<${Button} variant="ghost" size="sm" onClick=${() => { setFilters({}); setQuery(""); }}>Clear all<//>`}
     <//>
     <${Segmented}
       label="State"
@@ -83,7 +90,7 @@ export function Runs() {
         : list.length
           ? html`<${RunList} list=${list} />`
           : html`<${Empty}>No runs match.<//>`}
-  </div>`;
+  <//>`;
 }
 
 export function RunDetail({ id }) {
@@ -93,8 +100,8 @@ export function RunDetail({ id }) {
   useEffect(() => {
     loadRun(id).then(setDetail, (e) => setError(e.message));
   }, [id, jobs.value]);
-  if (error) return html`<div class="page narrow"><div class="page-head"><div><h1>Run</h1><p>${error}</p></div></div></div>`;
-  if (!detail) return html`<div class="page narrow"><${Empty}>Loading run.<//></div>`;
+  if (error) return html`<${Page} narrow title="Run" lead=${error} />`;
+  if (!detail) return html`<${Page} narrow><${Empty}>Loading run.<//><//>`;
   const c = config.value,
     job = jobs.value.find((j) => j.id === id) ?? detail.job,
     project = projectOf(c, job),
@@ -102,15 +109,9 @@ export function RunDetail({ id }) {
     prs = (job.prUrls || []).map(safeLink).filter(Boolean),
     ticket = ticketLink(c, job),
     report = detail.report;
-  return html`<div class="page run-detail">
-    <p class="crumbs"><a href="/runs" onClick=${follow}>Runs</a></p>
-    <div class="page-head">
-      <div>
-        <h1>${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//></h1>
-        <p>${job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}</p>
-      </div>
-      ${isOpen(job) && html`<${Button} variant="danger" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}
-    </div>
+  return html`<${Page} class="run-detail" title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
+    lead=${`${job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
+    actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
     <div class="links-row">
       ${ticket && html`<${Link} href=${ticket}>Ticket in Kaneo<//>`}
       ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
@@ -136,16 +137,14 @@ export function RunDetail({ id }) {
       ]}
     />
     ${report &&
-    html`<section class="group">
-      <header><h2>Report from the run</h2><${Tag} tone=${report.status === "complete" ? "ok" : report.status === "awaiting-human" ? "attention" : ""}>${report.status}<//></header>
+    html`<${Section} title="Report" aside=${html`<${Tag} tone=${report.status === "complete" ? "ok" : report.status === "awaiting-human" ? "attention" : ""}>${report.status}<//>`}>
       <p class="report">${report.reason}</p>
       ${report.createdTaskIds?.length > 0 && html`<p class="muted small">Created ${report.createdTaskIds.length} ticket${report.createdTaskIds.length === 1 ? "" : "s"}.</p>`}
-    </section>`}
+    <//>`}
     </div>
-    <section class="group">
-      <header><h2>Timeline</h2></header>
+    <${Section} title="Timeline">
       ${detail.events.length ? html`<${Timeline} events=${[...detail.events].reverse()} />` : html`<${Empty}>No events recorded for this run.<//>`}
-    </section>
+    <//>
     </div>
-  </div>`;
+  <//>`;
 }

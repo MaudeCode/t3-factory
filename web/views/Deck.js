@@ -25,7 +25,6 @@ import {
   threadLink,
   modelName,
   projectOf,
-  difficultyLabel,
   matchesRunFilters,
   byNewest,
   byFinished,
@@ -34,9 +33,10 @@ import {
   STOPS,
   stopOf,
 } from "../lib/format.js";
-import { Button, Switch, Check, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help } from "../ui/index.js";
+import { Button, Switch, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More } from "../ui/index.js";
 
-function Status() {
+// Top bar: the automation switch, the start bar, and when the scheduler last looked.
+function Status({ initialTicket }) {
   const on = live.value.enabled,
     d = status.value.decision,
     now = serverNow();
@@ -44,11 +44,10 @@ function Status() {
   return html`<section class="status">
     <div class="status-main">
       <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
-      <div>
-        <h1>${on ? "Automation on" : "Automation paused"}</h1>
-        <p>${decisionSentence(d)}</p>
-      </div>
+      <h1>${on ? "Automation on" : "Automation paused"}</h1>
+      ${decisionSentence(d) && html`<p>${decisionSentence(d)}</p>`}
     </div>
+    <${Composer} initialTicket=${initialTicket} />
     <div class="status-meta">
       <span>Last check ${ago(d?.at, now)}</span>
       ${next && on && html`<span title="Sooner when a T3 thread or the config changes">Next check ${next > now + 1000 ? until(next, now) : "due now"} at the latest</span>`}
@@ -70,21 +69,16 @@ function Machine({ provider }) {
   const assigned = quota?.factoryRouting?.modelId && config.value.models.find((m) => m.id === quota.factoryRouting.modelId)?.name;
   return html`<section class="machine ready">
     <header>
-      <h2><${Icon} name=${providerIcon(provider.driver)} /> ${provider.name}</h2>
-      <span class="reason">${reason}</span>
+      <h2><${Icon} name=${providerIcon(provider.driver)} /> ${provider.name} <span class="load" title="Running now of the automatic limit"><b>${active}</b>${limit ? ` / ${limit}` : ""}</span></h2>
+      <span class="reason">${reason}${quota?.capturedAt && html`<span class="muted" title=${`Allowance read ${ago(quota.capturedAt, now)}`}> · ${ago(quota.capturedAt, now)}</span>`}</span>
     </header>
-    <p class="slots">
-      <b>${active}</b> running${limit ? ` of ${limit}` : ", automatic starts off"}
-      ${assigned && html`<span class="muted"> · next automatic run uses ${assigned}</span>`}
-    </p>
     ${windows.length
-      ? windows.map((w) => html`<${Meter} key=${w.label} label=${w.label} value=${w.value} marker=${w.marker} note=${w.reset ? `resets ${until(w.reset, now)}` : ""} />`)
+      ? windows.map((w) => html`<${Meter} key=${w.label} label=${w.label} value=${w.value} marker=${w.marker} note=${w.reset ? until(w.reset, now) : ""} noteTitle=${w.reset ? `Resets ${until(w.reset, now)}` : ""} />`)
       : html`<p class="muted small">${stream.quotaError ? `Allowance unavailable: ${stream.quotaError}` : "No allowance reading yet."}</p>`}
     ${(stream.models || []).length > 0 &&
     html`<p class="model-reasons">
-      ${stream.models.map((m) => html`<span key=${m.id}><b>${m.name}</b> ${streamReason(m.reason)}</span>`)}
+      ${stream.models.map((m) => html`<span key=${m.id}><b>${m.name}</b>${assigned === m.name && html`<${Tag} tone="on" title="The next automatic run uses this model">next<//>`} ${streamReason(m.reason)}</span>`)}
     </p>`}
-    ${quota?.capturedAt && html`<p class="muted small checked">Quota read ${ago(quota.capturedAt, now)}</p>`}
   </section>`;
 }
 
@@ -106,24 +100,31 @@ function Operation({ op }) {
   </div>`;
 }
 
+// Start bar: project key, dash, ticket number; model; override; start. An empty number means the next eligible ticket.
 export function Composer({ initialTicket } = {}) {
   const linked = initialTicket !== undefined;
-  const [ticket, setTicket] = useState(initialTicket ?? "");
+  const keys = [...new Set(config.value.projects.map((p) => p.key).filter(Boolean))];
+  const [linkKey = "", linkNumber = ""] = (ticketKey(initialTicket ?? "") || "").split("-");
+  const [project, setProject] = useState(linkKey || keys[0] || "");
+  const [number, setNumber] = useState(linkNumber);
   const [model, setModel] = useState("auto");
   const [override, setOverride] = useState(true);
+  const ticket = number.trim() ? `${project}-${number.trim()}` : "";
   const key = ticketKey(ticket);
-  const invalid = linked && !key;
+  const invalid = linked && !ticketKey(initialTicket);
   const pending = pendingRun(ticket);
   const submit = (e) => {
     e.preventDefault();
     if (invalid || pending) return;
-    if (startRun({ ticket: linked ? key : ticket.trim(), model, overrideLimits: override }) && !linked) setTicket("");
+    if (startRun({ ticket: key, model, overrideLimits: override }) && !linked) setNumber("");
   };
+  const options = [...new Set([project, ...keys].filter(Boolean))].map((k) => [k, k]);
   return html`${invalid && html`<p class="alert" role="alert">Invalid ticket link. Enter a ticket key to continue.</p>`}<form class="composer" onSubmit=${submit}>
-    <input class="mono" value=${ticket} onInput=${(e) => setTicket(e.target.value)} placeholder=${linked ? "Ticket key" : "Next eligible ticket"} required=${linked} aria-label="Ticket key" autocapitalize="characters" spellcheck="false" />
-    <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Automatic model"], ...config.value.models.map((m) => [m.id, m.name])]} />
-    <${Check} label="Override limits" checked=${override} onChange=${(e) => setOverride(e.target.checked)} hint="Skips idle and reserve thresholds. Readiness, difficulty, duplicate checks, and merge rules still apply." />
-    <${Button} variant="primary" type="submit" disabled=${invalid || pending}>${linked && key ? `Start ${key}` : "Start run"}<//>
+    <${Select} class="ticket-project" label="Ticket project" value=${project} onChange=${setProject} options=${options} />
+    <input class="mono ticket-number" value=${number} onInput=${(e) => setNumber(e.target.value.replace(/\D/g, ""))} placeholder=${linked ? "number" : "next"} required=${linked} inputmode="numeric" aria-label="Ticket number" title=${number ? `Ticket ${project}-${number}` : "Leave empty to start the next eligible ticket"} />
+    <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Auto"], ...config.value.models.map((m) => [m.id, m.name])]} />
+    <${Button} variant="ghost" icon="zap" aria-pressed=${override} label=${override ? "Override limits: on. Skips idle and reserve thresholds; readiness, difficulty, duplicate and merge checks still apply." : "Override limits: off. Waits for idle time and reserve."} onClick=${() => setOverride((v) => !v)} />
+    <${Button} variant="primary" type="submit" icon="play" label=${key ? `Start ${key}` : "Start next eligible ticket"} disabled=${invalid || pending} />
   </form>`;
 }
 
@@ -148,19 +149,15 @@ export function Chains() {
       if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
       return ["Next", "attention", t.note ?? "starts when a slot is free"];
     };
-    return html`<section class="group" key=${p.id}>
-      <header>
-        <h2>Chain to ${p.target.key} <small>${done} of ${all.length} done</small></h2>
-        <${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: "Cancel chain" }, () => actions.cancelPlan(p.id))}>Cancel chain<//>
-      </header>
+    return html`<${Section} key=${p.id} title=${`Chain to ${p.target.key}`} count=${`${done} of ${all.length} done`}
+      aside=${html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: "Cancel chain" }, () => actions.cancelPlan(p.id))}>Cancel chain<//>`}>
       ${all.map((t) => {
         const [label, tone, note] = state(t), job = jobByTask.get(t.id);
-        const row = html`<span class="chain-body"><span><b class="key">${t.key}</b> ${t.title}</span><small>${note || (job ? `${modelName(config.value, job)}` : "")}</small></span>`;
         return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
-          <${Tag} tone=${tone}>${label}<//>${row}
+          <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${note || (job ? modelName(config.value, job) : "")}<//>
         <//>`;
       })}
-    </section>`;
+    <//>`;
   });
 }
 
@@ -173,23 +170,21 @@ export function UpNext({ limit = 5, children, filters, query = "" }) {
     held = (q?.held ?? []).filter(t => matchesRunFilters(t, filters, query)),
     all = limit === Infinity;
   const project = (id) => c.projects.find((p) => p.kaneoId === id);
-  return html`<section class="group">
-    <header><h2>Up next ${q && html`<small>${tickets.length}</small>`}</h2>${children}</header>
+  return html`<${Section} title="Up next" count=${q ? tickets.length : null} aside=${children}>
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
         ? tickets.slice(0, limit).map((t) => {
             const pending = () => pendingRun(t.key);
             const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
+            const p = project(t.projectId);
             return html`<div class="next" key=${t.id}>
             <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
-              <span class="next-body">
-                <span><b class="key">${t.key}</b> ${t.title}</span>
-                <small>${t.after?.length ? html`<b class="tone-attention">after ${t.after.join(", ")}</b> · ` : ""}${project(t.projectId)?.name ?? t.projectId} · ${t.priority}
-                  ${t.difficulty ? html`<${Tag} title=${`${difficultyLabel(t.difficulty)} difficulty`}>${t.difficulty}<//>` : html`<${Tag} tone="attention">no difficulty<//>`}
-                  ${t.labelRank != null && html`<${Tag} tone="on">${project(t.projectId)?.priorityLabels?.[t.labelRank] ?? "priority label"}<//>`}
-                </small>
-              </span>
+              <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
+                <${Meta} project=${p?.name ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${p?.priorityLabels ?? []}>
+                  ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
+                <//>
+              <//>
             </a>
             <${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${pending() || started}
               title=${pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run or active chain." : "Override limits and start this ticket now."}
@@ -200,9 +195,9 @@ export function UpNext({ limit = 5, children, filters, query = "" }) {
             </div>`;
           })
         : html`<${Empty}>${query.trim() || ["projects", "tags", "difficulties", "priorities"].some(key => filters?.[key]?.length) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
-    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span></div>`)}`}
+    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
-  </section>`;
+  <//>`;
 }
 
 // One run. Used on the deck, the runs page, and upstream reviews.
@@ -230,12 +225,9 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
       ${ticket ? html`<span onClick=${(e) => e.stopPropagation()}><${Link} href=${ticket} class="key">${job.label}<//></span>` : html`<b class="key">${job.label}</b>`}
       ${note && html`<span onClick=${(e) => e.stopPropagation()}><${Help} text=${note} glyph=${waiting ? "!" : "i"} tone=${waiting ? "attention" : ""} /></span>`}
     </span>
-    <span class="run-meta">
-      ${showProject && project && html`<span>${project.name}</span>`}
-      ${job.kind && job.kind !== "ticket" && html`<${Tag}>${job.kind === "upstream" ? "review" : "discovery"}<//>`}
-      <span><${Icon} name=${providerIcon(providerOf(job))} label=${providerName(providerOf(job))} /> ${modelName(c, job)}</span>
-      ${job.difficulty && html`<${Tag} title=${`${difficultyLabel(job.difficulty)} difficulty`}>${job.difficulty}<//>`}
-    </span>
+    <${Meta} class="run-meta" project=${showProject && project?.name} kind=${job.kind && job.kind !== "ticket" && (job.kind === "upstream" ? "review" : "discovery")}
+      model=${html`<span title=${`Model: ${providerName(providerOf(job))} ${modelName(c, job)}`}><${Icon} name=${providerIcon(providerOf(job))} /> ${modelName(c, job)}</span>`}
+      priority=${job.priority} difficulty=${job.difficulty} labels=${job.labels ?? []} highlight=${project?.priorityLabels ?? []} />
     <${Stops} n=${stopOf(job.state)} tone=${toneOf(job.state)} label=${stateLabel(job.state)} />
     <span class="run-state muted" title=${timingTitle}><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
     <span class="run-links" onClick=${(e) => e.stopPropagation()}>
@@ -246,9 +238,11 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
 
 // Rows share one grid so the track column lines up under its legend. The pane around the grid is the
 // size container, since a container query cannot read the queried element's own width.
-export function RunList({ list, now = serverNow() }) {
+// With a title the heading is the grid's first row, so the stop legend sits on the title line above its column.
+export function RunList({ list, title, count, aside, now = serverNow() }) {
   return html`<div class="runs-pane"><div class="runs">
-    <div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>
+    ${title ? html`<header class="run-head"><h2>${title}${count != null && html`<small>${count}</small>`}</h2><div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>${aside && html`<span class="run-aside">${aside}</span>`}</header>`
+      : html`<div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>`}
     ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} />`)}
   </div></div>`;
 }
@@ -256,11 +250,10 @@ export function RunList({ list, now = serverNow() }) {
 export function RunGroup({ title, list, limit = 8, empty, children }) {
   const [all, setAll] = useState(false);
   const visible = all ? list : list.slice(0, limit);
-  return html`<section class="group">
-    <header><h2>${title} ${list.length > 0 && html`<small>${list.length}</small>`}</h2>${children}</header>
-    ${list.length ? html`<${RunList} list=${visible} />` : empty && html`<${Empty}>${empty}<//>`}
+  return html`<${Section} title=${list.length ? null : title} count=${list.length || null} aside=${list.length ? null : children}>
+    ${list.length ? html`<${RunList} list=${visible} title=${title} count=${list.length} aside=${children} />` : empty && html`<${Empty}>${empty}<//>`}
     ${!all && list.length > limit && html`<${Button} variant="ghost" size="sm" onClick=${() => setAll(true)}>Show all ${list.length}<//>`}
-  </section>`;
+  <//>`;
 }
 
 export function Deck({ initialTicket } = {}) {
@@ -274,29 +267,24 @@ export function Deck({ initialTicket } = {}) {
   // Settled runs leave the live status, so the finished list comes from history.
   const done = (history.value ?? list).filter(isFinished).sort(byFinished);
   return html`
-    <${Status} />
+    <${Status} initialTicket=${initialTicket} />
     <div class="strip">${PROVIDERS.map((p) => html`<${Machine} key=${p.driver} provider=${p} />`)}</div>
     <div class="deck">
       <div class="deck-main">
-        <section class="group">
-          <header><h2>Start a run</h2></header>
-          <${Composer} initialTicket=${initialTicket} />
-          <${Operations} />
-        </section>
+        ${operations.value.length > 0 && html`<${Section} class="launch"><${Operations} /><//>`}
         <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
           ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}
         <//>
         <${Chains} />
-        <${UpNext}><a href="/runs?state=next" onClick=${follow}>Whole queue</a><//>
+        <${UpNext}><${More} href="/runs?state=next" label="Whole queue" onClick=${follow} /><//>
         <${RunGroup} title="Finished recently" list=${done} limit=${5} empty="Nothing has finished yet.">
-          <a href="/runs" onClick=${follow}>All runs</a>
+          <${More} href="/runs" label="All runs" onClick=${follow} />
         <//>
       </div>
       <aside class="deck-side">
-        <section class="group">
-          <header><h2>Activity</h2><a href="/activity" onClick=${follow}>Everything</a></header>
+        <${Section} title="Activity" aside=${html`<${More} href="/activity" label="All activity" onClick=${follow} />`}>
           ${journal.value.length ? html`<${Timeline} events=${journal.value.slice(0, 12)} />` : html`<${Empty}>Nothing recorded yet.<//>`}
-        </section>
+        <//>
       </aside>
     </div>`;
 }

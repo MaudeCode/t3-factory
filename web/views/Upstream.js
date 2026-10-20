@@ -1,7 +1,7 @@
 import { html, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, clock, serverNow, actions } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
-import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Help } from "../ui/index.js";
+import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody } from "../ui/index.js";
 import { RunGroup } from "./Deck.js";
 
 const minutes = (n) => span(n * 60);
@@ -54,22 +54,15 @@ export function Upstream() {
   const now = serverNow();
   const c = config.value;
   if (!c.upstream)
-    return html`<div class="page narrow">
-      <div class="page-head"><div><h1>Upstream</h1></div></div>
+    return html`<${Page} narrow title="Upstream">
       <${Empty}>No watched repositories. Add <code>upstream</code> with a prompt file to the config file to turn reviews on.<//>
-    </div>`;
+    <//>`;
   const byRepo = Object.fromEntries((status.value.upstreams || []).map((r) => [r.repo, r]));
   const watched = c.projects.flatMap((p, project) => p.upstreams.map((u, index) => ({ project, index, entry: u, projectName: p.name, enabled: p.enabled, live: byRepo[u.repo] })));
   const reviews = jobs.value.filter((j) => j.kind === "upstream").sort(byNewest),
     minutesDefault = c.upstream.checkMinutes;
-  return html`<div class="page">
-    <div class="page-head">
-      <div><h1>Upstream<${Help} text="Each new release of a watched repository gets a review run that files tickets for anything worth adopting." /></h1></div>
-      <div class="automation">
-        <${Switch} label="Upstream reviews" checked=${live.value.upstream} disabled=${busy.value} onChange=${() => actions.toggle("upstream")} />
-        <span><b>${live.value.upstream ? "Reviews on" : "Reviews paused"}</b></span>
-      </div>
-    </div>
+  return html`<${Page} title="Upstream" hint="Each new release of a watched repository gets a review run that files tickets for anything worth adopting."
+    actions=${html`<label class="automation"><${Switch} label="Upstream reviews" checked=${live.value.upstream} disabled=${busy.value} onChange=${() => actions.toggle("upstream")} /><b>${live.value.upstream ? "Reviews on" : "Reviews paused"}</b></label>`}>
     <${WatchDialog} key=${edit ? `${edit.project}-${edit.index ?? "new"}` : "closed"} edit=${edit} onClose=${() => setEdit(null)} />
     <div class="cols">
       <div>
@@ -77,7 +70,7 @@ export function Upstream() {
           ${watched.length
             ? watched.map(
                 ({ entry: u, live: r, ...w }) => html`<div class="release" key=${u.repo} role="button" tabindex="0" onClick=${() => setEdit({ ...w, entry: u })} onKeyDown=${(e) => e.key === "Enter" && setEdit({ ...w, entry: u })}>
-                  <span class="release-name" onClick=${(e) => e.target.closest("a") && e.stopPropagation()}><b>${u.name}</b><small><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}</small></span>
+                  <span onClick=${(e) => e.target.closest("a") && e.stopPropagation()}><${RowBody} title=${html`<b>${u.name}</b>`}><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}<//></span>
                   <span class="release-state">
                     ${r?.reviewing ? html`<${Tag} tone="on">reviewing<//>` : r?.pending ? html`<${Tag} tone="attention">review due<//>` : r?.latest ? html`<${Tag} tone="ok">up to date<//>` : html`<${Tag}>new<//>`}
                   </span>
@@ -90,7 +83,7 @@ export function Upstream() {
                 </div>`,
               )
             : html`<${Empty}>No watched repositories yet.<//>`}
-          <${Button} size="sm" style="margin-top:12px" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })}>Watch a repository<//>
+          <${Button} size="sm" style="margin-top:8px" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })}>Watch a repository<//>
         <//>
         <${RunGroup} title="Reviews" list=${reviews} empty="No reviews yet." />
       </div>
@@ -101,5 +94,5 @@ export function Upstream() {
         <//>
       </div>
     </div>
-  </div>`;
+  <//>`;
 }

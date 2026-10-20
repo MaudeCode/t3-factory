@@ -6,7 +6,7 @@ import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
 
 const state = {
-  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
+  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kaneoId: "p", key: "APP", name: "Example" }], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
   status: { jobs: [], journal: [] },
 };
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -32,6 +32,7 @@ async function show(path = '/start?ticket=app-123', signedIn = true) {
   render(html`<${App} />`, root);
   await pause();
 }
+const named = () => `${root.querySelector('[aria-label^="Ticket project"] span')?.textContent}-${root.querySelector('[aria-label="Ticket number"]').value}`;
 async function run() {
   calls = [];
   await show('/start?ticket=app-123', false);
@@ -39,17 +40,17 @@ async function run() {
   assert(login?.textContent.includes('Sign in'), 'launch link requires authentication');
   assert(calls.length === 0, 'signed-out navigation does not dispatch');
   await show();
-  assert(root.querySelector('[aria-label="Ticket key"]').value === 'APP-123', 'launch link prefills the named ticket');
-  assert(root.querySelector('button[type="submit"]').textContent === 'Start APP-123', 'explicit named start action');
+  assert(named() === 'APP-123', 'launch link prefills the named ticket');
+  assert(root.querySelector('button[type="submit"]').getAttribute('aria-label') === 'Start APP-123', 'explicit named start action');
   assert(calls.length === 0, 'opening and authenticating does not dispatch');
   navigate('/runs'); await pause();
   const back = new Promise(resolve => window.addEventListener('popstate', resolve, { once: true }));
   window.history.back(); await back; await pause();
-  assert(root.querySelector('[aria-label="Ticket key"]').value === 'APP-123', 'back restores the named ticket without dispatch');
+  assert(named() === 'APP-123', 'back restores the named ticket without dispatch');
   const forward = new Promise(resolve => window.addEventListener('popstate', resolve, { once: true }));
   window.history.forward(); await forward; await pause();
   navigate('/start?ticket=APP-124'); await pause();
-  assert(root.querySelector('[aria-label="Ticket key"]').value === 'APP-124', 'history navigation updates the ticket');
+  assert(named() === 'APP-124', 'history navigation updates the ticket');
   assert(calls.length === 0, 'leaving and reopening cannot dispatch');
   for (const query of ['', '?ticket=bad', '?ticket=APP-1&ticket=APP-2']) {
     await show('/start' + query);
@@ -78,15 +79,15 @@ async function whitespace() {
   for (const path of ['/', '/start?ticket=APP-123']) {
     calls = []; release = null;
     await show(path);
-    const input = root.querySelector('[aria-label="Ticket key"]');
-    input.value = ' APP-123 ';
+    const input = root.querySelector('[aria-label="Ticket number"]');
+    input.value = ' 123 ';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await pause();
     root.querySelector('button[type="submit"]').click();
     await pause();
     try {
       assert(calls.length === 1, `pasted whitespace submits once on ${path}`);
-      assert(calls[0].input.ticket === 'APP-123', 'the submitted ticket is trimmed');
+      assert(calls[0].input.ticket === 'APP-123', 'the number is cleaned and joined to the project key');
     } finally { release?.(); }
     await pause();
   }

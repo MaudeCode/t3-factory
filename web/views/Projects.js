@@ -1,7 +1,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, jobs, history, sources, selectedProject, clock, serverNow, actions, set } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
-import { Button, Field, Input, Select, Chips, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Help } from "../ui/index.js";
+import { Button, Field, Input, Select, Chips, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Page, RowBody } from "../ui/index.js";
 import { follow } from "../lib/router.js";
 
 const t3Options = (current) => {
@@ -66,11 +66,7 @@ export function Projects() {
   const t3Project = sources.value?.t3.find((x) => x.id === current.t3Id);
   const pathMismatch = t3Project && t3Project.workspaceRoot !== current.repoPath;
   const columns = columnOptions(current.kaneoId);
-  return html`<div class="page">
-    <div class="page-head">
-      <div><h1>Projects<${Help} text="Repositories the factory may work in. A project pairs a T3 project with a Kaneo project." /></h1></div>
-      <${Button} variant="primary" onClick=${() => setAdding(true)}>Add project<//>
-    </div>
+  return html`<${Page} title="Projects" hint="A project pairs a T3 project with a Kaneo project." actions=${html`<${Button} variant="primary" size="sm" icon="plus" label="Add project" onClick=${() => setAdding(true)} />`}>
     <${AddProject} open=${adding} onClose=${() => setAdding(false)} />
     <div class="split">
       <div class="list" role="listbox" aria-label="Projects">
@@ -78,11 +74,9 @@ export function Projects() {
           const st = stats(x);
           return html`<div class=${`item ${j === i ? "current" : ""}`} key=${x.kaneoId || j} role="option" aria-selected=${j === i} tabindex="0"
             onClick=${() => (selectedProject.value = j)} onKeyDown=${(e) => e.key === "Enter" && (selectedProject.value = j)}>
-            <span class="item-body">
-              <b>${x.name}</b>
-              <small class="mono">${x.githubRepo || x.repoPath || "not set"}</small>
-              <small>${st.active} running${st.waiting ? `, ${st.waiting} need you` : ""}${x.upstreams?.length ? `, ${x.upstreams.length} watched` : ""}</small>
-            </span>
+            <${RowBody} title=${html`<b>${x.name}</b>`}>
+              <span class="mono">${x.githubRepo || x.repoPath || "not set"}</span> · ${st.active} running${st.waiting ? `, ${st.waiting} need you` : ""}${x.upstreams?.length ? `, ${x.upstreams.length} watched` : ""}
+            <//>
             <${Tag} tone=${x.enabled ? "on" : ""}>${x.enabled ? "included" : "off"}<//>
           </div>`;
         })}
@@ -96,7 +90,7 @@ export function Projects() {
               ${current.kaneoId && html`<${Link} href=${projectLink(c, current.kaneoId)}>Kaneo<//>`}
             </p>
           </div>
-          <${Button} variant="danger" size="sm" disabled=${inUse || entries.length === 1} title=${inUse ? "Runs are still open for this project" : undefined} onClick=${() => actions.removeProject(i)}>Remove<//>
+          <${Button} variant="danger" size="sm" disabled=${inUse || entries.length === 1} icon="trash" label=${inUse ? "Runs are still open for this project" : "Remove project"} onClick=${() => actions.removeProject(i)} />
         </div>
         <${Facts}
           items=${[
@@ -141,5 +135,5 @@ export function Projects() {
         <${Field} label="After finding nothing, leave a project alone for"><${Range} label="Discovery cooldown" path=${["discovery", "emptyCooldownHours"]} min="1" max="168" step="1" format=${(h) => span(h * 3600)} /><//>
       </div>
     <//>
-  </div>`;
+  <//>`;
 }

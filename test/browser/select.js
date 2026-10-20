@@ -146,7 +146,7 @@ async function projects() {
   };
   render(html`<${Projects} />`, root);
   await pause();
-  [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === "Add project").click();
+  root.querySelector('button[aria-label="Add project"]').click();
   await pause();
 }
 
