@@ -1451,6 +1451,12 @@ h2 .icon,
   gap: var(--space-3);
   padding-bottom: var(--space-3);
 }
+.selection-bar > .check {
+  margin: 0;
+}
+.selection-bar > .muted {
+  flex: 1;
+}
 .next > .check {
   flex-shrink: 0;
 }
@@ -2226,13 +2232,6 @@ h1 .crumb::after {
 }
 
 @media (max-width: 900px) {
-  .selection-bar {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-  .selection-bar > span {
-    text-align: right;
-  }
   :root {
     --gutter: var(--space-4);
   }

@@ -14,6 +14,7 @@ export function SessionTickets() {
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
+  const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState([]);
   const c = config.value,
     s = status.value.sessionTickets,
@@ -32,15 +33,15 @@ export function SessionTickets() {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kaneo tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions />`}>
+  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${s?.error && html`<p class="alert" role="alert">Collection failed ${ago(s.error.at, now)}: ${s.error.message}. Showing the last known list.</p>`}
     <${Operations} />
     <${Section} title="Reported by sessions" count=${s ? rows.length : null}>
-      ${!!rows.length && html`<div class="selection-bar">
+      ${selecting && !!rows.length && html`<div class="selection-bar">
         <${Check} label="Select visible" aria-label="Select visible tickets" checked=${picked.length === rows.length} indeterminate=${picked.length > 0 && picked.length < rows.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === rows.length ? [] : rows.map(t => t.taskId))} />
         <span class="muted">${picked.length} selected</span>
-        <${Button} size="sm" icon="play" aria-label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? "Override limits and start the selected tickets through the ordinary checks."} onClick=${() => { for (const t of picked) runNow({ ...t, id: t.taskId }, t.unavailable); setSelected([]); }}>Run selected<//>
-        <${Button} size="sm" aria-label="Remove selected tickets" disabled=${!picked.length || busy.value} onClick=${() => dismiss(picked)}>Remove selected<//>
+        <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? "Run selected tickets through the ordinary checks, overriding limits."} onClick=${() => { for (const t of picked) runNow({ ...t, id: t.taskId }, t.unavailable); setSelected([]); }} />
+        <${Button} size="sm" icon="x" label="Remove selected tickets" disabled=${!picked.length || busy.value} onClick=${() => dismiss(picked)} />
       </div>`}
       ${!s
         ? html`<${Empty}>Sessions have not been read yet.<//>`
@@ -49,7 +50,7 @@ export function SessionTickets() {
               // One session action per row, for the latest report; the facet line names every session.
               const ticket = { ...t, id: t.taskId }, hold = startHold(ticket) ?? t.unavailable, latest = t.sources.reduce((a, b) => (b.at > a.at ? b : a));
               return html`<${TicketRow} key=${t.taskId} ticket=${ticket} project=${project(t.projectId)}
-                selection=${html`<${Check} aria-label=${`Select ${t.key}`} checked=${selected.includes(t.taskId)} disabled=${busy.value} onChange=${e => setSelected(previous => e.target.checked ? [...previous, t.taskId] : previous.filter(id => id !== t.taskId))} />`}
+                selection=${selecting && html`<${Check} aria-label=${`Select ${t.key}`} checked=${selected.includes(t.taskId)} disabled=${busy.value} onChange=${e => setSelected(previous => e.target.checked ? [...previous, t.taskId] : previous.filter(id => id !== t.taskId))} />`}
                 actions=${html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(latest)} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${`Open in T3 Code: ${latest.title || "session"}, reported ${ago(latest.at, now)}${t.sources.length > 1 ? `; ${t.sources.length - 1} more ${t.sources.length === 2 ? "session" : "sessions"} reported it` : ""}`}><${Icon} name="commentDiscussion" /></a>
                   <${RunNow} ticket=${ticket} hold=${hold} />
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss([t])}>×<//>`}>
