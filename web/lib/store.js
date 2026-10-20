@@ -177,6 +177,12 @@ export const actions = {
       await load();
       message("Chain cancelled. Tickets already running finish on their own.");
     }),
+  dismissSessionTicket: (id) =>
+    run(async () => {
+      await post(`/api/session-tickets/${id}/dismiss`, {});
+      await load();
+      message("Removed from Session tickets. The ticket itself is unchanged.");
+    }),
   stopJob: (id) =>
     run(async () => {
       await post(`/api/jobs/${id}/stop`, {});

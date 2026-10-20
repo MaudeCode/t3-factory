@@ -90,8 +90,10 @@ test("state is pushed over the event stream whenever the factory writes, and run
     assert.equal((await (await fetch(`${url}/api/jobs/a1/report`, { headers: auth })).json()).report.reason, "done");
     assert.equal((await fetch(`${url}/api/jobs/missing/report`, { headers: auth })).status, 404);
     assert.equal((await fetch(`${url}/api/jobs/a1/stop`, { method: "POST", headers: auth })).status, 200);
+    assert.equal((await fetch(`${url}/api/session-tickets/task-1/dismiss`, { method: "POST", headers: auth })).status, 200);
+    assert.equal((await fetch(`${url}/api/session-tickets/task-1/dismiss`, { headers: auth })).status, 404, "dismissal is a POST");
     assert.deepEqual((await (await fetch(`${url}/api/sources`, { headers: auth })).json()).kaneo.labels, []);
-    assert.deepEqual(stopped, ["job-stop a1", "sources"], "stop and the catalogs go through the CLI");
+    assert.deepEqual(stopped, ["job-stop a1", "session-dismiss task-1", "sources"], "stop, dismissal and the catalogs go through the CLI");
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

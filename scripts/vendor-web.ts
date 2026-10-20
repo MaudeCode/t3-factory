@@ -46,6 +46,7 @@ const icons = {
   arrowDown: octicon("arrow-down"),
   dash: octicon("dash"),
   circleSlash: octicon("circle-slash"),
+  commentDiscussion: octicon("comment-discussion"),
   // Difficulty as one, two or three rising bars.
   bars1: { box: 16, d: "M2 10h3v4H2z" },
   bars2: { box: 16, d: "M2 10h3v4H2zM6.5 6h3v8h-3z" },

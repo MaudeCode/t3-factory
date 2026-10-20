@@ -12,6 +12,17 @@ import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
 export const ORCHESTRATION_PROTOCOL = 2;
 const ORCHESTRATION_PROTOCOL_HEADER = 'x-t3-orchestration-protocol', ORCHESTRATION_PROTOCOL_QUERY_PARAM = 'orchestrationProtocol';
 
+const sessionSchema = z.object({
+  id: z.string(), projectId: z.string(), title: z.string(), createdAt: z.string(), updatedAt: z.string(), deletedAt: z.string().nullish(),
+  lineage: z.object({ relationshipToParent: z.string().nullish() }).passthrough().nullish(),
+}).passthrough();
+export type Session = z.infer<typeof sessionSchema>;
+const turnItemSchema = z.object({
+  id: z.string(), threadId: z.string(), type: z.string(), ordinal: z.number(), startedAt: z.string(), updatedAt: z.string().nullish(),
+  messageId: z.string().nullish(), text: z.string().nullish(),
+}).passthrough();
+export type TurnItem = z.infer<typeof turnItemSchema>;
+
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
@@ -80,6 +91,25 @@ export class T3 {
     // Tool calls and auth refreshes resolve without a person; approvals and questions need one.
     const responses = projection.runtimeRequests.filter(r => r.status === 'resolved' && r.resolvedAt && humanRequest(r.kind)).map(r => ({ createdAt: r.resolvedAt! }));
     return { messages: projection.messages, responses };
+  }
+  /** Every top-level session T3 still exposes, including settled and archived ones; subagent and deleted threads are not sessions. */
+  async sessions() {
+    const shell = z.object({ threads: z.array(sessionSchema), archivedThreads: z.array(sessionSchema).default([]) }).passthrough().parse(await this.request('/api/orchestration/shell'));
+    return [...shell.threads, ...shell.archivedThreads].filter(t => !t.deletedAt && t.lineage?.relationshipToParent !== 'subagent');
+  }
+  /** Conversation turn items, oldest first: the recent bounded window without a cursor, else the older page behind `cursor`. */
+  async conversation(id: string, cursor?: string): Promise<{ items: TurnItem[]; cursor: string | null; more: boolean }> {
+    const base = `/api/orchestration/threads/${encodeURIComponent(id)}`;
+    // Only message items are parsed in full; other turn item kinds may carry any shape.
+    const messages = (items: unknown[]) => z.array(z.object({ type: z.string() }).passthrough()).parse(items).filter(i => i.type === 'assistant_message' || i.type === 'user_message').map(i => turnItemSchema.parse(i)).filter(i => i.threadId === id);
+    if (cursor === undefined) {
+      const page = z.object({ historyCursor: z.string().nullable(), hasMoreHistory: z.boolean(), projection: z.object({ turnItems: z.array(z.unknown()) }).passthrough() }).passthrough().parse(await this.request(`${base}/bounded`));
+      return { items: messages(page.projection.turnItems), cursor: page.historyCursor, more: page.hasMoreHistory };
+    }
+    const page = z.object({ items: z.array(z.object({ sourceThreadId: z.string(), item: z.unknown() }).passthrough()), nextCursor: z.string().nullable(), hasMoreHistory: z.boolean() }).passthrough()
+      .parse(await this.request(`${base}/history?cursor=${encodeURIComponent(cursor)}&view=conversation`));
+    // Entries inherited from another thread keep their source; a fork's copies are not this session's own reports.
+    return { items: messages(page.items.filter(e => e.sourceThreadId === id).map(e => e.item)), cursor: page.nextCursor, more: page.hasMoreHistory };
   }
   async socketUrl() {
     const ticket = z.object({ ticket: z.string() }).passthrough().parse(await this.request('/api/auth/websocket-ticket', {}));

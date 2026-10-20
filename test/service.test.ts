@@ -22,6 +22,7 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.throws(() => commandFor(['dispatch', '--chain', 'later']), /--chain requires first or all/);
     assert.equal(commandFor(['model-catalog']), undefined);
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });
+    assert.deepEqual(commandFor(['session-dismiss', 'task-1']), { type: 'session-dismiss', taskId: 'task-1' });
     assert.throws(() => commandFor(['dispatch', '--bogus']), /Unknown dispatch argument/);
     await new Promise<void>(resolve => server.close(() => resolve()));
     globalAgent.destroy(); // The replacement server must receive the next request, not a pooled socket from the old server.
