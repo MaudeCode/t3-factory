@@ -1053,15 +1053,22 @@ dialog::backdrop {
 /* Deck -------------------------------------------------------------------- */
 .status {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-4);
   padding: var(--space-3) var(--gutter);
 }
 .status .status-meta {
   margin-left: auto;
+  flex: 1;
+  min-width: 0;
+}
+.status-main,
+.status .composer {
+  flex-shrink: 0;
 }
 .status-main {
   display: flex;
+  min-height: calc(var(--control) + 2px);
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-3);
@@ -1073,6 +1080,8 @@ dialog::backdrop {
 .status p {
   color: var(--muted);
   max-width: 70ch;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .status-meta {
   display: flex;
@@ -2239,6 +2248,11 @@ h1 .crumb::after {
   .status .composer {
     order: 1;
     flex: 1 0 100%;
+  }
+  .status .status-meta {
+    order: 2;
+    flex-basis: 100%;
+    margin-left: 0;
   }
   .status-meta {
     align-items: flex-start;

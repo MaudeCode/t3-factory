@@ -84,6 +84,7 @@ async function run() {
   await pause();
   assert(root.querySelector('.operation')?.textContent.includes('quota-exhausted'), 'existing request row shows refusals');
   await whitespace();
+  await statusLayout();
   await show();
   assert(document.documentElement.scrollWidth <= innerWidth, 'launch form fits viewport');
   return { passed: true, viewport: [innerWidth, innerHeight], dispatches: calls.length };
@@ -106,5 +107,32 @@ async function whitespace() {
   }
   return { passed: true, contexts: ['manual', 'linked'] };
 }
-window.startTests = { show, run, whitespace };
+async function showDecision(decision = { reason: 'dispatched', ticket: 'APP-123', model: 'Example model' }) {
+  await show('/');
+  store.status.value = { ...store.status.value, decision: { ...decision, at: new Date().toISOString() } };
+  await pause();
+}
+async function statusLayout() {
+  await showDecision({ reason: 'disabled' });
+  const input = () => root.querySelector('[aria-label="Ticket number"]').getBoundingClientRect();
+  const before = input();
+  for (const decision of [
+    { reason: 'dispatched', ticket: 'APP-123', model: 'Example model' },
+    { reason: 'dispatched', upstream: { name: 'Example upstream', candidate: 'release-'.repeat(30) }, model: 'Example model' },
+    { reason: 'error', message: 'diagnostic'.repeat(100) },
+  ]) {
+    store.status.value = { ...store.status.value, decision: { ...decision, at: new Date().toISOString() } };
+    await pause();
+    const after = input(), form = root.querySelector('.status .composer').getBoundingClientRect();
+    const message = root.querySelector('.status p'), bounds = message.getBoundingClientRect();
+    assert(Math.abs(before.x - after.x) < 1 && Math.abs(before.width - after.width) < 1 && Math.abs(before.y - after.y) < 1, 'decision feedback does not shift or resize the ticket input');
+    assert(message.textContent.includes(decision.reason === 'error' ? decision.message : 'Started'), 'complete decision feedback remains visible');
+    assert(innerWidth <= 900 ? bounds.top >= form.bottom : bounds.left >= form.right, 'decision feedback follows the form on desktop and stacks below it on mobile');
+    assert(bounds.left >= 0 && bounds.right <= innerWidth && message.scrollWidth <= message.clientWidth + 1, 'long decision feedback wraps within the viewport');
+    assert(document.documentElement.scrollWidth <= innerWidth, 'status header does not overflow the viewport');
+  }
+  await showDecision();
+  return { passed: true, viewport: [innerWidth, innerHeight], decisions: 3 };
+}
+window.startTests = { show, run, whitespace, showDecision, statusLayout };
 await show();

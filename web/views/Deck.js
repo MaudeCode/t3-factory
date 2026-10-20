@@ -45,10 +45,10 @@ function Status({ initialTicket }) {
     <div class="status-main">
       <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
       <h1>${on ? "Automation on" : "Automation paused"}</h1>
-      ${decisionSentence(d) && html`<p>${decisionSentence(d)}</p>`}
     </div>
     <${Composer} initialTicket=${initialTicket} />
     <div class="status-meta">
+      ${decisionSentence(d) && html`<p>${decisionSentence(d)}</p>`}
       <span>Last check ${ago(d?.at, now)}</span>
       ${next && on && html`<span title="Sooner when a T3 thread or the config changes">Next check ${next > now + 1000 ? until(next, now) : "due now"} at the latest</span>`}
     </div>
