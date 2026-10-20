@@ -175,6 +175,16 @@ async function bulk() {
   calls = [];
   await show();
   const pick = key => button(`Select ${key}`);
+  const enter = async () => { button('Select tickets').click(); await pause(); };
+  assert(!root.querySelector('.next input[type=checkbox]') && !root.querySelector('.selection-bar'), 'normal browsing hides selection checkboxes and bulk controls');
+  assert(button('Select tickets')?.querySelector('svg') && !button('Select tickets').textContent.trim(), 'selection mode uses an icon-only library button');
+  await enter();
+  for (const name of ['Done selecting tickets', 'Run selected tickets', 'Remove selected tickets']) assert(button(name)?.querySelector('svg') && !button(name).textContent.trim() && button(name).title, `${name} has an icon, accessible name and tooltip without button text`);
+  pick('APP-2').click(); await pause();
+  button('Done selecting tickets').click(); await pause();
+  assert(!root.querySelector('.next input[type=checkbox]') && !root.querySelector('.selection-bar'), 'Done restores the ordinary list');
+  await enter();
+  assert(!pick('APP-2').checked && root.textContent.includes('0 selected'), 'leaving selection mode clears its selection');
   assert(pick('APP-2')?.type === 'checkbox', 'tickets have accessible selection checkboxes');
   pick('APP-2').click(); pick('APP-5').click(); await pause();
   button('Run selected tickets').click(); await pause();
@@ -184,6 +194,7 @@ async function bulk() {
   assert(calls.filter(c => c.url === '/api/dispatch').length === 2, 'bulk Run does not duplicate requests');
   assert(calls.filter(c => c.url === '/api/dispatch').every(c => c.input.model === 'auto' && c.input.overrideLimits === true), 'bulk Run uses the single-row dispatch contract');
   await show();
+  await enter();
   pick('WEB-9').click(); await pause();
   assert(button('Run selected tickets').disabled, 'an unavailable selected ticket blocks bulk Run with its ordinary hold');
   button('Select visible tickets').click(); await pause();
@@ -204,6 +215,7 @@ async function bulk() {
   assert(calls.filter(c => c.url.includes('/dismiss')).map(c => c.url).join() === '/api/session-tickets/t5/dismiss', 'bulk Remove dismisses only the reviewed visible selection');
   assert(!root.querySelector('.selection-bar'), 'a live-empty list clears its bulk controls');
   await show();
+  await enter();
   button('Select visible tickets').click(); await pause();
   button('Select visible tickets').click(); await pause();
   assert([...root.querySelectorAll('.next input[type=checkbox]')].every(el => !el.checked), 'Select visible also clears selection');
