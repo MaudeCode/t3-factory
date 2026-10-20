@@ -179,12 +179,17 @@ struct FactorySettingsView: View {
                             Text("\(index + 1)").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted).frame(width: 14)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(preset["name"] as? String ?? "Model").font(.system(size: 13, weight: .semibold))
-                                Text("\((preset["model"] as? [String: Any])?["model"] as? String ?? ""), up to \(preset["maxDifficulty"] as? String == "med" ? "medium" : preset["maxDifficulty"] as? String ?? "high")").font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
                                 let live = model.liveModelState(id)
-                                if !live.isEmpty { Text(live).font(.system(size: 11)).foregroundStyle(live == "next automatic run" ? Theme.ok : Theme.muted) }
+                                HStack(spacing: 6) {
+                                    Text((preset["model"] as? [String: Any])?["model"] as? String ?? "").font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
+                                    Tag(text: "D " + (preset["maxDifficulty"] as? String ?? "high")).help("Hardest ticket it may take")
+                                    if live == "next automatic run" { Tag(text: "next", color: Theme.accent).help("The next automatic run uses this model") }
+                                    else if live == "working" { Tag(text: "working", color: Theme.accent) }
+                                }
                             }
                             Spacer()
-                            Tag(text: preset["automatic"] as? Bool == true ? "automatic" : "manual", color: preset["automatic"] as? Bool == true ? Theme.accent : Theme.muted)
+                            Image(systemName: preset["automatic"] as? Bool == true ? "bolt.fill" : "person").foregroundStyle(Theme.muted)
+                                .help(preset["automatic"] as? Bool == true ? "Automatic: the scheduler may pick it" : "Manual: only when you choose it")
                         }.padding(.vertical, 4).tag(id).listRowBackground(Color.clear)
                     }.onMove { offsets, destination in model.moveModels(from: offsets, to: destination) }
                 }.listStyle(.plain).scrollContentBackground(.hidden).background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))

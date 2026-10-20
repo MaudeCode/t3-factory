@@ -56,7 +56,7 @@ struct FactoryPanel: View {
                 Toggle("", isOn: Binding(get: { model.enabled }, set: { value in Task { await model.setEnabled(value) } })).toggleStyle(.switch).labelsHidden().disabled(model.busy != nil)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.enabled ? "Automation on" : "Automation paused").font(.system(size: 17, weight: .semibold))
-                    Text(model.decisionSentence).font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    if !model.decisionSentence.isEmpty { Text(model.decisionSentence).font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true) }
                 }
             }
             if model.hasUpstream {
@@ -68,19 +68,24 @@ struct FactoryPanel: View {
     }
 
     private var composer: some View {
-        section("Start a run", count: nil) {
-            HStack(spacing: 8) {
-                DarkTextField(placeholder: "Ticket key, or blank for the next eligible", text: $model.ticket, mono: true).onSubmit { Task { await model.dispatch() } }
+        VStack(alignment: .leading, spacing: 8) {
+            // Project key, dash, number; an empty number starts the next eligible ticket.
+            HStack(spacing: 6) {
+                Picker("", selection: $model.ticketProject) {
+                    ForEach(model.projectKeys, id: \.self) { Text($0).tag($0) }
+                }.labelsHidden().frame(width: 90).help("Ticket project")
+                Text("-").foregroundStyle(Theme.muted)
+                DarkTextField(placeholder: "next", text: $model.ticketNumber, mono: true).frame(width: 72).onSubmit { Task { await model.dispatch() } }
+                    .help("Ticket number; leave empty to start the next eligible ticket")
                 Picker("", selection: $model.selectedModel) {
-                    Text("Automatic").tag("auto")
+                    Text("Auto").tag("auto")
                     ForEach(Array(model.configuredModels.enumerated()), id: \.offset) { _, preset in Text(preset["name"] as? String ?? "Model").tag(preset["id"] as? String ?? "") }
-                }.labelsHidden().frame(width: 120)
-            }
-            HStack {
-                if model.selectedModelUsesCodex { Text("Codex runs ignore idle time and reserves.").font(.system(size: 11)).foregroundStyle(Theme.muted) }
-                else { Toggle("Ignore idle time and reserves", isOn: $model.overrideLimits).font(.system(size: 11)).foregroundStyle(Theme.muted) }
-                Spacer()
-                Button { Task { await model.dispatch() } } label: { Label("Start run", systemImage: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty)
+                }.labelsHidden().frame(width: 110)
+                Button { model.overrideLimits.toggle() } label: { Image(systemName: "bolt.fill").foregroundStyle(model.overrideLimits ? Theme.accent : Theme.muted) }
+                    .buttonStyle(.plain).disabled(model.selectedModelUsesCodex)
+                    .help(model.selectedModelUsesCodex ? "Codex runs ignore idle time and reserves." : model.overrideLimits ? "Override limits: on. Skips idle and reserve thresholds; readiness, difficulty, duplicate and merge checks still apply." : "Override limits: off. Waits for idle time and reserve.")
+                Button { Task { await model.dispatch() } } label: { Image(systemName: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty)
+                    .help(model.ticketNumber.isEmpty ? "Start the next eligible ticket" : "Start \(model.ticketProject)-\(model.ticketNumber)")
             }
             ForEach(model.requests) { request in
                 HStack(alignment: .top, spacing: 8) {
@@ -96,7 +101,7 @@ struct FactoryPanel: View {
                     }
                 }.padding(.vertical, 4)
             }
-        }
+        }.card()
     }
 
     private var promptTitle: String {
@@ -199,7 +204,7 @@ struct UpNextCard: View {
                                 HStack(spacing: 6) { Text(ticket["key"] as? String ?? "").font(Theme.mono()); Text(ticket["title"] as? String ?? "").font(.system(size: 12)).lineLimit(1) }
                                 HStack(spacing: 4) {
                                     if let after = ticket["after"] as? [String], !after.isEmpty { Text("after " + after.joined(separator: ", ")).foregroundStyle(Theme.attention) }
-                                    Text([model.projectName(ticket["projectId"] as? String), (ticket["difficulty"] as? String).map { $0 == "med" ? "medium" : $0 } ?? "unclassified", ticket["priority"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).foregroundStyle(Theme.muted)
+                                    Text(ticket["difficulty"] is String ? model.facets(ticket) : model.facets(ticket) + " · no difficulty").foregroundStyle(ticket["difficulty"] is String ? Theme.muted : Theme.attention)
                                 }.font(.system(size: 11)).lineLimit(1)
                             }
                             Spacer()
@@ -235,7 +240,7 @@ struct RunRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
                     Text(job["label"] as? String ?? job["ticketKey"] as? String ?? "Discovery").font(Theme.mono())
-                    Text([model.projectName(job["projectId"] as? String), model.modelName(job), (job["difficulty"] as? String).map { $0 == "med" ? "medium" : $0 } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
+                    Text(model.facets(job, model: model.modelName(job))).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
                     Spacer()
                     Tag(text: label.0, color: label.1)
                 }
