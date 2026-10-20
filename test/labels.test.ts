@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Kaneo, listTasks } from '../src/clients.ts';
+import { Kaneo, KaneoTaskNotFound, listTasks } from '../src/clients.ts';
 
 const task = { id: 'task', projectId: 'project', title: 'Fixture', number: 1, status: 'to-do', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'app' }, { name: 'med' }, { name: 'contracts' }] };
 const kaneo = () => new Kaneo({ url: 'https://tracker.example.test', workspaceId: 'workspace', readyLabel: 'sf' });
@@ -34,4 +34,23 @@ test('label read failures and cross-workspace data fail closed', async t => {
   await assert.rejects(listTasks(k, 'project'));
   unavailable = true;
   await assert.rejects(listTasks(k, 'project'), /Label service unavailable/);
+});
+
+test('only explicit coded task-read absence gets a distinct error', async t => {
+  const k = kaneo();
+  let response = { isError: true, content: [{ type: 'text', text: '' }] };
+  t.mock.method(k.client, 'callTool', async () => response);
+  for (const text of ['not JSON (NOT_FOUND)', '{}', '{"error":404}', JSON.stringify({ error: 'HTTP 404' }), JSON.stringify({ error: 'Authorization: Bearer fixture-secret (UNAUTHORIZED)' })]) {
+    response.content[0].text = text;
+    await assert.rejects(k.call('get_task', { taskId: 'missing' }), error => {
+      assert.ok(error instanceof Error && !(error instanceof KaneoTaskNotFound));
+      assert.doesNotMatch(error.message, /fixture-secret/);
+      return true;
+    });
+  }
+  response.content[0].text = JSON.stringify({ error: '/api/task/missing: Task not found (NOT_FOUND)' });
+  for (const name of ['get_task', 'get_task_by_ticket_id']) await assert.rejects(k.call(name, {}), KaneoTaskNotFound);
+  await assert.rejects(k.call('list_workspace_labels', {}), error => error instanceof Error && !(error instanceof KaneoTaskNotFound));
+  response = { isError: false, content: response.content };
+  assert.deepEqual(await k.call('get_task', {}), { error: '/api/task/missing: Task not found (NOT_FOUND)' }, 'ordinary data cannot classify an MCP failure');
 });

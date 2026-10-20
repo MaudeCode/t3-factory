@@ -201,6 +201,8 @@ export class T3 {
   }
 }
 
+export class KaneoTaskNotFound extends Error {}
+
 export class Kaneo {
   client = new Client({ name: 't3-factory', version: '0.1.0' });
   readonly config: Config['kaneo'];
@@ -212,8 +214,14 @@ export class Kaneo {
   }
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {
     const r = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 30_000 });
-    if (r.isError) throw new Error(`Kaneo ${name} failed; check its authenticated connection`);
     const text = z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()) }).parse(r).content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n');
+    if (r.isError) {
+      let detail = '';
+      try { detail = z.object({ error: z.string() }).parse(JSON.parse(text)).error; } catch { /* Unclassified failures remain retryable. */ }
+      // The pinned MCP appends the server's error code; plain 404/not-found prose is not proof of absence.
+      if (['get_task', 'get_task_by_ticket_id'].includes(name) && detail.endsWith(' (NOT_FOUND)')) throw new KaneoTaskNotFound(`Kaneo ${name}: task not found`);
+      throw new Error(`Kaneo ${name} failed; check its authenticated connection`);
+    }
     return JSON.parse(text);
   }
   async close() { await this.client.close(); }

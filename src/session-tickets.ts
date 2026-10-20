@@ -3,7 +3,7 @@
 // contract, confirms each reported ticket against the tracker, and keeps its progress in the Store so a restart
 // resumes where it stopped. It never changes a ticket, starts work, or alters automatic scheduling.
 import { z } from 'zod';
-import { T3, Kaneo, taskSchema, listTaskLabels, type Session } from './clients.ts';
+import { T3, Kaneo, KaneoTaskNotFound, taskSchema, listTaskLabels, type Session } from './clients.ts';
 import { Store, type Job, type SessionRef, type SessionThread, type SessionTicket } from './store.ts';
 import { ticketDifficulty } from './policy.ts';
 import { log, safeError } from './scheduler.ts';
@@ -103,16 +103,21 @@ async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Se
 const trackerTask = taskSchema.extend({ workspaceId: z.string().optional() });
 // The tracker's own record for a reference, or null when the reference cannot be a ticket in this workspace.
 async function lookup(c: Config, kaneo: Kaneo, cat: Catalog, ref: SessionRef) {
-  let found: unknown;
-  if (ref.kind === 'task') found = await kaneo.call('get_task', { taskId: ref.value });
-  else {
-    const project = Object.values(cat.projects).find(p => p.slug === ref.value.split('-')[0]);
-    if (!project) return null;
-    found = await kaneo.call('get_task_by_ticket_id', { ticketId: ref.value, workspaceId: c.kaneo.workspaceId, projectId: project.id });
+  try {
+    let found: unknown;
+    if (ref.kind === 'task') found = await kaneo.call('get_task', { taskId: ref.value });
+    else {
+      const project = Object.values(cat.projects).find(p => p.slug === ref.value.split('-')[0]);
+      if (!project) return null;
+      found = await kaneo.call('get_task_by_ticket_id', { ticketId: ref.value, workspaceId: c.kaneo.workspaceId, projectId: project.id });
+    }
+    const task = trackerTask.parse(found);
+    if (task.workspaceId !== undefined && task.workspaceId !== c.kaneo.workspaceId) return null;
+    return cat.projects[task.projectId] ? task : null;
+  } catch (error) {
+    if (error instanceof KaneoTaskNotFound) return null;
+    throw error;
   }
-  const task = trackerTask.parse(found);
-  if (task.workspaceId !== undefined && task.workspaceId !== c.kaneo.workspaceId) return null;
-  return cat.projects[task.projectId] ? task : null;
 }
 
 // One bounded batch: scan changed sessions, confirm pending references, refresh listed tickets, mark consumed
@@ -169,7 +174,6 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         }
         rec.pending.splice(rec.pending.indexOf(ref), 1);
       } catch (error) {
-        // ponytail: the tracker client cannot tell "no such ticket" from an outage, so a bad reference retries hourly forever.
         ref.attempts++; ref.error = safeError(error); ref.retryAfter = new Date(now + Math.min(ref.attempts, 12) * RETRY_MS).toISOString();
         errors.push(`Confirming ${ref.value}: ${ref.error}`);
       }
