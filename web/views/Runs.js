@@ -29,6 +29,38 @@ import {
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Link, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
+// Search box, Filter button and its popover for any ticket or run list. `rows` are everything the list could
+// show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
+export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false }) {
+  const [open, setOpen] = useState(false);
+  const button = useRef();
+  const change = (key, value) => onFilters({ ...filters, [key]: value });
+  const active = ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : [])].filter(key => filters[key]?.length).length;
+  // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
+  const picked = (key) => filters[key] ?? [];
+  const tags = [...new Set([...picked("tags"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
+  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kaneoId) || rows.some(row => row.projectId === p.kaneoId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode })));
+  // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
+  const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
+  const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
+  return html`<input class="mono search" value=${query} onInput=${(e) => onQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
+    <span ref=${button}><${Button} size="sm" icon="filter" label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>
+    <${Popover} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
+      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kaneoId, p.name])} onChange=${value => change("projects", value)} /><//>
+      <${Field} group label="Tags">
+        <div class="tags-pick">
+          <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tags.map(tag => [tag, tag])} onChange=${value => change("tags", value)} />
+          ${(filters.tags?.length ?? 0) > 1 && html`<${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "ANY"], ["and", "ALL"]]} />`}
+          ${(filters.tags?.length ?? 0) > 0 && html`<${Button} variant="ghost" size="sm" icon label="Clear tags" onClick=${() => change("tags", [])}>×<//>`}
+        </div>
+      <//>
+      ${chips("difficulties", "Difficulty", [glyph("low", "bars1", "Low"), glyph("med", "bars2", "Medium"), glyph("high", "bars3", "High")])}
+      ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("no-priority", "circleSlash", "No priority")])}
+      ${providers && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
+      ${active > 0 && html`<${Button} variant="ghost" size="sm" onClick=${() => { onFilters({}); onQuery(""); }}>Clear all<//>`}
+    <//>`;
+}
+
 export function Runs() {
   clock.value;
   useEffect(() => {
@@ -37,11 +69,7 @@ export function Runs() {
   const [state, setState] = useState(new URLSearchParams(location.search).get("state") ?? "open");
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
-  const [filterOpen, setFilterOpen] = useState(false);
-  const filterButton = useRef();
   const next = state === "next";
-  const change = (key, value) => setFilters(previous => ({ ...previous, [key]: value }));
-  const active = ["projects", "tags", "difficulties", "priorities", ...(!next ? ["providers"] : [])].filter(key => filters[key]?.length).length;
   // Live jobs win over the history snapshot for anything still open.
   const liveById = new Map(jobs.value.map((j) => [j.id, j]));
   const all = (history.value ?? jobs.value).map((j) => liveById.get(j.id) ?? j);
@@ -53,30 +81,8 @@ export function Runs() {
       matchesRunFilters(j, filters, query) &&
       (!filters.providers?.length || filters.providers.includes(providerOf(j))),
   );
-  // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
   const rows = [...all, ...(status.value.upNext?.tickets ?? []), ...(status.value.upNext?.held ?? [])];
-  const picked = (key) => filters[key] ?? [];
-  const tags = [...new Set([...picked("tags"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
-  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kaneoId) || rows.some(row => row.projectId === p.kaneoId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode })));
-  // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
-  const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
-  const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
-  return html`<${Page} title="Runs" actions=${html`<input class="mono search" value=${query} onInput=${(e) => setQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
-      <span ref=${filterButton}><${Button} size="sm" icon="filter" label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-expanded=${filterOpen} aria-pressed=${active > 0} onClick=${() => setFilterOpen((v) => !v)}>${active || null}<//></span>`}>
-    <${Popover} open=${filterOpen} onClose=${() => setFilterOpen(false)} anchor=${filterButton} label="Filters" width=${340}>
-      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kaneoId, p.name])} onChange=${value => change("projects", value)} /><//>
-      <${Field} group label="Tags">
-        <div class="tags-pick">
-          <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tags.map(tag => [tag, tag])} onChange=${value => change("tags", value)} />
-          ${(filters.tags?.length ?? 0) > 1 && html`<${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "ANY"], ["and", "ALL"]]} />`}
-          ${(filters.tags?.length ?? 0) > 0 && html`<${Button} variant="ghost" size="sm" icon label="Clear tags" onClick=${() => change("tags", [])}>×<//>`}
-        </div>
-      <//>
-      ${chips("difficulties", "Difficulty", [glyph("low", "bars1", "Low"), glyph("med", "bars2", "Medium"), glyph("high", "bars3", "High")])}
-      ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("no-priority", "circleSlash", "No priority")])}
-      ${!next && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
-      ${active > 0 && html`<${Button} variant="ghost" size="sm" onClick=${() => { setFilters({}); setQuery(""); }}>Clear all<//>`}
-    <//>
+  return html`<${Page} title="Runs" actions=${html`<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers=${!next} />`}>
     <${Segmented}
       label="State"
       value=${state}

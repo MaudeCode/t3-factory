@@ -5,6 +5,7 @@ import { ticketKey } from "./format.js";
 export const PAGES = [
   ["/", "Deck"],
   ["/runs", "Runs"],
+  ["/session-tickets", "Session tickets"],
   ["/activity", "Activity"],
   ["/models", "Models"],
   ["/capacity", "Capacity"],

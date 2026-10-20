@@ -11,6 +11,7 @@ export type ControlCommand =
   | { type: 'once'; options: Record<string, unknown> }
   | { type: 'job-stop'; jobId: string }
   | { type: 'plan-cancel'; planId: string }
+  | { type: 'session-dismiss'; taskId: string }
   | { type: 'health' };
 export type ControlResult = { code: number; data: unknown };
 export const controlPath = (stateDir: string) => join(stateDir, 'control.sock');
@@ -62,6 +63,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   if (args[0] === 'once' || args[0] === 'doctor') return { type: 'once', options: { dryRun: args.includes('--dry-run'), doctor: args[0] === 'doctor' } };
   if (args[0] === 'job-stop' && args[1]) return { type: 'job-stop', jobId: args[1] };
   if (args[0] === 'plan-cancel' && args[1]) return { type: 'plan-cancel', planId: args[1] };
+  if (args[0] === 'session-dismiss' && args[1]) return { type: 'session-dismiss', taskId: args[1] };
   if (args[0] !== 'dispatch') return undefined;
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }

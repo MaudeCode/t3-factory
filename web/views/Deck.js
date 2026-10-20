@@ -163,6 +163,32 @@ export function Chains() {
   });
 }
 
+// Why a ticket cannot be started from here right now, or null when it can.
+export function startHold(t) {
+  if (pendingRun(t.key)) return "A request for this ticket is already pending.";
+  if (jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id)) return "This ticket already has an open run or active chain.";
+  return null;
+}
+
+// One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
+// The queue and the session list share this row; `children` extends the facet line, `actions` the trailing buttons.
+export function TicketRow({ ticket: t, project, children, actions }) {
+  const c = config.value;
+  return html`<div class="next" key=${t.id}>
+    <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
+      <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
+        <${Meta} project=${project?.name ?? t.project ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
+      <//>
+    </a>
+    ${actions}
+  </div>`;
+}
+
+// Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled.
+export const RunNow = ({ ticket: t, hold }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
+  title=${hold ?? "Override limits and start this ticket now."}
+  onClick=${() => { if (!startHold(t) && !hold) startRun({ ticket: t.key, model: "auto", overrideLimits: true }); }}><${Icon} name="play" /><//>`;
+
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "" }) {
   clock.value;
@@ -176,26 +202,9 @@ export function UpNext({ limit = 5, children, filters, query = "" }) {
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
-        ? tickets.slice(0, limit).map((t) => {
-            const pending = () => pendingRun(t.key);
-            const started = jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
-            const p = project(t.projectId);
-            return html`<div class="next" key=${t.id}>
-            <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
-              <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-                <${Meta} project=${p?.name ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${p?.priorityLabels ?? []}>
-                  ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
-                <//>
-              <//>
-            </a>
-            <${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${pending() || started}
-              title=${pending() ? "A request for this ticket is already pending." : started ? "This ticket already has an open run or active chain." : "Override limits and start this ticket now."}
-              onClick=${() => {
-                if (pending() || started) return;
-                startRun({ ticket: t.key, model: "auto", overrideLimits: true });
-              }}><${Icon} name="play" /><//>
-            </div>`;
-          })
+        ? tickets.slice(0, limit).map((t) => html`<${TicketRow} key=${t.id} ticket=${t} project=${project(t.projectId)} actions=${html`<${RunNow} ticket=${t} hold=${startHold(t)} />`}>
+            ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
+          <//>`)
         : html`<${Empty}>${query.trim() || ["projects", "tags", "difficulties", "priorities"].some(key => filters?.[key]?.length) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
     ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}

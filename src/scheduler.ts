@@ -11,6 +11,7 @@ import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
 
 import { readModelQuota } from './models.ts';
+import { sessionTicketStatus } from './session-tickets.ts';
 
 const exec = promisify(execFile);
 // Blocked cleanups wait for something outside the scheduler to change, so retrying every cycle only repeats their cost.
@@ -1173,6 +1174,7 @@ export function writeStatus(c: Config, store: Store) {
     discovery: c.projects.map(p => ({ projectId: p.kaneoId, lastAt: iso(store.get(`discoveryLast:${p.kaneoId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kaneoId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
+    sessionTickets: sessionTicketStatus(c, store),
     jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })),
     // The menu app reads only this file, so it gets the recent journal and the last finished runs here.
     journal: store.events(60),

@@ -7,13 +7,14 @@ import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js"
 import { Login } from "./Login.js";
 import { Deck } from "./Deck.js";
 import { Runs, RunDetail } from "./Runs.js";
+import { SessionTickets } from "./SessionTickets.js";
 import { Activity } from "./Activity.js";
 import { Models } from "./Models.js";
 import { Capacity } from "./Capacity.js";
 import { Projects } from "./Projects.js";
 import { Upstream } from "./Upstream.js";
 
-const pages = { "/": Deck, "/start": Deck, "/runs": Runs, "/runs/:id": RunDetail, "/activity": Activity, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream };
+const pages = { "/": Deck, "/start": Deck, "/runs": Runs, "/runs/:id": RunDetail, "/session-tickets": SessionTickets, "/activity": Activity, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream };
 const CONNECTION = { connecting: "Connecting", live: "Live", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.

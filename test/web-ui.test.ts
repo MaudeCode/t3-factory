@@ -47,6 +47,7 @@ test('launch links select exactly one named ticket and never submit during routi
     assert.deepEqual(match('/start' + query), { page: '/start', param: '', path: '/start' });
   assert.equal(match('/start?ticket=APP-1&chain=all&allowMissingReadyLabel=true').param, 'APP-1');
   assert.equal(match('/runs?state=next').page, '/runs');
+  assert.equal(match('/session-tickets').page, '/session-tickets');
 });
 
 test('launch pairing preserves the ticket query without dispatching', async () => {

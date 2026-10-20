@@ -45,6 +45,22 @@ export interface PlanTicket {
 }
 export interface Plan { id: string; createdAt: string; target: PlanTicket; tickets: PlanTicket[]; model: string; overrideLimits: boolean; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }
+// A ticket that a T3 session reported creating, with every session and message that reported it.
+export interface SessionSource { threadId: string; messageId: string; projectId: string; title: string; at: string }
+export interface SessionTicket {
+  taskId: string; projectId: string; key: string; number: number; title: string; priority: string; status: string; labels: string[]; createdAt: string;
+  firstSeenAt: string; refreshedAt: string; refreshError?: string; sources: SessionSource[];
+  // Tombstones: a dismissed or consumed entry never returns to the list, whatever a rescan or refresh finds.
+  dismissedAt?: string; consumed?: { jobId: string; at: string };
+}
+// A ticket reference extracted from a session message, waiting for the tracker to confirm it.
+export interface SessionRef { kind: 'key' | 'task'; value: string; messageId: string; at: string; attempts: number; error?: string; retryAfter?: string }
+// Scan progress through one session's conversation. `lastOrdinal` is the newest turn item fully processed;
+// `backfill` is an unfinished walk back through older history pages toward that mark.
+export interface SessionThread {
+  id: string; projectId: string; title: string; createdAt: string; updatedAt?: string; lastOrdinal?: number;
+  backfill?: { cursor: string; updatedAt: string; top: number }; pending: SessionRef[];
+}
 const STATE_TEXT: Record<Job['state'], string> = { dispatching: 'is starting', running: 'is running', waiting: 'needs you', complete: 'finished', dismissed: 'was dismissed' };
 const STREAM_TEXT: Record<string, string> = {
   'provider-running': 'working', 'provider-disabled': 'automatic starts off', 'waiting-for-idle': 'waiting for idle time', 'quota-exhausted': 'allowance exhausted',
@@ -71,7 +87,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_job ON events(job_id);
-      CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_threads(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_tickets(task_id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
     // task_id is the live claim. Completed and dismissed history retain their ticket IDs in data.
     this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND json_extract(data, '$.state') IN ('complete', 'dismissed')");
   }
@@ -95,6 +113,12 @@ export class Store {
     if (!before) this.record('plan.created', `Chain to ${plan.target.key} started with ${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'} ahead of it`, detail);
     else if (before.state !== plan.state) this.record('plan.state', `Chain to ${plan.target.key} ${plan.state === 'done' ? 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
   }
+  sessionThreads(): SessionThread[] { return this.db.prepare('SELECT data FROM session_threads ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  sessionThread(id: string): SessionThread | undefined { const row = this.db.prepare('SELECT data FROM session_threads WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  saveSessionThread(thread: SessionThread) { this.db.prepare('INSERT INTO session_threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(thread.id, JSON.stringify(thread)); }
+  sessionTickets(): SessionTicket[] { return this.db.prepare('SELECT data FROM session_tickets ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  sessionTicket(taskId: string): SessionTicket | undefined { const row = this.db.prepare('SELECT data FROM session_tickets WHERE task_id=?').get(taskId); return row ? JSON.parse(row.data as string) : undefined; }
+  saveSessionTicket(ticket: SessionTicket) { this.db.prepare('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data').run(ticket.taskId, JSON.stringify(ticket)); }
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
     this.db.prepare('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
     this.db.prepare('DELETE FROM events WHERE id < (SELECT MAX(id) FROM events) - 5000').run();

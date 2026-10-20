@@ -380,6 +380,11 @@ export function createFactoryWeb(options: {
           const result = await run(["job-stop", job[1]]);
           return json(res, result.code ? 409 : 200, result.data);
         }
+        const session = path.match(/^\/api\/session-tickets\/([\w-]{1,64})\/dismiss$/);
+        if (session && req.method === "POST") {
+          const result = await run(["session-dismiss", session[1]]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
         const plan = path.match(/^\/api\/plans\/([\w-]{1,64})\/cancel$/);
         if (plan && req.method === "POST") {
           const result = await run(["plan-cancel", plan[1]]);

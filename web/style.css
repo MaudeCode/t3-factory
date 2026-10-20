@@ -597,6 +597,11 @@ h2 .help {
 .meta-project {
   color: var(--ink);
 }
+/* A note among the facets wraps rather than clipping on a narrow row. */
+.meta > b {
+  min-width: 0;
+  white-space: normal;
+}
 .meta .tag {
   font-size: 10px;
   padding: 0 5px;

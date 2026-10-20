@@ -8,6 +8,7 @@ import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kaneo, listTasks } from './clients.ts';
 import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, readAll, type CycleOptions } from './scheduler.ts';
+import { collectSessionTickets, dismissSessionTicket } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
@@ -31,6 +32,8 @@ export class FactoryService {
   private kaneoTimer?: NodeJS.Timeout;
   private cleanupTimer?: NodeJS.Timeout;
   private cleanupQueued = false;
+  private collectionTimer?: NodeJS.Timeout;
+  private collectionQueued = false;
   private readonly cleanupVisited = new Set<string>();
   private readyFingerprint?: string;
   private readonly timing: ServiceTiming;
@@ -70,7 +73,7 @@ export class FactoryService {
   async stop() {
     this.stopped = true;
     this.abort.abort();
-    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer);
+    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
     await this.queue.catch(() => {});
@@ -147,6 +150,25 @@ export class FactoryService {
     }, false), 0);
   }
 
+  // Session-ticket collection runs the same way: one bounded batch per queued item, behind any command, until nothing remains.
+  private scheduleCollection() {
+    if (this.stopped || this.collectionQueued) return;
+    this.collectionQueued = true;
+    this.collectionTimer = setTimeout(() => void this.enqueue(async () => {
+      let more = false;
+      try {
+        if (this.stopped) return;
+        const c = this.configure(), kaneo = await this.ensureKaneo(c);
+        more = await collectSessionTickets(c, this.store, this.t3, kaneo);
+        writeStatus(c, this.store);
+      } catch (error) { log('session-tickets-failed', { message: safeError(error) }); }
+      finally {
+        this.collectionQueued = false;
+        if (more) this.scheduleCollection();
+      }
+    }, false), 0);
+  }
+
   private async handle(command: ControlCommand): Promise<ControlResult> {
     if (command.type === 'health') return { code: 0, data: { ok: true, pid: process.pid } };
     if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
@@ -154,6 +176,10 @@ export class FactoryService {
     if (command.type === 'job-stop') {
       const result = await this.enqueue(() => stopJob(this.configure(), this.store, this.t3, command.jobId));
       this.wake('job-stop');
+      return { code: 0, data: result };
+    }
+    if (command.type === 'session-dismiss') {
+      const result = await this.enqueue(async () => { const r = dismissSessionTicket(this.store, command.taskId); writeStatus(loadConfig(this.configPath), this.store); return r; });
       return { code: 0, data: result };
     }
     if (command.type === 'plan-cancel') {
@@ -233,7 +259,7 @@ export class FactoryService {
       this.dropKaneo();
       throw error;
     } finally {
-      if (!options.dryRun && !options.doctor) this.scheduleCleanup(true);
+      if (!options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
       if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
     }
   }

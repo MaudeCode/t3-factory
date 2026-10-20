@@ -32,6 +32,12 @@ Manual jobs can overlap other runs and can start while automatic dispatch is pau
 
 If a specific manual ticket lacks the configured readiness label, the web page offers **Cancel** or **Run anyway**. Confirmation skips only that label requirement for that ticket and request; it does not add a label or change automatic scheduling. Status, classification, dependencies, model limits, quota availability, duplicate ownership, and merge gates remain enforced. CLI users can make the same explicit choice with `dispatch --ticket APP-123 --allow-missing-ready-label`.
 
+## Session tickets
+
+The web app's **Session tickets** page lists tickets that your T3 sessions reported creating, whichever project they belong to. The scheduler reads every top-level session's conversation in the background, including older history and sessions that are settled, confirms each reported ticket with the tracker, and keeps the list in its state database, so it survives restarts and needs no skill run or reporting thread. A ticket appears only if the tracker shows it was created during the session that reported it; mentions, quoted text, tables and examples do not count. The list is not the automatic queue: it is every open session-created ticket in a ready column, including ones that lack a readiness label or belong to a project the factory does not run. Tickets in progress, in review or done are hidden, and return if they move back to a ready column.
+
+Run starts the ticket exactly like **Run now** on the queue, through the same readiness, dependency, quota, duplicate and merge checks, with the model chosen at dispatch. The entry leaves the list once Factory confirms the run started, whether from this page, the deck, the CLI, a chain or automatic scheduling; a refused or failed start keeps the entry and its outcome. Remove takes the entry off the list for good without touching the ticket, its runs or scheduling; `t3-factory session-dismiss TASK_ID` does the same. A collection failure is shown on the page while the last known list stays visible.
+
 ## Automatic scheduling
 
 Tickets matching a project's `priorityLabels` are considered first, in configured label order, followed by unmatched tickets. Within each label rank, urgency orders tickets: urgent, high, medium, low, then no priority. Within an urgency tier, the highest-ranked available model with a sufficient difficulty ceiling gets first choice. Project ticket counts, rotating ties, and oldest-ticket order break remaining ties. Without configured priority labels, the existing urgency ordering applies.
