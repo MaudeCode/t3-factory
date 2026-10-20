@@ -31,11 +31,14 @@ import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
 // Search box, Filter button and its popover for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
-export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false }) {
+export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false }) {
   const [open, setOpen] = useState(false);
   const button = useRef();
   const change = (key, value) => onFilters({ ...filters, [key]: value });
-  const active = ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : [])].filter(key => filters[key]?.length).length;
+  const active = ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
+  const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
+  for (const id of sessions ? filters.sessions ?? [] : []) if (!sessionNames.has(id)) sessionNames.set(id, "Session no longer listed");
+  const sessionOptions = [...sessionNames].sort((a, b) => a[1].localeCompare(b[1]));
   // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
   const picked = (key) => filters[key] ?? [];
   const tags = [...new Set([...picked("tags"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
@@ -46,6 +49,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   return html`<input class="mono search" value=${query} onInput=${(e) => onQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
     <span ref=${button}><${Button} size="sm" icon="filter" label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>
     <${Popover} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
+      ${sessions && html`<${Field} group label="Session"><${Select} multiple placeholder="Any" label="Session" value=${filters.sessions ?? []} options=${sessionOptions} onChange=${value => change("sessions", value)} /><//>`}
       <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kaneoId, p.name])} onChange=${value => change("projects", value)} /><//>
       <${Field} group label="Tags">
         <div class="tags-pick">

@@ -85,6 +85,36 @@ const { Store } = await import('../src/store.ts');
 const { T3: T3Client, Kaneo: KaneoClient } = await import('../src/clients.ts');
 const LINK = (taskId: string, workspace = 'workspace') => `https://kaneo.example.test/dashboard/workspace/${workspace}/project/FIX/task/${taskId}`;
 
+test('upstream release-review sources are excluded from collection and existing projections', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9));
+  f.labels.set('task-9', ['upstream', 'feat']);
+  f.sessions.push(f.session('ordinary'), f.session('review'));
+  f.bounded.set('ordinary', { items: [message('a1', 'assistant_message', 'Created FIX-8 and FIX-9.', 1, AT.reported, 'ordinary')], cursor: null, more: false });
+  f.bounded.set('review', { items: [message('b1', 'assistant_message', 'Created FIX-7 and FIX-8.', 1, AT.reported, 'review')], cursor: null, more: false });
+  await f.drain();
+  f.store.save({ id: 'review-job', kind: 'upstream', projectId: 'FIX', taskId: null, ticketKey: null, threadId: 'review', messageId: 'start', createdAt: AT.threadStart, completedAt: AT.threadEnd, state: 'complete', reason: 'Done', lastPersonalActivity: null, reportPath: join(f.dir, 'report'), command: null, prUrls: [] });
+  assert.deepEqual(f.keys(), ['FIX-8', 'FIX-9'], 'upstream-only tickets leave the existing list');
+  assert.deepEqual(f.status().rows[0].sources.map(s => s.threadId), ['ordinary'], 'mixed tickets retain only ordinary source sessions');
+  assert.equal(f.store.sessionTicket('task-8')!.sources.length, 2, 'stored provenance is preserved');
+  assert.ok(f.status().rows.find(r => r.key === 'FIX-9')!.labels.includes('upstream'), 'labels do not classify the source session');
+  f.sessions[1] = f.session('review', { updatedAt: '2026-03-01T11:00:00Z' });
+  const rec = f.store.sessionThread('review')!;
+  rec.pending.push({ kind: 'key', value: 'FIX-404', messageId: 'missing', at: AT.reported, attempts: 1, error: 'Old upstream lookup failure' });
+  rec.error = 'Old upstream read failure'; f.store.saveSessionThread(rec);
+  f.sessions.push(f.session('fresh-review'));
+  f.bounded.set('fresh-review', { items: [message('c1', 'assistant_message', 'Created FIX-10.', 1, AT.reported, 'fresh-review')], cursor: null, more: false });
+  f.store.save({ ...f.store.job('review-job')!, id: 'fresh-review-job', threadId: 'fresh-review' });
+  f.store.saveSessionTicket({ ...f.store.sessionTicket('task-7')!, refreshAfter: '2000-01-01T00:00:00Z' });
+  f.calls.length = 0;
+  assert.equal(await f.collect(), false, 'excluded upstream work cannot keep background collection queued');
+  assert.equal(f.calls.some(c => /\/threads\/(review|fresh-review)\//.test(c)), false, 'new and previously collected upstream review history is not read');
+  assert.equal(f.store.sessionThread('fresh-review'), undefined, 'an excluded review is never added to the scan ledger');
+  assert.equal(f.calls.includes('get_task_by_ticket_id'), false, 'upstream pending references are not confirmed');
+  assert.equal(f.calls.includes('get_task'), false, 'upstream-only rows are not refreshed');
+  assert.equal(f.status().error, null, 'excluded source failures do not keep the collection notice alive');
+});
+
 test('creation reports name keys and task links, not mentions, prompts, examples, quotes, tables, code or negations', () => {
   const refs = (text: string) => creationReports(text, 'workspace').map(r => `${r.kind}:${r.value}`);
   assert.deepEqual(refs('Created FIX-7: Fix uploads.'), ['key:FIX-7']);
