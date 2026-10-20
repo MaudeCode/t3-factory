@@ -7,6 +7,9 @@ import { configSchema } from '../src/config.ts';
 import { T3, Kaneo } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
 import { v2Thread } from './v2-fixture.ts';
+import { createMcpServer } from '@kaneo/mcp';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { KaneoClient as TrackerClient } from '../node_modules/@kaneo/mcp/dist/kaneo/client.js';
 
 // Synthetic T3 conversation and Kaneo fixtures. No live sessions, tickets, or dispatches.
 const AT = { threadStart: '2026-03-01T10:00:00.000Z', created: '2026-03-01T10:05:00.000Z', reported: '2026-03-01T10:06:00.000Z', threadEnd: '2026-03-01T10:10:00.000Z' };
@@ -152,6 +155,36 @@ function collectorFixture(t: test.TestContext) {
   t.after(() => { f.store.close(); rmSync(dir, { recursive: true, force: true }); });
   return f;
 }
+
+test('session ticket keys resolve through the pinned MCP tool registry', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  const paths: string[] = [];
+  t.mock.method(TrackerClient.prototype, 'json', async (path: string) => {
+    paths.push(path);
+    const url = new URL(path, 'https://tracker.example');
+    if (url.pathname === '/api/project') return f.projects;
+    if (url.pathname.startsWith('/api/column/')) return [{ slug: 'ready', isFinal: false, position: 0 }];
+    if (url.pathname === '/api/task/by-ticket-id/FIX-7') {
+      assert.equal(url.searchParams.get('workspaceId'), 'workspace');
+      assert.equal(url.searchParams.get('projectId'), 'FIX');
+      return f.tasks[0];
+    }
+    if (url.pathname === '/api/label/workspace/workspace') return [];
+    throw new Error(`Unexpected tracker path ${path}`);
+  });
+  const server = createMcpServer();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), f.kaneo.client.connect(clientTransport)]);
+  t.after(async () => { await f.kaneo.close(); await server.close(); });
+  t.mock.method(f.kaneo, 'call', KaneoClient.prototype.call);
+  await f.collect();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'reported ticket is confirmed using tools available in the pinned MCP');
+  assert.equal(f.status().error, null);
+  assert.ok(paths.some(path => path.startsWith('/api/task/by-ticket-id/FIX-7?')), 'key lookup uses the tracker endpoint directly');
+});
 
 test('reports across projects become one row per confirmed task, in priority order, with their provenance', async t => {
   const f = collectorFixture(t);
