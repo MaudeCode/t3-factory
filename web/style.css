@@ -1485,7 +1485,7 @@ h2 .icon,
   flex-shrink: 0;
   gap: var(--space-3);
 }
-.next-inline {
+.next-secondary {
   display: flex;
   gap: var(--space-3);
 }
@@ -2259,14 +2259,18 @@ h1 .crumb::after {
 }
 
 @media (max-width: 900px) {
-  .next-inline {
+  .next-secondary {
     display: none;
   }
   .next-more {
     display: inline-flex;
   }
+  .next-ticket {
+    padding-top: var(--space-1);
+    padding-bottom: var(--space-1);
+  }
   .next-actions {
-    flex-direction: column;
+    flex-direction: row;
     gap: var(--space-1);
     padding: var(--space-1) 0;
   }
