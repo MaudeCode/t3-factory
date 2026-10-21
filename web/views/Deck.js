@@ -171,7 +171,7 @@ export function startHold(t) {
 }
 
 // One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
-// The queue and session list share this row; secondary actions collapse into a mobile popover.
+// The queue and session list share this row; rows with several actions use one mobile popover.
 export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection }) {
   const c = config.value;
   const [open, setOpen] = useState(false), button = useRef();
@@ -183,12 +183,12 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
         <${Meta} project=${project?.name ?? t.project ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
       <//>
     </a>
-    ${actions && html`<div class="next-actions">${actions}
-      ${secondaryActions && html`<div class="next-secondary">${secondaryActions}</div>
+    ${actions && html`<div class="next-actions">
+      ${secondaryActions ? html`<div class="next-inline">${actions}${secondaryActions}</div>
         <span ref=${button} class="next-more"><${Button} size="sm" icon class="next-run" label=${label} aria-expanded=${open} onClick=${() => setOpen(!open)}>⋯<//></span>
         <${Popover} class="next-menu" open=${open} onClose=${() => setOpen(false)} anchor=${button} label=${label} width=${220}>
-          <div onClick=${() => setOpen(false)}>${secondaryActions}</div>
-        <//>`}
+          <div onClick=${() => setOpen(false)}>${actions}${secondaryActions}</div>
+        <//>` : actions}
     </div>`}
   </div>`;
 }
@@ -197,7 +197,7 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
 export const runNow = (t, hold) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits: true }) : null;
 export const RunNow = ({ ticket: t, hold }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
   title=${hold ?? "Override limits and start this ticket now."}
-  onClick=${() => runNow(t, hold)}><${Icon} name="play" /><//>`;
+  onClick=${() => runNow(t, hold)}><${Icon} name="play" /><span class="next-action-label">Run</span><//>`;
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "" }) {
