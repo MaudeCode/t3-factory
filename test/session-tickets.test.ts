@@ -289,6 +289,32 @@ test('paused service recovers a sectioned report from a legacy up-to-date cursor
   } finally { await service.stop(); }
 });
 
+test('recent creation reports are collected before the historical replay backlog', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('old'), f.session('recent', { updatedAt: '2026-03-01T10:11:00.000Z' }));
+  f.tasks.push(task('task-7', 7), task('task-8', 8));
+  f.bounded.set('old', { items: [message('old', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 'old')], cursor: null, more: false });
+  f.bounded.set('recent', { items: [message('recent', 'assistant_message', 'Created FIX-8.', 1, AT.reported, 'recent')], cursor: null, more: false });
+  await f.collect({ reads: 1 });
+  assert.deepEqual(f.keys(), ['FIX-8'], 'the first bounded read reaches the recently updated session');
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'historical replay continues after recent sessions are current');
+});
+
+test('recent pending confirmations are collected before old replay candidates', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('old'));
+  f.tasks.push(task('task-7', 7), task('task-8', 8));
+  f.bounded.set('old', { items: [message('old', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 'old')], cursor: null, more: false });
+  await f.collect({ lookups: 0 });
+  f.sessions.push(f.session('recent', { updatedAt: '2026-03-01T10:11:00.000Z' }));
+  f.bounded.set('recent', { items: [message('recent', 'assistant_message', 'Created FIX-8.', 1, AT.reported, 'recent')], cursor: null, more: false });
+  await f.collect({ reads: 1, lookups: 1 });
+  assert.deepEqual(f.keys(), ['FIX-8'], 'the first confirmation reaches the recently updated session');
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8']);
+});
+
 function collectorFixture(t: test.TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-collector-'));
   const budget = { reservePercent: 0, minRemainingPercent: 0 };
