@@ -1480,6 +1480,15 @@ h2 .icon,
   min-width: 32px;
   font-size: 16px;
 }
+.next-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-3);
+}
+.meta > .session-sources {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .chain-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2232,6 +2241,11 @@ h1 .crumb::after {
 }
 
 @media (max-width: 900px) {
+  .next-actions {
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) 0;
+  }
   :root {
     --gutter: var(--space-4);
   }
@@ -2352,7 +2366,7 @@ h1 .crumb::after {
   input.mono {
     font-size: 16px;
   }
-  .next-run {
+  .next-actions .next-run {
     min-height: 44px;
     min-width: 44px;
   }

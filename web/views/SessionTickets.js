@@ -54,9 +54,9 @@ export function SessionTickets() {
                 actions=${html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(latest)} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${`Open in T3 Code: ${latest.title || "session"}, reported ${ago(latest.at, now)}${t.sources.length > 1 ? `; ${t.sources.length - 1} more ${t.sources.length === 2 ? "session" : "sessions"} reported it` : ""}`}><${Icon} name="commentDiscussion" /></a>
                   <${RunNow} ticket=${ticket} hold=${hold} />
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss([t])}>×<//>`}>
-                <span title="The T3 session that reported creating this ticket">from ${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
-                <span class="muted" title=${new Date(t.createdAt).toLocaleString()}>created ${ago(t.createdAt, now)}</span>
-                <span class="muted" title=${t.refreshError ? `Last read failed: ${t.refreshError}` : "When the tracker was last read for this ticket"}>${t.refreshError ? "tracker read failed, " : ""}checked ${ago(t.refreshedAt, now)}</span>
+                <span class="session-sources" title="The T3 session that reported creating this ticket">${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
+                <span class="muted" title=${new Date(t.createdAt).toLocaleString()}>${ago(t.createdAt, now, true)}</span>
+                ${t.refreshError && html`<span class="tone-attention" title=${`Last read failed: ${t.refreshError}`}>tracker read failed</span>`}
                 ${t.unavailable && html`<b class="tone-attention">${t.unavailable}</b>`}
               <//>`;
             })

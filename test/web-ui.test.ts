@@ -290,6 +290,9 @@ test('relative times accept ISO strings and millisecond numbers alike', () => {
   assert.equal(until(new Date(now + 3600_000).toISOString(), now), 'in 1 h');
   assert.equal(until(now - 1, now), 'now');
   assert.equal(ago(now - 90_000, now), '1 min ago');
+  assert.equal(ago(now - (3600 + 52 * 60) * 1000, now, true), '1h 52m ago');
+  assert.equal(ago(new Date(now - 90_000).toISOString(), now, true), '1m ago');
+  assert.equal(ago(now + 1000, now, true), '0s ago');
 });
 
 test('the deck explains the last check in one sentence', () => {

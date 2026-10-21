@@ -181,7 +181,7 @@ export function TicketRow({ ticket: t, project, children, actions, selection }) 
         <${Meta} project=${project?.name ?? t.project ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
       <//>
     </a>
-    ${actions}
+    ${actions && html`<div class="next-actions">${actions}</div>`}
   </div>`;
 }
 
