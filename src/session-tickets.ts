@@ -14,6 +14,8 @@ const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
+const REPORT_VERSION = 1;
+const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
 interface Catalog { at: number; projects: Record<string, CatalogProject> }
@@ -24,9 +26,11 @@ export interface Budget { reads?: number; lookups?: number; refreshes?: number }
 // the creation verb in its own clause, so "did not find one, so I created X" reports X and "did not create X" does not.
 const CREATED = /\b(?:creat(?:ed|ing)|filed|filing|opened|opening)\b/i;
 const NEGATED = /\b(?:not|no|never|without|didn't|did not|wasn't|was not|cannot|can't|could not|couldn't)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
+const FUTURE = /\b(?:will|planning to|going to|intend to|please)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
 const CLAUSE = /[,;:]|\s(?:so|but|and|then|yet)\s/i;
 const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/dashboard\/workspace\/([^/\s)]+)\/project\/[^/\s)]+\/task\/([\w-]+)/g;
+const reportBoundary = (line: string) => /^(?:existing|related|next|examples?|references|unfiled|not created|see also)\b/i.test(line.replace(/^\s*(?:(?:#{1,6}|[-*+•]|\d+[.)])\s+)?(?:\*\*|__)?/, ''));
 // Explicit skill commands and the legacy release-review launch request, not titles or discussion of the skill.
 const UPSTREAM_REVIEW_REQUEST = /^(?:[$/](?:skills[:/])?upstream-release-review\b|Review [^\n]+?\bfrom\b[^\n]+?\bto\b[^\n]+?\bwith\b[^\n]*\bupstream-release-review`?\s+skill(?=[.!?](?:\s|$)|\s*$))/i;
 const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
@@ -42,16 +46,43 @@ function* affirmedClauses(block: string) {
     // A header, or a bare list number the sentence split left on its own, carries its polarity into the next fragment.
     header = /:\s*$/.test(sentence) || /^\s*(?:[-*+•]|\d+[.)])\s*$/.test(sentence);
     for (const clause of sentence.split(CLAUSE)) {
-      if (CREATED.test(clause) && !NEGATED.test(clause)) polarity = 'yes';
+      if (CREATED.test(clause) && !NEGATED.test(clause) && !FUTURE.test(clause)) polarity = 'yes';
       else if (NEGATED.test(clause) || CREATED.test(clause)) polarity = 'no';
       if (polarity === 'yes') yield clause;
     }
   }
 }
+// Expand only explicit ranges and line-ending numeric lists; never turn a large range into unbounded work.
+function expandReportKeys(text: string) {
+  return text.replace(/\b([A-Z][A-Z0-9]*)-(\d+)\s*(?:through|to|[–—])\s*(?:\1-)?(\d+)\b/g, (_, prefix, start, end) => {
+    const first = Number(start), last = Number(end);
+    return Number.isSafeInteger(last) && first > 0 && last >= first && last - first < MAX_REPORT_KEYS
+      ? Array.from({ length: last - first + 1 }, (_, i) => `${prefix}-${first + i}`).join(', ') : '';
+  }).replace(/\b([A-Z][A-Z0-9]*)-(\d+)((?:,\s*\d+)+)(?=\.?\s*$)/gm, (_, prefix, first, rest) => {
+    const numbers = [first, ...rest.match(/\d+/g)].map(Number);
+    return numbers.length <= MAX_REPORT_KEYS && numbers.every(n => Number.isSafeInteger(n) && n > 0) ? numbers.map(n => `${prefix}-${n}`).join(', ') : '';
+  });
+}
+
 export function creationReports(text: string, workspaceId: string): Pick<SessionRef, 'kind' | 'value'>[] {
   const refs = new Map<string, Pick<SessionRef, 'kind' | 'value'>>();
+  let section = false;
   for (const block of text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').split(/\n\s*\n/)) {
-    const body = [...affirmedClauses(block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n'))].join('\n');
+    const plain = expandReportKeys(block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n')).trim();
+    const heading = /^(?:#{1,6}\s+[^\n]+|(?:\*\*|__)[^\n]+(?:\*\*|__))$/.test(plain);
+    const list = /^\s*(?:[-*+•]|\d+[.)])\s/.test(plain);
+    const stop = reportBoundary(plain);
+    const clauses = [...affirmedClauses(plain)];
+    const summary = clauses.some(c => /\b(?:created|filed|opened)\b/i.test(c) && /\btickets?\b|\b(?:these|following)\b/i.test(c));
+    const inherited = section && list && !stop;
+    section = !stop && (summary || (section && (heading || list)));
+    const listBody = plain.split('\n').filter(line => !reportBoundary(line)).join('\n');
+    const reported = inherited
+      ? listBody.split(/(?=^\s*(?:[-*+•]|\d+[.)])\s)/m).flatMap(item => [...affirmedClauses(`Created tickets:\n${item}`)])
+      : clauses;
+    // Batch summaries often state their exact number range in the next sentence of the same paragraph.
+    if (summary) for (const range of plain.matchAll(/\bNumbers\s+(?:run|range(?: from)?)\s+([^.!?\n]+)/gi)) reported.push(range[1]!);
+    const body = reported.join('\n');
     for (const [, workspace, taskId] of body.matchAll(LINK)) if (decoded(workspace) === workspaceId) refs.set(`task:${taskId}`, { kind: 'task', value: taskId });
     for (const [, key] of body.replace(LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
   }
@@ -152,9 +183,15 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     listed = new Set(sessions.map(s => s.id));
     for (const session of sessions) {
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
-      if (rec.upstreamReview !== undefined && !rec.backfill && rec.updatedAt === session.updatedAt) continue;
+      const replay = rec.reportVersion !== REPORT_VERSION;
+      if (!replay && rec.upstreamReview !== undefined && !rec.backfill && rec.updatedAt === session.updatedAt) continue;
       if (rec.retryAfter && Date.parse(rec.retryAfter) > now) continue;
       if (reads++ >= limits.reads) { more = true; break; }
+      if (replay) {
+        // Reuse bounded backfill for old reports; references, provenance and tombstones remain intact.
+        delete rec.updatedAt; delete rec.lastOrdinal; delete rec.backfill;
+        rec.reportVersion = REPORT_VERSION;
+      }
       try { delete rec.retryAfter; delete rec.error; await scanSession(t3, store, rec, session, c.kaneo.workspaceId); }
       catch (error) {
         // Progress is untouched; the session waits before its next read so an outage cannot loop on the same sessions.

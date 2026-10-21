@@ -60,6 +60,7 @@ export interface SessionRef { kind: 'key' | 'task'; value: string; messageId: st
 // `backfill` is an unfinished walk back through older history pages toward that mark.
 export interface SessionThread {
   id: string; projectId: string; title: string; createdAt: string; updatedAt?: string; lastOrdinal?: number;
+  reportVersion?: number;
   backfill?: { cursor: string; updatedAt: string; top: number }; pending: SessionRef[];
   // Undefined until the session's own history has established whether it launches a release review.
   upstreamReview?: boolean;

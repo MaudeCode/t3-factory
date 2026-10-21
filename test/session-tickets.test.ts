@@ -239,6 +239,56 @@ test('creation reports name keys and task links, not mentions, prompts, examples
   assert.deepEqual(refs('Created FIX-7.\n\nCreated FIX-7 again.'), ['key:FIX-7'], 'one reference per message');
 });
 
+test('sectioned creation reports retain their ticket lists, bounded ranges and numeric shorthand', () => {
+  const refs = (text: string) => creationReports(text, 'workspace').filter(r => r.kind === 'key').map(r => r.value);
+  assert.deepEqual(refs('Ten tickets filed.\n\n**Do now**\n\n1. FIX-7 Handle reuse. Today every reader opens the DB.\n2. FIX-8 One pass.\n\n**Later**\n\n- FIX-9 Cache reads.\n\nExisting FIX-1 was linked instead.'), ['FIX-7', 'FIX-8', 'FIX-9']);
+  assert.deepEqual(refs('All five tickets are filed and verified. Numbers run FIX-10 through FIX-14.\n\n**By component**\n\n- Web: FIX-10, 11, 12.\n- App: FIX-13, 14.'), ['FIX-10', 'FIX-11', 'FIX-12', 'FIX-13', 'FIX-14']);
+  assert.deepEqual(refs('Three tickets filed.\n\n**By component**\n\n- Web: FIX-10, 11, 12.\n- Existing FIX-13 is related.'), ['FIX-10', 'FIX-11', 'FIX-12']);
+  assert.deepEqual(refs('I will be filing tickets:\n- FIX-7'), [], 'future intent is not a creation report');
+  for (const text of ['I will create tickets.\n\n- FIX-7', 'No tickets were created.\n\n**Later**\n\n- FIX-7', 'Tickets filed.\n\nExisting tickets:\n\n- FIX-7', 'Tickets filed.\n\nUnrelated discussion of FIX-7.\n\n- FIX-8']) assert.deepEqual(refs(text), [], text);
+  assert.deepEqual(refs('Created FIX-1 through FIX-1000000.'), [], 'range expansion is bounded and fails closed');
+});
+
+test('legacy scan progress replays sectioned reports through bounded history and preserves tombstones', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9));
+  const retry = { kind: 'key' as const, value: 'FIX-99', messageId: 'unconfirmed', at: AT.reported, attempts: 3, error: 'Previous failure', retryAfter: '2099-01-01T00:00:00Z' };
+  f.store.saveSessionThread({ id: 's1', projectId: 'FIX', title: 'Session s1', createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 20, pending: [retry], upstreamReview: false });
+  f.bounded.set('s1', { items: [message('latest', 'assistant_message', 'Nothing new.', 20, AT.reported, 's1')], cursor: 'older', more: true });
+  f.history.set('older', { items: [message('filed', 'assistant_message', 'Three tickets filed.\n\n**Do now**\n\n- FIX-7\n- FIX-8\n- FIX-9', 2, AT.reported, 's1')], cursor: null, more: false });
+  for (const [id, number] of [['task-8', 8], ['task-9', 9]] as const) f.store.saveSessionTicket({ taskId: id, projectId: 'FIX', key: `FIX-${number}`, number, title: 'Existing marker', priority: 'high', status: 'to-do', labels: [], createdAt: AT.created, firstSeenAt: AT.reported, refreshedAt: AT.reported, sources: [], ...(number === 8 ? { dismissedAt: AT.reported } : { consumed: { jobId: 'launched', at: AT.reported } }) });
+  assert.equal(await f.collect({ reads: 1 }), true, 'legacy progress starts a bounded rescan');
+  f.store.close(); f.store = new Store(f.c.stateDir);
+  f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=conversation');
+  await f.collect({ reads: 1 });
+  const pending = f.store.sessionThread('s1')!;
+  assert.equal(pending.backfill?.cursor, 'older', 'a failed page retains its durable cursor');
+  delete pending.retryAfter; f.store.saveSessionThread(pending);
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7']);
+  assert.equal(f.store.sessionTicket('task-8')!.dismissedAt, AT.reported);
+  assert.equal(f.store.sessionTicket('task-9')!.consumed?.jobId, 'launched');
+  assert.deepEqual(f.store.sessionThread('s1')!.pending, [retry], 'existing lookup retries are retained');
+  const reads = f.calls.filter(c => c.includes('/history?')).length;
+  await f.drain();
+  assert.equal(f.calls.filter(c => c.includes('/history?')).length, reads, 'the new parser does not rescan again');
+  assert.equal(f.store.sessionTicket('task-7')!.sources.length, 1, 'replay is idempotent');
+});
+
+test('paused service recovers a sectioned report from a legacy up-to-date cursor', { timeout: 20000 }, async t => {
+  const f = serviceFixture(t), store = new Store(f.c.stateDir);
+  store.saveSessionThread({ id: f.thread.id, projectId: 'FIX', title: f.thread.title, createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 2, pending: [], upstreamReview: false });
+  store.close();
+  f.turnItems[1]!.text = 'Ticket filed.\n\n**Completed**\n\n- FIX-7 Uploads.';
+  const service = new FactoryService(f.path, { kaneoPollMs: 600_000 });
+  try {
+    await service.start();
+    const s = await f.until(s => s.sessionTickets?.rows?.length > 0);
+    assert.deepEqual(s.sessionTickets?.rows.map((r: any) => r.key), ['FIX-7'], 'recovered report reaches status without a browser or dispatch');
+  } finally { await service.stop(); }
+});
+
 function collectorFixture(t: test.TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-collector-'));
   const budget = { reservePercent: 0, minRemainingPercent: 0 };
