@@ -21,6 +21,10 @@ interface CatalogProject { id: string; name: string; slug: string; ready: string
 interface Catalog { at: number; projects: Record<string, CatalogProject> }
 export interface Budget { reads?: number; lookups?: number; refreshes?: number }
 
+// Apply the same priority to page reads and confirmations, including unfinished history walks.
+const recentFirst = (a: Pick<SessionThread, 'updatedAt' | 'createdAt' | 'backfill'>, b: typeof a) =>
+  (b.backfill?.updatedAt ?? b.updatedAt ?? b.createdAt).localeCompare(a.backfill?.updatedAt ?? a.updatedAt ?? a.createdAt);
+
 // Creation reports: a block of an assistant message with a clause that says it created, filed or opened something,
 // naming tracker keys or task links. Quoted lines, tables and code are not reports. A negator counts only against
 // the creation verb in its own clause, so "did not find one, so I created X" reports X and "did not create X" does not.
@@ -179,7 +183,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   let listed: Set<string> | undefined;
   try {
     let reads = 0;
-    const sessions = (await t3.sessions()).filter(session => includeSource(session.id, session.title));
+    const sessions = (await t3.sessions()).filter(session => includeSource(session.id, session.title)).toSorted(recentFirst);
     listed = new Set(sessions.map(s => s.id));
     for (const session of sessions) {
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
@@ -203,7 +207,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   } catch (error) { errors.push(`Listing sessions: ${safeError(error)}`); }
   includeSource = sessionSourceFilter(store.jobs(), store.sessionThreads());
   let cat: Catalog | undefined;
-  const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now));
+  const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now)).toSorted(recentFirst);
   if (due.length) {
     try { cat = await catalog(c, store, kaneo); } catch (error) { errors.push(`Reading tracker projects: ${safeError(error)}`); }
   }
