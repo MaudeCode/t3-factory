@@ -127,7 +127,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         Object.assign(thread, { status: 'completed', activeRunId: null, latestRunCompletedAt: '2026-01-01T06:00:00Z', pendingBackgroundTasks: [{ taskId: 'validation', kind: 'command' }] });
         for (let pass = 0; pass < 2; pass++) { await runReconcile(); store.close(); store = new Store(join(dir, 'state')); }
         assert.deepEqual(state(), ['running', 'Waiting for background commands']);
-        assert.equal(busyProviders(store.jobs(), threads, new Map(), 30).size, 0, 'a command wait holds no provider slot');
+        assert.equal(busyProviders(store.jobs(), threads, new Map(), 30).size, 1, 'an unfinished command wait retains its admission reservation');
         assert.deepEqual(commands, [], 'a missing report authorizes no Stop, cleanup or launch');
         assert.equal(existsSync(tree), true);
         Object.assign(thread, { status: 'running', activeRunId: 'resumed-run', pendingBackgroundTasks: [] });

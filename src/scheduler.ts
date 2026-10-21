@@ -717,7 +717,7 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
   const counts = new Map(planned);
   for (const job of jobs.filter(j => !['complete', 'dismissed'].includes(j.state))) {
     const thread = threads.find(t => t.id === job.threadId);
-    if (thread && commandWait(thread, timeout)) continue;
+    // Running jobs retain reservations while commands can wake them without another admission check.
     if (!['running', 'dispatching'].includes(job.state) && !(thread && executing(thread, timeout))) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);

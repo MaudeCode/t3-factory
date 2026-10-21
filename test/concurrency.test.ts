@@ -39,3 +39,18 @@ test('capacity counts active, resumed and uncertain runs but releases waiting an
   assert.equal(busyProviders(jobs, [], instances, 30, limits, new Map([['codex', 1]])).has('codex'), true);
   assert.deepEqual([...busyProviders([...jobs, job('unknown', 'dispatching', 'unknown')], [], instances, 30, limits)].sort(), ['claudeAgent', 'codex']);
 });
+
+test('unfinished command waits retain capacity before and after automatic resumption', () => {
+  for (const driver of ['claudeAgent', 'codex']) {
+    const jobs = Array.from({ length: 4 }, (_, i) => ({ id: `job-${i}`, threadId: `thread-${i}`, state: 'running', providerDriver: driver }) as Job);
+    const threads = jobs.map(j => v2Thread({ id: j.threadId, providerInstanceId: driver, modelSelection: { instanceId: driver, model: 'fixture' }, status: 'completed', activeRunId: null, pendingBackgroundTasks: [{ taskId: 'pr-watch', kind: 'command' }] }));
+    const blocked = () => busyProviders(jobs, threads, new Map(), 30, { claude: 4, codex: 4 }).has(driver);
+    assert.equal(blocked(), true, `${driver}: four unfinished command waits must block a fifth automatic job`);
+    threads[0].status = 'running'; threads[0].activeRunId = 'resumed-run'; threads[0].pendingBackgroundTasks = [];
+    assert.equal(blocked(), true, `${driver}: automatic resumption must keep the same reservation`);
+    jobs[0].state = 'complete';
+    assert.equal(blocked(), false, `${driver}: verified completion frees capacity`);
+    jobs[0].state = 'running'; jobs[1].state = 'waiting';
+    assert.equal(blocked(), false, `${driver}: a job parked for human input frees capacity`);
+  }
+});
