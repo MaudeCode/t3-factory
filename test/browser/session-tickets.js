@@ -40,7 +40,10 @@ window.fetch = async (url, init) => {
 // Signals compare by identity, so a live update is a new status object, as the event stream delivers one.
 const update = (patch) => { state = { ...state, status: { ...state.status, ...patch } }; applyState(state); };
 const keys = () => [...root.querySelectorAll(".next .key")].map((e) => e.textContent);
-const button = (label) => root.querySelector(`[aria-label="${label}"]`);
+const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find(el => el.getClientRects().length);
+async function more(key) {
+  if (innerWidth <= 900) { button(`More actions for ${key}`).click(); await pause(); }
+}
 async function show(patch = {}) {
   operations.value = [];
   notice.value = null;
@@ -65,7 +68,9 @@ async function run() {
   assert(first.querySelector('a[href="/api/threads/thread-t9/open"]')?.getAttribute("aria-label").includes("T3 Code"), "the source session opens through the desktop-link resolver");
   assert(first.textContent.includes("Plan WEB-9") && !first.textContent.includes("from Plan WEB-9"), "the originating session is named without a prefix");
   assert(root.querySelectorAll(".next")[2].textContent.includes("tracker read failed"), "a failed refresh is not shown as fresh");
+  await more('APP-2');
   assert(!button("Run APP-2 now").closest("a") && !button("Remove APP-2 from Session tickets").closest("a"), "actions sit beside the tracker link, not inside it");
+  if (innerWidth <= 900) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause(); }
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
   assert(many.querySelectorAll('a[href^="/api/threads/"]').length === 1 && many.querySelector('a[href^="/api/threads/"]').title.includes("2 more"), "several sources collapse into one session action");
   assert(many.getBoundingClientRect().right <= innerWidth && many.textContent.includes("Third look"), "all sources are named without widening the row");
@@ -83,6 +88,7 @@ async function run() {
   update({ jobs: [{ id: "j", taskId: "t2", state: "running" }] });
   await pause();
   assert(button("Run APP-2 now").disabled && button("Run APP-2 now").title.includes("open run"), "an open run disables the row until the list consumes it");
+  await more('APP-1');
   button("Remove APP-1 from Session tickets").click();
   await pause();
   const dialog = document.querySelector("dialog[open]");
@@ -90,6 +96,7 @@ async function run() {
   [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === "Cancel").click();
   await pause();
   assert(keys().includes("APP-1") && !calls.some((c) => c.url.startsWith("/api/session-tickets")), "cancel changes nothing");
+  await more('APP-1');
   button("Remove APP-1 from Session tickets").click();
   await pause();
   [...document.querySelector("dialog[open]").querySelectorAll("button")].find((b) => b.textContent.trim() === "Remove").click();
@@ -231,15 +238,42 @@ async function compactRows() {
   assert(first.textContent.includes('1h 52m ago'), 'creation age uses compact units');
   assert(first.querySelector(`[title="${new Date(createdAt).toLocaleString()}"]`), 'creation age retains its absolute date tooltip');
   assert(root.textContent.includes('tracker read failed') && !root.querySelectorAll('.next')[2].textContent.includes('checked '), 'failed reads retain a concise warning');
-  const rects = [...first.querySelectorAll('.next-run')].map(el => el.getBoundingClientRect());
-  assert(rects.length === 3, 'all three row actions remain available');
+  const rects = [...first.querySelectorAll('.next-run')].filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
+  assert(rects.length === (innerWidth <= 900 ? 2 : 3), 'mobile exposes Run and overflow while desktop keeps all actions');
   assert(!matchMedia('(pointer: coarse)').matches || rects.every(r => r.width >= 44 && r.height >= 44), 'touch actions retain 44px targets');
   assert(innerWidth <= 900
-    ? rects.every(r => Math.abs(r.left - rects[0].left) < 1) && rects[1].top >= rects[0].bottom && rects[2].top >= rects[1].bottom
-    : rects.every(r => Math.abs(r.top - rects[0].top) < 1) && rects[1].left >= rects[0].right,
+    ? rects.every(r => Math.abs(r.left - rects[0].left) < 1) && rects[1].top >= rects[0].bottom
+    : rects.every(r => Math.abs(r.top - rects[0].top) < 1),
     'actions stack on mobile and remain horizontal on desktop');
   assert(document.documentElement.scrollWidth <= innerWidth, 'long sources and stacked actions fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.sessionTests = { run, show, showControls, controls, bulk, compactRows, showError, showEmpty };
+async function rowHeight() {
+  await show({ sessionTickets: { at, error: null, rows: [row('t2', 'APP-2', 'high', { title: 'App: every write shows its result immediately', difficulty: 'high', labels: ['bug', 'sf', 'high', 'app'], sources: [{ threadId: 'thread-t2', title: 'Fix Immediate Action Feedback', at }] })] } });
+  const entry = root.querySelector('.next'), height = entry.getBoundingClientRect().height;
+  assert(innerWidth > 900 || height <= 108, `mobile rows stay compact with real touch targets, got ${height}px`);
+  if (innerWidth <= 900) {
+    await more('APP-2');
+    const panel = document.querySelector('.popover[aria-label="More actions for APP-2"]');
+    assert(panel && panel.textContent.includes('Open session') && panel.textContent.includes('Remove'), 'overflow names both secondary actions');
+    assert(panel.querySelector('a').getAttribute('href') === '/api/threads/thread-t2/open', 'overflow preserves the source resolver');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
+    assert(!document.querySelector('.popover[aria-label="More actions for APP-2"]') && document.activeElement === button('More actions for APP-2'), 'Escape closes overflow and restores focus');
+  }
+  return { passed: true, viewport: [innerWidth, innerHeight], rowHeight: height };
+}
+async function overflowEdges() {
+  if (innerWidth > 900) return { passed: true, mobile: false };
+  await show({ sessionTickets: { at, error: null, rows: Array.from({ length: 12 }, (_, i) => row(`t${i}`, `APP-${i}`, 'high')) } });
+  const entry = button('More actions for APP-6');
+  scrollBy(0, entry.getBoundingClientRect().bottom - innerHeight + 12);
+  await more('APP-6');
+  const panel = document.querySelector('.popover[aria-label="More actions for APP-6"]'), rect = panel.getBoundingClientRect();
+  assert(rect.top >= 8 && rect.bottom <= innerHeight - 8 && panel.scrollHeight <= panel.clientHeight + 2, 'overflow remains usable at the viewport bottom');
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); await pause();
+  assert(!document.querySelector('.popover[aria-label="More actions for APP-6"]'), 'outside click closes overflow');
+  scrollTo(0, 0);
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.sessionTests = { run, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
 await show();

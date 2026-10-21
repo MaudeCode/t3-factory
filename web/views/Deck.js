@@ -1,5 +1,5 @@
 // Home: what the factory is doing right now, why, and what needs you.
-import { html, useEffect, useState } from "../lib/h.js";
+import { html, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
@@ -33,7 +33,7 @@ import {
   STOPS,
   stopOf,
 } from "../lib/format.js";
-import { Button, Switch, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More } from "../ui/index.js";
+import { Button, Switch, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
 // Top bar: the automation switch, the start bar, and when the scheduler last looked.
 function Status({ initialTicket }) {
@@ -171,9 +171,11 @@ export function startHold(t) {
 }
 
 // One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
-// The queue and the session list share this row; `children` extends the facet line, `actions` the trailing buttons.
-export function TicketRow({ ticket: t, project, children, actions, selection }) {
+// The queue and session list share this row; secondary actions collapse into a mobile popover.
+export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection }) {
   const c = config.value;
+  const [open, setOpen] = useState(false), button = useRef();
+  const label = `More actions for ${t.key}`;
   return html`<div class="next" key=${t.id}>
     ${selection}
     <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
@@ -181,7 +183,13 @@ export function TicketRow({ ticket: t, project, children, actions, selection }) 
         <${Meta} project=${project?.name ?? t.project ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
       <//>
     </a>
-    ${actions && html`<div class="next-actions">${actions}</div>`}
+    ${actions && html`<div class="next-actions">${actions}
+      ${secondaryActions && html`<div class="next-secondary">${secondaryActions}</div>
+        <span ref=${button} class="next-more"><${Button} size="sm" icon class="next-run" label=${label} aria-expanded=${open} onClick=${() => setOpen(!open)}>⋯<//></span>
+        <${Popover} class="next-menu" open=${open} onClose=${() => setOpen(false)} anchor=${button} label=${label} width=${220}>
+          <div onClick=${() => setOpen(false)}>${secondaryActions}</div>
+        <//>`}
+    </div>`}
   </div>`;
 }
 

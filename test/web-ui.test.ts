@@ -251,6 +251,7 @@ test('backdrop clicks close a dialog; clicks on its content do not', () => {
 test('Select placement uses the available viewport below or above and clamps narrow or zoomed views', () => {
   const trigger = { left: 100, top: 100, bottom: 140, width: 240 };
   assert.deepEqual(selectPosition(trigger, { width: 1280, height: 800 }, 500), { left: 100, top: 144, width: 240, height: 280 });
+  assert.deepEqual(selectPosition(trigger, { width: 1280, height: 800 }, 500, Infinity), { left: 100, top: 144, width: 240, height: 500 });
   assert.deepEqual(selectPosition({ ...trigger, top: 740, bottom: 780 }, { width: 1280, height: 800 }, 500), { left: 100, top: 456, width: 240, height: 280 });
   assert.deepEqual(selectPosition({ left: 300, top: 150, bottom: 190, width: 400 }, { width: 390, height: 400 }, 500), { left: 8, top: 194, width: 374, height: 198 });
   assert.deepEqual(selectPosition(trigger, { width: 300, height: 200, offsetLeft: 50, offsetTop: 80 }, 40), { left: 100, top: 144, width: 240, height: 40 });
