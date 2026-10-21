@@ -33,6 +33,7 @@ const icons = {
   openai: { box: 24, d: svgPath("@lobehub/icons-static-svg/icons/openai.svg") },
   pullRequest: octicon("git-pull-request"),
   play: octicon("play"),
+  gear: octicon("gear"),
   plus: octicon("plus"),
   trash: octicon("trash"),
   filter: octicon("filter"),

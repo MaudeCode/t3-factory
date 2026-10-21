@@ -2171,17 +2171,6 @@ h1 .crumb::after {
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--line);
 }
-.release[role="button"] {
-  cursor: pointer;
-  margin: 0 calc(var(--space-2) * -1);
-  padding-left: var(--space-2);
-  padding-right: var(--space-2);
-  border-radius: var(--radius);
-  transition: background var(--fast);
-}
-.release[role="button"]:hover {
-  background: var(--surface);
-}
 .release {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

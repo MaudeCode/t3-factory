@@ -499,3 +499,22 @@ test('confirmed launches leave the manual queue and saved successes are retired 
   assert.equal(posts, 2, 'retired rows must never be replayed');
   store.operations.value = []; saved.clear();
 });
+
+test('upstream requests use the shared queue and retain duplicate protection for uncertain reviews', async () => {
+  store.operations.value = []; saved.clear();
+  store.authenticated.value = false;
+  const input = { upstream: 'up/stable', model: 'auto', overrideLimits: true };
+  const id = store.startRun(input);
+  assert.ok(id);
+  assert.equal(store.startRun({ ...input, upstream: 'UP/STABLE' }), null);
+  assert.equal(store.pendingReview('up/stable'), true);
+  assert.equal(store.pendingReview('up/other'), false);
+  store.operations.value = store.operations.value.map((op: any) => ({ ...op, state: 'uncertain' }));
+  assert.equal(store.startRun(input), null, 'uncertain reviews cannot be resent');
+  saved.set('factoryOperations', JSON.stringify(store.operations.value));
+  await store.restoreOperation();
+  assert.equal(store.operations.value[0].state, 'uncertain', 'reload never replays an uncertain review');
+  assert.equal(store.operations.value[0].input.upstream, 'up/stable', 'reload preserves the upstream target');
+  assert.equal(store.pendingReview('up/stable'), true);
+  store.operations.value = []; saved.clear();
+});

@@ -370,8 +370,11 @@ export function pendingRun(ticket) {
   const key = ticketKey(ticket);
   return !!key && operations.value.some((op) => ticketKey(op.input.ticket) === key && ["queued", "running", "uncertain"].includes(op.state));
 }
+export function pendingReview(repo) {
+  return !!repo && operations.value.some((op) => op.input.upstream?.toLowerCase() === repo.toLowerCase() && ["queued", "running", "uncertain"].includes(op.state));
+}
 export function startRun(input) {
-  if (pendingRun(input.ticket)) return null;
+  if (pendingRun(input.ticket) || pendingReview(input.upstream)) return null;
   const id = uuid();
   operations.value = [...operations.value, { id, input: clone(input), state: "queued" }];
   saveOperations();

@@ -56,6 +56,8 @@ Upstream release reviews run ahead of ticket work, through the same quota and ru
 
 Discovery runs only when there are no eligible tickets and no otherwise-ready tickets waiting for difficulty classification. It uses an available automatic model and a separate task and worktree. A no-work result starts the project's configured discovery cooldown.
 
+To send a review yourself, use **Review now** beside a repository marked **review due**, or `t3-factory dispatch --upstream owner/repo --model auto --override-limits`. This explicit action works with automatic reviews paused. It uses the cached due release for that enabled watch, keeps hard allowance and duplicate checks, and never starts unrelated work. Omit `--override-limits` to retain ordinary manual threshold checks. A review target cannot be combined with ticket, readiness-waiver or chain options.
+
 ## Completion and recovery
 
 A delivered ticket is complete only after its report, Kaneo Done status, and merged PR evidence agree. A model turn ending or a PR opening is not completion. Failed starts and unexplained endings park for inspection instead of triggering blind retries. T3 can leave a run active after its provider sessions stopped. When every session has been `stopped` or `error` and the thread is unchanged for 30 minutes, the scheduler treats the run as ended: it reads the report, or parks the job, and releases the execution slot. It never stops that run, and it preserves the workspace while T3 still reports the run active.

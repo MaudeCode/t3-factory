@@ -86,17 +86,17 @@ function Operation({ op }) {
   const d = op.result?.data,
     running = op.state === "running";
   const text = op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
-    ? "Checking the ticket and starting its T3 run"
+    ? op.input.upstream ? "Checking the release and starting its review" : "Checking the ticket and starting its T3 run"
     : d?.reason === "dispatched"
       ? `Started ${d.ticket || "ticket"} with ${d.model}.`
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
   return html`<div class=${`operation ${op.state}`} role="status">
     ${running && html`<i class="spinner"></i>`}
-    <span><b class="key">${op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     ${!op.choiceHandled && d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${() => showReadinessConfirmation(op.id)}>Review and run anyway<//>`}
     ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
-    ${!running && op.state !== "queued" && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}
+    ${!running && op.state !== "queued" && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.upstream || op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}
   </div>`;
 }
 
@@ -130,8 +130,8 @@ export function Composer({ initialTicket } = {}) {
   </form>`;
 }
 
-export function Operations() {
-  return operations.value.map((op) => html`<${Operation} key=${op.id} op=${op} />`);
+export function Operations({ list = operations.value } = {}) {
+  return list.map((op) => html`<${Operation} key=${op.id} op=${op} />`);
 }
 
 // Chains the user started: each ticket's state, and what the next one waits for.

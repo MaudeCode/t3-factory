@@ -1,8 +1,8 @@
 import { html, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, clock, serverNow, actions } from "../lib/store.js";
+import { config, status, live, busy, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
 import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody } from "../ui/index.js";
-import { RunGroup } from "./Deck.js";
+import { RunGroup, Operations } from "./Deck.js";
 
 const minutes = (n) => span(n * 60);
 const nextCheck = (checkedAt, every, now) => {
@@ -59,19 +59,23 @@ export function Upstream() {
     <//>`;
   const byRepo = Object.fromEntries((status.value.upstreams || []).map((r) => [r.repo, r]));
   const watched = c.projects.flatMap((p, project) => p.upstreams.map((u, index) => ({ project, index, entry: u, projectName: p.name, enabled: p.enabled, live: byRepo[u.repo] })));
+  const requests = operations.value.filter(op => op.input.upstream);
   const reviews = jobs.value.filter((j) => j.kind === "upstream").sort(byNewest),
     minutesDefault = c.upstream.checkMinutes;
   return html`<${Page} title="Upstream" hint="Each new release of a watched repository gets a review run that files tickets for anything worth adopting."
     actions=${html`<label class="automation"><${Switch} label="Upstream reviews" checked=${live.value.upstream} disabled=${busy.value} onChange=${() => actions.toggle("upstream")} /><b>${live.value.upstream ? "Reviews on" : "Reviews paused"}</b></label>`}>
     <${WatchDialog} key=${edit ? `${edit.project}-${edit.index ?? "new"}` : "closed"} edit=${edit} onClose=${() => setEdit(null)} />
+    ${requests.length > 0 && html`<${Section}><${Operations} list=${requests} /><//>`}
     <div class="cols">
       <div>
         <${Section} title="Watched releases">
           ${watched.length
             ? watched.map(
-                ({ entry: u, live: r, ...w }) => html`<div class="release" key=${u.repo} role="button" tabindex="0" onClick=${() => setEdit({ ...w, entry: u })} onKeyDown=${(e) => e.key === "Enter" && setEdit({ ...w, entry: u })}>
-                  <span onClick=${(e) => e.target.closest("a") && e.stopPropagation()}><${RowBody} title=${html`<b>${u.name}</b>`}><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}<//></span>
-                  <span class="release-state">
+                ({ entry: u, live: r, ...w }) => html`<div class="release" key=${u.repo}>
+                  <span><${RowBody} title=${html`<b>${u.name}</b>`}><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}<//></span>
+                  <span class="release-state row-actions">
+                    ${r?.pending && html`<${Button} size="sm" icon="play" label=${`Review ${u.name} now`} disabled=${pendingReview(u.repo)} onClick=${() => startRun({ upstream: u.repo, model: "auto", overrideLimits: true })} />`}
+                    <${Button} size="sm" icon="gear" label=${`Edit ${u.name} watch`} onClick=${() => setEdit({ ...w, entry: u })} />
                     ${r?.reviewing ? html`<${Tag} tone="on">reviewing<//>` : r?.pending ? html`<${Tag} tone="attention">review due<//>` : r?.latest ? html`<${Tag} tone="ok">up to date<//>` : html`<${Tag}>new<//>`}
                   </span>
                   <span class="release-versions">
