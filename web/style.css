@@ -1975,6 +1975,16 @@ h1 .crumb::after {
 }
 
 /* Run slots */
+.slot-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.slot-picker input {
+  width: 110px;
+}
+
 .slots {
   display: flex;
   gap: var(--space-1);

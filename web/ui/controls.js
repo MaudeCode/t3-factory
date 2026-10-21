@@ -76,16 +76,22 @@ export function Stepper({ path, value, onChange, min = 0, max = 99, labels = {},
   </div>`;
 }
 
-// Run slots for one provider: click a slot to set the limit; slots in use are filled.
+// Quick run limits plus a custom integer, without rendering one button per possible run.
 export function Slots({ path, running = 0, max = 6, label }) {
   const limit = at(path) ?? 0;
-  const count = Math.max(max, limit, running);
-  return html`<div class="slots" role="radiogroup" aria-label=${label}>
-    <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>Off</button>
-    ${Array.from({ length: count }, (_, i) => i + 1).map(
-      (n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
-        aria-label=${`${n} at once`} title=${n <= running ? "running now" : n <= limit ? "free slot" : `allow ${n} at once`} onClick=${() => set(path, n)}>${n}</button>`,
-    )}
+  const [draft, edit] = useState(String(limit));
+  useEffect(() => edit(String(limit)), [limit]);
+  return html`<div class="slot-picker">
+    <div class="slots" role="radiogroup" aria-label=${label}>
+      <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>Off</button>
+      ${Array.from({ length: max }, (_, i) => i + 1).map(
+        (n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
+          aria-label=${`${n} at once`} title=${n <= running ? "running now" : n <= limit ? "free slot" : `allow ${n} at once`} onClick=${() => set(path, n)}>${n}</button>`,
+      )}
+    </div>
+    <${Input} kind="integer" value=${draft} required max=${Number.MAX_SAFE_INTEGER} aria-label=${`${label} custom limit`} title="Custom limit"
+      onInput=${(e) => { const el = e.currentTarget; edit(el.value); if (el.validity.valid) set(path, el.valueAsNumber); }}
+      onBlur=${() => edit(String(limit))} />
   </div>`;
 }
 
