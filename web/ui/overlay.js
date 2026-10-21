@@ -1,23 +1,26 @@
 // Dialog and toast. Both stay mounted so open and close can animate.
 import { html, useEffect, useRef } from "../lib/h.js";
-import { isBackdropClick } from "../lib/format.js";
+import { isBackdropClick, selectPosition } from "../lib/format.js";
 import { Button } from "./controls.js";
 import { confirmation, finishConfirmation } from "../lib/confirmation.js";
 
 // Small panel anchored under `anchor` (a ref to the trigger); follows it while the page scrolls or resizes,
 // and closes on an outside pointer or Escape.
-export function Popover({ open, onClose, anchor, label, width = 300, children }) {
+export function Popover({ open, onClose, anchor, label, width = 300, children, class: extra = "" }) {
   const ref = useRef();
   useEffect(() => {
     if (!open) return;
     const panel = ref.current, trigger = anchor.current;
     const position = () => {
-      const t = trigger.getBoundingClientRect(), edge = 8;
-      const w = Math.min(width, innerWidth - edge * 2);
-      Object.assign(panel.style, { width: `${w}px`, left: `${Math.max(edge, Math.min(t.right - w, innerWidth - edge - w))}px`, top: `${t.bottom + 4}px`, maxHeight: `${innerHeight - t.bottom - 12}px` });
+      if (!trigger.getClientRects().length) { onClose(); return; }
+      const t = trigger.getBoundingClientRect(), viewport = window.visualViewport ?? { width: innerWidth, height: innerHeight };
+      const w = Math.min(width, viewport.width - 16);
+      panel.style.width = `${w}px`;
+      const p = selectPosition({ left: t.right - w, top: t.top, bottom: t.bottom, width: w }, viewport, panel.scrollHeight + 2, Infinity);
+      Object.assign(panel.style, { left: `${p.left}px`, top: `${p.top}px`, maxHeight: `${p.height}px` });
     };
     const outside = (e) => !panel.contains(e.target) && !trigger.contains(e.target) && onClose();
-    const escape = (e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); trigger.focus({ preventScroll: true }); } };
+    const escape = (e) => { if (e.key === "Escape") { e.preventDefault(); onClose(); (trigger.querySelector("button") ?? trigger).focus({ preventScroll: true }); } };
     panel.showPopover();
     position();
     document.addEventListener("pointerdown", outside);
@@ -32,7 +35,7 @@ export function Popover({ open, onClose, anchor, label, width = 300, children })
       window.removeEventListener("scroll", position, true);
     };
   }, [open]);
-  return open && html`<div ref=${ref} class="popover" popover="manual" role="group" aria-label=${label}>${children}</div>`;
+  return open && html`<div ref=${ref} class=${`popover ${extra}`} popover="manual" role="group" aria-label=${label}>${children}</div>`;
 }
 
 // Native <dialog>; closes on Escape, backdrop click, or the Done button.
