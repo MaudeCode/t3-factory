@@ -1485,7 +1485,7 @@ h2 .icon,
   flex-shrink: 0;
   gap: var(--space-3);
 }
-.next-secondary {
+.next-inline {
   display: flex;
   gap: var(--space-3);
 }
@@ -2259,7 +2259,7 @@ h1 .crumb::after {
 }
 
 @media (max-width: 900px) {
-  .next-secondary {
+  .next-inline {
     display: none;
   }
   .next-more {

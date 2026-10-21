@@ -42,7 +42,10 @@ const update = (patch) => { state = { ...state, status: { ...state.status, ...pa
 const keys = () => [...root.querySelectorAll(".next .key")].map((e) => e.textContent);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find(el => el.getClientRects().length);
 async function more(key) {
-  if (innerWidth <= 900) { button(`More actions for ${key}`).click(); await pause(); }
+  if (innerWidth <= 900 && !document.querySelector(`.popover[aria-label="More actions for ${key}"]`)) {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
+    button(`More actions for ${key}`).click(); await pause();
+  }
 }
 async function show(patch = {}) {
   operations.value = [];
@@ -63,6 +66,7 @@ async function run() {
   assert(keys().join() === "WEB-9,APP-2,APP-5,APP-1", "rows keep the scheduler's priority order");
   const first = root.querySelector(".next");
   assert(first.querySelector(".meta-project").textContent === "Other project" && first.textContent.includes("not configured in Factory"), "an unmapped project says why it cannot start");
+  await more('WEB-9');
   assert(button("Run WEB-9 now").disabled && button("Run WEB-9 now").title.includes("not configured"), "Run is disabled with the reason as its tooltip");
   assert(root.querySelectorAll(".next .tag-label").length === 6, "rows show their attached labels");
   assert(first.querySelector('a[href="/api/threads/thread-t9/open"]')?.getAttribute("aria-label").includes("T3 Code"), "the source session opens through the desktop-link resolver");
@@ -74,8 +78,10 @@ async function run() {
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
   assert(many.querySelectorAll('a[href^="/api/threads/"]').length === 1 && many.querySelector('a[href^="/api/threads/"]').title.includes("2 more"), "several sources collapse into one session action");
   assert(many.getBoundingClientRect().right <= innerWidth && many.textContent.includes("Third look"), "all sources are named without widening the row");
+  await more('APP-2');
   button("Run APP-2 now").click();
   await pause();
+  await more('APP-2');
   assert(button("Run APP-2 now").disabled, "a pending request disables its row");
   button("Run APP-2 now").click();
   await pause();
@@ -239,23 +245,20 @@ async function compactRows() {
   assert(first.querySelector(`[title="${new Date(createdAt).toLocaleString()}"]`), 'creation age retains its absolute date tooltip');
   assert(root.textContent.includes('tracker read failed') && !root.querySelectorAll('.next')[2].textContent.includes('checked '), 'failed reads retain a concise warning');
   const rects = [...first.querySelectorAll('.next-run')].filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
-  assert(rects.length === (innerWidth <= 900 ? 2 : 3), 'mobile exposes Run and overflow while desktop keeps all actions');
+  assert(rects.length === (innerWidth <= 900 ? 1 : 3), 'mobile exposes one actions control while desktop keeps all actions');
   assert(!matchMedia('(pointer: coarse)').matches || rects.every(r => r.width >= 44 && r.height >= 44), 'touch actions retain 44px targets');
-  assert(innerWidth <= 900
-    ? rects.every(r => Math.abs(r.left - rects[0].left) < 1) && rects[1].top >= rects[0].bottom
-    : rects.every(r => Math.abs(r.top - rects[0].top) < 1),
-    'actions stack on mobile and remain horizontal on desktop');
+  assert(rects.every(r => Math.abs(r.top - rects[0].top) < 1), 'actions never force a vertical stack');
   assert(document.documentElement.scrollWidth <= innerWidth, 'long sources and stacked actions fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 async function rowHeight() {
   await show({ sessionTickets: { at, error: null, rows: [row('t2', 'APP-2', 'high', { title: 'App: every write shows its result immediately', difficulty: 'high', labels: ['bug', 'sf', 'high', 'app'], sources: [{ threadId: 'thread-t2', title: 'Fix Immediate Action Feedback', at }] })] } });
   const entry = root.querySelector('.next'), height = entry.getBoundingClientRect().height;
-  assert(innerWidth > 900 || height <= 108, `mobile rows stay compact with real touch targets, got ${height}px`);
+  assert(innerWidth > 900 || height <= 80, `mobile row height follows its text with one action control, got ${height}px`);
   if (innerWidth <= 900) {
     await more('APP-2');
     const panel = document.querySelector('.popover[aria-label="More actions for APP-2"]');
-    assert(panel && panel.textContent.includes('Open session') && panel.textContent.includes('Remove'), 'overflow names both secondary actions');
+    assert(panel && ['Run', 'Open session', 'Remove'].every(label => panel.textContent.includes(label)), 'menu names all three actions');
     assert(panel.querySelector('a').getAttribute('href') === '/api/threads/thread-t2/open', 'overflow preserves the source resolver');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
     assert(!document.querySelector('.popover[aria-label="More actions for APP-2"]') && document.activeElement === button('More actions for APP-2'), 'Escape closes overflow and restores focus');
