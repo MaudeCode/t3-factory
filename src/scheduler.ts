@@ -678,7 +678,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
 }
 
 export interface Skipped { key: string; reason: string; id?: string; missingReadyLabel?: boolean; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; ticket?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
+export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
 function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsSchema>>, done: (id: string) => Promise<boolean>, limit = readLimiter()) {
   const relations = new Map<string, Promise<z.infer<typeof relationsSchema>>>(), finished = new Map<string, Promise<boolean>>();
@@ -729,6 +729,7 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
+  if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain || options.allowMissingReadyLabel)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
   if (options.allowMissingReadyLabel && (!options.manual || !options.ticket?.trim())) throw new Error('The readiness-label override requires a specific manual ticket');
   if (options.manual && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
   if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
@@ -769,7 +770,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
         const manualCodex = options.manual && driver === 'codex';
         if (!quota.hasAllowance) reason = 'quota-exhausted';
         else if (!quota.allowed && (manualCodex || !override)) reason = 'quota-budget';
-        else if (!manualCodex && !override) {
+        else if (!options.upstream && !manualCodex && !override) {
           // An unreadable activity state holds ticket work back but, like idle time, never a review.
           try {
             if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver, instances));
@@ -790,21 +791,23 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       catch (error) { stream.quotaError = safeError(error); }
     }
     // The queue is read on every pass, paused or not, so the page always shows what would start next.
-    const reviewsOn = !!c.upstream?.enabled, ticketsOn = c.enabled || !!options.manual || !!options.doctor;
+    const reviewsOn = !!options.upstream || !!c.upstream?.enabled, ticketsOn = !options.upstream && (c.enabled || !!options.manual || !!options.doctor);
     // While tickets are paused the read is for display only, so a Kaneo failure must not hold up reviews.
     let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true;
-    try { queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel); }
+    try { if (!options.upstream) queue = await inventory(c, kaneo, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel); }
     catch (error) { if (ticketsOn) throw error; queueRead = false; log('queue-read-failed', { message: safeError(error) }); }
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     if (options.manual && options.ticket && !queue.ready.length) {
       const chained = await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, override, decision);
       if (chained) return chained;
     }
-    if (!options.ticket && queueRead) store.set('upNext', JSON.stringify(upNext(c, store, queue)));
+    if (!options.ticket && !options.upstream && queueRead) store.set('upNext', JSON.stringify(upNext(c, store, queue)));
     // Fully paused: provider status, quota, and the queue stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
     if (!ticketsOn && !reviewsOn) { store.set('streams', JSON.stringify(streams)); return decision('disabled', { streams, eligible: queue.ready.length }); }
     // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
-    const reviews = options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
+    const reviews = options.upstream ? (await pendingReviews(c, store, store.jobs(), Date.now(), false)).filter(r => r.upstream.repo === options.upstream!.toLowerCase())
+      : options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !options.dryRun && !options.doctor);
+    if (options.upstream && !reviews.length) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     const candidates = ticketsOn ? [...queue.ready] : [];
     const skipped = [...queue.skipped];
     const results: Record<string, any>[] = [];
@@ -853,7 +856,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     for (const stream of streams) if (stream.reason === 'ready') stream.reason = queue.ready.length ? 'difficulty-limit' : skipped.some(s => /difficulty/.test(s.reason)) ? 'needs-classification' : 'no-eligible-ticket';
     const reason = options.doctor ? 'doctor' : results.some(r => r.reason === 'dispatched') ? 'dispatched'
       : results.some(r => r.reason === 'would-dispatch') ? 'would-dispatch'
-      : options.manual ? 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
+      : options.upstream ? results.at(-1)?.reason ?? 'no-eligible-model' : options.manual ? 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
     store.set('streams', JSON.stringify(streams));
     return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length });
   } finally { if (ownsKaneo) await kaneo.close(); }
@@ -891,7 +894,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
     if (plan && !options.manual && busyProviders(jobs, shell.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('provider-running', { driver: plan.driver });
-    const review = plan?.review;
+    const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
+    if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     // A review needs no ticket queue, so ticket-only reads cannot block it.
     const queue = plan?.queue ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kaneo, shell.threads, jobs, store, ticketKey, !!options.manual && !!options.allowMissingReadyLabel));
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: ticketKey, requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
@@ -963,6 +967,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (options.continuation && busyProviders(store.jobs(), fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
+    if (review && !(await pendingReviews(c, store, store.jobs(), Date.now(), false)).some(r => r.project.kaneoId === review.project.kaneoId && JSON.stringify(r.upstream) === JSON.stringify(review.upstream))) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
     const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kaneo.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');

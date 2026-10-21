@@ -9,6 +9,7 @@ import { T3, Kaneo } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
 // What gh returns after --exclude-drafts, with and without --exclude-pre-releases.
 const stable = [{ tagName: 'v1', publishedAt: '2026-03-01T00:00:00Z' }, { tagName: 'v2', publishedAt: '2026-03-02T00:00:00Z' }];
@@ -222,4 +223,44 @@ test('upstream config: watched repositories need a prompt and a single owner', (
   assert.equal(configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project] }).upstream?.checkMinutes, 360);
   const aliased = { ...project, key: 'TWO', kaneoId: 'two', t3Id: 'two', upstreams: [{ name: 'Up', repo: 'Up/Stable', firstBase: 'v1' }] };
   assert.throws(() => configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project, aliased] }), /only one project/, 'repository names compare case-insensitively');
+});
+
+for (const model of ['auto', 'sol']) test(`manual upstream dispatch: ${model} starts only the named due review while paused`, async t => {
+  const f = dispatchFixture(t), { c, store } = f;
+  c.enabled = false;
+  c.upstream = { enabled: false, promptFile: c.factorySkill, checkMinutes: 60 };
+  c.projects[0].upstreams = [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1', prereleases: false }, { name: 'Other', repo: 'up/other', firstBase: 'v1', prereleases: false }];
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  store.set('upstreamLatest:up/stable', 'v2'); store.set('upstreamLatest:up/other', 'v3');
+  const options = { manual: true, model, upstream: 'UP/Stable', overrideLimits: true };
+  const result = await cycle(configSchema.parse(c), store, options, { t3: f.t3, kaneo: f.kaneo });
+  assert.equal(result.reason, 'dispatched', 'Review now dispatches while both automation switches are paused');
+  assert.equal(f.launches.length, 1);
+  assert.deepEqual(store.jobs().map(j => [j.kind, j.projectId, j.taskId, j.upstream]), [['upstream', 'FIX', null, { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' }]]);
+  assert.ok(!f.calls.some(call => call.startsWith('list_tasks:')), 'review dispatch does not depend on ticket inventory');
+  assert.match((f.launches[0] as any).initialMessage.text, /Do not implement any ticket/);
+  const again = await cycle(configSchema.parse(c), store, options, { t3: f.t3, kaneo: f.kaneo });
+  assert.equal(again.reason, 'upstream-not-due', 'a pending review cannot be started again');
+  assert.equal(f.launches.length, 1);
+});
+
+for (const scenario of ['unknown', 'current', 'disabled', 'candidate-owned', 'fresh-change', 'exhausted', 'waiting-cap'] as const) test(`manual upstream guards: ${scenario}`, async t => {
+  const f = dispatchFixture(t), { c, store } = f;
+  c.upstream = { enabled: false, promptFile: c.factorySkill, checkMinutes: 60 };
+  c.projects[0].upstreams = [{ name: 'Stable', repo: 'up/stable', firstBase: 'v1', prereleases: false }];
+  c.projects[0].enabled = scenario !== 'disabled';
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  store.set('upstreamLatest:up/stable', scenario === 'current' ? 'v1' : 'v2');
+  if (scenario === 'candidate-owned') store.save(job({ projectId: 'FIX', state: 'complete', upstream: { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' } }));
+  if (scenario === 'fresh-change') f.hooks.shell = async final => { if (final) store.set('upstreamReviewed:up/stable', 'v2'); };
+  if (scenario === 'exhausted') t.mock.method(f.t3, 'provider', async () => { const p = f.provider(); p.usageLimits.windows[0].usedPercent = 100; return p; });
+  if (scenario === 'waiting-cap') {
+    c.maxWaitingPRs = 1;
+    store.save(job({ threadId: 'waiting-thread', state: 'waiting', upstream: { name: 'Other', repo: 'up/other', base: 'v1', candidate: 'v2' } }));
+    f.threads.push(v2Thread({ id: 'waiting-thread', projectId: 'FIX', status: 'waiting', pendingRuntimeRequest: { kind: 'approval' } }));
+  }
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  const result = await cycle(configSchema.parse(c), store, { manual: true, model: 'sol', upstream: scenario === 'unknown' ? 'up/unknown' : 'up/stable', overrideLimits: true }, { t3: f.t3, kaneo: f.kaneo });
+  assert.equal(result.reason, scenario === 'fresh-change' ? 'upstream-changed-before-dispatch' : scenario === 'exhausted' ? 'codex-quota-exhausted' : scenario === 'waiting-cap' ? 'waiting-cap' : 'upstream-not-due');
+  assert.equal(f.launches.length, 0, 'a refused review never falls back to ticket or discovery');
 });

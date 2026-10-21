@@ -69,8 +69,10 @@ const dispatchSchema = z
     overrideLimits: z.boolean().default(true),
     allowMissingReadyLabel: z.boolean().default(false),
     chain: z.enum(["first", "all"]).optional(),
+    upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
   })
   .strict()
+  .refine(input => !input.upstream || (!input.ticket && !input.chain && !input.allowMissingReadyLabel), "An upstream review cannot include ticket options")
   .refine(input => !input.allowMissingReadyLabel || !!input.ticket, "The readiness-label override requires a specific ticket");
 const requestId = z.string().uuid();
 // Toggle endpoints and the CLI commands for [off, on].
@@ -461,6 +463,7 @@ export function createFactoryWeb(options: {
             "--model",
             input.model,
             ...(input.ticket ? ["--ticket", input.ticket.toUpperCase()] : []),
+            ...(input.upstream ? ["--upstream", input.upstream] : []),
             ...(input.overrideLimits ? ["--override-limits"] : []),
             ...(input.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
             ...(input.chain ? ["--chain", input.chain] : []),

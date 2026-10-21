@@ -67,6 +67,14 @@ Run `await queueTests.runProjects()` in the same fixture and viewports to exerci
 
 `test/web-live.test.ts` also starts the actual web CLI against temporary state to verify its compact job projection. State, history and run-report responses must retain labels and priority so recorded runs match the same filters as the queue. Callback-injected server fixtures alone do not cover this composition boundary.
 
+### Manual upstream reviews
+
+A due watched-release row has a repository-specific Review now button and a separate watch-settings button. Review now submits `upstream: "owner/repo"` through the existing dispatch operation and request queue, with automatic model selection and the ordinary manual limit override. Pending and uncertain submissions disable that repository's button; refusals remain visible on the Upstream page. Refreshing reconciles the saved request ID.
+
+Manual reviews can run while automatic reviews and ticket automation are paused. They require an enabled watched repository and a cached due release, never read ticket inventory to choose work, and never fall back to ticket or discovery dispatch. The scheduler rechecks the review's base, candidate and ownership before launch. Hard allowance, waiting cap, configuration and duplicate gates still apply. Automatic review behavior and review-only prompts are unchanged.
+
+Serve the repository root and open `/test/browser/upstream.html`. Run `await upstreamTests.run()` at 1280 × 800 and 390 × 844 to check launch targeting, duplicate prevention, refusal feedback, settings access and viewport bounds. `await upstreamTests.show()` restores the screenshot state.
+
 ### Session tickets
 
 The page defaults to newest ticket creation first, with a Newest first / Oldest first selector. It uses tracker `createdAt`, not report or refresh time. The shared filter popover adds a Session multi-pick facet on this page; selected source thread IDs match any reporting session and combine with search and metadata filters. A selected session that leaves the loaded rows stays selected as "Session no longer listed", so a live update cannot silently widen the filter. `await sessionTests.controls()` exercises these controls, date ordering and live updates at the same desktop and phone viewports as the full fixture.

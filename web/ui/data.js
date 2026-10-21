@@ -2,7 +2,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { clockTime, dayLabel } from "../lib/format.js";
 import { Help } from "./controls.js";
-import { ICONS } from "../vendor/icons.js?v=bad95610ff95";
+import { ICONS } from "../vendor/icons.js?v=9ef06b636172";
 
 const pct = (value) => Math.max(0, Math.min(100, Number(value) || 0));
 

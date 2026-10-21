@@ -23,6 +23,9 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.equal(commandFor(['model-catalog']), undefined);
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });
     assert.deepEqual(commandFor(['session-dismiss', 'task-1']), { type: 'session-dismiss', taskId: 'task-1' });
+    assert.deepEqual(commandFor(['dispatch', '--upstream', 'UP/Stable']), { type: 'dispatch', options: { manual: true, upstream: 'up/stable' } });
+    assert.throws(() => commandFor(['dispatch', '--upstream', 'no-slash']), /requires owner\/repo/);
+    for (const args of [['--ticket', 'APP-1'], ['--chain', 'all'], ['--allow-missing-ready-label']]) assert.throws(() => commandFor(['dispatch', '--upstream', 'up/stable', ...args]), /cannot be combined/);
     assert.throws(() => commandFor(['dispatch', '--bogus']), /Unknown dispatch argument/);
     await new Promise<void>(resolve => server.close(() => resolve()));
     globalAgent.destroy(); // The replacement server must receive the next request, not a pooled socket from the old server.

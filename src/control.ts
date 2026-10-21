@@ -68,11 +68,15 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; ticket?: string; model?: string; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
+export function dispatchOptions(args: string[]): { manual: true; ticket?: string; upstream?: string; model?: string; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
-    else if (args[i] === '--model') {
+    else if (args[i] === '--upstream') {
+      const value = args[++i];
+      if (!/^[\w.-]+\/[\w.-]+$/.test(value ?? '')) throw new Error('--upstream requires owner/repo');
+      options.upstream = value.toLowerCase();
+    } else if (args[i] === '--model') {
       const value = args[++i];
       if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
       options.model = value;
@@ -85,5 +89,6 @@ export function dispatchOptions(args: string[]): { manual: true; ticket?: string
     else if (args[i] === '--dry-run') options.dryRun = true;
     else throw new Error(`Unknown dispatch argument: ${args[i]}`);
   }
+  if (options.upstream && (options.ticket || options.chain || options.allowMissingReadyLabel)) throw new Error('--upstream cannot be combined with ticket options');
   return options;
 }
