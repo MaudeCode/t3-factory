@@ -26,12 +26,12 @@ export const uuid = () =>
   );
 
 // Two units at most, and never a zero second unit: "1 h 5 min", "3 d", "41 min".
-export const span = (seconds) => {
+export const span = (seconds, compact = false) => {
   const units = [["d", 86400], ["h", 3600], ["min", 60], ["s", 1]];
   const parts = [];
   for (const [name, size] of units) {
     const n = Math.floor(seconds / size);
-    if (n > 0 || (name === "s" && !parts.length)) parts.push(`${n} ${name}`);
+    if (n > 0 || (name === "s" && !parts.length)) parts.push(compact ? `${n}${name === "min" ? "m" : name}` : `${n} ${name}`);
     seconds -= n * size;
     if (parts.length === 2 || (parts.length === 1 && name === "min")) break;
   }
@@ -40,7 +40,7 @@ export const span = (seconds) => {
 
 // Dates arrive as ISO strings from the server or as millisecond numbers computed here.
 const ms = (date) => (typeof date === "number" ? date : Date.parse(date));
-export const ago = (date, now = Date.now()) => (date ? `${span(Math.max(0, (now - ms(date)) / 1000))} ago` : "never");
+export const ago = (date, now = Date.now(), compact = false) => (date ? `${span(Math.max(0, (now - ms(date)) / 1000), compact)} ago` : "never");
 export const until = (date, now = Date.now()) => {
   const s = (ms(date) - now) / 1000;
   return s > 0 ? `in ${span(s)}` : "now";

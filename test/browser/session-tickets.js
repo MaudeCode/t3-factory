@@ -1,7 +1,7 @@
 // Synthetic session tickets, the actual page, store and dispatch path. No live sessions, tickets or dispatches.
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status, notice } from "../../web/lib/store.js";
+import { applyState, operations, status, notice, serverNow } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { route, match } from "../../web/lib/router.js";
 
@@ -63,7 +63,7 @@ async function run() {
   assert(button("Run WEB-9 now").disabled && button("Run WEB-9 now").title.includes("not configured"), "Run is disabled with the reason as its tooltip");
   assert(root.querySelectorAll(".next .tag-label").length === 6, "rows show their attached labels");
   assert(first.querySelector('a[href="/api/threads/thread-t9/open"]')?.getAttribute("aria-label").includes("T3 Code"), "the source session opens through the desktop-link resolver");
-  assert(first.textContent.includes("from Plan WEB-9"), "the originating session is named");
+  assert(first.textContent.includes("Plan WEB-9") && !first.textContent.includes("from Plan WEB-9"), "the originating session is named without a prefix");
   assert(root.querySelectorAll(".next")[2].textContent.includes("tracker read failed"), "a failed refresh is not shown as fresh");
   assert(!button("Run APP-2 now").closest("a") && !button("Remove APP-2 from Session tickets").closest("a"), "actions sit beside the tracker link, not inside it");
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
@@ -222,5 +222,24 @@ async function bulk() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'selection controls fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.sessionTests = { run, show, showControls, controls, bulk, showError, showEmpty };
+async function compactRows() {
+  const createdAt = new Date(serverNow() - (3600 + 52 * 60 + 5) * 1000).toISOString();
+  await show({ sessionTickets: { at, error: null, rows: rows.map(r => ({ ...r, createdAt, sources: r.taskId === 't1' ? [...r.sources, { ...r.sources[0], threadId: 'long', title: 'LongSessionName'.repeat(12) }] : r.sources })) } });
+  const first = root.querySelector('.next');
+  assert(first.textContent.includes('Plan WEB-9') && !first.textContent.includes('from Plan'), 'session names have no from prefix');
+  assert(!first.textContent.includes('created ') && !first.textContent.includes('checked '), 'rows omit created and checked labels');
+  assert(first.textContent.includes('1h 52m ago'), 'creation age uses compact units');
+  assert(first.querySelector(`[title="${new Date(createdAt).toLocaleString()}"]`), 'creation age retains its absolute date tooltip');
+  assert(root.textContent.includes('tracker read failed') && !root.querySelectorAll('.next')[2].textContent.includes('checked '), 'failed reads retain a concise warning');
+  const rects = [...first.querySelectorAll('.next-run')].map(el => el.getBoundingClientRect());
+  assert(rects.length === 3, 'all three row actions remain available');
+  assert(!matchMedia('(pointer: coarse)').matches || rects.every(r => r.width >= 44 && r.height >= 44), 'touch actions retain 44px targets');
+  assert(innerWidth <= 900
+    ? rects.every(r => Math.abs(r.left - rects[0].left) < 1) && rects[1].top >= rects[0].bottom && rects[2].top >= rects[1].bottom
+    : rects.every(r => Math.abs(r.top - rects[0].top) < 1) && rects[1].left >= rects[0].right,
+    'actions stack on mobile and remain horizontal on desktop');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'long sources and stacked actions fit the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.sessionTests = { run, show, showControls, controls, bulk, compactRows, showError, showEmpty };
 await show();
