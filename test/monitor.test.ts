@@ -135,7 +135,7 @@ for (const variant of commandVariants) test(`command-only reconciliation: ${vari
     if (variant === 'invalid') assert.match(saved.reason, /invalid|expected/i);
     if (variant === 'mismatch') assert.equal(saved.reason, 'Completion report job ID mismatch');
     if (variant === 'unverified') assert.equal(saved.reason, 'Discovery report includes another project');
-    assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, ['worker', 'active', 'monitor'].includes(variant) ? 1 : 0, 'local commands hold no provider slot');
+    assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, ['missing', 'worker', 'active', 'monitor', 'expired-monitor'].includes(variant) ? 1 : 0, 'unfinished running jobs retain capacity during command waits');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
