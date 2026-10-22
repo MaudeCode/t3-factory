@@ -7,10 +7,11 @@ import type { ModelSelection } from './config.ts';
 import type { Difficulty } from './policy.ts';
 
 // A batch's uncertainty protects only targets that have no confirmed or definitively failed outcome.
-export function cleanupActionPending(action: CleanupAction, path: string): boolean {
-  const target = canonicalPath(path);
-  return ['requested', 'uncertain'].includes(action.state) && action.targets.some(t => canonicalPath(t.path) === target) &&
-    !action.outcomes.some(o => canonicalPath(o.path) === target && ['confirmed', 'failed'].includes(o.state));
+export function cleanupActionPending(action: CleanupAction, path: string, canonical = canonicalPath): boolean {
+  if (!['requested', 'uncertain'].includes(action.state)) return false;
+  const target = canonical(path);
+  return action.targets.some(t => canonical(t.path) === target) &&
+    !action.outcomes.some(o => canonical(o.path) === target && ['confirmed', 'failed'].includes(o.state));
 }
 
 export interface Job {
