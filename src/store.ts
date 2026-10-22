@@ -1,9 +1,17 @@
+import { canonicalPath } from './workspace.ts';
 import type { CleanupAction } from './cleanup.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelSelection } from './config.ts';
 import type { Difficulty } from './policy.ts';
+
+// A batch's uncertainty protects only targets that have no confirmed or definitively failed outcome.
+export function cleanupActionPending(action: CleanupAction, path: string): boolean {
+  const target = canonicalPath(path);
+  return ['requested', 'uncertain'].includes(action.state) && action.targets.some(t => canonicalPath(t.path) === target) &&
+    !action.outcomes.some(o => canonicalPath(o.path) === target && ['confirmed', 'failed'].includes(o.state));
+}
 
 export interface Job {
   id: string; kind: 'ticket' | 'discovery' | 'upstream'; projectId: string; taskId: string | null;

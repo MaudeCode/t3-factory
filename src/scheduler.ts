@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
-import { Store, jobLabel, type Job, type Plan, type PlanTicket } from './store.ts';
+import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
 
@@ -265,7 +265,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
     if (!current || identity(current) !== ownership) throw new Error('Factory ownership changed before command stop');
   };
   try {
-    if (store.cleanupActions().some(a => a.id !== boundary.actionId && ['requested', 'uncertain'].includes(a.state) && a.targets.some(t => t.projectId === job.projectId && [job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].some(p => p && canonicalPath(p) === canonicalPath(t.path))))) throw new Error('Operator cleanup outcome is uncertain; preserve workspace pending inspection');
+    if (store.cleanupActions().some(a => a.id !== boundary.actionId && [job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].some(p => p && cleanupActionPending(a, p)))) throw new Error('Operator cleanup outcome is uncertain; preserve workspace pending inspection');
     const project = projectFor(c, job), fresh = await t3.shell(true), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
     if (!thread) return;
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');

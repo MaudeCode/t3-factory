@@ -166,3 +166,31 @@ test('batch normal removal retains failed dirty work and independently confirms 
     assert.ok(existsSync(f.path)); assert.equal(existsSync(other), false); assert.ok(f.store.job('job2')?.workspaceCleanedAt); assert.equal(f.calls[0], 1);
   } finally { f.close(); }
 });
+
+for (const uncertain of [false, true]) test(`action-only cleanup remains in inventory after restart: ${uncertain ? 'uncertain' : 'confirmed'}`, async () => {
+  const f = fixture(); try {
+    const review = await f.review(); if (uncertain) f.lostAfter();
+    const action = await f.force(review); assert.equal(action.state, uncertain ? 'uncertain' : 'confirmed');
+    f.restart();
+    const inventory = await cleanupInventory(f.c, f.store, f.t3), row = inventory.items.find(i => i.path === f.path);
+    assert.ok(row, 'an action-only workspace remains visible after its directory and Git registration are absent');
+    assert.equal(row.present, false); assert.equal(row.registered, false);
+    assert.equal(row.state, uncertain ? 'blocked' : 'complete');
+    assert.equal(row.lastAttempt, action.updatedAt);
+    const sorted = await cleanupInventory(f.c, f.store, f.t3, 0, 50, undefined, { sort: 'attempt' });
+    assert.equal(sorted.items[0].path, f.path);
+    assert.equal(inventory.counts.complete, uncertain ? 0 : 1);
+    assert.equal(inventory.present, 1, 'only the primary checkout remains physically present');
+  } finally { f.close(); }
+});
+
+test('an uncertain batch holds only targets with an unresolved outcome', async () => {
+  const f = fixture(); try {
+    const at = new Date().toISOString(), other = join(f.dir, 'uncertain-tree');
+    f.store.saveCleanupAction({ id: randomUUID(), input: {}, operator: 'fixture', reason: 'Mixed batch', state: 'uncertain', requestedAt: at, updatedAt: at,
+      targets: [f.target, { projectId: 'p', path: other }], outcomes: [{ path: f.path, state: 'failed', message: 'Preflight refused without a mutation' }, { path: other, state: 'uncertain', message: 'Transport response lost' }] });
+    const action = await f.force(await f.review());
+    assert.equal(action.state, 'confirmed', 'a known failed target can be reviewed again without replaying the uncertain target');
+    assert.equal(f.calls[0], 1); assert.equal(f.store.cleanupActions().find(a => a.reason === 'Mixed batch')?.state, 'uncertain');
+  } finally { f.close(); }
+});

@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import type { Config } from './config.ts';
 import type { T3, Kaneo } from './clients.ts';
-import type { Store, Job } from './store.ts';
+import { cleanupActionPending, type Store, type Job } from './store.ts';
 import { subagentDescendants, type Thread } from './policy.ts';
 import { cleanupCompletedWorkspace, verifyCleanupHead, verifyCompletionReport, readCompletionReport, safeError } from './scheduler.ts';
 import { canonicalPath, inspectWorkspace, worktrees, freeBytes, processWorkspaces, usesWorkspace, removeWorkspace, verifyIdleProjection } from './workspace.ts';
@@ -149,13 +149,13 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kaneo: Kan
 // Job cannot represent a Git-only worktree; this row joins physical identity with optional owners.
 interface CleanupInventoryItem {
   projectId: string; repository: string; path: string; branch: string; head: string; present: boolean; registered: boolean;
-  ownership: string; state: string; checkedAt: string; jobs: ReturnType<typeof publicJob>[]; bindings: ReturnType<typeof threadIdentity>[];
+  ownership: string; state: string; checkedAt: string; lastAttempt: string | null; jobs: ReturnType<typeof publicJob>[]; bindings: ReturnType<typeof threadIdentity>[];
   size: { state: string; bytes: number | null; checkedAt?: string | null };
 }
 
 export async function cleanupInventory(c: Config, store: Store, t3: T3, offset = 0, limit = 50, signal?: AbortSignal, filters: { query?: string; repository?: string; ownership?: string; state?: string; sort?: string } = {}) {
   signal = AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
-  const at = new Date().toISOString(), jobs = store.jobs(), errors: { repository: string; message: string }[] = [];
+  const at = new Date().toISOString(), jobs = store.jobs(), actions = store.cleanupActions(), errors: { repository: string; message: string }[] = [];
   let threads: Thread[] = [], shellKnown = false;
   try { threads = (await t3.shell(true)).threads; shellKnown = true; } catch (e) { errors.push({ repository: 'T3', message: safeError(e) }); }
   const items: CleanupInventoryItem[] = [], repositories: { path: string; freeBytes: number | null }[] = [];
@@ -165,35 +165,40 @@ export async function cleanupInventory(c: Config, store: Store, t3: T3, offset =
     try { registered = await worktrees(project.repoPath, signal); } catch (e) { errors.push({ repository: project.repoPath, message: safeError(e) }); }
     repositories.push({ path: project.repoPath, freeBytes: await freeBytes(project.repoPath) });
     const localJobs = jobs.filter(j => j.projectId === project.kaneoId), localThreads = threads.filter(t => t.projectId === project.t3Id);
-    const paths = new Set([...registered.map(t => t.path), ...localJobs.flatMap(jobPaths), ...localThreads.flatMap(t => t.worktreePath ? [t.worktreePath] : [])].map(canonicalPath));
+    const localActions = actions.filter(a => a.targets.some(t => t.projectId === project.kaneoId));
+    const paths = new Set([...registered.map(t => t.path), ...localJobs.flatMap(jobPaths), ...localThreads.flatMap(t => t.worktreePath ? [t.worktreePath] : []), ...localActions.flatMap(a => a.targets.filter(t => t.projectId === project.kaneoId).map(t => t.path))].map(canonicalPath));
     for (const path of paths) {
       const bindings = threads.filter(t => t.worktreePath && canonicalPath(t.worktreePath) === path);
       const owned = localJobs.filter(j => bindings.some(t => t.id === j.threadId) || jobPaths(j).some(p => canonicalPath(p) === path));
+      const history = localActions.filter(a => a.targets.some(t => t.projectId === project.kaneoId && canonicalPath(t.path) === path));
+      const unresolved = history.some(a => cleanupActionPending(a, path));
+      const confirmed = history.some(a => a.outcomes.some(o => canonicalPath(o.path) === path && o.state === 'confirmed'));
+      const jobRows = owned.map(publicJob), lastAttempt = [...jobRows.map(j => j.lastAttempt), ...history.map(a => a.updatedAt)].filter((at): at is string => !!at).sort().at(-1) ?? null;
       const tree = registered.find(t => canonicalPath(t.path) === path), present = existsSync(path), primary = registered[0] && canonicalPath(registered[0].path) === path;
       const active = bindings.some(t => t.activeRunId || t.pendingRuntimeRequest || t.pendingBackgroundTasks.length || ['preparing', 'queued', 'starting', 'running', 'waiting'].includes(t.status)) || owned.some(j => !['complete', 'dismissed'].includes(j.state));
-      const state = primary ? 'primary' : active ? 'active' : !shellKnown ? 'unknown' : !present ? tree ? 'stale-registration' : owned.some(j => j.workspaceCleanedAt) ? 'complete' : 'missing' : owned.some(j => j.workspaceCleanupError) ? 'blocked' : owned.some(j => !j.workspaceCleanedAt) ? 'pending' : 'review';
+      const state = primary ? 'primary' : active ? 'active' : !shellKnown ? 'unknown' : unresolved ? 'blocked' : !present ? tree ? 'stale-registration' : confirmed || owned.some(j => j.workspaceCleanedAt) ? 'complete' : 'missing' : owned.some(j => j.workspaceCleanupError) ? 'blocked' : owned.some(j => !j.workspaceCleanedAt) ? 'pending' : 'review';
       const cached = JSON.parse(store.get(`cleanupSize:${digest([project.kaneoId, path])}`) ?? 'null');
       const size = cached ? { state: cached.state === 'error' ? 'error' : Date.now() - Date.parse(cached.checkedAt) < 300_000 && cached.head === tree?.head ? 'known' : 'stale', bytes: cached.bytes, checkedAt: cached.checkedAt } : { state: 'unknown', bytes: null };
       items.push({ projectId: project.kaneoId, repository: project.repoPath, path, branch: tree?.branch ?? bindings[0]?.branch ?? '', head: tree?.head ?? '', present, registered: !!tree,
         ownership: !shellKnown ? 'unknown' : owned.length > 1 || bindings.length > 1 ? 'shared' : owned.length ? 'factory' : bindings.length ? 't3-only' : 'orphan',
-        state, jobs: owned.map(publicJob), bindings: bindings.map(threadIdentity), size, checkedAt: at });
+        state, lastAttempt, jobs: jobRows, bindings: bindings.map(threadIdentity), size, checkedAt: at });
     }
   }
   const query = filters.query?.toLowerCase() ?? '';
   const filtered = items.filter(i => (!filters.repository || i.repository === filters.repository) && (!filters.ownership || i.ownership === filters.ownership) && (!filters.state || i.state === filters.state) && JSON.stringify([i.path, i.branch, i.repository, i.jobs, i.bindings]).toLowerCase().includes(query));
-  filtered.sort((a, b) => filters.sort === 'size' ? (b.size.bytes ?? -1) - (a.size.bytes ?? -1) : filters.sort === 'attempt' ? String(b.jobs[0]?.lastAttempt ?? '').localeCompare(a.jobs[0]?.lastAttempt ?? '') : String(filters.sort === 'branch' ? a.branch : filters.sort === 'repository' ? a.repository : a.path).localeCompare(String(filters.sort === 'branch' ? b.branch : filters.sort === 'repository' ? b.repository : b.path)));
+  filtered.sort((a, b) => filters.sort === 'size' ? (b.size.bytes ?? -1) - (a.size.bytes ?? -1) : filters.sort === 'attempt' ? String(b.lastAttempt ?? '').localeCompare(a.lastAttempt ?? '') : String(filters.sort === 'branch' ? a.branch : filters.sort === 'repository' ? a.repository : a.path).localeCompare(String(filters.sort === 'branch' ? b.branch : filters.sort === 'repository' ? b.repository : b.path)));
   if (!errors.length) store.set('cleanupLastScan', at);
   const maintenance = JSON.parse(store.get('cleanupMaintenance') ?? 'null');
   const stalled = !!maintenance && ['pending', 'inspecting'].includes(maintenance.state) && Date.now() - Date.parse(maintenance.lastAttempt) > Math.max(c.pollSeconds ?? 60, 900) * 2000;
   const nextRetry = items.flatMap(i => i.jobs.map(j => j.nextRetry)).filter((at): at is string => !!at && Date.parse(at) > Date.now()).sort()[0] ?? null;
   return { lastSuccessfulScan: store.get('cleanupLastScan'), nextRetry, stalled, items: filtered.slice(offset, offset + limit), total: filtered.length, inventoryTotal: items.length, offset, limit, checkedAt: at, errors, repositories,
     counts: Object.fromEntries(['pending', 'blocked', 'active', 'missing', 'complete', 'stale-registration', 'review', 'unknown', 'primary'].map(s => [s, items.filter(i => i.state === s).length])),
-    present: items.filter(i => i.present).length, automationEnabled: c.enabled, maintenance, actions: store.cleanupActions().slice(0, 50) };
+    present: items.filter(i => i.present).length, automationEnabled: c.enabled, maintenance, actions: actions.slice(0, 50) };
 }
 
 function confirmAbsentActions(store: Store, detail: Awaited<ReturnType<typeof inspectCleanup>>) {
   if (!detail.workspace || detail.workspace.present || detail.workspace.registered || detail.bindings.length || detail.checks.some(c => !c.override && c.state !== 'pass')) return;
-  for (const action of store.cleanupActions().filter(a => ['requested', 'uncertain'].includes(a.state) && a.targets.some(t => t.projectId === detail.projectId && canonicalPath(t.path) === detail.path))) {
+  for (const action of store.cleanupActions().filter(a => cleanupActionPending(a, detail.path))) {
     action.outcomes = action.outcomes.filter(o => canonicalPath(o.path) !== detail.path);
     action.outcomes.push({ path: detail.path, state: 'confirmed', message: 'Already-absent finalization after uncertain response; removal attribution unknown', physicalRemoval: false, freeSpaceChange: null });
     action.updatedAt = new Date().toISOString();
@@ -242,7 +247,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
     let mutated = false;
     try {
       const project = projectFor(c, target.projectId), beforeFree = await freeBytes(project.repoPath);
-      if (store.cleanupActions().some(a => a.id !== action.id && ['requested', 'uncertain'].includes(a.state) && a.targets.some(t => canonicalPath(t.path) === canonicalPath(target.path)))) throw new Error('An earlier cleanup response is uncertain. Inspect its result; destructive requests are never replayed');
+      if (store.cleanupActions().some(a => a.id !== action.id && cleanupActionPending(a, target.path))) throw new Error('An earlier cleanup response is uncertain. Inspect its result; destructive requests are never replayed');
       if (input.type === 'force') {
         const fresh = await inspectCleanup(c, store, t3, kaneo, { ...target, size: true }, boundary);
         if (!fresh.forceAllowed || fresh.fingerprint !== review.fingerprint) throw new Error('Reviewed identity, content or activity changed; review again');
