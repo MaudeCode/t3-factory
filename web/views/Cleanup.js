@@ -109,8 +109,10 @@ export function Cleanup() {
   const outcomeSummary = [["deleted", summary.removed], ["already gone", summary.absent], ["failed", summary.failed], ["unconfirmed", summary.uncertain], ["still pending", summary.pending], ["not sent", summary.cancelled]].filter(([label, n]) => label === "deleted" || n).map(([label, n]) => `${n} ${label}`).join(" · ");
   useEffect(() => { if (wasRunning.current && !running) { setRevision(n => n + 1); setSelected([]); } wasRunning.current = running; }, [running]);
   useEffect(() => {
-    const abort = new AbortController(); generation.current++; batchRead.current?.abort(); setPreparing(false); setLoading(true); setError("");
+    const abort = new AbortController(); generation.current++; batchRead.current?.abort(); setPreparing(false); setError("");
     const force = rescan.current;
+    // Status pushes reload the list silently; only the first load and an explicit refresh show as loading.
+    if (!snapshot || force) setLoading(true);
     const timer = setTimeout(() => { rescan.current = false; return loadCleanup({ ...filters, limit: 50, ...force ? { refresh: true } : {} }, abort.signal).then(value => { if (!abort.signal.aborted) { setData(value); setSelected([]); } }, e => { if (!abort.signal.aborted) setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); }); }, 120);
     return () => { clearTimeout(timer); abort.abort(); };
   }, [JSON.stringify(filters), revision, status.value.at]);
