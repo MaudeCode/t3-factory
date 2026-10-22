@@ -2428,7 +2428,7 @@ h1 .crumb::after {
 .cleanup-reason { overflow-wrap: anywhere; }
 .cleanup-note { flex: 0 0 15px; display: inline-flex; }
 .cleanup-note .help { margin: 0; }
-.cleanup-age { flex: 0 0 80px; text-align: right; }
+.cleanup-age { flex: 0 0 92px; text-align: right; white-space: nowrap; }
 .cleanup-row-actions { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); min-width: 96px; justify-content: flex-end; }
 .cleanup-row-group.is-current { background: var(--surface); border-radius: var(--radius); }
 .cleanup-path { overflow-wrap: anywhere; white-space: normal; }
