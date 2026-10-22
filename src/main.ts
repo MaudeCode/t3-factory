@@ -1,3 +1,4 @@
+import { manageCleanup, cleanupRequestSchema } from './cleanup.ts';
 import { readFileSync, writeFileSync, renameSync, existsSync, watch } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { modify, applyEdits, parse } from 'jsonc-parser';
@@ -32,10 +33,10 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
-  const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
+  const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
   // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
   const viaService = async (args: string[], input?: unknown) => {
-    const command = commandFor(args);
+    const command = args[0] === 'cleanup' ? { type: 'cleanup' as const, input: cleanupRequestSchema.parse(input), operator: args[1] } : commandFor(args);
     return (command && await callControl(c.stateDir, command)) ?? runFactory(args, input);
   };
   const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
@@ -62,6 +63,25 @@ if (command === 'web') {
   server.listen(config.port, config.host, () => console.log(`Factory web controls listening on ${config.host}:${config.port}`));
   const shutdown = () => { server.closeAllConnections(); server.close(); store.close(); };
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
+} else if (command === 'cleanup-cancel') {
+  const c = loadConfig(configPath);
+  const result = await callControl(c.stateDir, { type: 'cleanup-cancel', inspectionId: z.uuid().parse(process.argv[3]) });
+  console.log(JSON.stringify(result?.data ?? { cancelled: false }));
+} else if (command === 'cleanup') {
+  let store: Store | undefined, kaneo: Kaneo | undefined;
+  try {
+    const input = cleanupRequestSchema.parse(JSON.parse(readFileSync(0, 'utf8'))), c = loadConfig(configPath);
+    const forwarded = await callControl(c.stateDir, { type: 'cleanup', input, operator: process.argv[3] });
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else {
+      store = new Store(c.stateDir);
+      if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; cleanup refused');
+      const lazy = { call: async (tool: string, args: any) => { if (!kaneo) { kaneo = new Kaneo(c.kaneo); await kaneo.connect(); } return kaneo.call(tool, args); } } as Kaneo;
+      console.log(JSON.stringify(await manageCleanup(c, store, new T3(c.t3), lazy, input, process.argv[3] ?? 'local CLI operator')));
+      if (!['inventory', 'inspect', 'review'].includes(input.type)) writeStatus(c, store);
+    }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+  finally { await kaneo?.close().catch(() => {}); store?.close(); }
 } else if (command === 'job-stop') {
   // The running scheduler stops the thread and reconciles at once; otherwise stop it here and leave reconciliation to the next pass.
   try {

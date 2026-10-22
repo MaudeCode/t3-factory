@@ -2416,3 +2416,21 @@ h1 .crumb::after {
     transition: none !important;
   }
 }
+
+/* Cleanup extends the shared list-row, facts and dialog layouts. */
+.cleanup-filters, .cleanup-summary { display: flex; flex-wrap: wrap; gap: .7rem; align-items: center; margin-block: 1rem; }
+.cleanup-filters .search { flex: 1 1 18rem; min-width: 0; }
+.cleanup-row, .cleanup-check { display: flex; align-items: center; gap: .8rem; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+.cleanup-row .row-body, .cleanup-check .row-body { flex: 1; min-width: 0; }
+.cleanup-open { border: 0; background: transparent; color: inherit; padding: 0; text-align: left; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.cleanup-path, .cleanup-check .row-body small { overflow-wrap: anywhere; white-space: normal; }
+.cleanup-check .row-body small { display: flex; flex-wrap: wrap; gap: .4rem; }
+@media (max-width: 600px) {
+  .cleanup-row { flex-wrap: wrap; gap: .5rem; }
+  .cleanup-row .row-body { flex-basis: calc(100% - 2rem); }
+  .cleanup-filters > * { max-width: 100%; }
+  .cleanup-check { align-items: flex-start; }
+}
+.cleanup-row > input[type="checkbox"] { width: 1.15rem; height: 1.15rem; flex: 0 0 1.15rem; padding: 0; margin: 0; }
+.cleanup-filters > .select { flex: 1 1 10rem; width: auto; }
+.cleanup-filters .search { flex-basis: 100%; }

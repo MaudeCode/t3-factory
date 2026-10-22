@@ -132,3 +132,21 @@ The standard installer uses these paths:
 | `<stateDir>/web-requests` | Web dispatch request records |
 
 Re-run the relevant installer after source or environment changes. Existing configuration, credentials, and state are preserved. OIDC login sessions are stored privately under `stateDir` and survive web-service restarts. Caddy is operated separately; see [web access](web-access.md).
+
+## Cleanup management
+
+Open **Cleanup** to inventory configured repositories, Git registrations, T3 bindings and all historical Factory jobs, including dismissed jobs. Directory presence and registration are separate facts. An absent directory with a remaining registration is a stale registration, not reclaimed space. Durable action targets keep orphaned workspaces in the inventory after their directory and registration disappear. Confirmed outcomes count as completed cleanup; unresolved outcomes stay blocked until inspection verifies absence. Search and filters run before pagination. Size is unknown until **Estimate size** reads the worktree; cached estimates become stale. Free space and measured changes are independent filesystem observations, not estimated recovered bytes.
+
+**Review** reads ownership, completion evidence, content summaries, terminals and process working directories. It does not detach bindings or close terminals. Closing or refreshing an inspection cancels its queued work. Inspections have a bounded read window; failed repositories and authorization errors remain visible. Ticket automation pause does not pause workspace maintenance.
+
+**Retry now** bypasses only the cleanup cooldown and advances one normal maintenance step. **Normal remove** advances up to eight normal steps. Both use the existing completion, merged-HEAD, activity and nonforce removal checks. They never dispatch a ticket, change automation or complete a tracker task. Select up to twenty rows for per-item normal outcomes.
+
+**Review force removal** records a content and ownership fingerprint, valid for ten minutes. Review the lost paths and overridden completion/content checks, enter the exact canonical worktree path and a reason, then confirm each worktree separately. Branch refs, reports and terminal history are preserved. Force cannot override a primary checkout, repository mismatch, symlink/alias path, active or queued work, resumed owner, active subagent, open terminal, process use or unknown live evidence. A changed HEAD, file content, binding, job or check requires another review. Large content scans stop at 100000 entries or the read deadline and refuse force when they cannot establish identity.
+
+Actions run on the same queue as dispatch and reconciliation, or under the exclusive offline store claim when no service is listening. Requests and outcomes persist across restarts and are visible in Cleanup and Activity. An uncertain response holds automatic maintenance and further destructive requests for that path; it is never replayed. Inspect the directory, registration, bindings and recorded action to establish what actually happened. If verification shows a partial detach, a new review can proceed after a confirmed failure. Refreshing inspection can finalize an uncertain request only when fresh checks confirm both directory and registration absent and no remaining bindings. It records already-absent finalization with unknown removal attribution and no recovered-byte claim. Otherwise the hold remains for operator investigation.
+
+The CLI accepts the same validated request on stdin through `t3-factory cleanup`. For example, the following only reads the inventory:
+
+```sh
+printf '%s\n' '{"type":"inventory","offset":0,"limit":50}' | t3-factory cleanup
+```

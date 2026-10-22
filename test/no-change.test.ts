@@ -8,7 +8,7 @@ import { reconcile } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
-import { v2Thread } from './v2-fixture.ts';
+import { v2Thread, v2Projection } from './v2-fixture.ts';
 
 const accepted = { 'done': 'done', 'unlabeled': 'to-do', 'complete-empty': 'done', 'missing-worktree': 'done' } as const;
 const rejected = {
@@ -45,7 +45,7 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
       throw new Error(name);
     } } as unknown as Kaneo;
     const threads = [thread];
-    const t3 = { shell: async () => ({ threads }), terminals: async () => [],
+    const t3 = { shell: async () => ({ threads }), request: async () => ({ projection: v2Projection(thread) }), terminals: async () => [],
       dispatch: async (command: any) => { thread.worktreePath = null; thread.branch = null; assert.equal(command.type, 'thread.metadata.update'); },
       removeWorktree: async (_cwd: string, path: string) => { git(repo, 'worktree', 'remove', path); } } as unknown as T3;
     try {

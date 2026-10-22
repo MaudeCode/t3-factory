@@ -123,6 +123,7 @@ export function RunDetail({ id }) {
     lead=${`${job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
     <div class="links-row">
+      <a href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow}>Cleanup review</a>
       ${ticket && html`<${Link} href=${ticket}>Ticket in Kaneo<//>`}
       ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
       ${job.threadId && html`<a href=${threadLink(job)}>Open in T3 Code</a>`}

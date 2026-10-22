@@ -1,12 +1,13 @@
-import { readFileSync, realpathSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection } from './workspace.ts';
+import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { basename, dirname, join, sep } from 'node:path';
+import { join, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
-import { Store, jobLabel, type Job, type Plan, type PlanTicket } from './store.ts';
+import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, type Config, type Project } from './config.ts';
 
@@ -125,13 +126,13 @@ function currentReport(job: Job, t: Thread): boolean {
   if (statSync(job.reportPath).mtimeMs > answeredAt) return true;
   try { return JSON.parse(readFileSync(job.reportPath, 'utf8')).status !== 'awaiting-human'; } catch { return true; }
 }
-function readCompletionReport(job: Job) {
+export function readCompletionReport(job: Job) {
   if (!existsSync(job.reportPath)) throw new Error('Turn ended without a completion report; inspect in T3');
   const report = reportSchema.parse(JSON.parse(readFileSync(job.reportPath, 'utf8')));
   if (report.jobId !== job.id) throw new Error('Completion report job ID mismatch');
   return report;
 }
-async function verifyCompletionReport(c: Config, kaneo: Kaneo, job: Job, t: Thread, report: z.infer<typeof reportSchema>) {
+export async function verifyCompletionReport(c: Config, kaneo: Kaneo, job: Job, t: Thread, report: z.infer<typeof reportSchema>) {
   const project = projectFor(c, job);
   if (job.kind === 'ticket') {
     if (report.status !== 'complete' && report.prUrls.length) throw new Error('Ticket cannot finish as no-work');
@@ -234,18 +235,38 @@ function assignedBranch(job: Job): string | undefined {
   ]).safeParse(job.command);
   return command.success ? command.data : undefined;
 }
-// Resolve a removed directory through its nearest existing ancestor so it compares equal to Git's registered path.
-function canonicalPath(path: string): string { return existsSync(path) ? realpathSync(path) : join(canonicalPath(dirname(path)), basename(path)); }
+export async function verifyCleanupHead(c: Config, store: Store, kaneo: Kaneo, job: Job, threads: Thread[], branch: string, path: string): Promise<string> {
+  const project = projectFor(c, job);
+  let head: string;
+  if (job.kind === 'ticket' && job.prUrls.length) {
+    const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
+    if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
+    const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], threads, branch, store);
+    if (!history.branches.has(branch)) throw new Error('Workspace head is not verified merged');
+    head = history.branches.get(branch)!;
+  } else {
+    // Discovery and tickets closed without delivery verify their head against the release branch.
+    head = job.workspaceCleanup?.head ?? await git(path, ['rev-parse', 'HEAD']);
+    if (!await released(project, head)) throw new Error('Workspace head is not part of the release branch');
+  }
+  return head;
+}
 
-async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, job: Job) {
+export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo: Kaneo, job: Job, boundary: { processes?: typeof processWorkspaces; actionId?: string } = {}) {
+  let mutationUncertain = false;
+  const mutate = async (work: () => Promise<unknown>) => { mutationUncertain = true; await work(); mutationUncertain = false; };
   const identity = (j: Job) => JSON.stringify([j.threadId, j.projectId, j.taskId, j.messageId, j.command, j.reportPath, j.state, j.createdAt]);
+  job.workspaceCleanupAttemptedAt = new Date().toISOString(); store.save(job);
+  const maintenance = (patch: Record<string, unknown>) => store.set('cleanupMaintenance', JSON.stringify({ ...JSON.parse(store.get('cleanupMaintenance') ?? '{}'), lastAttempt: job.workspaceCleanupAttemptedAt, jobId: job.id, error: undefined, ...patch }));
+  maintenance({ state: 'inspecting' });
   const ownership = identity(job);
   const checkOwner = () => {
     const current = store.job(job.id);
     if (!current || identity(current) !== ownership) throw new Error('Factory ownership changed before command stop');
   };
   try {
-    const project = projectFor(c, job), fresh = await t3.shell(), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
+    if (store.cleanupActions().some(a => a.id !== boundary.actionId && [job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].some(p => p && cleanupActionPending(a, p)))) throw new Error('Operator cleanup outcome is uncertain; preserve workspace pending inspection');
+    const project = projectFor(c, job), fresh = await t3.shell(true), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
     if (!thread) return;
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');
     const commands = thread.pendingBackgroundTasks.some(t => t.kind === 'command');
@@ -278,6 +299,9 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     if (!workspace && commands) throw new Error('Command workspace ownership cannot be verified');
     if (!workspace) { job.workspaceCleanedAt = new Date().toISOString(); store.save(job); return; }
     const path = canonicalPath(workspace);
+    const physical = await inspectWorkspace(project.repoPath, path);
+    if ((physical.present || physical.registered) && !physical.removable) throw new Error('Preserve unregistered, locked or primary workspace');
+    if (physical.status) throw new Error('Preserve dirty or ignored workspace contents');
     const assigned = assignedBranch(job);
     if (!assigned) throw new Error('Workspace was not assigned by a Factory launch');
     const checkoutBranch = existsSync(path) ? await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : null;
@@ -290,18 +314,7 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     const subagents = subagentDescendants(fresh.threads, thread.id);
     if (shared(fresh.threads, subagents)) throw new Error('Workspace is shared with another thread');
     if (subagents.some(t => busy(t) || resumed(t))) throw new Error('Workspace is shared with an active subagent');
-    let head: string;
-    if (job.kind === 'ticket' && job.prUrls.length) {
-      const task = taskSchema.parse(await kaneo.call('get_task', { taskId: job.taskId }));
-      if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
-      const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], fresh.threads, branch, store);
-      if (!history.branches.has(branch)) throw new Error('Workspace head is not verified merged');
-      head = history.branches.get(branch)!;
-    } else {
-      // Discovery and tickets closed without delivery verify their head against the release branch.
-      head = pending?.head ?? await git(path, ['rev-parse', 'HEAD']);
-      if (!await released(project, head)) throw new Error('Workspace head is not part of the release branch');
-    }
+    const head = await verifyCleanupHead(c, store, kaneo, job, fresh.threads, branch, path);
     if (pending && pending.head !== head) throw new Error('Verified workspace head changed');
     if (existsSync(path)) {
       if (await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || (checkoutBranch !== branch && checkoutBranch !== 'HEAD')) throw new Error('Preserve dirty or changed workspace');
@@ -327,14 +340,14 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
             bounded.subagents.some(a => !['completed', 'failed', 'cancelled', 'interrupted'].includes(a.status))) throw new Error('Bounded thread has new or non-command work');
         await verifyCompletionReport(c, kaneo, job, thread, readCompletionReport(job));
         if (readFileSync(job.reportPath, 'utf8') !== reportText || await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch) throw new Error('Completion report or workspace changed before command stop');
-        const latest = await t3.shell(), confirmed = latest.threads.find(t => t.id === thread.id), children = subagentDescendants(latest.threads, thread.id);
+        const latest = await t3.shell(true), confirmed = latest.threads.find(t => t.id === thread.id), children = subagentDescendants(latest.threads, thread.id);
         checkOwner();
         if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.projectId !== thread.projectId || confirmed.worktreePath !== thread.worktreePath || confirmed.branch !== thread.branch || busy(confirmed) || resumed(confirmed) || confirmed.activeRunId || confirmed.pendingRuntimeRequest || confirmed.pendingBackgroundTasks.some(t => t.kind !== 'command') || shared(latest.threads, children) || children.some(t => busy(t) || resumed(t) || t.pendingBackgroundTasks.length)) throw new Error('Thread or workspace changed before command stop');
         job.commandStop = { status: 'requested', requestedAt: new Date().toISOString() };
         job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
         log('job-command-stop-requested', { jobId: job.id, threadId: thread.id });
       });
-      const confirmation = (await t3.shell()).threads.find(t => t.id === thread.id);
+      const confirmation = (await t3.shell(true)).threads.find(t => t.id === thread.id);
       checkOwner();
       if (!confirmation || confirmation.pendingBackgroundTasks.length || busy(confirmation) || resumed(confirmation)) throw new Error('Command stop requested; awaiting T3 confirmation');
       // Even immediate confirmation advances removal only on a subsequent maintenance pass.
@@ -348,38 +361,45 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     }
     const monitored = [thread, ...subagents].filter(t => t.pendingBackgroundTasks.length);
     if (monitored.length) {
-      for (const t of monitored) await t3.stop(t.id);
+      for (const t of monitored) await mutate(() => t3.stop(t.id));
       return;
     }
     const boundSubagents = subagents.filter(bound);
     if (boundSubagents.length) {
-      for (const t of boundSubagents) await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: t.id, expectedWorktreePath: t.worktreePath, worktreePath: null, branch: null });
+      for (const t of boundSubagents) await mutate(() => t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: t.id, expectedWorktreePath: t.worktreePath, worktreePath: null, branch: null }));
       return; // Detach owned subagents before the job thread, one step per cycle.
     }
     if (thread.worktreePath) {
       job.workspaceCleanup = { path, branch, head }; job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
-      await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: thread.id, expectedWorktreePath: thread.worktreePath, worktreePath: null, branch: null });
+      await mutate(() => t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: thread.id, expectedWorktreePath: thread.worktreePath, worktreePath: null, branch: null }));
       return; // Let T3 detach the idle provider session before removing its directory.
     }
     // T3 can leave this thread's idle setup shell open in the workspace. Close only its idle terminals; the process check stays authoritative.
     const terminals = (await t3.terminals()).filter(t => t.threadId === thread.id && (t.status === 'starting' || t.status === 'running'));
     if (terminals.some(t => t.status === 'starting' || t.hasRunningSubprocess)) throw new Error('A T3 terminal for this thread is still running a command');
     if (terminals.length) {
-      for (const t of terminals) await t3.closeTerminal(thread.id, t.terminalId);
+      for (const t of terminals) await mutate(() => t3.closeTerminal(thread.id, t.terminalId));
       return; // Let the shells exit before checking running processes.
     }
-    const cwds = (await exec('lsof', ['-b', '-n', '-d', 'cwd', '-Fn'], { timeout: 20_000, maxBuffer: 4_000_000 })).stdout.split('\n').filter(l => l.startsWith('n')).map(l => l.slice(1));
-    if (!cwds.length) throw new Error('Cannot verify running process workspaces');
-    if (cwds.some(cwd => cwd === path || cwd.startsWith(path + sep))) throw new Error('A running process is still using the workspace');
-    const latest = await t3.shell(), confirmed = latest.threads.find(t => t.id === thread.id), latestSubagents = subagentDescendants(latest.threads, thread.id);
-    if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.worktreePath !== null || executing(confirmed, c.monitoringTimeoutMinutes) || waiting(confirmed) || confirmed.pendingBackgroundTasks.length || shared(latest.threads, latestSubagents) || latestSubagents.some(t => bound(t) || busy(t) || resumed(t) || t.pendingBackgroundTasks.length)) throw new Error('Thread or workspace changed before removal');
-    const present = async () => existsSync(path) || (await git(project.repoPath, ['worktree', 'list', '--porcelain'])).split('\n').includes(`worktree ${path}`);
-    if (await present()) await t3.removeWorktree(project.repoPath, path); // A directory Git no longer registers has nothing left to remove.
-    if (await present()) throw new Error('Workspace removal is not confirmed');
+    const removal = await removeWorkspace(project.repoPath, path, t3, false, async () => {
+      const cwds = await (boundary.processes ?? processWorkspaces)();
+      if (cwds.some(cwd => cwd === path || cwd.startsWith(path + sep))) throw new Error('A running process is still using the workspace');
+      const latest = await t3.shell(true), confirmed = latest.threads.find(t => t.id === thread.id), latestSubagents = subagentDescendants(latest.threads, thread.id);
+      if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.worktreePath !== null || executing(confirmed, c.monitoringTimeoutMinutes) || waiting(confirmed) || confirmed.pendingBackgroundTasks.length || shared(latest.threads, latestSubagents) || latestSubagents.some(t => bound(t) || busy(t) || resumed(t) || t.pendingBackgroundTasks.length)) throw new Error('Thread or workspace changed before removal');
+      await verifyIdleProjection(t3, confirmed, job.commandStop?.status === 'confirmed');
+      for (const child of latestSubagents) await verifyIdleProjection(t3, child);
+      if (existsSync(path) && (await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch)) throw new Error('Workspace changed before removal');
+      checkOwner();
+      mutationUncertain = true;
+    });
+    mutationUncertain = false;
+    store.record('cleanup.confirmed', removal.outcome === 'removed' ? 'Worktree physically removed' : 'Already-absent workspace finalized', { path, ...removal }, job.id);
     job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
+    maintenance({ state: 'complete', lastSuccess: job.workspaceCleanedAt });
     log('job-workspace-cleaned', { jobId: job.id, threadId: job.threadId, path });
   } catch (error) {
     const reason = safeError(error);
+    maintenance({ state: 'blocked', error: reason });
     const current = store.job(job.id);
     if (!current) { log('job-workspace-cleanup-blocked', { jobId: job.id, reason }); return; }
     if (identity(current) !== ownership) {
@@ -390,6 +410,9 @@ async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3, kaneo:
     }
     if (job.workspaceCleanupError !== reason) log('job-workspace-cleanup-blocked', { jobId: job.id, reason });
     job.workspaceCleanupError = reason; job.workspaceCleanupBlockedAt = new Date().toISOString(); store.save(job);
+    return { uncertain: mutationUncertain };
+  } finally {
+    if (JSON.parse(store.get('cleanupMaintenance') ?? '{}').state === 'inspecting') maintenance({ state: 'pending' });
   }
 }
 

@@ -38,6 +38,6 @@ export const publicStopCommand = z.discriminatedUnion('type', [
 export function v2Projection(thread: Thread, extra: Record<string, unknown> = {}) {
   return {
     thread: { ...thread, pullRequests: thread.pendingBackgroundTasks.filter(t => t.kind === 'monitor').map((_, i) => ({ host: 'github.com', repository: 'fixture/repo', number: i + 1, source: 'explicit', watch: {} })) },
-    runs: [], providerThreads: [], turnItems: [], subagents: [], ...extra,
+    runs: [], providerThreads: [], turnItems: [], subagents: [], messages: [], runtimeRequests: [], ...extra,
   };
 }

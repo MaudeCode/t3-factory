@@ -61,8 +61,9 @@ export class T3 {
     if (!environmentId) throw new Error('T3 did not report its environment ID');
     return `t3code://threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(id)}`;
   }
-  async shell() {
-    const shell = z.object({ threads: z.array(threadSchema), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
+  async shell(includeArchived = false) {
+    const shell = z.object({ threads: z.array(threadSchema), archivedThreads: z.array(threadSchema).default([]), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
+    if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(t => t.id === thread.id)) shell.threads.push(thread);
     const candidates = new Set<string>();
     // Probe concurrently so slow reads cost one request timeout, not one per stale thread.
     await Promise.all(shell.threads.map(async t => {
@@ -168,8 +169,8 @@ export class T3 {
     // Thread launch prepares the worktree and runs the project setup script; plain dispatch does not.
     return callT3Rpc(await this.socketUrl(), { type: 'launch', input });
   }
-  async removeWorktree(cwd: string, path: string) {
-    return callT3Rpc(await this.socketUrl(), { type: 'remove-worktree', cwd, path });
+  async removeWorktree(cwd: string, path: string, force = false) {
+    return callT3Rpc(await this.socketUrl(), { type: 'remove-worktree', cwd, path, force });
   }
   async terminals() {
     return z.object({ type: z.literal('snapshot'), terminals: z.array(z.object({
