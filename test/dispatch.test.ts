@@ -12,7 +12,7 @@ import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { dispatchFixture, deferred } from './dispatch-fixture.ts';
 
-for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible', 'new-other-project-reference', 'new-project-reference', 'new-open-pr'] as const) {
+for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'parallel-label-limit', 'parallel-label-dry-run', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'missing-sf-confirmation', 'label-ranked', 'label-blocked', 'label-ineligible', 'new-other-project-reference', 'new-project-reference', 'new-open-pr'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
     execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -41,8 +41,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
     if (scenario === 'parallel-codex-zero' || scenario === 'parallel-both-zero') c.concurrency.codex = 0;
     if (scenario === 'ceiling') c.models.forEach(m => { m.maxDifficulty = 'low'; });
     if (scenario.startsWith('label-')) c.projects[0].priorityLabels = ['compatibility', 'security'];
+    if (scenario.startsWith('parallel-label')) c.projects[0].labelLimits = { app: 2 };
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
     const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
+    if (scenario.startsWith('parallel-label')) tasks.slice(0, 4).forEach(task => task.labels.push({ name: 'app' }));
     if (scenario === 'truncated-labels') tasks.forEach(task => { task.labels = ['app', 'web', 'contracts', 'sec', 'med', 'sf'].map(name => ({ name })); });
     if (scenario === 'missing-sf-confirmation') tasks.forEach(task => { task.labels = [{ name: 'high' }]; });
     if (scenario.startsWith('label-')) {
@@ -133,7 +135,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
         assert.equal(attempts.length, 1);
         return;
       }
-      const result = await cycle(c, store, manualQuota ? { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true } : scenario === 'parallel-dry-run' ? { dryRun: true } : {});
+      const result = await cycle(c, store, manualQuota ? { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: true } : ['parallel-dry-run', 'parallel-label-dry-run'].includes(scenario) ? { dryRun: true } : {});
       if (manualQuota) {
         assert.equal(attempts.length, scenario === 'manual-five-hour-empty' ? 0 : 1);
         if (attempts.length) {
@@ -147,7 +149,12 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
         return;
       }
       if (parallel) {
-        if (scenario === 'parallel-dry-run') {
+        if (scenario === 'parallel-label-dry-run') {
+          assert.equal(attempts.length, 0);
+          const planned = (result as any).streams.flatMap((s: any) => s.planned);
+          assert.deepEqual(planned.filter((key: string) => ['FIX-1', 'FIX-2', 'FIX-3', 'FIX-4'].includes(key)).length, 2, 'dry runs count their own planned runs against label limits');
+          assert.ok(planned.includes('FIX-5') && planned.includes('FIX-6'));
+        } else if (scenario === 'parallel-dry-run') {
           assert.equal(attempts.length, 0);
           assert.equal(store.jobs().length, 0);
           const streams = (result as any).streams;
@@ -157,7 +164,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
         } else {
           const codex = attempts.filter(a => a.modelSelection.instanceId === 'codex');
           const claude = attempts.filter(a => a.modelSelection.instanceId === 'claudeAgent');
-          const expectedCounts: Record<string, number[]> = { parallel: [3, 2], 'parallel-partial': [2, 2], 'parallel-quota': [1, 2], 'parallel-resumed': [0, 2], 'parallel-lowered': [0, 2], 'parallel-discovery': [2, 0], 'parallel-claude-zero': [3, 0], 'parallel-codex-zero': [0, 2], 'parallel-both-zero': [0, 0] };
+          const expectedCounts: Record<string, number[]> = { parallel: [3, 2], 'parallel-partial': [2, 2], 'parallel-quota': [1, 2], 'parallel-resumed': [0, 2], 'parallel-lowered': [0, 2], 'parallel-discovery': [2, 0], 'parallel-claude-zero': [3, 0], 'parallel-codex-zero': [0, 2], 'parallel-both-zero': [0, 0], 'parallel-label-limit': [3, 1] };
           const expected = expectedCounts[scenario];
           assert.deepEqual([codex.length, claude.length], expected);
           assert.equal(new Set(attempts.map(a => a.threadId)).size, attempts.length);
@@ -169,6 +176,17 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
             assert.equal((await cycle(c, store, { manual: true, ticket: 'FIX-2', model: 'fable', overrideLimits: true })).reason, 'dispatched');
           }
           if (scenario === 'parallel-discovery') assert.equal(new Set(attempts.map(a => a.projectId)).size, attempts.length);
+          if (scenario === 'parallel-label-limit') {
+            const keys = attempts.map(a => a.initialMessage.text.match(/Deliver (FIX-\d+):/)?.[1]);
+            assert.deepEqual(keys.filter(k => ['FIX-1', 'FIX-2', 'FIX-3', 'FIX-4'].includes(k!)).length, 2, 'only two app runs start at once');
+            const next = await cycle(c, store);
+            assert.equal(attempts.length, 4, 'a full label holds its remaining tickets');
+            assert.ok((next as any).streams.some((s: any) => s.reason === 'label-limit'));
+            const first = store.jobs().find(j => j.labels?.includes('app'))!;
+            first.state = 'waiting'; store.save(first);
+            await cycle(c, store);
+            assert.equal(attempts.length, 5, 'a run waiting for the user frees its label slot');
+          }
           if (scenario === 'parallel') {
             await cycle(c, store);
             assert.equal(attempts.length, 5, 'existing claims fill capacity on the next cycle');

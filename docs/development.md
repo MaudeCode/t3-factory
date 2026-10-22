@@ -67,9 +67,9 @@ Run `await queueTests.runProjects()` in the same fixture and viewports to exerci
 
 `test/web-live.test.ts` also starts the actual web CLI against temporary state to verify its compact job projection. State, history and run-report responses must retain labels and priority so recorded runs match the same filters as the queue. Callback-injected server fixtures alone do not cover this composition boundary.
 
-The Capacity page's shared `Slots` control keeps Off and 1–6 as quick picks and accepts a custom nonnegative integer through the existing config draft and Save flow. Zero means Off. Empty, negative, fractional and out-of-range input leaves the accepted config value intact; leaving the field restores that value. Custom limits and running counts do not expand the number of rendered buttons. The scheduler's existing integer contract is unchanged.
+The shared `Slots` control, used for provider limits on the Capacity page and label limits on the Projects page, offers Off and 1–6 as quick picks and a last `7+` slot. Choosing it opens a focused number box; Enter or leaving the box saves a valid nonnegative integer through the existing config draft, Escape discards, and invalid input never reaches the config. A saved limit above six shows as that checked last slot. Zero means Off. Custom limits and running counts do not expand the number of rendered buttons.
 
-Serve the repository root and open `/test/browser/capacity.html`. Run `await capacityTests.run()` at 1280 × 800 and 390 × 844 to check both providers, custom limits, zero, invalid values, Save/reload, quick picks and bounded layout. `await capacityTests.show()` restores the baseline display.
+Serve the repository root and open `/test/browser/capacity.html`. Run `await capacityTests.run()` at 1280 × 800 and 390 × 844 to check both providers, the custom slot, Escape, zero, invalid values, Save/reload, quick picks and bounded layout. `await capacityTests.show()` restores the baseline display.
 
 ### Manual upstream reviews
 

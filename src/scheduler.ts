@@ -713,12 +713,15 @@ export interface Clients { t3?: T3; kaneo?: Kaneo; deferCleanup?: boolean }
 export type Decision = { reason: string; at: string } & Record<string, unknown>;
 type Queue = Awaited<ReturnType<typeof inventory>>;
 
+// Running jobs retain reservations while commands can wake them without another admission check.
+const holdsSlot = (job: Pick<Job, 'state'>, thread: Thread | undefined, timeout: number) =>
+  !['complete', 'dismissed'].includes(job.state) && (['running', 'dispatching'].includes(job.state) || !!(thread && executing(thread, timeout)));
+
 export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>()): Set<string> {
   const counts = new Map(planned);
-  for (const job of jobs.filter(j => !['complete', 'dismissed'].includes(j.state))) {
+  for (const job of jobs) {
     const thread = threads.find(t => t.id === job.threadId);
-    // Running jobs retain reservations while commands can wake them without another admission check.
-    if (!['running', 'dispatching'].includes(job.state) && !(thread && executing(thread, timeout))) continue;
+    if (!holdsSlot(job, thread, timeout)) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
     // Unknown ownership must be reconciled before any further automatic starts.
@@ -726,6 +729,13 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
     counts.set(driver, (counts.get(driver) ?? 0) + 1);
   }
   return new Set(['claudeAgent', 'codex'].filter(driver => (counts.get(driver) ?? 0) >= limits[driver === 'codex' ? 'codex' : 'claude']));
+}
+
+// The first of a ticket's limited labels whose runs in its project already fill the limit.
+export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[], threads: Thread[], ticket: { projectId: string; labels?: { name: string }[] }): string | undefined {
+  const limits = c.projects.find(p => p.kaneoId === ticket.projectId)?.labelLimits ?? {};
+  const held = jobs.filter(j => j.projectId === ticket.projectId && holdsSlot(j, threads.find(t => t.id === j.threadId), c.monitoringTimeoutMinutes));
+  return ticket.labels?.map(l => l.name).find(name => name in limits && held.filter(j => j.labels?.includes(name)).length >= limits[name]);
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
@@ -813,11 +823,14 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const results: Record<string, any>[] = [];
     const claimedProjects = new Set<string>();
     const planned = new Map<string, number>();
+    // Dry runs record nothing, so their would-be runs count against label limits here.
+    const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
+    const labelOpen = (t: Candidate) => !fullLabel(c, [...store.jobs(), ...started], shell.threads, t);
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
     const free = (m: { driver: string }) => !busy.has(m.driver);
     while (readyModels.some(free) || (reviews.length && idleModels.some(free))) {
       const review = reviews[0];
-      const assignment = review ? undefined : selectAssignment(candidates, readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
+      const assignment = review ? undefined : selectAssignment(candidates.filter(labelOpen), readyModels, busy, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
       const discovery = ticketsOn && !review && !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
       const selected = assignment ?? (review ? readyModels.find(free) ?? idleModels.find(free) : discovery ? readyModels.find(free) : undefined);
       if (!selected) break;
@@ -831,7 +844,10 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
         if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
         if (result.reason === 'dispatched' || result.reason === 'would-dispatch') {
           if (options.manual) return result;
-          if (result.reason === 'would-dispatch') planned.set(selected.driver, (planned.get(selected.driver) ?? 0) + 1);
+          if (result.reason === 'would-dispatch') {
+            planned.set(selected.driver, (planned.get(selected.driver) ?? 0) + 1);
+            if (assignment) started.push({ state: 'running', threadId: '', projectId: assignment.ticket.projectId, labels: (assignment.ticket.labels ?? []).map(l => l.name) });
+          }
           for (const driver of busyProviders(store.jobs(), shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned)) busy.add(driver);
           (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: null, upstream: review?.upstream }));
           if (review) reviews.shift();
@@ -853,7 +869,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
         results.push({ reason: 'error', driver: selected.driver, message: stream.reason });
       }
     }
-    for (const stream of streams) if (stream.reason === 'ready') stream.reason = queue.ready.length ? 'difficulty-limit' : skipped.some(s => /difficulty/.test(s.reason)) ? 'needs-classification' : 'no-eligible-ticket';
+    for (const stream of streams) if (stream.reason === 'ready') stream.reason = candidates.length && !candidates.some(labelOpen) ? 'label-limit' : queue.ready.length ? 'difficulty-limit' : skipped.some(s => /difficulty/.test(s.reason)) ? 'needs-classification' : 'no-eligible-ticket';
     const reason = options.doctor ? 'doctor' : results.some(r => r.reason === 'dispatched') ? 'dispatched'
       : results.some(r => r.reason === 'would-dispatch') ? 'would-dispatch'
       : options.upstream ? results.at(-1)?.reason ?? 'no-eligible-model' : options.manual ? 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
@@ -967,6 +983,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (options.continuation && busyProviders(store.jobs(), fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
+    const full = (!options.manual || options.continuation) && queue.selected && fullLabel(c, store.jobs(), fresh.threads, queue.selected);
+    if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
     if (review && !(await pendingReviews(c, store, store.jobs(), Date.now(), false)).some(r => r.project.kaneoId === review.project.kaneoId && JSON.stringify(r.upstream) === JSON.stringify(review.upstream))) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
