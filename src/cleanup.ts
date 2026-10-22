@@ -430,17 +430,21 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
           await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: binding.id, expectedWorktreePath: binding.worktreePath, worktreePath: null, branch: null });
           mutated = false;
         }
+        // Later readings compare Git identity and status, not another full content hash: any edit shows in status or inode.
+        type Identity = { head: string; branch: string; inode: string; present: boolean; registered: boolean; common: string; tracked: number; untracked: number; ignored: number; changes: { kind: string; path: string }[] };
+        const identityOf = (w: Identity | null | undefined) => w ? JSON.stringify([w.head, w.branch, w.inode, w.present, w.registered, w.common, w.tracked, w.untracked, w.ignored, w.changes]) : '';
+        const recheck = { ...inspection, size: false };
         // Nothing was detached for an unbound worktree, so the fresh reading still stands.
-        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kaneo, inspection, boundary) : fresh;
-        if (afterDetach.workspace?.fingerprint !== fresh.workspace?.fingerprint || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
+        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kaneo, recheck, boundary) : fresh;
+        if (identityOf(afterDetach.workspace) !== identityOf(fresh.workspace) || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
         // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
         await verifyDetachedOwners(t3, fresh.bindings);
         if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
-        const final = await inspectWorkspace(project.repoPath, target.path, forced, boundary.signal);
-        if (final.fingerprint !== fresh.workspace?.fingerprint) throw new Error('Worktree changed before removal');
+        const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
+        if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
         const result = await removeWorkspace(project.repoPath, target.path, t3, forced, async () => {
-          const evidence = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
-          if (evidence.workspace?.fingerprint !== fresh.workspace?.fingerprint || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
+          const evidence = await inspectCleanup(c, store, t3, kaneo, recheck, boundary);
+          if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
           await verifyDetachedOwners(t3, fresh.bindings);
           if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
         }, () => { mutated = true; });
