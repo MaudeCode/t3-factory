@@ -3,7 +3,7 @@
 // event stream, the poll fallback, and every action that reloads all feed the same path.
 import { signal, computed, batch } from "./h.js";
 import { api, post } from "./api.js";
-import { clone, uuid, moveItem, repoFromPath, ticketKey } from "./format.js";
+import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState } from "./format.js";
 
 // State -----------------------------------------------------------------
 export const auth = signal({ mode: "pairing", loginUrl: "" });
@@ -22,6 +22,7 @@ export const sources = signal(null); // T3 projects, Kaneo projects with columns
 export const live = signal({ enabled: false, upstream: false, concurrency: { claude: 1, codex: 1 } });
 export const busy = signal(false);
 export const operations = signal([]);
+export const launchOperations = computed(() => operations.value.filter(op => op.kind !== "cleanup"));
 export const readiness = signal(null);
 export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
@@ -308,7 +309,11 @@ const saveOperations = () => storage?.setItem("factoryOperations", JSON.stringif
 const request = (id) => operations.value.find((op) => op.id === id);
 const needsOperation = (op) => !op.choiceHandled && !(op.state === "done" && ["dispatched", "plan-started"].includes(op.result?.data?.reason));
 function updateOperation(id, patch) {
-  operations.value = operations.value.map((op) => op.id === id ? { ...op, ...patch, id, input: op.input } : op).filter(needsOperation);
+  operations.value = operations.value.map((op) => {
+    if (op.id !== id) return op;
+    const state = op.kind === "cleanup" && patch.result ? cleanupOperationState(patch.result) : patch.state ?? op.state;
+    return { ...op, ...patch, state, ...(!["queued", "running"].includes(state) && !op.completedAt ? { completedAt: new Date(Date.now() + serverOffset).toISOString() } : {}), id, input: op.input };
+  }).filter(needsOperation);
   saveOperations();
 }
 export function restoreOperation() {
@@ -377,9 +382,9 @@ export function startRun(input) {
   if (pendingRun(input.ticket) || pendingReview(input.upstream)) return null;
   return enqueueOperation(input);
 }
-function enqueueOperation(input, kind = "dispatch") {
+function enqueueOperation(input, kind = "dispatch", cleanupTargets) {
   const id = uuid();
-  operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued" }];
+  operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued", ...(cleanupTargets ? { cleanupTargets: clone(cleanupTargets) } : {}) }];
   saveOperations();
   void drainOperations();
   return id;
@@ -490,16 +495,46 @@ export function subscribe() {
 // Cleanup uses the same persisted, non-replaying request queue as dispatch.
 async function cleanupRead(path, input, signal, get = false) {
   const inspectionId = uuid();
-  const cancel = () => { void post("/api/cleanup/cancel", { inspectionId }).catch(() => {}); };
+  const cancel = () => { if (!get) void post("/api/cleanup/cancel", { inspectionId }).catch(() => {}); };
   signal?.addEventListener("abort", cancel, { once: true });
   try {
-    return await api(get ? path + "?" + new URLSearchParams(Object.entries({ ...input, inspectionId }).filter(([, v]) => v !== "" && v != null)) : path,
+    return await api(get ? path + "?" + new URLSearchParams(Object.entries(input).filter(([, v]) => v !== "" && v != null)) : path,
       { signal, ...get ? {} : { method: "POST", body: JSON.stringify({ ...input, inspectionId }) } });
   } finally { signal?.removeEventListener("abort", cancel); }
 }
 export const loadCleanup = (filters = {}, signal) => cleanupRead("/api/cleanup", filters, signal, true);
-export const inspectCleanup = (target, review = false, signal) => cleanupRead("/api/cleanup/" + (review ? "review" : "inspect"), target, signal);
-export function startCleanup(input) {
-  if (operations.value.some(op => op.kind === "cleanup" && ["queued", "running", "uncertain"].includes(op.state))) return null;
-  return enqueueOperation(input, "cleanup");
+export async function inspectCleanup(target, review = false, signal) {
+  const detail = await cleanupRead("/api/cleanup/" + (review ? "review" : "inspect"), target, signal);
+  for (const action of detail.actions ?? []) {
+    const op = request(action.id);
+    if (op?.kind === "cleanup" && ["confirmed", "failed", "uncertain"].includes(action.state)) updateOperation(op.id, { state: "done", result: { ...op.result, data: action } });
+  }
+  return detail;
+}
+export function cleanupOperationHolds(op, target) {
+  if (["queued", "running", "uncertain"].includes(op.state)) return true;
+  return op.result?.data?.state === "uncertain" && !op.result.data.outcomes?.some(o => o.path === target.path && ["confirmed", "failed"].includes(o.state));
+}
+export function startCleanup(input, target) {
+  const pending = operations.value.filter(op => op.kind === "cleanup" && (["queued", "running", "uncertain"].includes(op.state) || op.result?.data?.state === "uncertain"));
+  // Old saved force requests have no target metadata; preserve their conservative hold until reconciled.
+  if (pending.some(op => op.input.type === "force" && !op.cleanupTargets)) return null;
+  const key = t => `${t.projectId}:${t.path}`;
+  const held = new Set(pending.flatMap(op => (op.cleanupTargets ?? op.input.targets ?? []).filter(t => cleanupOperationHolds(op, t))).map(key));
+  if (input.type === "force") {
+    if (pending.some(op => op.input.reviewId === input.reviewId) || target && held.has(key(target))) return null;
+    return enqueueOperation(input, "cleanup", target ? [target] : undefined);
+  }
+  const seen = new Set();
+  const targets = input.targets.filter(t => { const k = key(t); if (held.has(k) || seen.has(k)) return false; seen.add(k); return true; });
+  let first = null;
+  for (let offset = 0; offset < targets.length; offset += 20) {
+    const chunk = targets.slice(offset, offset + 20);
+    const id = enqueueOperation({ ...input, targets: chunk }, "cleanup", chunk); first ??= id;
+  }
+  return first;
+}
+export function stopCleanupQueue() {
+  operations.value = operations.value.map(op => op.kind === "cleanup" && op.state === "queued" ? { ...op, state: "cancelled", result: { data: { message: "Stopped before sending", outcomes: (op.cleanupTargets ?? op.input.targets ?? []).map(t => ({ path: t.path, state: "cancelled", message: "Stopped before sending" })) } } } : op);
+  saveOperations();
 }

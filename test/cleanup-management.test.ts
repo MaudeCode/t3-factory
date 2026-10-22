@@ -7,9 +7,9 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { manageCleanup, inspectCleanup, cleanupInventory } from '../src/cleanup.ts';
+import { manageCleanup, inspectCleanup, cleanupInventory, readCleanupCatalog, refreshCleanupCatalog } from '../src/cleanup.ts';
 import { Store, type Job } from '../src/store.ts';
-import { inspectWorkspace } from '../src/workspace.ts';
+import { inspectWorkspace, removeWorkspace } from '../src/workspace.ts';
 import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
@@ -18,7 +18,7 @@ function fixture() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cleanup-manager-'))), repo = join(dir, 'repo'), path = join(dir, 'tree'); mkdirSync(repo);
   const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
   git('init', '-q', '-b', 'main'); writeFileSync(join(repo, '.gitignore'), 'ignored\n'); writeFileSync(join(repo, 'file'), 'released\n'); git('add', '.'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'released');
-  git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD')); git('worktree', 'add', '-qb', 'feat/FIX-1', path);
+  git('update-ref', 'refs/remotes/origin/main', git('rev-parse', 'HEAD')); git('remote', 'add', 'origin', repo); git('worktree', 'add', '-qb', 'feat/FIX-1', path);
   let store = new Store(join(dir, 'state'));
   const c = { enabled: false, monitoringTimeoutMinutes: 30, projects: [{ kaneoId: 'p', t3Id: 't3', repoPath: repo, baseBranch: 'main', doneStatuses: ['done'] }] } as Config;
   let threads: ReturnType<typeof v2Thread>[] = [], removeCalls = 0, detachCalls = 0, unknown = false, queued = false, removeError = false, lostAfter = false;
@@ -235,4 +235,275 @@ for (const scenario of ['filesystem-work', 'history-scale', 'cancellation'] as c
     }
     assert.deepEqual(f.calls, [0, 0]);
   } finally { if (immediate) clearImmediate(immediate); t.mock.restoreAll(); syncBuiltinESMExports(); f.close(); }
+});
+
+
+test('workflow views separate retained directories from protected and historical records before pagination', async () => {
+  const f = fixture(); try {
+    f.inventoryRecords(3);
+    const old = f.store.jobs()[0]; old.workspaceCleanedAt = '2026-01-03T00:00:00Z'; f.store.save(old);
+    const result = await cleanupInventory(f.c, f.store, f.t3, 0, 1, undefined, { view: 'retained' });
+    assert.equal(result.total, 1, 'retained view excludes primary, missing and already-removed records');
+    assert.equal(result.items[0].path, f.path);
+    assert.deepEqual(result.views, { retained: 1, protected: 1, missing: 2, removed: 1 });
+    for (const [view, total] of [['protected', 1], ['missing', 2], ['removed', 1]] as const) {
+      const page = await cleanupInventory(f.c, f.store, f.t3, 0, 1, undefined, { view });
+      assert.equal(page.total, total); assert.equal(page.items.length, 1);
+    }
+    assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); }
+});
+
+
+test('disk inventory identifies shared filesystems instead of presenting free space as separate per-repository capacity', async () => {
+  const f = fixture(), other = fixture(); try {
+    f.c.projects.push({ ...other.c.projects[0], kaneoId: 'other', t3Id: 'other' });
+    const result = await cleanupInventory(f.c, f.store, f.t3);
+    const filesystems = result.filesystems;
+    assert.equal(filesystems.length, 1, 'two repositories on the same filesystem have one disk-space observation');
+    assert.deepEqual(filesystems[0].repositories.sort(), [f.repo, other.repo].sort());
+    assert.ok(filesystems[0].freeBytes != null && filesystems[0].freeBytes > 0);
+    assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); other.close(); }
+});
+
+
+test('read-only checks summarize ignored directories without expanding every dependency file', async () => {
+  const f = fixture(); try {
+    const ignored = join(f.path, 'ignored'); mkdirSync(ignored);
+    for (let i = 0; i < 18000; i++) writeFileSync(join(ignored, `${i}-${'x'.repeat(230)}`), '');
+    await assert.doesNotReject(async () => {
+      const workspace = await inspectWorkspace(f.repo, f.path);
+      assert.equal(workspace.ignored, 1, 'the ignored dependency directory is one summarized entry');
+      assert.deepEqual(workspace.changes, [{ kind: '!!', path: 'ignored/' }]);
+      assert.ok(workspace.status, 'normal removal still preserves ignored contents');
+    }, 'a cheap check must not fail because an ignored dependency tree exceeds Git output limits');
+  } finally { f.close(); }
+});
+
+
+for (const scenario of ['ignored-only', 'tracked-change', 'untracked-change', 'queued', 'resumed'] as const) test(`normal cleanup with ignored files: ${scenario}`, async () => {
+  const f = fixture(); try {
+    const [owner] = f.owners(); f.store.save(f.job());
+    writeFileSync(join(f.path, 'ignored'), 'ignored local data is explicitly disposable');
+    if (scenario === 'tracked-change') writeFileSync(join(f.path, 'file'), 'keep tracked work');
+    if (scenario === 'untracked-change') writeFileSync(join(f.path, 'new-file'), 'keep untracked work');
+    if (scenario === 'queued') f.queued();
+    if (scenario === 'resumed') owner.latestUserMessageAt = '2026-01-03T00:00:00Z';
+    const result = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'remove', id: randomUUID(), targets: [f.target], reason: 'Normal cleanup includes ignored files' }, 'fixture', f.boundary);
+    assert.equal(result.state, scenario === 'ignored-only' ? 'confirmed' : 'failed', JSON.stringify(result));
+    assert.equal(existsSync(f.path), scenario !== 'ignored-only');
+    assert.equal(f.calls[0], scenario === 'ignored-only' ? 1 : 0);
+  } finally { f.close(); }
+});
+
+for (const tracked of [true, false]) test(`ignored-only removal rechecks ${tracked ? 'tracked' : 'untracked'} changes after the final activity callback`, async () => {
+  const f = fixture(); try {
+    writeFileSync(join(f.path, 'ignored'), 'discard ignored files only');
+    await assert.rejects(removeWorkspace(f.repo, f.path, f.t3, false, async () => {
+      writeFileSync(join(f.path, tracked ? 'file' : 'new-work'), 'new work must survive');
+    }), /dirty|changed|untracked/i);
+    assert.ok(existsSync(f.path)); assert.equal(f.calls[0], 0);
+  } finally { f.close(); }
+});
+
+
+test('inventory gives each retained row a human reason and one next action before inspection', async () => {
+  const f = fixture(); try {
+    f.owners(); const job = f.job(); f.store.save(job);
+    let row = (await cleanupInventory(f.c, f.store, f.t3)).items.find(i => i.path === f.path)!;
+    assert.equal((row as any).next?.group, 'ready', 'finished work with no recorded blocker offers normal removal');
+    assert.equal((row as any).next.action, 'remove');
+    job.workspaceCleanupError = 'Ticket is no longer Done'; f.store.save(job);
+    row = (await cleanupInventory(f.c, f.store, f.t3)).items.find(i => i.path === f.path)!;
+    assert.equal((row as any).next.group, 'ready'); assert.equal((row as any).next.action, 'remove');
+    assert.match((row as any).next.reason, /merge.*local changes.*checked/i, 'manual deletion verifies current Git evidence instead of trusting historical ticket state');
+    assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); }
+});
+
+
+test('disposable ignored contents do not invalidate an explicit deletion review or require a full dependency hash', async () => {
+  const f = fixture(); try {
+    f.owners(); mkdirSync(join(f.path, 'ignored')); writeFileSync(join(f.path, 'ignored', 'cache'), 'old ignored data');
+    const review = await f.review(); assert.equal(review.forceAllowed, true);
+    writeFileSync(join(f.path, 'ignored', 'cache'), 'new ignored data'); writeFileSync(join(f.path, 'ignored', 'another'), 'disposable');
+    const result = await f.force(review);
+    assert.equal(result.state, 'confirmed', 'ignored data is disposable under the approved policy');
+    assert.equal(existsSync(f.path), false);
+    assert.equal(review.size.bytes, null, 'a skipped ignored tree must not produce a falsely complete size estimate');
+  } finally { f.close(); }
+});
+
+test('automatic maintenance retry reports a deleted completion thread as a blocker instead of claiming maintenance advanced', async () => {
+  const f = fixture(); try {
+    f.store.save(f.job());
+    const result = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'retry', id: randomUUID(), targets: [f.target], reason: 'A missing completion thread prevents automatic maintenance' }, 'fixture', f.boundary);
+    assert.equal(result.state, 'failed', 'missing ownership evidence cannot report successful progress');
+    assert.match(result.outcomes[0].message, /completion thread.*unavailable/i); assert.ok(existsSync(f.path)); assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); }
+});
+
+
+test('inventory distinguishes a repaired terminal permission from an undated historical cleanup error', async () => {
+  const f = fixture(); try {
+    f.owners(); const job = f.job(); job.workspaceCleanupError = 'EnvironmentAuthorizationError: The authenticated token is missing required scope: terminal:read.'; f.store.save(job);
+    const inventory = await cleanupInventory(f.c, f.store, f.t3), row = inventory.items.find(i => i.path === f.path)!;
+    assert.equal(row.next?.group, 'ready', 'a fresh successful terminal snapshot resolves the recorded permission blocker');
+    assert.match(row.next!.reason, /terminal.*(?:restored|available|resolved)/i);
+    assert.equal(f.store.job(job.id)!.workspaceCleanupError, job.workspaceCleanupError, 'the previous result remains history, not rewritten success');
+    assert.equal(row.lastAttempt, null, 'an unknown historical timestamp must not be invented');
+    f.t3.terminals = async () => { throw { _tag: 'EnvironmentAuthorizationError', detail: 'Missing terminal:read scope' }; };
+    const blocked = await cleanupInventory(f.c, f.store, f.t3);
+    assert.equal(blocked.terminalAccess?.state, 'unavailable');
+    assert.equal(blocked.items.find(i => i.path === f.path)!.next?.group, 'attention', 'an unresolved live permission failure is still a hold');
+    assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); }
+});
+
+
+test('failed normal removals leave Ready even when their recorded blocker is fixable', async () => {
+  const f = fixture(); try {
+    f.owners(); const job = f.job(); job.workspaceCleanupError = 'Preserve dirty or ignored workspace contents'; f.store.save(job);
+    const id = randomUUID(); f.store.saveCleanupAction({ id, input: { type: 'remove' }, operator: 'fixture', requestedAt: '2026-01-03T00:00:00Z', updatedAt: '2026-01-03T00:00:00Z', state: 'failed', targets: [f.target], reason: 'Remove finished work', outcomes: [{ path: f.path, state: 'failed', message: job.workspaceCleanupError }] });
+    const inventory = await cleanupInventory(f.c, f.store, f.t3), row = inventory.items.find(i => i.path === f.path)!;
+    assert.equal(row.next?.group, 'attention', 'a failed removal is not still advertised as Ready');
+    assert.match(row.next!.reason, /failed/i); assert.ok(existsSync(f.path)); assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); }
+});
+
+test('a maintenance step that leaves the worktree present is pending, never confirmed removal', async () => {
+  const f = fixture(); try {
+    f.owners(); f.store.save(f.job());
+    const result = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'retry', id: randomUUID(), targets: [f.target], reason: 'Advance one step' }, 'fixture', f.boundary);
+    assert.equal(result.state, 'pending', 'a successful step is not successful physical removal');
+    assert.equal(result.outcomes[0].state, 'pending'); assert.equal(result.outcomes[0].physicalRemoval, false); assert.ok(existsSync(f.path));
+  } finally { f.close(); }
+});
+
+
+for (const scenario of ['orphan', 't3-only', 'shared-idle', 'factory-without-report', 'factory-without-ticket', 'ignored', 'tracked', 'untracked', 'unmerged', 'remote-diverged', 'unknown', 'active', 'queued', 'process', 'resumed', 'resumed-after-detach', 'dirty-after-detach', 'uncertain-removal'] as const) test(`manual unused cleanup verifies Git and live state regardless of Factory ownership: ${scenario}`, async () => {
+  const f = fixture(); try {
+    const owners = scenario === 'orphan' || scenario === 'remote-diverged' ? [] : f.owners(scenario === 'shared-idle' ? 2 : 1);
+    if (scenario.startsWith('factory-') || scenario === 'resumed') {
+      const job = f.job(); if (scenario === 'factory-without-ticket') { job.kind = 'ticket'; job.taskId = 'deleted'; f.kaneo.call = async () => { throw new Error('task not found'); }; } f.store.save(job);
+    }
+    if (scenario === 'ignored') writeFileSync(join(f.path, 'ignored'), 'explicitly disposable');
+    if (scenario === 'tracked') writeFileSync(join(f.path, 'file'), 'preserve tracked work');
+    if (scenario === 'untracked') writeFileSync(join(f.path, 'untracked'), 'preserve new work');
+    if (scenario === 'unmerged') { writeFileSync(join(f.path, 'file'), 'unmerged work'); execFileSync('git', ['-C', f.path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qam', 'unmerged']); }
+    if (scenario === 'remote-diverged') {
+      f.git('checkout', '--orphan', 'replacement'); f.git('rm', '-rf', '.'); writeFileSync(join(f.repo, 'replacement'), 'replacement release'); f.git('add', '.'); f.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'replacement'); f.git('branch', '-f', 'main', 'HEAD');
+      assert.notEqual(f.git('rev-parse', 'main'), f.git('rev-parse', 'refs/remotes/origin/main'), 'the remote release differs from the stale local tracking ref');
+    }
+    if (scenario === 'unknown') f.unknown();
+    if (scenario === 'active') { owners[0].activeRunId = 'active'; owners[0].status = 'running'; }
+    if (scenario === 'queued') f.queued();
+    if (scenario === 'process') f.boundary.processes = async () => [f.path];
+    if (scenario === 'resumed') owners[0].latestUserMessageAt = '2026-01-03T00:00:00Z';
+    if (scenario === 'resumed-after-detach' || scenario === 'dirty-after-detach') f.race(() => {
+      if (owners[0].worktreePath !== null) return;
+      if (scenario === 'resumed-after-detach') owners[0].latestUserMessageAt = '2026-01-03T00:00:00Z';
+      else writeFileSync(join(f.path, 'file'), 'late work must survive');
+    });
+    if (scenario === 'uncertain-removal') f.lost();
+    const allowed = ['orphan', 't3-only', 'shared-idle', 'factory-without-report', 'factory-without-ticket', 'ignored'].includes(scenario);
+    const branchHead = f.git('rev-parse', 'refs/heads/feat/FIX-1'), id = randomUUID();
+    const input = { type: 'remove', id, targets: [f.target], reason: 'Delete verified unused worktrees regardless of Factory ownership' };
+    const result = await manageCleanup(f.c, f.store, f.t3, f.kaneo, input, 'fixture', f.boundary);
+    assert.equal(result.state, allowed ? 'confirmed' : scenario === 'uncertain-removal' ? 'uncertain' : 'failed', JSON.stringify(result));
+    assert.equal(existsSync(f.path), !allowed, 'only verified unused worktrees are removed');
+    assert.equal(f.calls[0], allowed || scenario === 'uncertain-removal' ? 1 : 0);
+    assert.equal(f.git('rev-parse', 'refs/heads/feat/FIX-1'), branchHead, 'the branch ref stays available');
+    if (allowed) { assert.equal(result.outcomes[0].physicalRemoval, true); f.restart(); assert.deepEqual(await manageCleanup(f.c, f.store, f.t3, f.kaneo, input, 'fixture', f.boundary), result); assert.equal(f.calls[0], 1, 'restart never repeats deletion'); }
+  } finally { f.close(); }
+});
+
+
+test('public inspection offers normal deletion of a clean merged orphan without a Factory report', async () => {
+  const f = fixture(); try {
+    const detail = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'inspect', ...f.target }, 'fixture', f.boundary);
+    assert.equal(detail.state, 'eligible', JSON.stringify(detail.checks));
+    assert.equal(detail.jobs.length, 0);
+    assert.ok(detail.checks.some((check: any) => check.name === 'Merged HEAD' && check.state === 'pass'));
+    assert.deepEqual(f.calls, [0, 0]);
+    assert.equal((await cleanupInventory(f.c, f.store, f.t3)).items.find(i => i.path === f.path)!.next!.action, 'remove');
+  } finally { f.close(); }
+});
+
+
+test('maintained cleanup inventory survives restart and serves filters without filesystem or network discovery', async t => {
+  const f = fixture(); try {
+    f.owners(); const job = f.job(); job.state = 'running'; f.store.save(job);
+    await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const observed = readCleanupCatalog(f.c, f.store).checkedAt;
+    job.state = 'complete'; f.store.save(job); f.restart();
+    t.mock.method(f.t3, 'shell', async () => { assert.fail('cached page reads cannot call T3'); });
+    t.mock.method(f.store, 'jobs', () => { assert.fail('cached page reads cannot deserialize historical dispatch commands'); });
+    t.mock.method(fs, 'realpathSync', () => { assert.fail('cached page reads cannot resolve filesystem paths'); }); syncBuiltinESMExports();
+    try {
+      const page = readCleanupCatalog(f.c, f.store, 0, 1, { view: 'retained', query: 'FIX-1', sort: 'path' });
+      assert.equal(page.checkedAt, observed, 'a cache read does not invent a new discovery timestamp');
+      assert.equal(page.total, 1); assert.equal(page.items.length, 1); assert.equal(page.items[0].path, f.path);
+      assert.equal(page.items[0].jobs[0].state, 'complete', 'finished run state is projected immediately from the ledger');
+      assert.notEqual(page.items[0].next!.group, 'protected');
+      assert.deepEqual(f.calls, [0, 0]);
+    } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  } finally { f.close(); }
+});
+
+test('verified removal outcomes update maintained inventory before another discovery scan', async () => {
+  const f = fixture(); try {
+    await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const at = new Date().toISOString();
+    f.store.saveCleanupAction({ id: randomUUID(), input: {}, operator: 'fixture', requestedAt: at, updatedAt: at, state: 'confirmed', targets: [f.target], reason: 'Verified fixture outcome', outcomes: [{ path: f.path, state: 'confirmed', physicalRemoval: true, message: 'removed' }] });
+    const retained = readCleanupCatalog(f.c, f.store, 0, 50, { view: 'retained' });
+    assert.equal(retained.total, 0, 'a known confirmed removal leaves the retained list immediately');
+    const gone = readCleanupCatalog(f.c, f.store, 0, 50, { view: 'gone' });
+    assert.equal(gone.items.find(item => item.path === f.path)!.present, false);
+    assert.equal(gone.staleResults, false, 'known durable outcomes do not force the client to wait for a rescan');
+  } finally { f.close(); }
+});
+
+test('a failed background discovery preserves the previous catalog and configuration changes invalidate it', async () => {
+  const f = fixture(); try {
+    await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const previous = readCleanupCatalog(f.c, f.store);
+    f.unknown(); await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const degraded = readCleanupCatalog(f.c, f.store);
+    assert.equal(degraded.checkedAt, previous.checkedAt);
+    assert.ok(degraded.items.some(item => item.path === f.path)); assert.ok(degraded.errors.length);
+    const changed = { ...f.c, projects: [{ ...f.c.projects[0], repoPath: join(f.dir, 'different') }] };
+    const invalid = readCleanupCatalog(changed, f.store);
+    assert.equal(invalid.checkedAt, ''); assert.equal(invalid.items.length, 0); assert.equal(invalid.refreshing, true);
+  } finally { f.close(); }
+});
+
+
+test('offline inventory discovery materializes the same persistent catalog used by page reads', async () => {
+  const f = fixture(); try {
+    const discovered = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'inventory', view: 'retained' }, 'offline fixture', f.boundary);
+    assert.ok(discovered.items.some((item: any) => item.path === f.path)); assert.ok(f.store.get('cleanupCatalog'));
+    f.restart(); const cached = readCleanupCatalog(f.c, f.store, 0, 50, { view: 'retained' });
+    assert.equal(cached.checkedAt, discovered.checkedAt); assert.equal(cached.total, discovered.total); assert.deepEqual(f.calls, [0, 0]);
+  } finally { f.close(); }
+});
+
+test('catalog discovery is triggered by lifecycle and removal changes rather than heartbeat bookkeeping', () => {
+  const f = fixture(); try {
+    let changes = 0; f.store.onCleanupChange = () => { changes++; };
+    const job = f.job(); f.store.save(job); assert.equal(changes, 1);
+    job.workspaceCleanupAttemptedAt = new Date().toISOString(); job.workspaceCleanupError = 'Still held'; f.store.save(job);
+    job.thread!.updatedAt = new Date().toISOString(); f.store.save(job);
+    assert.equal(changes, 1, 'retry timestamps and thread heartbeats do not rescan every repository');
+    job.state = 'waiting'; f.store.save(job); assert.equal(changes, 2);
+    job.state = 'complete'; f.store.save(job); assert.equal(changes, 3);
+    job.workspaceCleanedAt = new Date().toISOString(); f.store.save(job); assert.equal(changes, 4);
+    const at = new Date().toISOString(), action = { id: randomUUID(), input: {}, operator: 'fixture', requestedAt: at, updatedAt: at, state: 'requested' as const, targets: [f.target], reason: 'Fixture', outcomes: [] as any[] };
+    f.store.saveCleanupAction(action); assert.equal(changes, 5);
+    action.outcomes.push({ path: f.path, state: 'failed', message: 'Preserved' }); f.store.saveCleanupAction(action);
+    assert.equal(changes, 5, 'failed attempts update the ledger without another discovery');
+    action.outcomes = [{ path: f.path, state: 'confirmed', physicalRemoval: true, message: 'removed' }]; f.store.saveCleanupAction(action);
+    assert.equal(changes, 6, 'verified physical changes request discovery');
+  } finally { f.close(); }
 });

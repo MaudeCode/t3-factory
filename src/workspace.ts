@@ -4,7 +4,7 @@ import type { Thread } from './policy.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { lstat, realpath, readdir, readlink, statfs } from 'node:fs/promises';
+import { lstat, realpath, readdir, readlink, statfs, stat } from 'node:fs/promises';
 import { createReadStream, existsSync, realpathSync } from 'node:fs';
 import { dirname, basename, join, resolve, sep } from 'node:path';
 import type { T3 } from './clients.ts';
@@ -25,6 +25,11 @@ export async function worktrees(repo: string, signal?: AbortSignal) {
 }
 export async function freeBytes(path: string): Promise<number | null> {
   try { const fs = await statfs(path); return fs.bavail * fs.bsize; } catch { return null; }
+}
+// Repository aliases can share one filesystem and must not multiply the free-space display.
+export async function filesystemSpace(path: string): Promise<{ id: string | null; freeBytes: number | null }> {
+  try { return { id: String((await stat(path)).dev), freeBytes: await freeBytes(path) }; }
+  catch { return { id: null, freeBytes: null }; }
 }
 export async function processWorkspaces(signal?: AbortSignal): Promise<string[]> {
   const { stdout } = await exec('lsof', ['-b', '-n', '-d', 'cwd', '-Fn'], { timeout: 20_000, maxBuffer: 4_000_000, signal });
@@ -51,6 +56,7 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
   let common = '', inode = '', content = '', files = 0, bytes = 0;
   let tracked = 0, untracked = 0, ignored = 0;
   const changes: { kind: string; path: string }[] = [];
+  const ignoredPaths = new Set<string>();
   if (present) {
     const s = await lstat(path); inode = `${s.dev}:${s.ino}`;
     const ownCommon = (await workspaceGit(path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], signal)).trim();
@@ -58,18 +64,20 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
     if (common !== await realpath((await workspaceGit(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'], signal)).trim())) throw new Error('Worktree belongs to another repository');
     if (canonicalPath((await workspaceGit(path, ['rev-parse', '--show-toplevel'], signal)).trim()) !== path) throw new Error('Path is not a worktree root');
     head = (await workspaceGit(path, ['rev-parse', 'HEAD'], signal)).trim(); branch = (await workspaceGit(path, ['rev-parse', '--abbrev-ref', 'HEAD'], signal)).trim();
-    status = await workspaceGit(path, ['status', '--porcelain=v1', '-z', '--ignored', '--untracked-files=all'], signal);
+    status = await workspaceGit(path, ['status', '--porcelain=v1', '-z', '--ignored=matching', '--untracked-files=all'], signal);
     const entries = status.split('\0');
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i]; if (!entry) continue;
       if (changes.length < 100) changes.push({ kind: entry.slice(0, 2), path: entry.slice(3) });
-      if (entry.startsWith('??')) untracked++; else if (entry.startsWith('!!')) ignored++; else { tracked++; if (/^[RC]|^.[RC]/.test(entry)) i++; }
+      if (entry.startsWith('??')) untracked++; else if (entry.startsWith('!!')) { ignored++; ignoredPaths.add(entry.slice(3).replace(/\/$/, '')); } else { tracked++; if (/^[RC]|^.[RC]/.test(entry)) i++; }
     }
     if (contents) {
       const hash = createHash('sha256');
       const visit = async (dir: string) => {
         for (const name of (await readdir(dir)).sort()) {
           signal?.throwIfAborted(); if (dir === path && name === '.git') continue;
+          // Ignored data is explicitly disposable; fingerprint only the work that still needs review.
+          if (ignoredPaths.has(join(dir, name).slice(path.length + 1))) continue;
           if (++files > 100_000) throw new Error('Content inspection exceeded 100000 entries; narrow or clean the workspace before reviewing');
           const file = join(dir, name), s = await lstat(file);
           hash.update(JSON.stringify([file.slice(path.length), s.mode, s.size, s.mtimeMs, s.ino]));
@@ -83,19 +91,23 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
     }
   }
   const identity = { path, root, primary, present, registered: !!registration, registration, common, inode, head, branch, status, content };
-  return { ...identity, tracked, untracked, ignored, changes, files: contents ? files : null, bytes: contents ? bytes : null,
+  return { ...identity, tracked, untracked, ignored, changes, files: contents ? files : null, bytes: contents && !ignored ? bytes : null,
     fingerprint: createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
     removable: path !== root && path !== primary && !!registration && !registration.locked && (!present || !!common),
   };
 }
 
-export async function removeWorkspace(repo: string, path: string, t3: T3, force = false, beforeRemove?: () => Promise<void>) {
+export async function removeWorkspace(repo: string, path: string, t3: T3, force = false, beforeRemove?: () => Promise<void>, onRemove?: () => void) {
   const before = await inspectWorkspace(repo, path);
   if (before.present || before.registered) {
     if (!before.removable) throw new Error('Only a registered, unlocked, non-primary worktree of the configured repository can be removed');
-    if (!force && before.status) throw new Error('Preserve dirty or ignored workspace contents');
+    if (!force && (before.tracked || before.untracked)) throw new Error('Preserve tracked or untracked workspace changes');
     await beforeRemove?.();
-    await t3.removeWorktree(repo, before.path, force);
+    // Git needs force for ignored files, so recheck real changes after the final activity guard.
+    const final = force ? before : await inspectWorkspace(repo, path);
+    if (!force && (!final.removable || final.head !== before.head || final.branch !== before.branch || final.inode !== before.inode || final.tracked || final.untracked)) throw new Error('Workspace identity or tracked/untracked contents changed before removal');
+    onRemove?.();
+    await t3.removeWorktree(repo, before.path, force || final.ignored > 0);
   }
   const after = await inspectWorkspace(repo, path);
   if (after.present || after.registered) throw new Error('Workspace removal is not confirmed; directory or Git registration remains');

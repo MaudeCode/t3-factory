@@ -1,4 +1,4 @@
-import { manageCleanup, cleanupRequestSchema } from './cleanup.ts';
+import { manageCleanup, cleanupRequestSchema, readCleanupCatalog } from './cleanup.ts';
 import { readFileSync, writeFileSync, renameSync, existsSync, watch } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { modify, applyEdits, parse } from 'jsonc-parser';
@@ -39,6 +39,7 @@ if (command === 'web') {
     const command = args[0] === 'cleanup' ? { type: 'cleanup' as const, input: cleanupRequestSchema.parse(input), operator: args[1] } : commandFor(args);
     return (command && await callControl(c.stateDir, command)) ?? runFactory(args, input);
   };
+  let inventoryRefresh: Promise<unknown> | undefined, inventoryError: string | undefined;
   const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
     readState: () => {
       const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
@@ -47,6 +48,14 @@ if (command === 'web') {
       status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map(compact);
       status.journal = store.events(80);
       return { config, status, now: new Date().toISOString() };
+    },
+    cleanupInventory: input => {
+      const current = loadConfig(configPath), data = readCleanupCatalog(current, store, input.offset, input.limit, input);
+      if ((input.refresh || !data.checkedAt) && !inventoryRefresh) {
+        inventoryError = undefined;
+        inventoryRefresh = viaService(['cleanup'], input).then(result => { if (result.code) inventoryError = safeError(result.data?.message ?? 'Inventory refresh failed'); }).catch(error => { inventoryError = safeError(error); }).finally(() => { inventoryRefresh = undefined; });
+      }
+      return { ...data, errors: inventoryError ? [...data.errors, { repository: 'Inventory', message: inventoryError }] : data.errors, refreshing: !inventoryError && (data.refreshing || !!input.refresh) };
     },
     history: () => store.jobs().map(compact).toReversed(),
     threadLink: (id) => new T3(loadConfig(configPath).t3).threadLink(id),
@@ -78,7 +87,7 @@ if (command === 'web') {
       if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; cleanup refused');
       const lazy = { call: async (tool: string, args: any) => { if (!kaneo) { kaneo = new Kaneo(c.kaneo); await kaneo.connect(); } return kaneo.call(tool, args); } } as Kaneo;
       console.log(JSON.stringify(await manageCleanup(c, store, new T3(c.t3), lazy, input, process.argv[3] ?? 'local CLI operator')));
-      if (!['inventory', 'inspect', 'review'].includes(input.type)) writeStatus(c, store);
+      if (!['inspect', 'review'].includes(input.type)) writeStatus(c, store);
     }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
   finally { await kaneo?.close().catch(() => {}); store?.close(); }

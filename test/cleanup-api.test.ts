@@ -17,12 +17,12 @@ test('cleanup inventory is authenticated, read-only and routed through the sched
   try {
     const address = server.address() as { port: number };
     const response = await new Promise<Response>((resolve, reject) => {
-      const req = request(`http://127.0.0.1:${address.port}/api/cleanup`, { headers: { Host: '127.0.0.1:3848' } }, res => { const chunks: Buffer[] = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode }))); });
+      const req = request(`http://127.0.0.1:${address.port}/api/cleanup?view=retained`, { headers: { Host: '127.0.0.1:3848' } }, res => { const chunks: Buffer[] = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode }))); });
       req.on('error', reject); req.end();
     });
     assert.equal(response.status, 200, 'cleanup inventory must be available to an authenticated operator');
     assert.deepEqual(await response.json(), { items: [], total: 0 });
-    assert.deepEqual(calls, [{ args: ['cleanup'], input: { type: 'inventory', offset: 0, limit: 50 } }]);
+    assert.deepEqual(calls, [{ args: ['cleanup'], input: { type: 'inventory', offset: 0, limit: 50, view: 'retained' } }]);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true }); }
 });
 
@@ -51,5 +51,44 @@ test('cleanup mutations enforce authentication, origin, strict validation and sh
     finish({ code: 0, data: { state: 'confirmed', outcomes: [] } });
     await new Promise(resolve => setImmediate(resolve));
     const stored = await (await send('/api/operations/' + id)).json(); assert.equal(stored.state, 'done'); assert.equal(stored.result.data.state, 'confirmed');
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true }); }
+});
+
+
+for (const outcome of ['failed', 'pending', 'uncertain'] as const) test(`cleanup HTTP operation reports ${outcome} outcomes even when the command returned zero`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cleanup-api-outcome-'));
+  const server = createFactoryWeb({ config: webConfigSchema.parse({}), secret: 'a'.repeat(64), dataDir: dir, oidc: { authenticated: async () => true } as any, readState: () => ({}),
+    run: async () => ({ code: 0, data: { state: outcome === 'pending' ? 'confirmed' : outcome, outcomes: [{ path: '/workspace/tree', state: outcome, physicalRemoval: false, message: 'Not removed' }] } }),
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port, id = '00000000-0000-4000-8000-000000000044';
+  const send = (path: string, input?: unknown) => new Promise<any>((resolve, reject) => {
+    const req = request(`http://127.0.0.1:${port}${path}`, { method: input ? 'POST' : 'GET', headers: { Host: '127.0.0.1:3848', Origin: 'http://127.0.0.1:3848', 'Idempotency-Key': id, 'Content-Type': 'application/json' } }, res => { let body = ''; res.on('data', c => body += c); res.on('end', () => resolve(JSON.parse(body))); });
+    req.on('error', reject); req.end(input ? JSON.stringify(input) : undefined);
+  });
+  try {
+    await send('/api/cleanup/actions', { type: 'remove', targets: [{ projectId: 'p', path: '/workspace/tree' }], reason: 'Check physical outcome' });
+    await new Promise(resolve => setImmediate(resolve));
+    const operation = await send('/api/operations/' + id);
+    assert.equal(operation.state, outcome, 'request completion must preserve the cleanup outcome');
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true }); }
+});
+
+
+test('cleanup HTTP reads use the maintained snapshot even when the command runner is unavailable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cleanup-api-catalog-')); const inputs: any[] = [];
+  const server = createFactoryWeb({ config: webConfigSchema.parse({}), secret: 'a'.repeat(64), dataDir: dir,
+    oidc: { authenticated: async () => true } as any, readState: () => ({}),
+    cleanupInventory: input => { inputs.push(input); return { items: [], total: 0, checkedAt: '2026-01-01T00:00:00Z' }; },
+    run: async () => { assert.fail('inventory must bypass command execution'); },
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const result = await new Promise<{ code: number; data: any }>((resolve, reject) => {
+      const req = request(`http://127.0.0.1:${port}/api/cleanup?limit=6&view=retained&refresh=true`, { headers: { Host: '127.0.0.1:3848' } }, res => { let text = ''; res.on('data', chunk => { text += chunk; }); res.on('end', () => resolve({ code: res.statusCode!, data: JSON.parse(text) })); }); req.on('error', reject); req.end();
+    });
+    assert.equal(result.code, 200); assert.equal(result.data.checkedAt, '2026-01-01T00:00:00Z');
+    assert.equal(inputs[0].refresh, true); assert.equal(inputs[0].limit, 6);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true }); }
 });

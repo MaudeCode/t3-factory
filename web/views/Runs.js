@@ -31,11 +31,11 @@ import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
 // Search box, Filter button and its popover for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
-export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false }) {
+export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false, children, searchLabel = "Find a ticket", filterLabel = "Filter runs", activeCount }) {
   const [open, setOpen] = useState(false);
   const button = useRef();
   const change = (key, value) => onFilters({ ...filters, [key]: value });
-  const active = ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
+  const active = activeCount ?? ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
   const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
   for (const id of sessions ? filters.sessions ?? [] : []) if (!sessionNames.has(id)) sessionNames.set(id, "Session no longer listed");
   const sessionOptions = [...sessionNames].sort((a, b) => a[1].localeCompare(b[1]));
@@ -46,9 +46,10 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
   const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
   const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
-  return html`<input class="mono search" value=${query} onInput=${(e) => onQuery(e.target.value)} placeholder="Find a ticket" aria-label="Find a ticket" />
-    <span ref=${button}><${Button} size="sm" icon="filter" label=${`Filter runs${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>
+  return html`<input class="mono search" value=${query} onInput=${(e) => onQuery(e.target.value)} placeholder=${searchLabel} aria-label=${searchLabel} />
+    <span ref=${button}><${Button} size="sm" icon="filter" label=${`${filterLabel}${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>
     <${Popover} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
+      ${children ?? html`
       ${sessions && html`<${Field} group label="Session"><${Select} multiple placeholder="Any" label="Session" value=${filters.sessions ?? []} options=${sessionOptions} onChange=${value => change("sessions", value)} /><//>`}
       <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kaneoId, p.name])} onChange=${value => change("projects", value)} /><//>
       <${Field} group label="Tags">
@@ -61,6 +62,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
       ${chips("difficulties", "Difficulty", [glyph("low", "bars1", "Low"), glyph("med", "bars2", "Medium"), glyph("high", "bars3", "High")])}
       ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("no-priority", "circleSlash", "No priority")])}
       ${providers && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
+      `}
       ${active > 0 && html`<${Button} variant="ghost" size="sm" onClick=${() => { onFilters({}); onQuery(""); }}>Clear all<//>`}
     <//>`;
 }

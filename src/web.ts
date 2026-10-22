@@ -1,3 +1,4 @@
+import { cleanupOperationState } from '../web/lib/format.js';
 import { cleanupRequestSchema } from './cleanup.ts';
 import {
   createServer,
@@ -52,7 +53,7 @@ type Result = { code: number; data: any };
 type Operation = {
   id: string;
   input: unknown;
-  state: "running" | "done" | "uncertain";
+  state: "running" | "done" | "failed" | "pending" | "uncertain";
   createdAt: string;
   result?: Result;
 };
@@ -160,6 +161,7 @@ export function createFactoryWeb(options: {
   dataDir: string;
   readState: () => unknown;
   history?: () => unknown;
+  cleanupInventory?: (input: Extract<import("./cleanup.ts").CleanupRequest, { type: "inventory" }>) => unknown;
   report?: (id: string) => unknown;
   threadLink?: (id: string) => Promise<string>;
   watch?: (notify: () => void) => () => void;
@@ -437,7 +439,8 @@ export function createFactoryWeb(options: {
         }
         if (path === "/api/cleanup" && req.method === "GET") {
           const query = new URL(req.url!, localOrigin).searchParams;
-          const input = cleanupRequestSchema.parse({ type: "inventory", offset: Number(query.get("offset") ?? 0), limit: Number(query.get("limit") ?? 50), ...Object.fromEntries(["query", "repository", "ownership", "state", "sort", "inspectionId"].filter(k => query.has(k)).map(k => [k, query.get(k)])) });
+          const input = cleanupRequestSchema.parse({ type: "inventory", ...query.has("refresh") ? { refresh: z.enum(["true", "false"]).parse(query.get("refresh")) === "true" } : {}, offset: Number(query.get("offset") ?? 0), limit: Number(query.get("limit") ?? 50), ...Object.fromEntries(["query", "repository", "ownership", "state", "view", "sort", "inspectionId"].filter(k => query.has(k)).map(k => [k, query.get(k)])) });
+          if (options.cleanupInventory) return json(res, 200, options.cleanupInventory(input as Extract<import("./cleanup.ts").CleanupRequest, { type: "inventory" }>));
           const result = await run(["cleanup"], input);
           return json(res, result.code ? 503 : 200, result.data);
         }
@@ -489,7 +492,7 @@ export function createFactoryWeb(options: {
           ];
           void run(args, path === "/api/cleanup/actions" ? input : undefined)
             .then((result) =>
-              saveJSON(file, { ...operation, state: "done", result }),
+              saveJSON(file, { ...operation, state: path === "/api/cleanup/actions" ? cleanupOperationState(result) : "done", result }),
             )
             .catch(() =>
               saveJSON(file, {

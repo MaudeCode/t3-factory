@@ -518,3 +518,58 @@ test('upstream requests use the shared queue and retain duplicate protection for
   assert.equal(store.pendingReview('up/stable'), true);
   store.operations.value = []; saved.clear();
 });
+
+
+test('cleanup queues distinct rows and chunks bulk removals through the existing serial operation drain', async () => {
+  store.operations.value = []; store.applyState(fixture(), true);
+  const oldFetch = globalThis.fetch, calls: any[] = []; let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url !== '/api/cleanup/actions') return Response.json(fixture());
+    const input = JSON.parse(init!.body as string), id = (init!.headers as any)['Idempotency-Key']; calls.push(input);
+    if (calls.length === 1) await held;
+    return Response.json({ id, state: 'done', result: { data: { state: 'confirmed', outcomes: input.targets.map((t: any) => ({ path: t.path, state: 'confirmed', message: 'removed' })) } } });
+  };
+  try {
+    const targets = Array.from({ length: 45 }, (_, n) => ({ projectId: 'p', path: `/worktrees/${n}` }));
+    store.startCleanup({ type: 'remove', targets, reason: 'Remove completed worktrees' });
+    assert.deepEqual(store.operations.value.map((op: any) => op.input.targets.length), [20, 20, 5], 'the queue preserves the API batch bound');
+    assert.ok(store.startCleanup({ type: 'remove', targets: [{ projectId: 'p', path: '/worktrees/next' }], reason: 'Another finished row' }), 'another row remains usable during a removal');
+    assert.equal(store.startCleanup({ type: 'remove', targets: [targets[0]], reason: 'Duplicate click' }), null);
+    assert.equal(calls.length, 1, 'only the first batch is in flight');
+    release(); await untilChecked(() => calls.length === 4 && store.operations.value.every((op: any) => op.state === 'done'));
+    assert.deepEqual(calls.map(i => i.targets.length), [20, 20, 5, 1]);
+  } finally { release(); await untilChecked(() => store.operations.value.every((op: any) => op.state === 'done')); globalThis.fetch = oldFetch; store.operations.value = []; }
+});
+
+
+test('cleanup results report verified removals and override stale Ready inventory', async () => {
+  const { cleanupOperationState, cleanupResultSummary, projectCleanupResults } = await import('../web/lib/format.js');
+  const path = '/worktrees/failed', target = { projectId: 'p', path };
+  const before = '2026-01-01T00:00:00.000Z', after = '2026-01-01T00:01:00.000Z';
+  const failed = { id: 'failed', input: { targets: [target] }, completedAt: after, result: { code: 0, data: { state: 'failed', outcomes: [{ path, state: 'failed', message: 'Preserve dirty or ignored workspace contents' }] } } };
+  assert.equal(cleanupOperationState(failed.result), 'failed', 'exit code zero does not mean the folder was removed');
+  const inventory = { checkedAt: before, items: [{ ...target, present: true, state: 'pending', next: { group: 'ready' } }], groups: { ready: 1, attention: 0 } };
+  const projected = projectCleanupResults(inventory, [failed]);
+  assert.equal(projected.items[0].next.group, 'attention');
+  assert.equal(projected.groups.ready, 0);
+  assert.equal(projected.staleResults, true, 'group totals cannot be treated as fresh during reconciliation');
+  assert.equal(projectCleanupResults(inventory, [failed]).items[0].next.group, 'attention', 'a stale refresh cannot resurrect the row');
+  const operations = [failed, ...[true, false, undefined].map((physicalRemoval, n) => ({ id: String(n), input: { targets: [{ projectId: 'p', path: `/worktrees/${n}` }] }, result: { data: { outcomes: [{ path: `/worktrees/${n}`, state: 'confirmed', physicalRemoval }] } } }))];
+  assert.deepEqual(cleanupResultSummary(operations), { total: 4, processed: 4, removed: 1, absent: 1, failed: 1, pending: 0, uncertain: 1, cancelled: 0 });
+  const caughtUp = { ...projected, resultsCheckedAt: after };
+  assert.equal(projectCleanupResults(caughtUp, [failed]).staleResults, false);
+});
+
+
+test('launch feedback excludes cleanup operations without dropping their recovery state', () => {
+  const cleanup = { id: 'cleanup', kind: 'cleanup', state: 'running', input: { type: 'remove' } };
+  const ticket = { id: 'ticket', input: { ticket: 'FIX-1' } }, upstream = { id: 'upstream', input: { upstream: 'example/app' } };
+  store.operations.value = [cleanup, ticket, upstream];
+  try {
+    assert.deepEqual(store.launchOperations.value.map((op: any) => op.id), ['ticket', 'upstream']);
+    store.operations.value = [cleanup];
+    assert.deepEqual(store.launchOperations.value, []);
+    assert.equal(store.operations.value[0], cleanup);
+  } finally { store.operations.value = []; }
+});
