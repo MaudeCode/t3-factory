@@ -1975,16 +1975,6 @@ h1 .crumb::after {
 }
 
 /* Run slots */
-.slot-picker {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-.slot-picker input {
-  width: 110px;
-}
-
 .slots {
   display: flex;
   gap: var(--space-1);
@@ -2030,10 +2020,30 @@ h1 .crumb::after {
 .slots [aria-checked="true"] {
   box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent);
 }
+.slots .slot-custom {
+  width: 84px;
+  height: 34px;
+  font-weight: 600;
+}
 .slots .slot-off[aria-checked="true"] {
   background: var(--surface-2);
   color: var(--ink);
   box-shadow: none;
+}
+
+.label-limits {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+.label-limit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.label-limit > span {
+  min-width: 120px;
 }
 
 /* Chips */

@@ -64,6 +64,7 @@ export const STREAM_REASONS = {
   "quota-budget": "waiting for budget",
   "no-eligible-model": "no automatic model available",
   "difficulty-limit": "no tickets within difficulty limits",
+  "label-limit": "label limits are full",
   "needs-classification": "tickets need difficulty labels",
   "no-eligible-ticket": "watching the queue",
   dispatched: "working",

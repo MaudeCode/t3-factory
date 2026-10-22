@@ -1,7 +1,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, jobs, history, sources, selectedProject, clock, serverNow, actions, set } from "../lib/store.js";
+import { config, status, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
-import { Button, Field, Input, Select, Chips, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Page, RowBody } from "../ui/index.js";
+import { Button, Field, Input, Select, Chips, Slots, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Page, RowBody } from "../ui/index.js";
 import { follow } from "../lib/router.js";
 
 const t3Options = (current) => {
@@ -14,6 +14,25 @@ const kaneoOptions = (current) => {
 };
 const columnOptions = (kaneoId) => (sources.value?.kaneo.columns[kaneoId] ?? []).map((c) => [c.slug, c.name]);
 const labelOptions = () => (sources.value?.kaneo.labels ?? []).map((l) => [l, l]);
+
+// One run limit per label; runs in this project count against every limited label they carry.
+function LabelLimits({ index, project }) {
+  const path = ["projects", String(index), "labelLimits"];
+  const limits = project.labelLimits ?? {};
+  const running = (label) => jobs.value.filter((j) => j.projectId === project.kaneoId && isActive(j) && j.labels?.includes(label)).length;
+  const free = labelOptions().filter(([label]) => !(label in limits));
+  return html`<div class="label-limits">
+    ${Object.keys(limits).map((label) => {
+      const n = running(label);
+      return html`<div class="label-limit" key=${label}>
+        <span><${Tag}>${label}<//> <small class="muted">${n} running</small></span>
+        <${Slots} label=${`${label} runs at once`} path=${[...path, label]} running=${n} />
+        <${Button} variant="ghost" size="sm" icon="x" label=${`Remove the ${label} limit`} onClick=${() => update((c) => delete c.projects[index].labelLimits[label])} />
+      </div>`;
+    })}
+    ${free.length > 0 && html`<${Select} label="Limit a label" value="" options=${[["", "Limit a label"], ...free]} onChange=${(v) => v && set([...path, v], 1)} />`}
+  </div>`;
+}
 
 // New projects start from the T3 and Kaneo catalogs so nothing has to be typed.
 function AddProject({ open, onClose }) {
@@ -120,6 +139,7 @@ export function Projects() {
           <${Field} group label="Ready when in" hint="Tickets in these columns may be picked up."><${Chips} label="Ready statuses" path=${[...p, "readyStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>
           <${Field} group label="Done when in" hint="A ticket moved here is finished; its run is settled."><${Chips} label="Done statuses" path=${[...p, "doneStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>
           <${Field} group label="Priority labels" hint="Pick in order of importance. Tickets with a higher label go first; among equals, urgency decides."><${Chips} ordered label="Priority labels" path=${[...p, "priorityLabels"]} options=${labelOptions()} custom="Other label" /><//>
+          <${Field} group label="Runs at once by label" hint="For tickets that compete for one machine resource, such as a simulator. Runs waiting for you free their slot; a run you start by hand may exceed the limit."><${LabelLimits} index=${i} project=${current} /><//>
         <//>
         <${Section} title="Watched releases" hint="Each new release of these repositories gets a review run.">
           ${current.upstreams?.length
