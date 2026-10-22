@@ -556,5 +556,8 @@ test('automatic maintenance finalizes a finished job whose worktree is gone inst
     const registered = { ...ghost, id: 'registered', thread: { ...ghost.thread, worktreePath: f.path } }; f.store.save(registered);
     await cleanupNextWorkspace(f.c, f.store, noShell, f.kaneo, new Set());
     assert.ok(!f.store.job('registered')!.workspaceCleanedAt, 'a stale Git registration still needs real cleanup'); assert.ok(f.store.job('registered')!.workspaceCleanupError);
+    const kept = { ...orphaned, id: 'kept', thread: { ...ghost.thread, worktreePath: f.repo } }; f.store.save(kept);
+    await cleanupNextWorkspace(f.c, f.store, noShell, f.kaneo, new Set());
+    assert.match(f.store.job('kept')!.workspaceCleanupError!, /no longer configured/); assert.notEqual(JSON.parse(f.store.get('cleanupMaintenance')!).state, 'blocked', 'an unconfigured project does not alarm maintenance');
   } finally { f.close(); }
 });

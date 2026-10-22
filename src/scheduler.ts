@@ -298,6 +298,8 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
       maintenance({ state: 'complete', lastSuccess: job.workspaceCleanedAt });
       return;
     }
+    // A worktree of a project that is no longer configured cannot be verified; keep it quietly instead of alarming every retry.
+    if (!configured) { job.workspaceCleanupError = 'Project is no longer configured; worktree kept'; job.workspaceCleanupBlockedAt = new Date().toISOString(); store.save(job); return; }
     const project = projectFor(c, job), fresh = await t3.shell(true), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
     if (!thread) throw new Error('Completion thread is unavailable; use explicit deletion review');
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');

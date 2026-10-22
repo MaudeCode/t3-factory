@@ -147,7 +147,6 @@ export function Cleanup() {
     try { const page = await loadCleanup({ ...filters, offset: data.items.length, limit: 50 }); if (epoch !== generation.current) return; setData(current => ({ ...current, groups: page.groups, total: page.total, items: [...current.items, ...page.items.filter(i => !current.items.some(old => keyOf(old) === keyOf(i)))] })); }
     catch (e) { if (epoch === generation.current) setError(e.message); } finally { if (epoch === generation.current) setLoading(false); }
   };
-  const missingProject = data?.maintenance?.error?.match(/Keep project (\S+) configured/);
   const counts = data ? { present: (data.views?.retained ?? 0) + (data.views?.protected ?? 0), ready: data.groups?.ready ?? 0, blocked: (data.groups?.attention ?? 0) + (data.groups?.retrying ?? 0), inuse: data.groups?.protected ?? 0 } : {};
   const activeFilters = [filters.repository, filters.ownership, filters.sort !== "action"].filter(Boolean).length;
   return html`<${Page} title="Cleanup" class="cleanup-page" lead=${data?.filesystems?.map(f => `${bytes(f.freeBytes)} free`).join(" · ")} actions=${html`<${RunFilters} rows=${[]} filters=${filters} query=${filters.query} onQuery=${v => change("query", v)} onFilters=${v => setFilters(current => ({ ...current, repository: "", ownership: "", sort: "action", ...v }))} searchLabel="Find a branch or folder" filterLabel="Filter worktrees" activeCount=${activeFilters}>
@@ -159,7 +158,6 @@ export function Cleanup() {
     ${error && html`<p role="alert" class="alert">${error}</p>`}
     ${data?.errors.map(e => html`<p role="alert" class="alert">Couldn't scan ${e.repository === "T3" ? "T3 ownership" : e.repository.split("/").at(-1)}. ${e.message} <${Button} size="sm" onClick=${refresh}>Retry scan<//></p>`)}
     ${data?.stalled && html`<p role="alert" class="alert">Automatic cleanup has stalled since ${clockTime(data.maintenance.lastAttempt)}: ${data.maintenance.error || "no error recorded"}.</p>`}
-    ${missingProject && html`<p role="alert" class="alert">A finished run references a removed project. Restore it as disabled to finish automatic cleanup. <a href="/projects" onClick=${follow}>Open Projects</a></p>`}
     ${totalTargets > 0 && html`<div class=${`cleanup-progress ${summary.failed > 0 ? "error" : ""}`} role=${summary.failed > 0 ? "alert" : "status"}><span>${outcomeSummary || "Nothing deleted"}${running ? ` · ${summary.processed} of ${totalTargets} done` : ""}</span>${running ? html`<${Button} size="sm" onClick=${stopCleanupQueue}>Stop queued deletions<//>` : html`<${Button} size="sm" variant="ghost" onClick=${() => ops.filter(op => !pendingState(op.state) && op.result?.data?.state !== "uncertain").forEach(op => actions.dismissOperation(op.id))}>Dismiss<//>`}</div>`}
     ${!data && html`<${Empty}>${loading ? "Loading worktrees…" : "Inventory unavailable."}<//>`}
     ${data && html`
