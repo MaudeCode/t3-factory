@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { manageCleanup, inspectCleanup, cleanupInventory, readCleanupCatalog, refreshCleanupCatalog } from '../src/cleanup.ts';
 import { Store, type Job } from '../src/store.ts';
+import { cleanupNextWorkspace } from '../src/scheduler.ts';
 import { inspectWorkspace, removeWorkspace } from '../src/workspace.ts';
 import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
@@ -22,10 +23,10 @@ function fixture() {
   let store = new Store(join(dir, 'state'));
   const c = { enabled: false, monitoringTimeoutMinutes: 30, projects: [{ kaneoId: 'p', t3Id: 't3', repoPath: repo, baseBranch: 'main', doneStatuses: ['done'] }] } as Config;
   let threads: ReturnType<typeof v2Thread>[] = [], removeCalls = 0, detachCalls = 0, unknown = false, queued = false, removeError = false, lostAfter = false;
-  let onShell: (() => void) | undefined;
+  let onShell: (() => void) | undefined, terminalList: any[] = []; const closes: { threadId: string; terminalId: string }[] = [];
   const t3 = { shell: async () => { onShell?.(); if (unknown) throw { _tag: 'EnvironmentAuthorizationError', detail: 'Missing terminal:read scope' }; return { threads, projects: [{ id: 't3', workspaceRoot: repo }] }; },
     request: async (url: string) => ({ projection: v2Projection(threads.find(t => url.includes(`/threads/${t.id}/`))!, { runs: queued ? [{ status: 'queued' }] : [], runtimeRequests: [], messages: [], providerThreads: [], subagents: [] }) }),
-    terminals: async () => [], dispatch: async (command: any) => { detachCalls++; const thread = threads.find(t => t.id === command.threadId)!; assert.equal(command.expectedWorktreePath, thread.worktreePath); thread.worktreePath = thread.branch = null; },
+    terminals: async () => terminalList, closeTerminal: async (threadId: string, terminalId: string) => { closes.push({ threadId, terminalId }); terminalList = terminalList.filter(t => t.terminalId !== terminalId); }, dispatch: async (command: any) => { detachCalls++; const thread = threads.find(t => t.id === command.threadId)!; assert.equal(command.expectedWorktreePath, thread.worktreePath); thread.worktreePath = thread.branch = null; },
     removeWorktree: async (_repo: string, target: string, force: boolean) => { removeCalls++; if (removeError) throw new Error('RPC response lost'); git('worktree', 'remove', ...force ? ['--force'] : [], target); if (lostAfter) throw new Error('RPC response lost after removal'); },
   } as unknown as T3;
   const kaneo = { call: async () => ({ id: 'task', projectId: 'p', number: 1, title: 'Fixture', createdAt: '2026-01-01T00:00:00Z', priority: 'low', status: 'done' }) } as unknown as Kaneo;
@@ -42,6 +43,7 @@ function fixture() {
       threads = Array.from({ length: count }, (_, i) => v2Thread({ id: `inventory-${i}`, projectId: 't3', worktreePath: join(dir, `inventory-${i}`), branch: `feat/FIX-${i + 10}` }));
       for (const thread of threads) store.save({ ...job(), id: thread.id, threadId: thread.id, thread: { ...job().thread!, worktreePath: thread.worktreePath } });
     },
+    terminal: (busy: boolean) => { terminalList = [{ threadId: 'owner', terminalId: 'setup-shell', cwd: path, worktreePath: path, status: 'running', pid: 1, hasRunningSubprocess: busy, label: 'fish', updatedAt: '2026-01-01T00:00:00Z' }]; }, closes,
     unknown: () => { unknown = true; }, queued: () => { queued = true; }, lost: () => { removeError = true; }, lostAfter: () => { lostAfter = true; }, race: (fn: () => void) => { onShell = fn; },
     restart: () => { store.close(); store = new Store(join(dir, 'state')); },
     close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); },
@@ -362,13 +364,20 @@ test('inventory distinguishes a repaired terminal permission from an undated his
 });
 
 
-test('failed normal removals leave Ready even when their recorded blocker is fixable', async () => {
+test('failed normal removals name their blocker and the action that clears it', async () => {
   const f = fixture(); try {
-    f.owners(); const job = f.job(); job.workspaceCleanupError = 'Preserve dirty or ignored workspace contents'; f.store.save(job);
-    const id = randomUUID(); f.store.saveCleanupAction({ id, input: { type: 'remove' }, operator: 'fixture', requestedAt: '2026-01-03T00:00:00Z', updatedAt: '2026-01-03T00:00:00Z', state: 'failed', targets: [f.target], reason: 'Remove finished work', outcomes: [{ path: f.path, state: 'failed', message: job.workspaceCleanupError }] });
-    const inventory = await cleanupInventory(f.c, f.store, f.t3), row = inventory.items.find(i => i.path === f.path)!;
-    assert.equal(row.next?.group, 'attention', 'a failed removal is not still advertised as Ready');
-    assert.match(row.next!.reason, /failed/i); assert.ok(existsSync(f.path)); assert.deepEqual(f.calls, [0, 0]);
+    f.owners(); const job = f.job(); f.store.save(job);
+    const record = (message: string) => f.store.saveCleanupAction({ id: randomUUID(), input: { type: 'remove' }, operator: 'fixture', requestedAt: '2026-01-03T00:00:00Z', updatedAt: new Date().toISOString(), state: 'failed', targets: [f.target], reason: 'Remove finished work', outcomes: [{ path: f.path, state: 'failed', message }] });
+    const row = async () => (await cleanupInventory(f.c, f.store, f.t3)).items.find(i => i.path === f.path)!.next!;
+    record('Workspace HEAD is not verified merged into the remote release branch');
+    assert.deepEqual(await row(), { group: 'attention', reason: 'Not merged into the release branch', action: 'force' }, 'a real refusal is not advertised as Unused');
+    record('1 tracked changes, 2 untracked files will be lost');
+    assert.deepEqual(await row(), { group: 'attention', reason: 'Local changes would be lost', action: 'force' });
+    record('Open T3 terminals retain this workspace; A running process is using the worktree');
+    assert.equal((await row()).group, 'protected', 'a folder something is using is In use, not a deletion candidate');
+    record('Preserve dirty or ignored workspace contents');
+    assert.equal((await row()).action, 'remove', 'a refusal under a rule that no longer applies is retried by the next delete');
+    assert.ok(existsSync(f.path)); assert.deepEqual(f.calls, [0, 0]);
   } finally { f.close(); }
 });
 
@@ -505,5 +514,47 @@ test('catalog discovery is triggered by lifecycle and removal changes rather tha
     assert.equal(changes, 5, 'failed attempts update the ledger without another discovery');
     action.outcomes = [{ path: f.path, state: 'confirmed', physicalRemoval: true, message: 'removed' }]; f.store.saveCleanupAction(action);
     assert.equal(changes, 6, 'verified physical changes request discovery');
+  } finally { f.close(); }
+});
+
+test('manual deletion recognises a squash-merged branch', async () => {
+  const f = fixture(); try {
+    f.owners();
+    const commit = (cwd: string, message: string) => execFileSync('git', ['-C', cwd, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qam', message]);
+    writeFileSync(join(f.path, 'file'), 'first\n'); commit(f.path, 'first');
+    writeFileSync(join(f.path, 'file'), 'second\n'); commit(f.path, 'second');
+    const blocked = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'remove', id: randomUUID(), targets: [f.target], reason: 'Unmerged yet' }, 'fixture', f.boundary);
+    assert.equal(blocked.state, 'failed'); assert.match(blocked.outcomes[0].message, /not verified merged/);
+    f.git('merge', '--squash', 'feat/FIX-1'); commit(f.repo, 'squash');
+    f.git('update-ref', 'refs/remotes/origin/main', f.git('rev-parse', 'HEAD'));
+    const result = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'remove', id: randomUUID(), targets: [f.target], reason: 'Squash merged' }, 'fixture', f.boundary);
+    assert.equal(result.state, 'confirmed', JSON.stringify(result.outcomes)); assert.equal(result.outcomes[0].physicalRemoval, true); assert.ok(!existsSync(f.path));
+  } finally { f.close(); }
+});
+
+test('manual deletion closes idle T3 shells but never a terminal running a command', async () => {
+  const f = fixture(); try {
+    f.owners(); f.terminal(true);
+    const busy = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'remove', id: randomUUID(), targets: [f.target], reason: 'Busy shell' }, 'fixture', f.boundary);
+    assert.equal(busy.state, 'failed'); assert.match(busy.outcomes[0].message, /terminals/i); assert.equal(f.closes.length, 0); assert.ok(existsSync(f.path));
+    f.restart(); f.closes.length = 0; f.terminal(false);
+    const idle = await manageCleanup(f.c, f.store, f.t3, f.kaneo, { type: 'remove', id: randomUUID(), targets: [f.target], reason: 'Idle shell' }, 'fixture', f.boundary);
+    assert.equal(idle.state, 'confirmed', JSON.stringify(idle.outcomes)); assert.deepEqual(f.closes, [{ threadId: 'owner', terminalId: 'setup-shell' }]); assert.ok(!existsSync(f.path));
+  } finally { f.close(); }
+});
+
+test('automatic maintenance finalizes a finished job whose worktree is gone instead of retrying it forever', async () => {
+  const f = fixture(); try {
+    const absent = join(f.dir, 'absent'), noShell = { shell: async () => { throw new Error('Nothing to verify for a vanished worktree'); } } as unknown as T3;
+    const ghost = { ...f.job(), id: 'ghost', state: 'dismissed' as const, dismissedAt: '2026-01-02T00:00:00Z', thread: { ...f.job().thread!, worktreePath: absent } };
+    const orphaned = { ...ghost, id: 'orphaned', projectId: 'removed-project' };
+    f.store.save(ghost); f.store.save(orphaned);
+    for (const job of [ghost, orphaned]) assert.equal(await cleanupNextWorkspace(f.c, f.store, noShell, f.kaneo, new Set()), true);
+    assert.ok(f.store.job('ghost')!.workspaceCleanedAt); assert.ok(f.store.job('orphaned')!.workspaceCleanedAt);
+    assert.equal(await cleanupNextWorkspace(f.c, f.store, noShell, f.kaneo, new Set()), false, 'nothing is left to retry');
+    rmSync(f.path, { recursive: true });
+    const registered = { ...ghost, id: 'registered', thread: { ...ghost.thread, worktreePath: f.path } }; f.store.save(registered);
+    await cleanupNextWorkspace(f.c, f.store, noShell, f.kaneo, new Set());
+    assert.ok(!f.store.job('registered')!.workspaceCleanedAt, 'a stale Git registration still needs real cleanup'); assert.ok(f.store.job('registered')!.workspaceCleanupError);
   } finally { f.close(); }
 });

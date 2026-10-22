@@ -206,7 +206,16 @@ export function cleanupOperationState(result) {
 /** @returns {{group: "attention" | "retrying" | "gone", reason: string, action: "inspect" | "retry" | "none"} | null} */
 export function cleanupOutcomePresentation(outcome) {
   if (!outcome) return null;
-  if (outcome.state === "failed") return { group: "attention", reason: /dirty or ignored/i.test(outcome.message) ? "Removal failed: local files were preserved" : /maxBuffer/i.test(outcome.message) ? "Removal failed: the file scan exceeded its limit" : `Removal failed: ${outcome.message}`, action: "inspect" };
+  if (outcome.state === "failed") {
+    const m = outcome.message;
+    // Refusals under rules that no longer apply are retried by the next delete.
+    if (/dirty or ignored|maxBuffer|requires one Factory-owned job/i.test(m)) return { group: "ready", reason: "Rechecked with the current cleanup rules", action: "remove" };
+    if (/tracked|untracked|dirty|workspace changes/i.test(m)) return { group: "attention", reason: "Local changes would be lost", action: "force" };
+    if (/not verified merged|not part of the release|Unmerged work/i.test(m)) return { group: "attention", reason: "Not merged into the release branch", action: "force" };
+    if (/resumed/i.test(m)) return { group: "protected", reason: "Work resumed after completion", action: "thread" };
+    if (/terminal|running process|still using|active or pending work/i.test(m)) return { group: "protected", reason: "An open terminal or process uses this folder", action: "inspect" };
+    return { group: "attention", reason: `Removal failed: ${m}`, action: "inspect" };
+  }
   if (outcome.state === "uncertain") return { group: "attention", reason: "Removal result is not confirmed", action: "inspect" };
   if (outcome.state === "pending") return { group: "retrying", reason: "Cleanup advanced, but the worktree is still present", action: "retry" };
   if (outcome.state === "confirmed") return typeof outcome.physicalRemoval === "boolean" ? { group: "gone", reason: outcome.physicalRemoval ? "Removal verified" : "Already absent; records finalized", action: "none" } : { group: "attention", reason: "Removal was reported without verified absence", action: "inspect" };

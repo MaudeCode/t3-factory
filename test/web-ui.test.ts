@@ -547,7 +547,7 @@ test('cleanup results report verified removals and override stale Ready inventor
   const { cleanupOperationState, cleanupResultSummary, projectCleanupResults } = await import('../web/lib/format.js');
   const path = '/worktrees/failed', target = { projectId: 'p', path };
   const before = '2026-01-01T00:00:00.000Z', after = '2026-01-01T00:01:00.000Z';
-  const failed = { id: 'failed', input: { targets: [target] }, completedAt: after, result: { code: 0, data: { state: 'failed', outcomes: [{ path, state: 'failed', message: 'Preserve dirty or ignored workspace contents' }] } } };
+  const failed = { id: 'failed', input: { targets: [target] }, completedAt: after, result: { code: 0, data: { state: 'failed', outcomes: [{ path, state: 'failed', message: 'Workspace HEAD is not verified merged into the remote release branch' }] } } };
   assert.equal(cleanupOperationState(failed.result), 'failed', 'exit code zero does not mean the folder was removed');
   const inventory = { checkedAt: before, items: [{ ...target, present: true, state: 'pending', next: { group: 'ready' } }], groups: { ready: 1, attention: 0 } };
   const projected = projectCleanupResults(inventory, [failed]);
