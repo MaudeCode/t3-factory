@@ -35,7 +35,8 @@ export async function processWorkspaces(signal?: AbortSignal): Promise<string[]>
 export const usesWorkspace = (cwd: string, path: string) => { const p = canonicalPath(cwd); return p === path || p.startsWith(path + sep); };
 
 export async function inspectWorkspace(repo: string, input: string, contents = false, signal?: AbortSignal) {
-  signal?.throwIfAborted();
+  signal = AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
+  signal.throwIfAborted();
   const path = canonicalPath(input), root = canonicalPath(repo), registrations = await worktrees(repo, signal);
   const registration = registrations.find(t => canonicalPath(t.path) === path);
   const primary = registrations[0] && canonicalPath(registrations[0].path);

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { manageCleanup, inspectCleanup, cleanupInventory } from '../src/cleanup.ts';
 import { Store, type Job } from '../src/store.ts';
+import { inspectWorkspace } from '../src/workspace.ts';
 import type { Config } from '../src/config.ts';
 import type { T3, Kaneo } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
@@ -192,5 +193,14 @@ test('an uncertain batch holds only targets with an unresolved outcome', async (
     const action = await f.force(await f.review());
     assert.equal(action.state, 'confirmed', 'a known failed target can be reviewed again without replaying the uncertain target');
     assert.equal(f.calls[0], 1); assert.equal(f.store.cleanupActions().find(a => a.reason === 'Mixed batch')?.state, 'uncertain');
+  } finally { f.close(); }
+});
+
+test('physical inspection respects its own deadline when no caller signal is provided', async t => {
+  const f = fixture(); try {
+    const deadline = new AbortController(); deadline.abort();
+    t.mock.method(AbortSignal, 'timeout', () => deadline.signal);
+    await assert.rejects(inspectWorkspace(f.repo, f.path, true), /abort/i, 'an expired inspection deadline must refuse the read even outside the review planner');
+    assert.ok(existsSync(f.path)); assert.deepEqual(f.calls, [0, 0]);
   } finally { f.close(); }
 });
