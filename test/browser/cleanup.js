@@ -66,12 +66,10 @@ async function run() {
   assert(document.querySelector('.cleanup-inspector').textContent.includes('Last result') && !document.querySelector('.cleanup-inspector').textContent.includes('Last attempt Not recorded'), 'an undated historical error is not presented as the current attempt');
   document.querySelector('[aria-label="Check fix-FIX-1"]').click(); await until(() => calls.length === 1 && document.body.textContent.includes('checks passed'));
   assert(calls.length === 1, 'only an explicit check starts inspection');
-  click('Delete anyway…'); await until(() => document.querySelector('.cleanup-force'));
-  assert(!document.querySelector('dialog[open]'), 'force review stays in the worktree row');
-  const form = document.querySelector('.cleanup-force'); assert(form, 'fresh force evidence opens an inline confirmation');
-  const submit = form.querySelector('button[type=submit]'); assert(submit.disabled, 'exact path and reason are required');
-  for (const [label, value] of [['Worktree folder name', 'fix-FIX-1']]) { const input = document.querySelector(`[aria-label="${label}"]`); input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); }
-  await until(() => !submit.disabled); assert(!submit.disabled, 'correct confirmation enables deletion'); submit.click(); submit.click(); await until(() => calls.filter(c => c === '/api/cleanup/actions').length === 1 && document.body.textContent.includes('Deleting…'));
+  click('Delete anyway…'); await until(() => document.querySelector('dialog[open]'));
+  assert(document.querySelector('dialog[open]').getAttribute('aria-label') === 'Delete fix-FIX-1 anyway?', 'a reviewed force asks once, in the shared confirmation');
+  assert(document.querySelector('dialog[open]').textContent.includes('will be lost') && !document.querySelector('input[aria-label="Worktree folder name"]'), 'the confirmation names what is lost and needs no typing');
+  const confirm = [...document.querySelectorAll('dialog[open] button')].find(b => b.textContent.trim() === 'Delete'); confirm.click(); confirm.click(); await until(() => calls.filter(c => c === '/api/cleanup/actions').length === 1 && document.body.textContent.includes('Deleting…'));
   assert(calls.filter(c => c === '/api/cleanup/actions').length === 1, 'double click submits one saved action');
   const row = document.querySelector('[aria-label="Details /workspace/worktrees/fix-FIX-1"]').closest('.cleanup-row-group'), height = row.querySelector('.cleanup-row').getBoundingClientRect().height;
   assert(row.querySelector('.cleanup-row-actions').textContent.includes('Deleting…'), 'progress shows in the row action');
@@ -92,8 +90,9 @@ async function failedReady() {
   await pause(400);
   assert(document.querySelector(`[aria-label="Details ${path}"]`), 'failed worktrees remain visible with their result after refresh');
   document.querySelector(`[aria-label="Details ${path}"]`).closest('.cleanup-row-group').querySelector('.cleanup-row-actions button').click();
-  await until(() => calls.length === 2 && document.body.textContent.includes('checks passed'));
-  assert(document.querySelector(`[aria-label="Details ${path}"]`).closest('.cleanup-row-group').querySelector('.cleanup-row-actions').textContent.includes('Delete'), 'a fresh eligible check offers normal removal after a failure');
+  await until(() => calls.length === 2 && document.querySelector('dialog[open]'));
+  assert(document.querySelector('dialog[open]').getAttribute('aria-label') === 'Delete example-6 anyway?', 'a failed row offers a reviewed force without expanding'); click('Cancel');
+  assert(!calls.includes('/api/cleanup/actions', 1), 'cancelling the confirmation sends nothing');
   return { passed: true, viewport: [innerWidth, innerHeight], requests: calls.length };
 }
 async function deleteUnused() {

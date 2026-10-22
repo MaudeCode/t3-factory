@@ -1,9 +1,9 @@
 // Worktrees on disk for every configured repository: which are unused, what blocks the rest, and one way to delete them.
 import { html, useEffect, useState, useRef } from "../lib/h.js";
-import { config, status, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, clock, serverNow } from "../lib/store.js";
+import { config, status, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, clock, serverNow, message } from "../lib/store.js";
 import { cleanupResultSummary, projectCleanupResults, ago, clockTime, formatBytes as bytes, ticketLink, threadLink, safeLink, prLabel } from "../lib/format.js";
 import { follow } from "../lib/router.js";
-import { Button, Select, Field, Input, RowBody, Meta, Tag, Help, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check } from "../ui/index.js";
+import { Button, Select, Field, RowBody, Meta, Tag, Help, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check } from "../ui/index.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { RunFilters } from "./Runs.js";
 
@@ -31,34 +31,41 @@ function previousFailure(item) {
 // action. Expanding reads what the inventory already knows; only Check and Delete anyway contact the backend.
 function CleanupRow({ item, selected, onSelect, onRemove, refreshing }) {
   const [open, setOpen] = useState(false), [detail, setDetail] = useState(null), [loading, setLoading] = useState(false), [error, setError] = useState("");
-  const [force, setForce] = useState(false), [confirmation, setConfirmation] = useState(""), [copied, setCopied] = useState(false);
+  const [reviewing, setReviewing] = useState(false), [copied, setCopied] = useState(false);
   const inspection = useRef();
   const next = nextOf(item), previous = previousFailure(item), folder = folderOf(item);
   const matching = operations.value.filter(op => op.kind === "cleanup" && targetsOf(op).some(t => keyOf(t) === keyOf(item)));
   const op = matching.findLast(op => cleanupOperationHolds(op, item)) ?? matching.at(-1);
   const pending = !!op && cleanupOperationHolds(op, item), outcome = op?.result?.data?.outcomes?.find(o => o.path === item.path);
-  const refresh = async (review = false) => {
+  const refresh = async () => {
     inspection.current?.abort(); inspection.current = new AbortController(); const signal = inspection.current.signal;
-    setOpen(true); setLoading(true); setError(""); setForce(false); setConfirmation("");
-    try {
-      const value = await inspectCleanup(targetOf(item), review, signal);
-      if (signal.aborted) return;
-      setDetail(value); setForce(review && value.forceAllowed);
-      if (review && !value.forceAllowed) setError(value.checks.filter(c => !c.override && c.state !== "pass").map(c => c.detail).join(". ") || "Fresh safety checks prevent deletion.");
-    } catch (e) { if (!signal.aborted) setError(e.message); }
+    setOpen(true); setLoading(true); setError("");
+    try { const value = await inspectCleanup(targetOf(item), false, signal); if (!signal.aborted) setDetail(value); }
+    catch (e) { if (!signal.aborted) setError(e.message); }
     finally { if (!signal.aborted) setLoading(false); }
   };
+  // Review, then one confirmation that names what will be lost. The row stays as it is.
+  const deleteAnyway = async () => {
+    setReviewing(true);
+    try {
+      const review = await inspectCleanup(targetOf(item), true);
+      if (!review.forceAllowed) return message(`${folder}: ${review.checks.filter(c => !c.override && c.state !== "pass").map(c => c.detail).join(". ") || "fresh safety checks prevent deletion"}`, true);
+      confirmAction({ title: `Delete ${folder} anyway?`, message: `${review.overridden.join(". ")}. The folder and everything in it is deleted. Branch refs, reports and threads stay.`, label: "Delete" },
+        () => { if (!startCleanup({ type: "force", reviewId: review.reviewId, confirmation: folder, reason: REASON }, targetOf(item))) message("An earlier cleanup request still needs verification.", true); });
+    } catch (e) { message(`${folder}: ${e.message}`, true); }
+    finally { setReviewing(false); }
+  };
   useEffect(() => () => inspection.current?.abort(), []);
-  const toggle = () => { if (open) { inspection.current?.abort(); setLoading(false); setForce(false); } setOpen(!open); };
+  const toggle = () => { if (open) { inspection.current?.abort(); setLoading(false); } setOpen(!open); };
   const owner = item.bindings[0]?.id || item.jobs.find(j => j.threadId)?.threadId;
   const ticket = item.jobs.map(j => ticketLink(config.value, j)).find(Boolean);
   const action = detail?.state === "eligible" ? "remove" : next.action === "thread" && !owner || next.action === "ticket" && !ticket ? "inspect" : next.action;
-  const busy = op?.state === "queued" ? "Queued" : op?.state === "running" ? "Deleting…" : loading ? "Checking…" : null;
+  const busy = op?.state === "queued" ? "Queued" : op?.state === "running" ? "Deleting…" : loading || reviewing ? "Checking…" : null;
   const primary = busy ? html`<${Button} size="sm" disabled>${busy}<//>`
     : action === "remove" ? html`<${Button} size="sm" disabled=${pending || refreshing} onClick=${() => onRemove([item])}>Delete<//>`
     : action === "thread" ? html`<${Link} class="btn btn-sm" href=${threadLink({ threadId: owner })}>Open thread<//>`
     : action === "ticket" ? html`<${Link} class="btn btn-sm" href=${ticket}>Open ticket<//>`
-    : action === "force" ? html`<${Button} size="sm" disabled=${pending} onClick=${() => refresh(true)}>Delete anyway…<//>`
+    : action === "force" ? html`<${Button} size="sm" disabled=${pending} onClick=${deleteAnyway}>Delete anyway…<//>`
     : action === "retry" ? html`<${Button} size="sm" disabled=${pending} onClick=${() => startCleanup({ type: "retry", targets: [targetOf(item)], reason: "Retry the current maintenance step" })}>Retry<//>`
     : action === "inspect" ? html`<${Button} size="sm" onClick=${() => refresh()}>Check<//>` : null;
   const checks = list => list.map(c => html`<div class="cleanup-check" key=${c.name}><strong>${c.name}</strong><span>${c.detail}</span><small>${c.state} · ${stamp(c.checkedAt)}</small></div>`);
@@ -82,17 +89,12 @@ function CleanupRow({ item, selected, onSelect, onRemove, refreshing }) {
       <div class="cleanup-path-line"><code class="cleanup-path">${item.path}</code><${Button} size="sm" variant="ghost" onClick=${async () => { try { await navigator.clipboard.writeText(item.path); setCopied(true); } catch { setError("Couldn't copy the path. Select it here to copy."); } }}>${copied ? "Copied" : "Copy path"}<//></div>
       <${Facts} items=${[["State", `${groupLabel} · ${next.reason}`], ["Branch", item.branch || "Detached"], ["Size", item.size.bytes != null ? `${bytes(item.size.bytes)} estimated${item.size.state === "stale" ? ", stale" : ""}` : null], ["Last result", previous && `${previous.message}${previous.at ? ` · ${stamp(previous.at)}` : ""}`], ["This request", op && (outcome?.state === "confirmed" ? `${outcome.physicalRemoval === false ? "Already gone" : "Deleted"}${outcome.freeSpaceChange > 0 ? ` · ${bytes(outcome.freeSpaceChange)} freed` : ""}` : outcome?.message || op.result?.data?.message || busy)]]} />
       <div class="links-row small">${item.jobs.map(j => html`<a href=${`/runs/${j.id}`} onClick=${follow}>Run ${j.ticketKey || "details"}</a>`)}${ticket && html`<${Link} href=${ticket}>Ticket<//>`}${item.jobs.flatMap(j => j.prUrls).map(safeLink).filter(Boolean).map(url => html`<${Link} href=${url}>${prLabel(url)}<//>`)}${owner && html`<${Link} href=${threadLink({ threadId: owner })}>Thread<//>`}</div>
-      <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${loading && html`<${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//>`}${next.group !== "protected" && next.group !== "gone" && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${loading || pending} onClick=${() => refresh(true)}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
+      <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${loading && html`<${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//>`}${next.group !== "protected" && next.group !== "gone" && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${reviewing || pending} onClick=${deleteAnyway}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
       ${error && html`<p role="alert" class="alert">${error}</p>`}
       ${detail && html`<div class="cleanup-verdict">${blocked.length ? checks(blocked) : html`<p>No blocker found. Delete rechecks before removing.</p>`}</div>
         <${Section} collapsible class="cleanup-disclosure" title=${`${passed.length} checks passed`}>${checks(passed)}<//>
         <${Section} collapsible class="cleanup-disclosure" title="Files and owners"><${Facts} items=${[["Repository", detail.repository], ["HEAD", detail.workspace?.head || "Unknown"], ["Directory", detail.workspace ? detail.workspace.present ? "Present" : "Absent" : "Unknown"], ["Git registration", detail.workspace ? detail.workspace.registered ? "Present" : "Absent" : "Unknown"], ["Contents", detail.workspace && `${detail.workspace.tracked} tracked changes, ${detail.workspace.untracked} untracked files, ${detail.workspace.ignored} ignored entries`], ["Ownership", detail.ownership], ["Processes", detail.processCount == null ? "Unknown" : detail.processCount], ["Terminals", detail.terminals.map(t => `${t.terminalId}: ${t.status}`).join(", ") || "None"]]} />${detail.workspace?.changes?.length > 0 && html`<ul class="mono cleanup-path">${detail.workspace.changes.map(c => html`<li>${c.kind} ${c.path}</li>`)}</ul><p class="small muted">Up to 100 paths.</p>`}${detail.jobs.map(j => html`<p class="small cleanup-path"><a href=${`/runs/${j.id}`} onClick=${follow}>${j.ticketKey || "Run details"}</a> · ${j.stage} · ${j.state}${j.nextRetry ? ` · retry ${clockTime(j.nextRetry)}` : ""}</p>`)}${detail.bindings.map(t => html`<p class="small cleanup-path"><${Link} href=${threadLink({ threadId: t.id })}>T3 thread<//> · ${t.status}${t.pending ? ` · pending ${t.pending.kind}` : ""}${t.background?.map(b => ` · ${b.kind}`).join("")}</p>`)}<//>
         <${Section} collapsible class="cleanup-disclosure" title="Action history"><${Timeline} actions=${detail.actions} /><//>`}
-      ${force && detail && html`<form class="cleanup-force" onSubmit=${e => { e.preventDefault(); if (confirmation === folder && Date.parse(detail.expiresAt) > serverNow() && !pending) { const id = startCleanup({ type: "force", reviewId: detail.reviewId, confirmation, reason: REASON }, targetOf(item)); if (id) setForce(false); else setError("An earlier cleanup request still needs verification."); } }}>
-        <p>Deletes the folder and everything in it. Branch refs, reports and threads stay.</p><ul>${detail.overridden.map(text => html`<li>${text}</li>`)}</ul>
-        <${Field} label=${`Type ${folder} to confirm`}><${Input} mono aria-label="Worktree folder name" value=${confirmation} onChange=${setConfirmation} autocomplete="off" /><//>
-        <div class="links-row"><${Button} variant="ghost" onClick=${() => setForce(false)}>Cancel<//>${Date.parse(detail.expiresAt) <= serverNow() ? html`<${Button} disabled=${loading} onClick=${() => refresh(true)}>Review again<//>` : html`<${Button} type="submit" variant="danger" disabled=${pending || confirmation !== folder}>Delete<//>`}</div>
-      </form>`}
     </section>`}
   </div>`;
 }
