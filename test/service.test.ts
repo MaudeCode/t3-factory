@@ -48,6 +48,7 @@ import { FactoryService } from '../src/service.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, stopJob } from '../src/scheduler.ts';
+import { readCleanupCatalog } from '../src/cleanup.ts';
 
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 
@@ -592,13 +593,70 @@ test('cleanup inspection is serialized with dispatch and queued inspection cance
   try {
     await service.start(); await entered.promise;
     const id = '00000000-0000-4000-8000-000000000042';
-    const inspection = internal.handle({ type: 'cleanup', input: { type: 'inventory', inspectionId: id } });
+    const inspection = internal.handle({ type: 'cleanup', input: { type: 'inspect', projectId: 'FIX', path: f.dir, inspectionId: id } });
     const rejected = assert.rejects(inspection, /abort/i);
     assert.equal(reads, 0, 'inspection waits behind the active pass');
     const cancelled = await internal.handle({ type: 'cleanup-cancel', inspectionId: id });
     assert.equal(cancelled.data.cancelled, true);
     release.resolve(); await rejected; assert.equal(reads, 0);
     const result = await internal.handle({ type: 'cleanup', input: { type: 'inventory' } });
-    assert.equal(result.code, 0); assert.equal(reads, 1);
+    assert.equal(result.code, 0); assert.equal(reads, 0, 'cached inventory does not start a synchronous inspection');
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('cleanup page reads return stored inventory without waiting for the writer or external discovery', async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  internal.store = new Store(f.c.stateDir); internal.stateDir = f.c.stateDir; internal.t3 = new T3(f.c.t3); internal.t3Settings = JSON.stringify(f.c.t3);
+  let discoveries = 0; t.mock.method(T3.prototype, 'shell', async () => { discoveries++; return f.shell(); });
+  const entered = deferred(), release = deferred();
+  const writer = internal.enqueue(async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  let returned = false;
+  const read = internal.handle({ type: 'cleanup', input: { type: 'inventory', limit: 6 } }).then((result: any) => { returned = true; return result; });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(returned, true, 'opening Cleanup cannot wait behind a deletion or scheduler pass');
+    const result = await read;
+    assert.equal(result.code, 0);
+    assert.equal(discoveries, 0, 'the page read never waits for T3 discovery');
+  } finally {
+    release.resolve(); await writer; await read; await service.stop(); rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+
+test('run completion refreshes one maintained cleanup catalog and explicit refresh discovers external worktrees', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const git = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' });
+  git('init', '-qb', 'main'); writeFileSync(join(f.dir, 'tracked'), 'fixture'); git('add', 'tracked'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'fixture');
+  const tree = join(f.dir, 'tree'); git('worktree', 'add', '-qb', 'feature', tree);
+  f.thread.worktreePath = tree; f.thread.branch = 'feature';
+  const entered = deferred(), release = deferred();
+  let closed = false;
+  const close = async () => { if (closed) return; closed = true; release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); };
+  t.after(close);
+  t.mock.method(internal, 'pass', async () => { entered.resolve(); await release.promise; return { reason: 'disabled' }; });
+  try {
+    await service.start(); await entered.promise;
+    let publication = deferred(), count = 0;
+    const set = internal.store.set.bind(internal.store);
+    t.mock.method(internal.store, 'set', (key: string, value: string) => { set(key, value); if (key === 'cleanupCatalog') { count++; publication.resolve(); } });
+    const job = { ...f.job, state: 'running', thread: { title: 'Fixture', status: 'completed', worktreePath: tree, branch: 'feature', updatedAt: f.thread.updatedAt, pending: null, background: [] } };
+    internal.store.save(job); internal.store.save({ ...job, reason: 'Another update in the same pass' });
+    release.resolve(); await publication.promise;
+    assert.equal(count, 1, 'writes in one pass coalesce into one discovery');
+    assert.equal(readCleanupCatalog(f.c, internal.store).items.find(item => item.path === tree)!.state, 'active');
+    publication = deferred();
+    await internal.enqueue(async () => internal.store.save({ ...job, state: 'complete' }));
+    await publication.promise;
+    const finished = readCleanupCatalog(f.c, internal.store).items.find(item => item.path === tree)!;
+    assert.equal(finished.jobs[0].state, 'complete'); assert.notEqual(finished.next!.group, 'protected');
+    const external = join(f.dir, 'external'); git('worktree', 'add', '-qb', 'external', external);
+    publication = deferred();
+    const response = await internal.handle({ type: 'cleanup', input: { type: 'inventory', refresh: true } });
+    assert.equal(response.data.refreshing, true);
+    assert.ok(!response.data.items.some((item: any) => item.path === external), 'refresh returns the current snapshot immediately');
+    await publication.promise;
+    assert.ok(readCleanupCatalog(f.c, internal.store).items.some(item => item.path === external), 'background discovery finds worktrees outside Factory');
+  } finally { await close(); }
 });

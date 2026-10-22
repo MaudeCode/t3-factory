@@ -193,3 +193,63 @@ export function moveItem(list, from, to) {
 }
 
 export const formatBytes = n => n == null ? "Unknown" : `${(n / 1024 ** 3).toFixed(2)} GiB`;
+
+// A finished HTTP request is not proof that its cleanup targets were removed.
+export function cleanupOperationState(result) {
+  const data = result?.data, outcomes = data?.outcomes ?? [];
+  if (data?.state === "uncertain" || outcomes.some(o => o.state === "uncertain")) return "uncertain";
+  if (result?.code || data?.state === "failed" || outcomes.some(o => o.state === "failed")) return "failed";
+  if (data?.state === "pending" || outcomes.some(o => o.state === "pending" || o.state === "requested")) return "pending";
+  return "done";
+}
+
+/** @returns {{group: "attention" | "retrying" | "gone", reason: string, action: "inspect" | "retry" | "none"} | null} */
+export function cleanupOutcomePresentation(outcome) {
+  if (!outcome) return null;
+  if (outcome.state === "failed") return { group: "attention", reason: /dirty or ignored/i.test(outcome.message) ? "Removal failed: local files were preserved" : /maxBuffer/i.test(outcome.message) ? "Removal failed: the file scan exceeded its limit" : `Removal failed: ${outcome.message}`, action: "inspect" };
+  if (outcome.state === "uncertain") return { group: "attention", reason: "Removal result is not confirmed", action: "inspect" };
+  if (outcome.state === "pending") return { group: "retrying", reason: "Cleanup advanced, but the worktree is still present", action: "retry" };
+  if (outcome.state === "confirmed") return typeof outcome.physicalRemoval === "boolean" ? { group: "gone", reason: outcome.physicalRemoval ? "Removal verified" : "Already absent; records finalized", action: "none" } : { group: "attention", reason: "Removal was reported without verified absence", action: "inspect" };
+  return null;
+}
+
+export function cleanupMatches(item, filters = {}) {
+  return (!filters.repository || item.repository === filters.repository) && (!filters.ownership || item.ownership === filters.ownership) && (!filters.state || item.state === filters.state) && JSON.stringify([item.path, item.branch, item.repository, item.jobs, item.bindings, item.lastOutcome]).toLowerCase().includes((filters.query ?? "").toLowerCase());
+}
+
+// Keep known results visible while a slower inventory refresh is still showing an older scan.
+export function projectCleanupResults(data, operations, filters = {}) {
+  if (!data) return data;
+  const observed = Date.parse(data.resultsCheckedAt ?? data.checkedAt ?? "");
+  const patches = new Map();
+  let staleResults = false;
+  for (const op of operations) {
+    const at = op.result?.data?.updatedAt ?? op.completedAt ?? op.createdAt;
+    if (!at || Date.parse(at) <= observed) continue;
+    for (const outcome of op.result?.data?.outcomes ?? []) {
+      const target = (op.cleanupTargets ?? op.input.targets ?? []).find(t => t.path === outcome.path);
+      if (target && cleanupOutcomePresentation(outcome)) { patches.set(`${target.projectId}:${target.path}`, { outcome, at, id: op.id }); staleResults = true; }
+    }
+  }
+  const groups = { ...data.groups }, items = [];
+  for (const item of data.items) {
+    const patch = patches.get(`${item.projectId}:${item.path}`);
+    if (!patch || item.lastOutcome?.actionId === patch.id && item.lastOutcome.state === patch.outcome.state) { items.push(item); continue; }
+    const next = cleanupOutcomePresentation(patch.outcome);
+    const updated = { ...item, next, state: next.group === "gone" ? "complete" : next.group === "retrying" ? "pending" : "blocked", lastOutcome: { ...patch.outcome, actionId: patch.id, updatedAt: patch.at }, ...(next.group === "gone" ? { present: false, registered: false } : {}) };
+    if (item.next?.group && cleanupMatches(item, filters)) groups[item.next.group] = Math.max(0, (groups[item.next.group] ?? 0) - 1);
+    if (cleanupMatches(updated, filters)) { groups[next.group] = (groups[next.group] ?? 0) + 1; items.push(updated); }
+  }
+  return { ...data, groups, items, staleResults };
+}
+
+export function cleanupResultSummary(operations) {
+  const targets = new Map();
+  for (const op of operations) for (const target of op.cleanupTargets ?? op.input.targets ?? []) {
+    const outcome = op.result?.data?.outcomes?.find(o => o.path === target.path);
+    const state = outcome?.state ?? (["queued", "running"].includes(op.state) ? op.state : cleanupOperationState(op.result));
+    targets.set(`${target.projectId}:${target.path}`, { state, physicalRemoval: outcome?.physicalRemoval });
+  }
+  const results = [...targets.values()], count = predicate => results.filter(predicate).length;
+  return { total: results.length, processed: count(o => !["queued", "running"].includes(o.state)), removed: count(o => o.state === "confirmed" && o.physicalRemoval === true), absent: count(o => o.state === "confirmed" && o.physicalRemoval === false), failed: count(o => o.state === "failed"), pending: count(o => o.state === "pending"), uncertain: count(o => o.state === "uncertain" || o.state === "confirmed" && typeof o.physicalRemoval !== "boolean"), cancelled: count(o => o.state === "cancelled") };
+}

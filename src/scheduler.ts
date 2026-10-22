@@ -40,8 +40,8 @@ export function safeError(error: unknown): string {
   const text = fields ? [fields._tag, fields.message ?? fields.detail].filter(v => typeof v === 'string' && v).join(': ') || 'Unknown error' : error instanceof Error ? error.message ?? error.name : error;
   return String(text).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
 }
-async function git(path: string, args: string[]): Promise<string> {
-  return (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000 })).stdout.trim();
+async function git(path: string, args: string[], signal?: AbortSignal): Promise<string> {
+  return (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000, signal })).stdout.trim();
 }
 async function gh(args: string[]): Promise<unknown> {
   return JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000 })).stdout);
@@ -89,8 +89,17 @@ async function verifyMerged(project: Project, urls: string[]) {
     if (pr.baseRefName !== project.baseBranch) throw new Error('Completed PR targets the wrong release branch');
   }
 }
-async function released(project: Project, head: string): Promise<boolean> {
-  return git(project.repoPath, ['merge-base', '--is-ancestor', head, `refs/remotes/origin/${project.baseBranch}`]).then(() => true, () => false);
+async function released(project: Project, head: string, release = `refs/remotes/origin/${project.baseBranch}`, signal?: AbortSignal): Promise<boolean> {
+  return git(project.repoPath, ['merge-base', '--is-ancestor', head, release], signal).then(() => true, () => false);
+}
+// Manual deletion verifies the remote release tip without mutating repository refs or trusting an old tracking ref.
+export async function verifyReleasedWorkspaceHead(project: Project, head: string, signal?: AbortSignal): Promise<string> {
+  const ref = `refs/heads/${project.baseBranch}`;
+  const remote = await git(project.repoPath, ['ls-remote', '--exit-code', 'origin', ref], signal);
+  const fields = remote.split(/\s+/);
+  if (fields.length !== 2 || fields[1] !== ref || !/^[a-f0-9]{40,64}$/.test(fields[0])) throw new Error('Remote release branch could not be verified');
+  if (!await released(project, head, fields[0], signal)) throw new Error('Workspace HEAD is not verified merged into the remote release branch');
+  return fields[0];
 }
 async function branchTip(project: Project, branch: string): Promise<string> {
   return git(project.repoPath, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).catch(() => '');
@@ -267,7 +276,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
   try {
     if (store.cleanupActions().some(a => a.id !== boundary.actionId && [job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].some(p => p && cleanupActionPending(a, p)))) throw new Error('Operator cleanup outcome is uncertain; preserve workspace pending inspection');
     const project = projectFor(c, job), fresh = await t3.shell(true), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
-    if (!thread) return;
+    if (!thread) throw new Error('Completion thread is unavailable; use explicit deletion review');
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');
     const commands = thread.pendingBackgroundTasks.some(t => t.kind === 'command');
     let reportText: string | undefined, reportWrittenAt = Infinity;
@@ -301,7 +310,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
     const path = canonicalPath(workspace);
     const physical = await inspectWorkspace(project.repoPath, path);
     if ((physical.present || physical.registered) && !physical.removable) throw new Error('Preserve unregistered, locked or primary workspace');
-    if (physical.status) throw new Error('Preserve dirty or ignored workspace contents');
+    if (physical.tracked || physical.untracked) throw new Error(`Preserve workspace changes: ${physical.tracked} tracked, ${physical.untracked} untracked`);
     const assigned = assignedBranch(job);
     if (!assigned) throw new Error('Workspace was not assigned by a Factory launch');
     const checkoutBranch = existsSync(path) ? await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : null;
@@ -390,8 +399,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
       for (const child of latestSubagents) await verifyIdleProjection(t3, child);
       if (existsSync(path) && (await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch)) throw new Error('Workspace changed before removal');
       checkOwner();
-      mutationUncertain = true;
-    });
+    }, () => { mutationUncertain = true; });
     mutationUncertain = false;
     store.record('cleanup.confirmed', removal.outcome === 'removed' ? 'Worktree physically removed' : 'Already-absent workspace finalized', { path, ...removal }, job.id);
     job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);

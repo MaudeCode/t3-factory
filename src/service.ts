@@ -1,4 +1,4 @@
-import { manageCleanup, cleanupRequestSchema } from './cleanup.ts';
+import { manageCleanup, cleanupRequestSchema, readCleanupCatalog, refreshCleanupCatalog } from './cleanup.ts';
 // The long-lived scheduler. One process holds the store claim, a T3 client, and a connected Kaneo
 // client, and runs passes in series from one queue. Passes start from what changes: a T3 thread
 // event, a config edit, a command over the control socket, or the fallback timer.
@@ -33,6 +33,9 @@ export class FactoryService {
   private kaneoTimer?: NodeJS.Timeout;
   private cleanupTimer?: NodeJS.Timeout;
   private cleanupQueued = false;
+  private inventoryTimer?: NodeJS.Timeout;
+  private inventoryQueued = false;
+  private inventoryRequested = 0;
   private collectionTimer?: NodeJS.Timeout;
   private collectionQueued = false;
   private readonly inspections = new Map<string, AbortController>();
@@ -54,6 +57,7 @@ export class FactoryService {
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
     if (!this.store.claim()) throw new Error('Another scheduler owns this state directory');
+    this.store.onCleanupChange = () => this.scheduleInventory();
     this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
     this.watcher = watch(dirname(this.configPath), (_, name) => { if (name === basename(this.configPath)) this.wake('config'); });
@@ -76,7 +80,7 @@ export class FactoryService {
     this.stopped = true;
     for (const controller of this.inspections.values()) controller.abort();
     this.abort.abort();
-    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer);
+    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
     await this.queue.catch(() => {});
@@ -153,6 +157,32 @@ export class FactoryService {
     }, false), 0);
   }
 
+  private scheduleInventory() {
+    if (this.stopped) return;
+    this.inventoryRequested++;
+    if (this.inventoryQueued) return;
+    this.inventoryQueued = true;
+    this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: true }));
+    this.inventoryTimer = setTimeout(() => void this.enqueue(async () => {
+      const requested = this.inventoryRequested;
+      this.store.set('cleanupCatalogAttempt', new Date().toISOString());
+      try {
+        if (this.stopped) return;
+        const c = this.configure();
+        await refreshCleanupCatalog(c, this.store, this.t3, this.abort.signal);
+        writeStatus(c, this.store);
+      } catch (error) {
+        if (!this.stopped) {
+          this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: false, errors: [{ repository: 'Inventory', message: safeError(error) }] }));
+          writeStatus(loadConfig(this.configPath), this.store);
+        }
+      } finally {
+        this.inventoryQueued = false;
+        if (!this.stopped && requested !== this.inventoryRequested) this.scheduleInventory();
+      }
+    }, false), 0);
+  }
+
   // Session-ticket collection runs the same way: one bounded batch per queued item, behind any command, until nothing remains.
   private scheduleCollection() {
     if (this.stopped || this.collectionQueued) return;
@@ -195,7 +225,13 @@ export class FactoryService {
     }
     if (command.type === 'cleanup-cancel') { this.inspections.get(command.inspectionId)?.abort(); return { code: 0, data: { cancelled: this.inspections.has(command.inspectionId) } }; }
     if (command.type === 'cleanup') {
-      const input = cleanupRequestSchema.parse(command.input), inspectionId = 'inspectionId' in input ? input.inspectionId : undefined;
+      const input = cleanupRequestSchema.parse(command.input);
+      if (input.type === 'inventory') {
+        const c = loadConfig(this.configPath), data = readCleanupCatalog(c, this.store, input.offset, input.limit, input);
+        if (input.refresh || !data.checkedAt && !this.inventoryQueued) this.scheduleInventory();
+        return { code: 0, data: { ...data, refreshing: data.refreshing || !!input.refresh } };
+      }
+      const inspectionId = 'inspectionId' in input ? input.inspectionId : undefined;
       const controller = new AbortController();
       if (inspectionId && this.inspections.has(inspectionId)) throw new Error('Inspection ID is already queued or running');
       if (inspectionId) this.inspections.set(inspectionId, controller);
@@ -286,6 +322,7 @@ export class FactoryService {
       throw error;
     } finally {
       if (!options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
+      if (!this.stopped && (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= (c?.pollSeconds ?? 60) * 1000)) this.scheduleInventory();
       if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
     }
   }

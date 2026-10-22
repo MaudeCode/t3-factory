@@ -62,8 +62,8 @@ export const RowBody = ({ title, children }) => html`<span class="row-body"><spa
 
 // Titled block of a page. `aside` sits on the title line; `hint` explains the block from a question mark beside
 // the title; `count` follows the title.
-export const Section = ({ title, hint, count, aside, children, class: extra }) =>
-  html`<section class=${`section ${extra ?? ""}`}>
+export const Section = ({ title, hint, count, aside, children, class: extra, collapsible = false, onToggle }) =>
+  collapsible ? html`<details class=${`section ${extra ?? ""}`} onToggle=${onToggle}><summary>${title}</summary><div>${children}</div></details>` : html`<section class=${`section ${extra ?? ""}`}>
     ${title && html`<header><h2>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h2>${aside}</header>`}
     ${children}
   </section>`;

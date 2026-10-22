@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, operations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -85,15 +85,14 @@ function Machine({ provider }) {
 function Operation({ op }) {
   const d = op.result?.data,
     running = op.state === "running";
-  const cleanup = op.kind === "cleanup";
-  const text = cleanup ? running ? "Verifying cleanup" : d?.outcomes?.map(o => `${o.path}: ${o.message}`).join("; ") || d?.message || op.state : op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
+  const text = op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
     ? op.input.upstream ? "Checking the release and starting its review" : "Checking the ticket and starting its T3 run"
     : d?.reason === "dispatched"
       ? `Started ${d.ticket || "ticket"} with ${d.model}.`
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
   return html`<div class=${`operation ${op.state}`} role="status">
     ${running && html`<i class="spinner"></i>`}
-    <span><b class="key">${cleanup ? `Cleanup ${op.input.type}` : op.input.upstream || op.input.ticket || "Next eligible ticket"}</b>${!cleanup && html` · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}`}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     ${!op.choiceHandled && d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${() => showReadinessConfirmation(op.id)}>Review and run anyway<//>`}
     ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
@@ -131,7 +130,7 @@ export function Composer({ initialTicket } = {}) {
   </form>`;
 }
 
-export function Operations({ list = operations.value } = {}) {
+export function Operations({ list = launchOperations.value } = {}) {
   return list.map((op) => html`<${Operation} key=${op.id} op=${op} />`);
 }
 
@@ -293,7 +292,7 @@ export function Deck({ initialTicket } = {}) {
     <div class="strip">${PROVIDERS.map((p) => html`<${Machine} key=${p.driver} provider=${p} />`)}</div>
     <div class="deck">
       <div class="deck-main">
-        ${operations.value.length > 0 && html`<${Section} class="launch"><${Operations} /><//>`}
+        ${launchOperations.value.length > 0 && html`<${Section} class="launch"><${Operations} /><//>`}
         <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
           ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}
         <//>

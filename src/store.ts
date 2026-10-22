@@ -94,6 +94,7 @@ export function decisionText(result: { reason: string } & Record<string, unknown
 }
 export class Store {
   db: DatabaseSync;
+  onCleanupChange?: () => void;
   constructor(dir: string) {
     mkdirSync(join(dir, 'reports'), { recursive: true, mode: 0o700 });
     const path = join(dir, 'state.sqlite');
@@ -112,6 +113,8 @@ export class Store {
     this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND json_extract(data, '$.state') IN ('complete', 'dismissed')");
   }
   jobs(): Job[] { return this.db.prepare('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  // Hot inventory reads need lifecycle metadata, not historical dispatch prompts and commands.
+  jobSummaries(): Omit<Job, 'command'>[] { return this.db.prepare("SELECT json_remove(data, '$.command') AS data FROM jobs ORDER BY rowid").all().map(row => JSON.parse(row.data as string)); }
   job(id: string): Job | undefined { const row = this.db.prepare('SELECT data FROM jobs WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   // Every job write passes through here, so the journal records each state change and delivered PR once.
   save(job: Job) {
@@ -121,10 +124,16 @@ export class Store {
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
     for (const url of job.prUrls ?? []) if (!before?.prUrls?.includes(url)) this.record('job.pr', `${label} opened ${url.replace(/^https:\/\/github\.com\//, '')}`, { ...detail, url }, job.id);
+    const lifecycle = (j: Job) => JSON.stringify([j.state, j.thread?.worktreePath, j.thread?.branch, j.thread?.status, j.resumedAt, j.workspaceCleanup?.path, j.dismissedWorktreePath, j.workspaceCleanedAt]);
+    if (!before || lifecycle(before) !== lifecycle(job)) this.onCleanupChange?.();
   }
   cleanupActions(): CleanupAction[] { return this.db.prepare('SELECT data FROM cleanup_actions ORDER BY rowid DESC').all().map(r => JSON.parse(r.data as string)); }
   cleanupAction(id: string): CleanupAction | undefined { const row = this.db.prepare('SELECT data FROM cleanup_actions WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
-  saveCleanupAction(action: CleanupAction) { this.db.prepare('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action)); }
+  saveCleanupAction(action: CleanupAction) {
+    const before = this.cleanupAction(action.id);
+    this.db.prepare('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action));
+    if (!before || action.outcomes.some(outcome => outcome.state === 'confirmed' && outcome.physicalRemoval === true && !before.outcomes.some(old => old.path === outcome.path && old.physicalRemoval === true))) this.onCleanupChange?.();
+  }
   plans(): Plan[] { return this.db.prepare('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   plan(id: string): Plan | undefined { const row = this.db.prepare('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   savePlan(plan: Plan) {
