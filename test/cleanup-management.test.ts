@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
@@ -36,6 +38,10 @@ function fixture() {
   return { dir, repo, path, c, target, git, t3, kaneo, boundary, inspect, review, force, job,
     get store() { return store; }, get calls() { return [removeCalls, detachCalls]; },
     owners: (n = 1) => { threads = Array.from({ length: n }, (_, i) => v2Thread({ id: i ? `owner${i}` : 'owner', projectId: 't3', worktreePath: path, branch: 'feat/FIX-1' })); return threads; },
+    inventoryRecords: (count: number) => {
+      threads = Array.from({ length: count }, (_, i) => v2Thread({ id: `inventory-${i}`, projectId: 't3', worktreePath: join(dir, `inventory-${i}`), branch: `feat/FIX-${i + 10}` }));
+      for (const thread of threads) store.save({ ...job(), id: thread.id, threadId: thread.id, thread: { ...job().thread!, worktreePath: thread.worktreePath } });
+    },
     unknown: () => { unknown = true; }, queued: () => { queued = true; }, lost: () => { removeError = true; }, lostAfter: () => { lostAfter = true; }, race: (fn: () => void) => { onShell = fn; },
     restart: () => { store.close(); store = new Store(join(dir, 'state')); },
     close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); },
@@ -203,4 +209,30 @@ test('physical inspection respects its own deadline when no caller signal is pro
     await assert.rejects(inspectWorkspace(f.repo, f.path, true), /abort/i, 'an expired inspection deadline must refuse the read even outside the review planner');
     assert.ok(existsSync(f.path)); assert.deepEqual(f.calls, [0, 0]);
   } finally { f.close(); }
+});
+
+for (const scenario of ['filesystem-work', 'history-scale', 'cancellation'] as const) test(`large cleanup inventory: ${scenario}`, async t => {
+  const f = fixture(), count = scenario === 'history-scale' ? 806 : 128; let immediate: NodeJS.Immediate | undefined;
+  try {
+    f.inventoryRecords(count);
+    const original = fs.realpathSync, cancel = new AbortController(); let reads = 0, scheduled = false;
+    t.mock.method(fs, 'realpathSync', (...args: any[]) => {
+      reads++;
+      if (scenario === 'cancellation' && args[0] === f.dir && !scheduled) { scheduled = true; immediate = setImmediate(() => cancel.abort()); }
+      return (original as any)(...args);
+    });
+    syncBuiltinESMExports();
+    if (scenario === 'cancellation') {
+      await assert.rejects(cleanupInventory(f.c, f.store, f.t3, 0, 100, cancel.signal), /abort/i, 'an inventory read must yield so cancellation is handled before the scan completes');
+      assert.ok(scheduled);
+    } else {
+      const inventory = await cleanupInventory(f.c, f.store, f.t3, 0, 100);
+      assert.equal(inventory.total, count + 2, 'every historical path and both Git worktrees remain in the inventory');
+      assert.equal(inventory.counts.missing, count);
+      for (const item of inventory.items.filter(i => i.path.includes('/inventory-'))) { assert.equal(item.jobs.length, 1); assert.equal(item.bindings.length, 1); }
+      t.diagnostic(`${count} jobs/bindings: ${reads} filesystem path resolutions`);
+      assert.ok(reads <= 20 * (count * 2 + 2), `path normalization must stay linear in jobs and bindings; observed ${reads} filesystem reads for ${count} of each`);
+    }
+    assert.deepEqual(f.calls, [0, 0]);
+  } finally { if (immediate) clearImmediate(immediate); t.mock.restoreAll(); syncBuiltinESMExports(); f.close(); }
 });

@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -155,9 +156,30 @@ interface CleanupInventoryItem {
 
 export async function cleanupInventory(c: Config, store: Store, t3: T3, offset = 0, limit = 50, signal?: AbortSignal, filters: { query?: string; repository?: string; ownership?: string; state?: string; sort?: string } = {}) {
   signal = AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
+  // Reuse path readings only within this inventory; destructive reviews still inspect fresh identity.
+  const canonicalPaths = new Map<string, string>();
+  const canonical = (path: string) => {
+    if (!canonicalPaths.has(path)) canonicalPaths.set(path, canonicalPath(path));
+    return canonicalPaths.get(path)!;
+  };
+  let work = 0;
+  const checkpoint = async () => {
+    signal!.throwIfAborted();
+    if (++work % 64 === 0) await yieldToEventLoop(undefined, { signal });
+  };
+  const append = <T>(index: Map<string, T[]>, path: string, value: T) => {
+    const values = index.get(path) ?? []; values.push(value); index.set(path, values);
+  };
   const at = new Date().toISOString(), jobs = store.jobs(), actions = store.cleanupActions(), errors: { repository: string; message: string }[] = [];
   let threads: Thread[] = [], shellKnown = false;
   try { threads = (await t3.shell(true)).threads; shellKnown = true; } catch (e) { errors.push({ repository: 'T3', message: safeError(e) }); }
+  const bindingsByPath = new Map<string, Thread[]>(), threadPaths = new Map<string, string>();
+  for (const thread of threads) {
+    if (thread.worktreePath) {
+      const path = canonical(thread.worktreePath); threadPaths.set(thread.id, path); append(bindingsByPath, path, thread);
+    }
+    await checkpoint();
+  }
   const items: CleanupInventoryItem[] = [], repositories: { path: string; freeBytes: number | null }[] = [];
   for (const project of c.projects) {
     signal?.throwIfAborted();
@@ -166,17 +188,36 @@ export async function cleanupInventory(c: Config, store: Store, t3: T3, offset =
     repositories.push({ path: project.repoPath, freeBytes: await freeBytes(project.repoPath) });
     const localJobs = jobs.filter(j => j.projectId === project.kaneoId), localThreads = threads.filter(t => t.projectId === project.t3Id);
     const localActions = actions.filter(a => a.targets.some(t => t.projectId === project.kaneoId));
-    const paths = new Set([...registered.map(t => t.path), ...localJobs.flatMap(jobPaths), ...localThreads.flatMap(t => t.worktreePath ? [t.worktreePath] : []), ...localActions.flatMap(a => a.targets.filter(t => t.projectId === project.kaneoId).map(t => t.path))].map(canonicalPath));
+    const paths = new Set<string>(), treesByPath = new Map<string, typeof registered[number]>(), jobsByPath = new Map<string, Job[]>();
+    const unresolved = new Set<string>(), confirmed = new Set<string>(), actionAttempt = new Map<string, string>();
+    for (const tree of registered) {
+      const path = canonical(tree.path); paths.add(path); if (!treesByPath.has(path)) treesByPath.set(path, tree); await checkpoint();
+    }
+    for (const job of localJobs) {
+      const owned = new Set(jobPaths(job).map(canonical));
+      for (const path of owned) paths.add(path);
+      const bound = threadPaths.get(job.threadId); if (bound) owned.add(bound);
+      for (const path of owned) append(jobsByPath, path, job);
+      await checkpoint();
+    }
+    for (const thread of localThreads) {
+      const path = threadPaths.get(thread.id); if (path) paths.add(path); await checkpoint();
+    }
+    for (const action of localActions) for (const target of action.targets.filter(t => t.projectId === project.kaneoId)) {
+      const path = canonical(target.path); paths.add(path);
+      if (cleanupActionPending(action, path, canonical)) unresolved.add(path);
+      if (action.outcomes.some(o => canonical(o.path) === path && o.state === 'confirmed')) confirmed.add(path);
+      if (action.updatedAt > (actionAttempt.get(path) ?? '')) actionAttempt.set(path, action.updatedAt);
+      await checkpoint();
+    }
+    const primaryPath = registered[0] && canonical(registered[0].path);
     for (const path of paths) {
-      const bindings = threads.filter(t => t.worktreePath && canonicalPath(t.worktreePath) === path);
-      const owned = localJobs.filter(j => bindings.some(t => t.id === j.threadId) || jobPaths(j).some(p => canonicalPath(p) === path));
-      const history = localActions.filter(a => a.targets.some(t => t.projectId === project.kaneoId && canonicalPath(t.path) === path));
-      const unresolved = history.some(a => cleanupActionPending(a, path));
-      const confirmed = history.some(a => a.outcomes.some(o => canonicalPath(o.path) === path && o.state === 'confirmed'));
-      const jobRows = owned.map(publicJob), lastAttempt = [...jobRows.map(j => j.lastAttempt), ...history.map(a => a.updatedAt)].filter((at): at is string => !!at).sort().at(-1) ?? null;
-      const tree = registered.find(t => canonicalPath(t.path) === path), present = existsSync(path), primary = registered[0] && canonicalPath(registered[0].path) === path;
+      await checkpoint();
+      const bindings = bindingsByPath.get(path) ?? [], owned = jobsByPath.get(path) ?? [], jobRows = owned.map(publicJob);
+      const lastAttempt = [...jobRows.map(j => j.lastAttempt), actionAttempt.get(path)].filter((at): at is string => !!at).sort().at(-1) ?? null;
+      const tree = treesByPath.get(path), present = existsSync(path), primary = primaryPath === path;
       const active = bindings.some(t => t.activeRunId || t.pendingRuntimeRequest || t.pendingBackgroundTasks.length || ['preparing', 'queued', 'starting', 'running', 'waiting'].includes(t.status)) || owned.some(j => !['complete', 'dismissed'].includes(j.state));
-      const state = primary ? 'primary' : active ? 'active' : !shellKnown ? 'unknown' : unresolved ? 'blocked' : !present ? tree ? 'stale-registration' : confirmed || owned.some(j => j.workspaceCleanedAt) ? 'complete' : 'missing' : owned.some(j => j.workspaceCleanupError) ? 'blocked' : owned.some(j => !j.workspaceCleanedAt) ? 'pending' : 'review';
+      const state = primary ? 'primary' : active ? 'active' : !shellKnown ? 'unknown' : unresolved.has(path) ? 'blocked' : !present ? tree ? 'stale-registration' : confirmed.has(path) || owned.some(j => j.workspaceCleanedAt) ? 'complete' : 'missing' : owned.some(j => j.workspaceCleanupError) ? 'blocked' : owned.some(j => !j.workspaceCleanedAt) ? 'pending' : 'review';
       const cached = JSON.parse(store.get(`cleanupSize:${digest([project.kaneoId, path])}`) ?? 'null');
       const size = cached ? { state: cached.state === 'error' ? 'error' : Date.now() - Date.parse(cached.checkedAt) < 300_000 && cached.head === tree?.head ? 'known' : 'stale', bytes: cached.bytes, checkedAt: cached.checkedAt } : { state: 'unknown', bytes: null };
       items.push({ projectId: project.kaneoId, repository: project.repoPath, path, branch: tree?.branch ?? bindings[0]?.branch ?? '', head: tree?.head ?? '', present, registered: !!tree,
@@ -185,8 +226,13 @@ export async function cleanupInventory(c: Config, store: Store, t3: T3, offset =
     }
   }
   const query = filters.query?.toLowerCase() ?? '';
-  const filtered = items.filter(i => (!filters.repository || i.repository === filters.repository) && (!filters.ownership || i.ownership === filters.ownership) && (!filters.state || i.state === filters.state) && JSON.stringify([i.path, i.branch, i.repository, i.jobs, i.bindings]).toLowerCase().includes(query));
+  const filtered: CleanupInventoryItem[] = [];
+  for (const i of items) {
+    if ((!filters.repository || i.repository === filters.repository) && (!filters.ownership || i.ownership === filters.ownership) && (!filters.state || i.state === filters.state) && JSON.stringify([i.path, i.branch, i.repository, i.jobs, i.bindings]).toLowerCase().includes(query)) filtered.push(i);
+    await checkpoint();
+  }
   filtered.sort((a, b) => filters.sort === 'size' ? (b.size.bytes ?? -1) - (a.size.bytes ?? -1) : filters.sort === 'attempt' ? String(b.lastAttempt ?? '').localeCompare(a.lastAttempt ?? '') : String(filters.sort === 'branch' ? a.branch : filters.sort === 'repository' ? a.repository : a.path).localeCompare(String(filters.sort === 'branch' ? b.branch : filters.sort === 'repository' ? b.repository : b.path)));
+  signal!.throwIfAborted();
   if (!errors.length) store.set('cleanupLastScan', at);
   const maintenance = JSON.parse(store.get('cleanupMaintenance') ?? 'null');
   const stalled = !!maintenance && ['pending', 'inspecting'].includes(maintenance.state) && Date.now() - Date.parse(maintenance.lastAttempt) > Math.max(c.pollSeconds ?? 60, 900) * 2000;
