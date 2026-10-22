@@ -3,7 +3,7 @@ import { html, useEffect, useState, useRef } from "../lib/h.js";
 import { config, status, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, clock, serverNow } from "../lib/store.js";
 import { cleanupResultSummary, projectCleanupResults, ago, clockTime, formatBytes as bytes, ticketLink, threadLink, safeLink, prLabel } from "../lib/format.js";
 import { follow } from "../lib/router.js";
-import { Button, Select, Field, Input, RowBody, Meta, Tag, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check } from "../ui/index.js";
+import { Button, Select, Field, Input, RowBody, Meta, Tag, Help, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check } from "../ui/index.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { RunFilters } from "./Runs.js";
 
@@ -16,7 +16,7 @@ const targetsOf = op => op.cleanupTargets ?? op.input.targets ?? [];
 const pendingState = state => ["queued", "running", "uncertain"].includes(state);
 const nextOf = item => item.next ?? { group: "attention", reason: "Not checked yet", action: "inspect" };
 const ageOf = item => item.jobs.map(j => j.completedAt).filter(Boolean).sort()[0] || item.bindings.map(t => t.updatedAt).sort()[0];
-const GROUPS = { ready: ["Unused", "ok"], attention: ["Blocked", "attention"], retrying: ["Retrying", "on"], protected: ["In use", ""], gone: ["Gone", ""] };
+const GROUPS = { ready: ["Unused", "ok"], attention: ["Blocked", "attention"], retrying: ["Retrying", "on"], protected: ["In use", ""], gone: ["Deleted", "ok"] };
 // Segmented views and the API views behind them.
 const VIEWS = [["present", "All"], ["ready", "Unused"], ["blocked", "Blocked"], ["inuse", "In use"]];
 const REASON = "Deleted from the Cleanup page";
@@ -27,7 +27,8 @@ function previousFailure(item) {
   return job ? { message: job.error, at: item.lastAttempt } : null;
 }
 
-// One worktree. Expanding reads what the inventory already knows; only Check and Delete anyway contact the backend.
+// One worktree on one fixed-height row: name, project, state tag, a glyph that explains a blocker on hover, age and one
+// action. Expanding reads what the inventory already knows; only Check and Delete anyway contact the backend.
 function CleanupRow({ item, selected, onSelect, onRemove, refreshing }) {
   const [open, setOpen] = useState(false), [detail, setDetail] = useState(null), [loading, setLoading] = useState(false), [error, setError] = useState("");
   const [force, setForce] = useState(false), [confirmation, setConfirmation] = useState(""), [copied, setCopied] = useState(false);
@@ -52,34 +53,36 @@ function CleanupRow({ item, selected, onSelect, onRemove, refreshing }) {
   const owner = item.bindings[0]?.id || item.jobs.find(j => j.threadId)?.threadId;
   const ticket = item.jobs.map(j => ticketLink(config.value, j)).find(Boolean);
   const action = detail?.state === "eligible" ? "remove" : next.action === "thread" && !owner || next.action === "ticket" && !ticket ? "inspect" : next.action;
-  const primary = action === "remove" ? html`<${Button} size="sm" disabled=${pending || refreshing} onClick=${() => onRemove([item])}>${op?.state === "queued" ? "Queued" : op?.state === "running" ? "Deleting…" : "Delete"}<//>`
+  const busy = op?.state === "queued" ? "Queued" : op?.state === "running" ? "Deleting…" : loading ? "Checking…" : null;
+  const primary = busy ? html`<${Button} size="sm" disabled>${busy}<//>`
+    : action === "remove" ? html`<${Button} size="sm" disabled=${pending || refreshing} onClick=${() => onRemove([item])}>Delete<//>`
     : action === "thread" ? html`<${Link} class="btn btn-sm" href=${threadLink({ threadId: owner })}>Open thread<//>`
     : action === "ticket" ? html`<${Link} class="btn btn-sm" href=${ticket}>Open ticket<//>`
-    : action === "force" ? html`<${Button} size="sm" disabled=${loading || pending} onClick=${() => refresh(true)}>${loading ? "Checking…" : "Delete anyway…"}<//>`
+    : action === "force" ? html`<${Button} size="sm" disabled=${pending} onClick=${() => refresh(true)}>Delete anyway…<//>`
     : action === "retry" ? html`<${Button} size="sm" disabled=${pending} onClick=${() => startCleanup({ type: "retry", targets: [targetOf(item)], reason: "Retry the current maintenance step" })}>Retry<//>`
-    : action === "inspect" ? html`<${Button} size="sm" disabled=${loading} onClick=${() => refresh()}>${loading ? "Checking…" : "Check"}<//>` : null;
+    : action === "inspect" ? html`<${Button} size="sm" onClick=${() => refresh()}>Check<//>` : null;
   const checks = list => list.map(c => html`<div class="cleanup-check" key=${c.name}><strong>${c.name}</strong><span>${c.detail}</span><small>${c.state} · ${stamp(c.checkedAt)}</small></div>`);
   const blocked = detail?.checks.filter(c => c.state !== "pass") ?? [], passed = detail?.checks.filter(c => c.state === "pass") ?? [];
   const [groupLabel, tone] = GROUPS[next.group] ?? GROUPS.attention;
-  const statusText = !op ? "" : op.state === "queued" ? "Queued" : op.state === "running" ? "Checking and deleting…" : pending ? "Result not confirmed. Check before another delete." : outcome?.state === "confirmed" && typeof outcome.physicalRemoval === "boolean" ? `${outcome.physicalRemoval === false ? "Already gone" : "Deleted"}${outcome.freeSpaceChange > 0 ? ` · ${bytes(outcome.freeSpaceChange)} freed` : ""}` : outcome?.state === "cancelled" ? "Not sent" : `${op.state === "failed" ? "Failed: " : ""}${outcome?.message || op.result?.data?.message || "Check the recorded result before retrying."}`;
+  // Why the row is not simply deletable, on hover or focus; the last failed attempt rides along.
+  const note = next.group === "ready" ? "" : `${next.reason}${previous && !next.reason.includes(previous.message) ? `. Last attempt: ${previous.message}` : ""}${outcome?.state === "failed" && !next.reason.includes(outcome.message) ? `. Failed: ${outcome.message}` : ""}`;
   return html`<div class=${`cleanup-row-group ${open ? "is-current" : ""}`}>
     <div class="cleanup-row">
       ${next.group !== "protected" && next.group !== "gone" ? html`<${Check} aria-label=${`Select ${item.path}`} checked=${selected} disabled=${pending} onChange=${() => onSelect(item)} />` : html`<span class="cleanup-spacer"></span>`}
       <button type="button" class="cleanup-open" aria-label=${`Details ${item.path}`} aria-expanded=${open} onClick=${toggle}>
         <${RowBody} title=${html`<b class="key">${folder}</b>${item.branch && item.branch !== "HEAD" && html`<span class="muted">${item.branch}</span>`}`}>
-          <${Meta} project=${projectOf(item)}><${Tag} tone=${tone}>${groupLabel}<//><//> <span class="cleanup-reason">${next.reason}</span>
+          <${Meta} project=${projectOf(item)}><${Tag} tone=${tone} title=${next.reason}>${groupLabel}<//><//>
         <//>
       </button>
+      <span class="cleanup-note">${note && html`<${Help} text=${note} glyph="!" tone=${next.group === "attention" ? "attention" : undefined} />`}</span>
       <span class="cleanup-age muted small" title=${ageOf(item) ? `Finished ${clockTime(ageOf(item))}` : undefined}>${ageOf(item) ? ago(ageOf(item), serverNow(), true) : ""}</span>
       <div class="cleanup-row-actions">${primary}</div>
     </div>
-    ${loading && html`<p class="cleanup-row-status" role="status">Checking ownership, files and activity… <${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//></p>`}
-    ${op && html`<p class=${`cleanup-row-status ${outcome?.state === "failed" || op.state === "uncertain" ? "error" : ""}`} role="status">${statusText}</p>`}
     ${open && html`<section class="cleanup-inspector" aria-label=${`Details for ${folder}`}>
       <div class="cleanup-path-line"><code class="cleanup-path">${item.path}</code><${Button} size="sm" variant="ghost" onClick=${async () => { try { await navigator.clipboard.writeText(item.path); setCopied(true); } catch { setError("Couldn't copy the path. Select it here to copy."); } }}>${copied ? "Copied" : "Copy path"}<//></div>
-      <${Facts} items=${[["Branch", item.branch || "Detached"], ["Size", item.size.bytes != null ? `${bytes(item.size.bytes)} estimated${item.size.state === "stale" ? ", stale" : ""}` : null], ["Last result", previous && `${previous.message}${previous.at ? ` · ${stamp(previous.at)}` : ""}`]]} />
+      <${Facts} items=${[["State", `${groupLabel} · ${next.reason}`], ["Branch", item.branch || "Detached"], ["Size", item.size.bytes != null ? `${bytes(item.size.bytes)} estimated${item.size.state === "stale" ? ", stale" : ""}` : null], ["Last result", previous && `${previous.message}${previous.at ? ` · ${stamp(previous.at)}` : ""}`], ["This request", op && (outcome?.state === "confirmed" ? `${outcome.physicalRemoval === false ? "Already gone" : "Deleted"}${outcome.freeSpaceChange > 0 ? ` · ${bytes(outcome.freeSpaceChange)} freed` : ""}` : outcome?.message || op.result?.data?.message || busy)]]} />
       <div class="links-row small">${item.jobs.map(j => html`<a href=${`/runs/${j.id}`} onClick=${follow}>Run ${j.ticketKey || "details"}</a>`)}${ticket && html`<${Link} href=${ticket}>Ticket<//>`}${item.jobs.flatMap(j => j.prUrls).map(safeLink).filter(Boolean).map(url => html`<${Link} href=${url}>${prLabel(url)}<//>`)}${owner && html`<${Link} href=${threadLink({ threadId: owner })}>Thread<//>`}</div>
-      <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${next.group !== "protected" && next.group !== "gone" && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${loading || pending} onClick=${() => refresh(true)}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
+      <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${loading && html`<${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//>`}${next.group !== "protected" && next.group !== "gone" && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${loading || pending} onClick=${() => refresh(true)}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
       ${error && html`<p role="alert" class="alert">${error}</p>`}
       ${detail && html`<div class="cleanup-verdict">${blocked.length ? checks(blocked) : html`<p>No blocker found. Delete rechecks before removing.</p>`}</div>
         <${Section} collapsible class="cleanup-disclosure" title=${`${passed.length} checks passed`}>${checks(passed)}<//>
@@ -124,7 +127,14 @@ export function Cleanup() {
       let items = [];
       if (selected.length) items = data.items.filter(i => selected.includes(keyOf(i)));
       else for (let offset = 0; ; offset += 100) { const page = await loadCleanup({ ...filters, view: "ready", offset, limit: 100 }, signal); items.push(...page.items); if (offset + page.items.length >= page.total || !page.items.length) break; }
-      if (!signal.aborted && items.length) confirmAction({ title: `Delete ${items.length} ${items.length === 1 ? "worktree" : "worktrees"}?`, message: "Each one is rechecked first: it must be merged into the release branch, idle, and free of tracked or untracked changes. Ignored files are deleted with the folder. Branches, reports and threads stay.", label: "Delete" }, () => remove(items));
+      const forced = selected.length ? items.filter(i => nextOf(i).action === "force") : [], plain = items.filter(i => !forced.includes(i));
+      if (!signal.aborted && items.length) confirmAction({ title: `Delete ${items.length} ${items.length === 1 ? "worktree" : "worktrees"}?`, message: `${plain.length ? "Each one is rechecked first: it must be merged into the release branch, idle, and free of tracked or untracked changes. " : ""}${forced.length ? `${forced.length} of them ${forced.length === 1 ? "has" : "have"} unmerged work or local changes that will be lost. ` : ""}Ignored files are deleted with the folder. Branches, reports and threads stay.`, label: "Delete" }, async () => {
+        if (plain.length) remove(plain);
+        for (const item of forced) {
+          try { const review = await inspectCleanup(targetOf(item), true); if (review.forceAllowed) startCleanup({ type: "force", reviewId: review.reviewId, confirmation: folderOf(item), reason: REASON }, targetOf(item)); else setError(`${folderOf(item)}: ${review.checks.filter(c => !c.override && c.state !== "pass").map(c => c.detail).join(". ") || "fresh safety checks prevent deletion"}`); }
+          catch (e) { setError(`${folderOf(item)}: ${e.message}`); }
+        }
+      });
     } catch (e) { if (!signal.aborted) setError(e.message); } finally { if (!signal.aborted) setPreparing(false); }
   };
   const more = async () => {

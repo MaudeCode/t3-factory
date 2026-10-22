@@ -533,12 +533,12 @@ test('cleanup queues distinct rows and chunks bulk removals through the existing
   try {
     const targets = Array.from({ length: 45 }, (_, n) => ({ projectId: 'p', path: `/worktrees/${n}` }));
     store.startCleanup({ type: 'remove', targets, reason: 'Remove completed worktrees' });
-    assert.deepEqual(store.operations.value.map((op: any) => op.input.targets.length), [20, 20, 5], 'the queue preserves the API batch bound');
+    assert.equal(store.operations.value.length, 45, 'one request per worktree, in order'); assert.ok(store.operations.value.every((op: any) => op.input.targets.length === 1));
     assert.ok(store.startCleanup({ type: 'remove', targets: [{ projectId: 'p', path: '/worktrees/next' }], reason: 'Another finished row' }), 'another row remains usable during a removal');
     assert.equal(store.startCleanup({ type: 'remove', targets: [targets[0]], reason: 'Duplicate click' }), null);
     assert.equal(calls.length, 1, 'only the first batch is in flight');
-    release(); await untilChecked(() => calls.length === 4 && store.operations.value.every((op: any) => op.state === 'done'));
-    assert.deepEqual(calls.map(i => i.targets.length), [20, 20, 5, 1]);
+    release(); await untilChecked(() => calls.length === 46 && store.operations.value.every((op: any) => op.state === 'done'));
+    assert.deepEqual(calls.map(i => i.targets[0].path).slice(0, 3), ['/worktrees/0', '/worktrees/1', '/worktrees/2'], 'rows are deleted in order');
   } finally { release(); await untilChecked(() => store.operations.value.every((op: any) => op.state === 'done')); globalThis.fetch = oldFetch; store.operations.value = []; }
 });
 

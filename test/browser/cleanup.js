@@ -71,10 +71,11 @@ async function run() {
   const form = document.querySelector('.cleanup-force'); assert(form, 'fresh force evidence opens an inline confirmation');
   const submit = form.querySelector('button[type=submit]'); assert(submit.disabled, 'exact path and reason are required');
   for (const [label, value] of [['Worktree folder name', 'fix-FIX-1']]) { const input = document.querySelector(`[aria-label="${label}"]`); input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); }
-  await until(() => !submit.disabled); assert(!submit.disabled, 'correct confirmation enables deletion'); submit.click(); submit.click(); await until(() => calls.filter(c => c === '/api/cleanup/actions').length === 1 && document.body.textContent.includes('Checking and deleting'));
+  await until(() => !submit.disabled); assert(!submit.disabled, 'correct confirmation enables deletion'); submit.click(); submit.click(); await until(() => calls.filter(c => c === '/api/cleanup/actions').length === 1 && document.body.textContent.includes('Deleting…'));
   assert(calls.filter(c => c === '/api/cleanup/actions').length === 1, 'double click submits one saved action');
-  assert(document.body.textContent.includes('Checking and deleting'), 'pending result remains at its worktree');
-  release(); await until(() => document.body.textContent.includes('Reviewed identity changed')); assert(document.body.textContent.includes('Reviewed identity changed'), 'failed outcome stays visible');
+  const row = document.querySelector('[aria-label="Details /workspace/worktrees/fix-FIX-1"]').closest('.cleanup-row-group'), height = row.querySelector('.cleanup-row').getBoundingClientRect().height;
+  assert(row.querySelector('.cleanup-row-actions').textContent.includes('Deleting…'), 'progress shows in the row action');
+  release(); await until(() => row.querySelector('.cleanup-note [data-tip*="Reviewed identity changed"]')); assert(row.querySelector('.cleanup-row').getBoundingClientRect().height === height, 'a result never changes the row height');
   inspectFailure = true; document.querySelector('[aria-label="Check fix-FIX-1"]').click(); await until(() => document.querySelector('.cleanup-inspector [role=alert]')?.textContent.includes('T3 connection unavailable'));
   assert(document.querySelector('.cleanup-inspector [role=alert]')?.textContent.includes('T3 connection unavailable'), 'failed checks show a recovery message inline');
   assert(document.documentElement.scrollWidth <= innerWidth, 'page fits viewport');
@@ -85,7 +86,7 @@ async function failedReady() {
   const path = '/workspace/worktrees/example-6';
   document.querySelector(`[aria-label="Details ${path}"]`).closest('.cleanup-row-group').querySelector('.cleanup-row-actions button').click();
   await until(() => calls.includes('/api/cleanup/actions')); release();
-  await until(() => document.body.textContent.includes('not verified merged'));
+  await until(() => document.querySelector('.cleanup-note [data-tip*="not verified merged"]'));
   assert(document.body.textContent.includes('0 deleted'), 'a completed request with failed outcomes must explicitly report zero removals');
   assert(!document.body.textContent.includes('Needs you'), 'a failed attempt does not create an operator triage queue');
   await pause(400);
@@ -128,7 +129,7 @@ async function previousFailure() {
   try {
     await show();
     const row = document.querySelector(`[aria-label="Details ${item.path}"]`).closest('.cleanup-row-group');
-    assert(row.textContent.includes('Rechecked with the current cleanup rules'), 'a refusal under an obsolete rule is offered for normal deletion');
+    assert(row.querySelector('.tag').textContent === 'Unused' && row.querySelector('.cleanup-row-actions').textContent === 'Delete', 'a refusal under an obsolete rule is offered for normal deletion');
     assert(!row.textContent.includes('requires one Factory-owned job'), 'an obsolete Factory-only rule does not appear as a current blocker');
     row.querySelector('.cleanup-open').click(); await until(() => row.querySelector('.cleanup-inspector'));
     assert(row.querySelector('.cleanup-inspector').textContent.includes('requires one Factory-owned job'), 'the exact historical failure remains available in row details');

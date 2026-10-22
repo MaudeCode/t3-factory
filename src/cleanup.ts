@@ -430,7 +430,8 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
           await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: binding.id, expectedWorktreePath: binding.worktreePath, worktreePath: null, branch: null });
           mutated = false;
         }
-        const afterDetach = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
+        // Nothing was detached for an unbound worktree, so the fresh reading still stands.
+        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kaneo, inspection, boundary) : fresh;
         if (afterDetach.workspace?.fingerprint !== fresh.workspace?.fingerprint || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
         // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
         await verifyDetachedOwners(t3, fresh.bindings);
