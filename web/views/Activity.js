@@ -7,6 +7,7 @@ const KINDS = [
   ["all", "Everything"],
   ["runs", "Runs"],
   ["decision", "Checks"],
+  ["cleanup", "Cleanup"],
 ];
 
 export function Activity() {
@@ -14,7 +15,7 @@ export function Activity() {
   useEffect(() => {
     if (!history.value) loadHistory().catch(() => {});
   }, []);
-  const list = journal.value.filter((e) => kind === "all" || (kind === "runs" ? e.kind.startsWith("job.") : e.kind === kind));
+  const list = journal.value.filter((e) => kind === "all" || (kind === "runs" ? e.kind.startsWith("job.") : kind === "cleanup" ? e.kind.startsWith("cleanup.") : e.kind === kind));
   const known = new Set([...jobs.value, ...(history.value ?? [])].map((j) => j.id));
   const text = (e) =>
     e.jobId && known.has(e.jobId) ? html`<a href=${`/runs/${e.jobId}`} onClick=${follow}>${e.text}</a>` : e.text;

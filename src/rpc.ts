@@ -44,13 +44,13 @@ export async function subscribeT3Shell(socketUrl: () => Promise<string>, onItem:
     });
   }
 }
-export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string }): Promise<unknown> {
+export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string; force?: boolean } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string }): Promise<unknown> {
   const protocol = transport(socketUrl);
   return Effect.runPromise(Effect.gen(function* () {
     const client = yield* RpcClient.make(group);
     if (action.type === 'dispatch') return yield* client['orchestration.dispatchCommand'](action.command);
     if (action.type === 'launch') return yield* client['orchestration.launchThread'](action.input);
-    if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: false });
+    if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: action.force ?? false });
     // The metadata stream opens with a snapshot of every terminal.
     if (action.type === 'terminals') return Option.getOrNull(yield* Stream.runHead(client['subscribeTerminalMetadata']({})));
     // Without terminalId, T3 closes every terminal of the thread, including busy ones.

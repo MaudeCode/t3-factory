@@ -335,7 +335,7 @@ async function drainOperations() {
         // Persist the send intent first: an interrupted write must be reconciled, never replayed.
         updateOperation(op.id, { state: "running", notReceived: false });
         try {
-          updateOperation(op.id, await post("/api/dispatch", op.input, { "Idempotency-Key": op.id }));
+          updateOperation(op.id, await post(op.kind === "cleanup" ? "/api/cleanup/actions" : "/api/dispatch", op.input, { "Idempotency-Key": op.id }));
         } catch (error) {
           message(error.message, true);
         }
@@ -375,8 +375,11 @@ export function pendingReview(repo) {
 }
 export function startRun(input) {
   if (pendingRun(input.ticket) || pendingReview(input.upstream)) return null;
+  return enqueueOperation(input);
+}
+function enqueueOperation(input, kind = "dispatch") {
   const id = uuid();
-  operations.value = [...operations.value, { id, input: clone(input), state: "queued" }];
+  operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued" }];
   saveOperations();
   void drainOperations();
   return id;
@@ -482,4 +485,21 @@ export function subscribe() {
     source?.close();
     document.removeEventListener("visibilitychange", tick);
   };
+}
+
+// Cleanup uses the same persisted, non-replaying request queue as dispatch.
+async function cleanupRead(path, input, signal, get = false) {
+  const inspectionId = uuid();
+  const cancel = () => { void post("/api/cleanup/cancel", { inspectionId }).catch(() => {}); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    return await api(get ? path + "?" + new URLSearchParams(Object.entries({ ...input, inspectionId }).filter(([, v]) => v !== "" && v != null)) : path,
+      { signal, ...get ? {} : { method: "POST", body: JSON.stringify({ ...input, inspectionId }) } });
+  } finally { signal?.removeEventListener("abort", cancel); }
+}
+export const loadCleanup = (filters = {}, signal) => cleanupRead("/api/cleanup", filters, signal, true);
+export const inspectCleanup = (target, review = false, signal) => cleanupRead("/api/cleanup/" + (review ? "review" : "inspect"), target, signal);
+export function startCleanup(input) {
+  if (operations.value.some(op => op.kind === "cleanup" && ["queued", "running", "uncertain"].includes(op.state))) return null;
+  return enqueueOperation(input, "cleanup");
 }

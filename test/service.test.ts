@@ -320,6 +320,7 @@ test('an ordinary pass renews a sweep while its cleanup continuation is queued',
     entered.resolve(); await release.promise;
     Object.assign(f.thread, { worktreePath: null, branch: null });
   });
+  t.mock.method(T3.prototype, 'request', async () => ({ projection: v2Projection(f.thread) }));
   t.mock.method(T3.prototype, 'terminals', async () => []);
   t.mock.method(T3.prototype, 'removeWorktree', async (_: string, path: string) => { git('worktree', 'remove', path); });
   try {
@@ -578,5 +579,26 @@ test('command Stop is deferred behind dispatch, serialized, and confirmed after 
     });
     await internal.handle({ type: 'once', options: {} }); await confirmed.promise;
     assert.equal(stops, 1, 'restart observes settlement instead of repeating interruption');
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('cleanup inspection is serialized with dispatch and queued inspection cancellation makes no workspace calls', async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred();
+  let reads = 0;
+  t.mock.method(internal, 'pass', async () => { entered.resolve(); await release.promise; return { reason: 'disabled' }; });
+  t.mock.method(T3.prototype, 'shell', async () => { reads++; return f.shell(); });
+  t.mock.method(T3.prototype, 'removeWorktree', async () => { assert.fail('Inspection never removes worktrees'); });
+  try {
+    await service.start(); await entered.promise;
+    const id = '00000000-0000-4000-8000-000000000042';
+    const inspection = internal.handle({ type: 'cleanup', input: { type: 'inventory', inspectionId: id } });
+    const rejected = assert.rejects(inspection, /abort/i);
+    assert.equal(reads, 0, 'inspection waits behind the active pass');
+    const cancelled = await internal.handle({ type: 'cleanup-cancel', inspectionId: id });
+    assert.equal(cancelled.data.cancelled, true);
+    release.resolve(); await rejected; assert.equal(reads, 0);
+    const result = await internal.handle({ type: 'cleanup', input: { type: 'inventory' } });
+    assert.equal(result.code, 0); assert.equal(reads, 1);
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });

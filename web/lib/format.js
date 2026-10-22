@@ -101,14 +101,14 @@ export const DIFFICULTIES = [
 export const difficultyLabel = (value) => DIFFICULTIES.find(([v]) => v === value)?.[1] ?? "High";
 
 export const STATES = ["dispatching", "running", "waiting", "complete", "dismissed"];
-export const STATE_LABELS = { dispatching: "Starting", running: "Running", waiting: "Needs you", complete: "Done", dismissed: "Settled" };
+export const STATE_LABELS = { dispatching: "Starting", running: "Running", waiting: "Needs you", complete: "Done", dismissed: "Settled", pending: "Pending", blocked: "Blocked", active: "In use", missing: "Missing path", "stale-registration": "Stale registration", review: "Needs review", unknown: "Unknown", primary: "Primary checkout", eligible: "Eligible", confirmed: "Confirmed", failed: "Failed", uncertain: "Uncertain", requested: "Requested" };
 export const finishedAt = (job) => job.completedAt ?? job.dismissedAt ?? job.createdAt;
 export const byFinished = (a, b) => String(finishedAt(b)).localeCompare(String(finishedAt(a)));
 export const stateLabel = (state) => STATE_LABELS[state] ?? state;
 // The four stops on a run's track, in order; a settled run also reaches the last stop.
 export const STOPS = ["Queued", "Working", "Needs you", "Done"];
 export const stopOf = (state) => ({ dispatching: 1, running: 2, waiting: 3, complete: 4, dismissed: 4 })[state] ?? 1;
-export const toneOf = (state) => ({ dispatching: "on", running: "on", waiting: "attention", complete: "ok", dismissed: "" })[state] ?? "";
+export const toneOf = (state) => ({ dispatching: "on", running: "on", waiting: "attention", complete: "ok", dismissed: "", pending: "on", active: "on", eligible: "ok", confirmed: "ok", blocked: "attention", failed: "attention", uncertain: "attention", unknown: "attention", "stale-registration": "attention" })[state] ?? "";
 export const isActive = (job) => ["running", "dispatching"].includes(job.state);
 export const isOpen = (job) => !["complete", "dismissed"].includes(job.state);
 export const isFinished = (job) => !isOpen(job);
@@ -191,3 +191,5 @@ export function moveItem(list, from, to) {
   next.splice(to, 0, item);
   return next;
 }
+
+export const formatBytes = n => n == null ? "Unknown" : `${(n / 1024 ** 3).toFixed(2)} GiB`;

@@ -190,3 +190,11 @@ Keep runtime behavior documented in the relevant guide and examples aligned with
 Documentation changes need link and example validation, not live ticket dispatches. Keep installation separate from development: the installers restart services and copy the runtime, so they are deployment commands rather than build checks.
 
 `LOCAL.md` may contain private deployment instructions for a particular checkout. It is ignored by Git and is not distributed to contributors.
+
+### Cleanup management
+
+`src/workspace.ts` is the shared filesystem inspection and removal boundary for automatic cleanup and operator actions. It validates canonical registered Git identity, protects primary checkouts and ignored contents, and confirms both directory and registration absence after T3 removal. `src/cleanup.ts` adds cross-job inventory, read-only evidence, expiring force reviews and durable operator action records. Force is passed explicitly only by a confirmed operator action; background maintenance always uses the nonforce default.
+
+Cleanup commands use the existing serialized service queue and offline claim. Inspection cancellation is a separate control command so it can cancel a read queued behind a pass. The browser reuses saved operations, Tag, RowBody, Facts, Dialog and Timeline; `/cleanup` needs its own view because its inventory includes worktrees without any Factory run.
+
+Run `node --test test/cleanup-management.test.ts test/cleanup-api.test.ts test/service.test.ts` for operator boundaries, restart/idempotency and queue behavior. Existing `test/workspace-cleanup.test.ts` remains the automatic-maintenance regression suite. Serve the repository root and open `/test/browser/cleanup.html?run=1` at 1280x800 and 390x844. `body.dataset.result` reports browser assertions for filtering, review, exact-path confirmation, duplicate clicks, pending/error feedback and viewport overflow. All destructive tests use temporary Git repositories, SQLite ledgers and fake T3/tracker/process boundaries; do not validate with live worktrees.

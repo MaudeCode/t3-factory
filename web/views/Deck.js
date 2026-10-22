@@ -85,14 +85,15 @@ function Machine({ provider }) {
 function Operation({ op }) {
   const d = op.result?.data,
     running = op.state === "running";
-  const text = op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
+  const cleanup = op.kind === "cleanup";
+  const text = cleanup ? running ? "Verifying cleanup" : d?.outcomes?.map(o => `${o.path}: ${o.message}`).join("; ") || d?.message || op.state : op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
     ? op.input.upstream ? "Checking the release and starting its review" : "Checking the ticket and starting its T3 run"
     : d?.reason === "dispatched"
       ? `Started ${d.ticket || "ticket"} with ${d.model}.`
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
   return html`<div class=${`operation ${op.state}`} role="status">
     ${running && html`<i class="spinner"></i>`}
-    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <span><b class="key">${cleanup ? `Cleanup ${op.input.type}` : op.input.upstream || op.input.ticket || "Next eligible ticket"}</b>${!cleanup && html` · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}`}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     ${!op.choiceHandled && d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${() => showReadinessConfirmation(op.id)}>Review and run anyway<//>`}
     ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}

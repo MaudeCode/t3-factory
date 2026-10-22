@@ -1,3 +1,4 @@
+import type { CleanupAction } from './cleanup.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,6 +35,7 @@ export interface Job {
   workspaceCleanedAt?: string;
   workspaceCleanupError?: string;
   workspaceCleanupBlockedAt?: string;
+  workspaceCleanupAttemptedAt?: string;
 }
 export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
   return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : 'Discovery');
@@ -90,6 +92,7 @@ export class Store {
     chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, task_id TEXT UNIQUE, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS cleanup_actions(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_job ON events(job_id);
@@ -110,6 +113,9 @@ export class Store {
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
     for (const url of job.prUrls ?? []) if (!before?.prUrls?.includes(url)) this.record('job.pr', `${label} opened ${url.replace(/^https:\/\/github\.com\//, '')}`, { ...detail, url }, job.id);
   }
+  cleanupActions(): CleanupAction[] { return this.db.prepare('SELECT data FROM cleanup_actions ORDER BY rowid DESC').all().map(r => JSON.parse(r.data as string)); }
+  cleanupAction(id: string): CleanupAction | undefined { const row = this.db.prepare('SELECT data FROM cleanup_actions WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  saveCleanupAction(action: CleanupAction) { this.db.prepare('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action)); }
   plans(): Plan[] { return this.db.prepare('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   plan(id: string): Plan | undefined { const row = this.db.prepare('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   savePlan(plan: Plan) {

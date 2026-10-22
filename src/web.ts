@@ -1,3 +1,4 @@
+import { cleanupRequestSchema } from './cleanup.ts';
 import {
   createServer,
   type IncomingMessage,
@@ -198,7 +199,7 @@ export function createFactoryWeb(options: {
           code: 1,
           data: {
             message:
-              "Web server restarted during dispatch. Inspect factory status before starting another run.",
+              "Web server restarted during an operation. Inspect its result before submitting another request.",
           },
         },
       });
@@ -434,17 +435,34 @@ export function createFactoryWeb(options: {
             settingsBusy = false;
           }
         }
-        if (path === "/api/dispatch" && req.method === "POST") {
+        if (path === "/api/cleanup" && req.method === "GET") {
+          const query = new URL(req.url!, localOrigin).searchParams;
+          const input = cleanupRequestSchema.parse({ type: "inventory", offset: Number(query.get("offset") ?? 0), limit: Number(query.get("limit") ?? 50), ...Object.fromEntries(["query", "repository", "ownership", "state", "sort", "inspectionId"].filter(k => query.has(k)).map(k => [k, query.get(k)])) });
+          const result = await run(["cleanup"], input);
+          return json(res, result.code ? 503 : 200, result.data);
+        }
+        if (path === "/api/cleanup/cancel" && req.method === "POST") {
+          const { inspectionId } = z.object({ inspectionId: z.uuid() }).strict().parse(await body(req));
+          const result = await run(["cleanup-cancel", inspectionId]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
+        if ((path === "/api/cleanup/inspect" || path === "/api/cleanup/review") && req.method === "POST") {
+          const input = cleanupRequestSchema.parse({ ...z.record(z.string(), z.unknown()).parse(await body(req)), type: path.endsWith("review") ? "review" : "inspect" });
+          const result = await run(["cleanup"], input);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
+        if ((path === "/api/dispatch" || path === "/api/cleanup/actions") && req.method === "POST") {
           const id = requestId.parse(req.headers["idempotency-key"]),
-            input = dispatchSchema.parse(await body(req));
+            input = path === "/api/dispatch" ? dispatchSchema.parse(await body(req)) : cleanupRequestSchema.parse({ ...z.record(z.string(), z.unknown()).parse(await body(req)), id });
+          if (path === "/api/cleanup/actions" && !["retry", "remove", "force"].includes((input as any).type)) return json(res, 400, { message: "Expected a cleanup action" });
           const file = join(operations, `${id}.json`);
           if (existsSync(file)) {
             const previous = JSON.parse(
               readFileSync(file, "utf8"),
             ) as Operation;
-            if (JSON.stringify(dispatchSchema.parse(previous.input)) !== JSON.stringify(input))
+            if (JSON.stringify(previous.input) !== JSON.stringify(input))
               return json(res, 409, {
-                message: "Request ID already belongs to another dispatch",
+                message: "Request ID already belongs to another operation",
               });
             return json(res, 200, previous);
           }
@@ -458,17 +476,18 @@ export function createFactoryWeb(options: {
             flag: "wx",
             mode: 0o600,
           });
-          const args = [
+          const dispatch = input as z.infer<typeof dispatchSchema>;
+          const args = path === "/api/cleanup/actions" ? ["cleanup", `web-session:${sign(req.headers.cookie ?? "").slice(0, 16)}`] : [
             "dispatch",
             "--model",
-            input.model,
-            ...(input.ticket ? ["--ticket", input.ticket.toUpperCase()] : []),
-            ...(input.upstream ? ["--upstream", input.upstream] : []),
-            ...(input.overrideLimits ? ["--override-limits"] : []),
-            ...(input.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
-            ...(input.chain ? ["--chain", input.chain] : []),
+            dispatch.model,
+            ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
+            ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
+            ...(dispatch.overrideLimits ? ["--override-limits"] : []),
+            ...(dispatch.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
+            ...(dispatch.chain ? ["--chain", dispatch.chain] : []),
           ];
-          void run(args)
+          void run(args, path === "/api/cleanup/actions" ? input : undefined)
             .then((result) =>
               saveJSON(file, { ...operation, state: "done", result }),
             )
@@ -480,7 +499,7 @@ export function createFactoryWeb(options: {
                   code: 1,
                   data: {
                     message:
-                      "Dispatch response was lost. Check factory status before starting another run.",
+                      "Operation response was lost. Inspect its result before submitting another request.",
                   },
                 },
               }),

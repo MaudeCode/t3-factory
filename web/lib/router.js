@@ -7,6 +7,7 @@ export const PAGES = [
   ["/runs", "Runs"],
   ["/session-tickets", "Session tickets"],
   ["/activity", "Activity"],
+  ["/cleanup", "Cleanup"],
   ["/models", "Models"],
   ["/capacity", "Capacity"],
   ["/projects", "Projects"],

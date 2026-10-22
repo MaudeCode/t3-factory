@@ -1,3 +1,4 @@
+import { manageCleanup, cleanupRequestSchema } from './cleanup.ts';
 // The long-lived scheduler. One process holds the store claim, a T3 client, and a connected Kaneo
 // client, and runs passes in series from one queue. Passes start from what changes: a T3 thread
 // event, a config edit, a command over the control socket, or the fallback timer.
@@ -34,6 +35,7 @@ export class FactoryService {
   private cleanupQueued = false;
   private collectionTimer?: NodeJS.Timeout;
   private collectionQueued = false;
+  private readonly inspections = new Map<string, AbortController>();
   private readonly cleanupVisited = new Set<string>();
   private readyFingerprint?: string;
   private readonly timing: ServiceTiming;
@@ -72,6 +74,7 @@ export class FactoryService {
   }
   async stop() {
     this.stopped = true;
+    for (const controller of this.inspections.values()) controller.abort();
     this.abort.abort();
     clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer);
     this.watcher?.close();
@@ -189,6 +192,25 @@ export class FactoryService {
     if (command.type === 'plan-cancel') {
       const result = await this.enqueue(async () => { const r = cancelPlan(this.store, command.planId); writeStatus(loadConfig(this.configPath), this.store); return r; });
       return { code: 0, data: result };
+    }
+    if (command.type === 'cleanup-cancel') { this.inspections.get(command.inspectionId)?.abort(); return { code: 0, data: { cancelled: this.inspections.has(command.inspectionId) } }; }
+    if (command.type === 'cleanup') {
+      const input = cleanupRequestSchema.parse(command.input), inspectionId = 'inspectionId' in input ? input.inspectionId : undefined;
+      const controller = new AbortController();
+      if (inspectionId && this.inspections.has(inspectionId)) throw new Error('Inspection ID is already queued or running');
+      if (inspectionId) this.inspections.set(inspectionId, controller);
+      try {
+        const result = await this.enqueue(async () => {
+          controller.signal.throwIfAborted();
+          const c = this.configure();
+          // Inspection also verifies tracker evidence when present. Lazy connection keeps inventory available during tracker outages.
+          const lazy = { call: async (tool: string, args: any) => (await this.ensureKaneo(c)).call(tool, args) } as Kaneo;
+          const r = await manageCleanup(c, this.store, this.t3, lazy, input, command.operator ?? 'local operator', { signal: controller.signal });
+          if (!['inventory', 'inspect', 'review'].includes(input.type)) writeStatus(c, this.store);
+          return r;
+        });
+        return { code: 0, data: result };
+      } finally { if (inspectionId) this.inspections.delete(inspectionId); }
     }
     if (command.type === 'once') {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));

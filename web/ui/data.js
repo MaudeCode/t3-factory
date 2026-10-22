@@ -1,6 +1,6 @@
 // Read-only display pieces: gauges, tags, tables, timelines.
 import { html, useEffect, useState } from "../lib/h.js";
-import { clockTime, dayLabel } from "../lib/format.js";
+import { clockTime, dayLabel, stateLabel, toneOf, formatBytes } from "../lib/format.js";
 import { Help } from "./controls.js";
 import { ICONS } from "../vendor/icons.js?v=9ef06b636172";
 
@@ -40,7 +40,7 @@ export const Icon = ({ name, label }) => {
 export const Stops = ({ n, tone, label }) =>
   html`<span class=${`stops ${tone ? `stops-${tone}` : ""}`} data-n=${n} role="img" aria-label=${label} title=${label}><i></i><i></i><i></i><i></i></span>`;
 
-export const Tag = ({ tone, children, title }) => html`<span class=${`tag ${tone ? `tag-${tone}` : ""}`} title=${title}>${children}</span>`;
+export const Tag = ({ tone, state, children, title }) => html`<span class=${`tag ${(tone ?? toneOf(state)) ? `tag-${tone ?? toneOf(state)}` : ""}`} title=${title}>${children ?? stateLabel(state)}</span>`;
 
 export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;
 
@@ -99,13 +99,15 @@ export const Facts = ({ items }) =>
 const TONES = { "job.state": (e) => ({ waiting: "attention", complete: "ok", dismissed: "" })[e.data.state] ?? "on", "job.created": () => "on", "job.pr": () => "ok", "job.stop": () => "attention", decision: (e) => (e.data.reason === "error" ? "attention" : "") };
 
 // Journal entries grouped by day, newest first.
-export const Timeline = ({ events, renderText }) => {
+export const Timeline = ({ events = [], actions, renderText }) => {
+  if (actions) events = actions.map(a => ({ id: a.id, time: a.updatedAt, kind: "cleanup." + a.state, data: a, text: `${a.state} · ${a.operator} · ${a.reason}. ${a.outcomes.map(o => `${o.path}: ${o.message}${o.freeSpaceChange == null ? "" : `; measured free-space change ${formatBytes(o.freeSpaceChange)}`}`).join("; ")}` }));
   const groups = [];
   for (const e of events) {
     const day = dayLabel(e.time);
     if (groups.at(-1)?.day !== day) groups.push({ day, items: [] });
     groups.at(-1).items.push(e);
   }
+  if (!events.length) return html`<${Empty}>No actions recorded.<//>`;
   return html`<div class="timeline">
     ${groups.map(
       (g) => html`<section key=${g.day}>
