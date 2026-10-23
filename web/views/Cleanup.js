@@ -15,11 +15,23 @@ const projectOf = item => config.value.projects.find(p => p.kaneoId === item.pro
 const targetsOf = op => op.cleanupTargets ?? op.input.targets ?? [];
 const pendingState = state => ["queued", "running", "uncertain"].includes(state);
 const nextOf = item => item.next ?? { group: "attention", reason: "Not checked yet", action: "inspect" };
+const selectable = item => !["protected", "gone"].includes(nextOf(item).group);
 const ageOf = item => item.jobs.map(j => j.completedAt).filter(Boolean).sort()[0] || item.bindings.map(t => t.updatedAt).sort()[0];
 const GROUPS = { ready: ["Unused", "ok"], attention: ["Blocked", "attention"], retrying: ["Retrying", "on"], protected: ["In use", ""], gone: ["Deleted", "ok"] };
 // Segmented views and the API views behind them.
 const VIEWS = [["present", "All"], ["ready", "Unused"], ["blocked", "Blocked"], ["inuse", "In use"]];
 const REASON = "Deleted from the Cleanup page";
+
+// Reads up to `want` rows in requests the inventory API accepts, at most 100 rows each.
+async function loadRows(query, want, signal) {
+  let value;
+  for (let offset = 0; offset < want; offset += 100) {
+    const page = await loadCleanup({ ...query, offset, limit: Math.min(100, want - offset) }, signal);
+    value = value ? { ...value, items: [...value.items, ...page.items] } : page;
+    if (offset + page.items.length >= page.total || !page.items.length) break;
+  }
+  return value;
+}
 
 function previousFailure(item) {
   if (item.lastOutcome?.state === "failed") return { message: item.lastOutcome.message, at: item.lastOutcome.updatedAt };
@@ -76,7 +88,7 @@ function CleanupRow({ item, selecting, selected, onSelect, onRemove, refreshing 
   const note = next.group === "ready" ? "" : `${next.reason}${previous && !next.reason.includes(previous.message) ? `. Last attempt: ${previous.message}` : ""}${outcome?.state === "failed" && !next.reason.includes(outcome.message) ? `. Failed: ${outcome.message}` : ""}`;
   return html`<div class=${`cleanup-row-group ${open ? "is-current" : ""}`}>
     <div class="cleanup-row">
-      ${selecting && (next.group !== "protected" && next.group !== "gone" ? html`<${Check} aria-label=${`Select ${item.path}`} checked=${selected} disabled=${pending} onChange=${() => onSelect(item)} />` : html`<span class="cleanup-spacer"></span>`)}
+      ${selecting && (selectable(item) ? html`<${Check} aria-label=${`Select ${item.path}`} checked=${selected} disabled=${pending} onChange=${() => onSelect(item)} />` : html`<span class="cleanup-spacer"></span>`)}
       <button type="button" class="cleanup-open" aria-label=${`Details ${item.path}`} aria-expanded=${open} onClick=${toggle}>
         <${RowBody} title=${html`<b class="key">${folder}</b>${item.branch && item.branch !== "HEAD" && html`<span class="muted">${item.branch}</span>`}`}>
           <${Meta} project=${projectOf(item)}><${Tag} tone=${tone} title=${next.reason}>${groupLabel}<//><//>
@@ -90,7 +102,7 @@ function CleanupRow({ item, selecting, selected, onSelect, onRemove, refreshing 
       <div class="cleanup-path-line"><code class="cleanup-path">${item.path}</code><${Button} size="sm" variant="ghost" onClick=${async () => { try { await navigator.clipboard.writeText(item.path); setCopied(true); } catch { setError("Couldn't copy the path. Select it here to copy."); } }}>${copied ? "Copied" : "Copy path"}<//></div>
       <${Facts} items=${[["State", `${groupLabel} · ${next.reason}`], ["Branch", item.branch || "Detached"], ["Size", item.size.bytes != null ? `${bytes(item.size.bytes)} estimated${item.size.state === "stale" ? ", stale" : ""}` : null], ["Last result", previous && `${previous.message}${previous.at ? ` · ${stamp(previous.at)}` : ""}`], ["This request", op && (outcome?.state === "confirmed" ? `${outcome.physicalRemoval === false ? "Already gone" : "Deleted"}${outcome.freeSpaceChange > 0 ? ` · ${bytes(outcome.freeSpaceChange)} freed` : ""}` : outcome?.message || op.result?.data?.message || busy)]]} />
       <div class="links-row small">${item.jobs.map(j => html`<a href=${`/runs/${j.id}`} onClick=${follow}>Run ${j.ticketKey || "details"}</a>`)}${ticket && html`<${Link} href=${ticket}>Ticket<//>`}${item.jobs.flatMap(j => j.prUrls).map(safeLink).filter(Boolean).map(url => html`<${Link} href=${url}>${prLabel(url)}<//>`)}${owner && html`<${Link} href=${threadLink({ threadId: owner })}>Thread<//>`}</div>
-      <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${loading && html`<${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//>`}${next.group !== "protected" && next.group !== "gone" && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${reviewing || pending} onClick=${deleteAnyway}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
+      <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${loading && html`<${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//>`}${selectable(item) && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${reviewing || pending} onClick=${deleteAnyway}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
       ${error && html`<p role="alert" class="alert">${error}</p>`}
       ${detail && html`<div class="cleanup-verdict">${blocked.length ? checks(blocked) : html`<p>No blocker found. Delete rechecks before removing.</p>`}</div>
         <${Section} collapsible class="cleanup-disclosure" title=${`${passed.length} checks passed`}>${checks(passed)}<//>
@@ -105,18 +117,22 @@ export function Cleanup() {
   const [snapshot, setData] = useState(null), [error, setError] = useState(""), [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({ query: new URLSearchParams(location.search).get("query") ?? "", repository: "", ownership: "", view: "present", sort: "action" });
   const [selecting, setSelecting] = useState(false), [selected, setSelected] = useState([]), [revision, setRevision] = useState(0), [preparing, setPreparing] = useState(false);
-  const batchRead = useRef(), generation = useRef(0), wasRunning = useRef(false), rescan = useRef(false);
+  const batchRead = useRef(), generation = useRef(0), wasRunning = useRef(false), rescan = useRef(false), scope = useRef("");
   const ops = operations.value.filter(op => op.kind === "cleanup"), running = ops.some(op => ["queued", "running"].includes(op.state));
   const data = projectCleanupResults(snapshot, ops, filters);
   const summary = cleanupResultSummary(ops), totalTargets = summary.total;
   const outcomeSummary = [["deleted", summary.removed], ["already gone", summary.absent], ["failed", summary.failed], ["unconfirmed", summary.uncertain], ["still pending", summary.pending], ["not sent", summary.cancelled]].filter(([label, n]) => label === "deleted" || n).map(([label, n]) => `${n} ${label}`).join(" · ");
   useEffect(() => { if (wasRunning.current && !running) { setRevision(n => n + 1); setSelected([]); } wasRunning.current = running; }, [running]);
   useEffect(() => {
-    const abort = new AbortController(); generation.current++; batchRead.current?.abort(); setPreparing(false); setError("");
-    const force = rescan.current;
-    // Status pushes reload the list silently; only the first load and an explicit refresh show as loading.
+    const abort = new AbortController(), force = rescan.current, filtered = JSON.stringify(filters);
+    // Status pushes reload what is already on screen: the selection, extra pages and a bulk read survive. A filter change or
+    // an explicit refresh starts over, and only the first load and an explicit refresh show as loading.
+    const silent = !!snapshot && !force && scope.current === filtered;
+    scope.current = filtered; setError("");
+    if (!silent) { generation.current++; batchRead.current?.abort(); setPreparing(false); }
     if (!snapshot || force) setLoading(true);
-    const timer = setTimeout(() => { rescan.current = false; return loadCleanup({ ...filters, limit: 50, ...force ? { refresh: true } : {} }, abort.signal).then(value => { if (!abort.signal.aborted) { setData(value); setSelected([]); } }, e => { if (!abort.signal.aborted) setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); }); }, 120);
+    const keep = value => { const live = new Set(value.items.filter(selectable).map(keyOf)); return current => current.every(key => live.has(key)) ? current : current.filter(key => live.has(key)); };
+    const timer = setTimeout(() => { rescan.current = false; return loadRows({ ...filters, ...force ? { refresh: true } : {} }, silent ? Math.max(50, snapshot.items.length) : 50, abort.signal).then(value => { if (!abort.signal.aborted) { setData(value); setSelected(silent ? keep(value) : []); } }, e => { if (!abort.signal.aborted) setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); }); }, 120);
     return () => { clearTimeout(timer); abort.abort(); };
   }, [JSON.stringify(filters), revision, status.value.at]);
   useEffect(() => () => batchRead.current?.abort(), []);
@@ -124,14 +140,14 @@ export function Cleanup() {
   const change = (key, value) => { setSelected([]); setFilters(current => ({ ...current, [key]: value })); };
   const pick = item => { const key = keyOf(item); setSelected(current => current.includes(key) ? current.filter(v => v !== key) : [...current, key]); };
   const remove = items => { const id = startCleanup({ type: "remove", targets: items.map(targetOf), reason: REASON }); if (!id) setError("An earlier cleanup request needs verification before these worktrees can be deleted."); return id; };
-  const unused = data?.groups?.ready ?? 0, selectable = (data?.items ?? []).filter(i => !["protected", "gone"].includes(nextOf(i).group));
+  const unused = data?.groups?.ready ?? 0, visible = (data?.items ?? []).filter(selectable);
   const removeBatch = async () => {
     batchRead.current?.abort(); batchRead.current = new AbortController(); const signal = batchRead.current.signal;
     setPreparing(true); setError("");
     try {
       let items = [];
       if (selected.length) items = data.items.filter(i => selected.includes(keyOf(i)));
-      else for (let offset = 0; ; offset += 100) { const page = await loadCleanup({ ...filters, view: "ready", offset, limit: 100 }, signal); items.push(...page.items); if (offset + page.items.length >= page.total || !page.items.length) break; }
+      else items = (await loadRows({ ...filters, view: "ready" }, Infinity, signal)).items;
       const forced = selected.length ? items.filter(i => nextOf(i).action === "force") : [], plain = items.filter(i => !forced.includes(i));
       if (!signal.aborted && items.length) confirmAction({ title: `Delete ${items.length} ${items.length === 1 ? "worktree" : "worktrees"}?`, message: `${plain.length ? "Each one is rechecked first: it must be merged into the release branch, idle, and free of tracked or untracked changes. " : ""}${forced.length ? `${forced.length} of them ${forced.length === 1 ? "has" : "have"} unmerged work or local changes that will be lost. ` : ""}Ignored files are deleted with the folder. Branches, reports and threads stay.`, label: "Delete" }, async () => {
         if (plain.length) remove(plain);
@@ -164,7 +180,7 @@ export function Cleanup() {
     ${data && html`
       <${Section} title=${VIEWS.find(([v]) => v === filters.view)?.[1]} count=${data.staleResults ? undefined : data.total} aside=${!selecting && html`<${Button} size="sm" icon="trash" label=${preparing ? "Preparing…" : `Delete ${unused} unused ${unused === 1 ? "worktree" : "worktrees"}`} disabled=${loading || data.staleResults || preparing || !unused} onClick=${removeBatch} />`}>
         ${selecting && !!data.items.length && html`<div class="selection-bar">
-          <${Check} label="Select visible" aria-label="Select visible worktrees" checked=${selectable.length > 0 && selected.length === selectable.length} indeterminate=${selected.length > 0 && selected.length < selectable.length} onChange=${() => setSelected(selected.length === selectable.length ? [] : selectable.map(keyOf))} />
+          <${Check} label="Select visible" aria-label="Select visible worktrees" checked=${visible.length > 0 && selected.length === visible.length} indeterminate=${selected.length > 0 && selected.length < visible.length} onChange=${() => setSelected(selected.length === visible.length ? [] : visible.map(keyOf))} />
           <span class="muted">${selected.length} selected</span>
           <${Button} size="sm" icon="trash" label="Delete selected worktrees" disabled=${!selected.length || preparing || loading || data.staleResults} onClick=${removeBatch} />
         </div>`}

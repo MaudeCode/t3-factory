@@ -14,6 +14,7 @@ window.fetch = async (url, init = {}) => {
   if (String(url).startsWith('/api/cleanup?')) {
     reads.push(String(url));
     const query = new URL(url, location.origin).searchParams;
+    if (Number(query.get('limit')) > 100) return Response.json({ message: 'Invalid inventory request: limit must be at most 100' }, { status: 400 });
     const viewOf = i => i.next.group === 'protected' ? 'protected' : i.present ? 'retained' : i.state === 'complete' ? 'removed' : 'missing';
     const matched = items.filter(i => (!query.get('query') || JSON.stringify(i).includes(query.get('query'))) && (!query.get('repository') || i.repository === query.get('repository')));
     const counted = matched.filter(i => !(i.state === 'primary' && ['present', 'ready', 'blocked', 'inuse'].includes(query.get('view'))));
@@ -151,6 +152,33 @@ async function maintainedInventory() {
   assert(calls.length === 0, 'background inventory updates do not inspect or remove worktrees');
   return { passed: true, viewport: [innerWidth, innerHeight], reads: reads.length };
 }
-window.cleanupTests = { show, run, failedReady, deleteUnused, deckIsolation, previousFailure, maintainedInventory }; await show();
+async function liveRefresh() {
+  // 140 more unused rows put three pages behind Show more, past the API's 100-row request limit.
+  items.push(...Array.from({ length: 140 }, (_, n) => ({ ...items[6], path: `/workspace/worktrees/extra-${n}`, branch: `fix/EXTRA-${n}`, jobs: [] })));
+  const original = items[7].next;
+  try {
+    await show();
+    const push = async () => { const before = reads.length; applyState({ ...state, status: { ...state.status, at: new Date().toISOString() } }, true); await until(() => reads.length > before); await pause(); };
+    const box = item => document.querySelector(`[aria-label="Select ${item.path}"]`);
+    click('Select worktrees'); await until(() => box(items[6]));
+    box(items[6]).click(); box(items[7]).click(); await until(() => document.body.textContent.includes('2 selected'));
+    await push();
+    assert(document.body.textContent.includes('2 selected') && box(items[6]).checked && box(items[7]).checked, 'a status push keeps the selection');
+    items[7].next = { group: 'protected', reason: 'Work is still using this folder', action: 'thread' };
+    await push();
+    assert(document.body.textContent.includes('1 selected') && box(items[6]).checked && !box(items[7]), 'a selected row that comes into use leaves the selection');
+    items[7].next = original;
+    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 100);
+    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 150);
+    await push();
+    assert(document.querySelectorAll('.cleanup-row').length === 150 && document.body.textContent.includes('1 selected') && !document.querySelector('[role=alert]'), 'rows loaded with Show more stay after a status push');
+    click('Refresh cleanup inventory'); await until(() => document.body.textContent.includes('0 selected'));
+    click('Done selecting worktrees'); await until(() => !box(items[6])); click('Select worktrees'); await until(() => box(items[6])); box(items[6]).click(); await until(() => document.body.textContent.includes('1 selected'));
+    [...document.querySelectorAll('.segmented button')].find(b => b.textContent.startsWith('Unused')).click(); await until(() => document.body.textContent.includes('0 selected'));
+    assert(document.documentElement.scrollWidth <= innerWidth, 'page fits viewport');
+    return { passed: true, viewport: [innerWidth, innerHeight], reads: reads.length };
+  } finally { items[7].next = original; items.splice(24); }
+}
+window.cleanupTests = { show, run, failedReady, deleteUnused, deckIsolation, previousFailure, maintainedInventory, liveRefresh }; await show();
 
-if (new URLSearchParams(location.search).has('run')) (new URLSearchParams(location.search).has('catalog') ? maintainedInventory() : new URLSearchParams(location.search).has('history') ? previousFailure() : new URLSearchParams(location.search).has('deck') ? deckIsolation() : new URLSearchParams(location.search).has('unused') ? deleteUnused() : new URLSearchParams(location.search).has('failed') ? failedReady() : run()).then(result => { document.body.dataset.result = JSON.stringify(result); }, error => { document.body.dataset.result = JSON.stringify({ failed: error.message }); });
+if (new URLSearchParams(location.search).has('run')) (new URLSearchParams(location.search).has('live') ? liveRefresh() : new URLSearchParams(location.search).has('catalog') ? maintainedInventory() : new URLSearchParams(location.search).has('history') ? previousFailure() : new URLSearchParams(location.search).has('deck') ? deckIsolation() : new URLSearchParams(location.search).has('unused') ? deleteUnused() : new URLSearchParams(location.search).has('failed') ? failedReady() : run()).then(result => { document.body.dataset.result = JSON.stringify(result); }, error => { document.body.dataset.result = JSON.stringify({ failed: error.message }); });
