@@ -294,7 +294,8 @@ struct RunRequest: Identifiable, Codable {
             guard let data = try? Data(contentsOf: file), let operation = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let index = requests.firstIndex(where: { $0.id == request.id }) else { continue }
             if let result = operation["result"] as? [String: Any], let object = result["data"] as? [String: Any] {
                 applyRequestResult(request, object: object, uncertain: operation["state"] as? String == "uncertain")
-            } else if ["running", "uncertain"].contains(request.state) {
+            } else if let state = operation["state"] as? String, ["running", "uncertain"].contains(state) {
+                if requests[index].state != state { requests[index].state = state }
                 let progress = operation["progress"] as? [String: Any] ?? [:]
                 let message: String
                 switch progress["phase"] as? String {
