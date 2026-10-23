@@ -104,12 +104,14 @@ enum RunPrompt: Identifiable {
 }
 
 // A prompt is only one possible result; retain the captured command and its lifecycle in the same row.
-struct RunRequest: Identifiable {
-    let id = UUID().uuidString
+struct RunRequest: Identifiable, Codable {
+    let id: String
     let arguments: [String]
     var state = "queued"
     var message = "Queued"
     var prompt: RunPrompt?
+    enum CodingKeys: String, CodingKey { case id, arguments, state, message }
+    init(arguments: [String]) { self.id = UUID().uuidString.lowercased(); self.arguments = arguments }
     var ticket: String { arguments.firstIndex(of: "--ticket").map { arguments[$0 + 1] } ?? "Next eligible ticket" }
     var model: String { arguments.firstIndex(of: "--model").map { arguments[$0 + 1] } ?? "auto" }
     var limits: String { FactoryModel.overrideText(arguments) }
@@ -125,7 +127,7 @@ struct RunRequest: Identifiable {
     @Published var error: String?
     @Published var notice: String?
     @Published var prompt: RunPrompt?
-    @Published var requests: [RunRequest] = []
+    @Published var requests: [RunRequest] = [] { didSet { saveRequests() } }
     private var drainingRequests = false
     @Published var ticketProject = ""
     @Published var ticketNumber = ""
@@ -148,12 +150,13 @@ struct RunRequest: Identifiable {
     init(start: Bool = true, command: (([String], Data?) async throws -> CommandResult)? = nil) {
         self.command = command
         guard start else { return }
-        Task { await reload(); await refreshModels() }
+        Task { await reload(); restoreRequests(); await drainRequests(); await refreshModels() }
         refreshStatus()
         clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.now = Date()
+                self.refreshRequestProgress()
                 // The watcher is the live path; a slow fallback keeps the panel honest if an event is missed.
                 if Int(self.now.timeIntervalSince1970) % 30 == 0 { self.refreshStatus() }
             }
@@ -267,9 +270,63 @@ struct RunRequest: Identifiable {
     }
     var lastCheck: String { decision["at"] == nil ? "no check yet" : "checked " + Words.ago(decision["at"] as? String, now: now) }
     func refreshStatus() {
+        refreshRequestProgress()
         let dir = stateDir
         if let data = try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status.json")), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { status = object }
         if dir != watchedDir { watch(dir) }
+    }
+    private func saveRequests() {
+        guard let dir = config["stateDir"] as? String, let data = try? JSONEncoder().encode(requests) else { return }
+        try? data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("native-requests.json"), options: .atomic)
+    }
+    func restoreRequests() {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: stateDir).appendingPathComponent("native-requests.json")), let saved = try? JSONDecoder().decode([RunRequest].self, from: data) else { return }
+        requests = saved.map { request in
+            var restored = request
+            if restored.state == "running" { restored.state = "uncertain"; restored.message = "Waiting for scheduler progress" }
+            return restored
+        }
+        refreshRequestProgress()
+    }
+    func refreshRequestProgress() {
+        for request in requests where request.state != "queued" {
+            let file = URL(fileURLWithPath: stateDir).appendingPathComponent("web-requests/\(request.id).json")
+            guard let data = try? Data(contentsOf: file), let operation = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let index = requests.firstIndex(where: { $0.id == request.id }) else { continue }
+            if let result = operation["result"] as? [String: Any], let object = result["data"] as? [String: Any] {
+                applyRequestResult(request, object: object, uncertain: operation["state"] as? String == "uncertain")
+            } else if ["running", "uncertain"].contains(request.state) {
+                let progress = operation["progress"] as? [String: Any] ?? [:]
+                let message: String
+                switch progress["phase"] as? String {
+                case "queued": message = "Queued at scheduler"
+                case "checking": message = "Checking · \(progress["stage"] as? String ?? "scheduler")"
+                case "launching": message = "Starting T3 run"
+                default: message = "Waiting for scheduler progress"
+                }
+                if requests[index].message != message { requests[index].message = message }
+            }
+        }
+    }
+    private func applyRequestResult(_ request: RunRequest, object: [String: Any], uncertain: Bool = false) {
+        guard let index = requests.firstIndex(where: { $0.id == request.id }) else { return }
+        let message: String
+        var prompt: RunPrompt?
+        let state: String
+        switch object["reason"] as? String {
+        case "dispatched", "plan-started": requests.remove(at: index); return
+        case "blocked-ticket-plan-required":
+            state = "done"; message = "Choose how to run this chain."
+            prompt = .blocked(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, tree: object["tree"] as? [String: Any] ?? [:])
+        case "ready-label-confirmation-required":
+            state = "done"; message = "Readiness confirmation required."
+            prompt = .readiness(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, label: object["requiredLabel"] as? String ?? "ready")
+        default:
+            state = uncertain ? "uncertain" : "error"
+            message = object["message"] as? String ?? object["reason"] as? String ?? "Check factory status before retrying."
+        }
+        if requests[index].state != state || requests[index].message != message || (prompt != nil && requests[index].prompt == nil) {
+            requests[index].state = state; requests[index].message = message; requests[index].prompt = prompt
+        }
     }
     // The scheduler replaces status.json atomically, so the directory reports the change.
     private func watch(_ dir: String) {
@@ -443,36 +500,19 @@ struct RunRequest: Identifiable {
         defer { drainingRequests = false }
         while let index = requests.firstIndex(where: { $0.state == "queued" }) {
             requests[index].state = "running"
-            requests[index].message = "Checking the ticket and starting its T3 run"
+            requests[index].message = "Waiting for scheduler progress"
             await send(requests[index])
         }
     }
     private func send(_ request: RunRequest) async {
-        let args = request.arguments
-        var resultPrompt: RunPrompt?
-        let message: String
         do {
-            let result = try await execute(args), object = jsonObject(result.text) ?? [:]
-            switch object["reason"] as? String {
-            case "dispatched", "plan-started":
-                requests.removeAll { $0.id == request.id }
-                refreshStatus(); return
-            case "blocked-ticket-plan-required":
-                message = "Choose how to run this chain."
-                resultPrompt = .blocked(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, tree: object["tree"] as? [String: Any] ?? [:])
-            case "ready-label-confirmation-required":
-                message = "Readiness confirmation required."
-                resultPrompt = .readiness(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, label: object["requiredLabel"] as? String ?? "ready")
-            default: throw failure(result)
-            }
+            let result = try await execute(request.arguments + ["--request-id", request.id])
+            guard let object = jsonObject(result.text) else { throw failure(result) }
+            applyRequestResult(request, object: object, uncertain: object["uncertain"] as? Bool == true)
         } catch {
             if let index = requests.firstIndex(where: { $0.id == request.id }) {
                 requests[index].state = "error"; requests[index].message = error.localizedDescription
             }
-            refreshStatus(); return
-        }
-        if let index = requests.firstIndex(where: { $0.id == request.id }) {
-            requests[index].state = "done"; requests[index].message = message; requests[index].prompt = resultPrompt
         }
         refreshStatus()
     }

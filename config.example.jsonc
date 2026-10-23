@@ -2,6 +2,8 @@
   // Replace all placeholders before using live integrations. Start paused.
   "enabled": false,
   "pollSeconds": 60,
+  // Queue wait and read-only manual checks, ending at durable launch ownership.
+  "manualPrelaunchSeconds": 60,
   "idleMinutes": 30,
   "maxWaitingPRs": null,
   "concurrency": { "claude": 1, "codex": 1 },

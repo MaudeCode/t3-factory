@@ -88,7 +88,10 @@ function Operation({ op }) {
   const d = op.result?.data,
     running = op.state === "running";
   const text = op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
-    ? op.input.upstream ? "Checking the release and starting its review" : "Checking the ticket and starting its T3 run"
+    ? op.progress?.phase === "queued" ? "Queued at scheduler"
+      : op.progress?.phase === "checking" ? `Checking · ${op.progress.stage}`
+      : op.progress?.phase === "launching" ? "Starting T3 run"
+      : "Waiting for scheduler progress"
     : d?.reason === "dispatched"
       ? `Started ${d.ticket || "ticket"} with ${d.model}.`
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";

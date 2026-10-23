@@ -11,6 +11,9 @@ import { T3, Kaneo, listTasks } from './clients.ts';
 import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, readAll, type CycleOptions } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
+import { readOperation, savedOperations } from './operations.ts';
+import { recoverOperation, runManualRequest } from './manual-request.ts';
+import { ReadContext, readPhase } from './read-context.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
@@ -43,7 +46,11 @@ export class FactoryService {
   private readyFingerprint?: string;
   private readonly timing: ServiceTiming;
   private queue: Promise<unknown> = Promise.resolve();
-  private readonly pending: { foreground: boolean; run: () => Promise<void> }[] = [];
+  private readonly pending: { foreground: boolean; run: () => Promise<void>; reason: string; context: ReadContext; id?: string; queuedAt: string }[] = [];
+  private active?: { reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string };
+  private readonly requests = new Map<string, Promise<ControlResult>>();
+  private readonly uncertainRequests = new Set<string>();
+  private kaneoAbort?: AbortController;
   private running = false;
   private wanted = false;
   private stopped = false;
@@ -57,6 +64,10 @@ export class FactoryService {
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
     if (!this.store.claim()) throw new Error('Another scheduler owns this state directory');
+    for (const operation of savedOperations(c.stateDir)) if (operation.command) {
+      if (['running', 'uncertain'].includes(operation.state)) recoverOperation(this.stateDir, this.store, operation);
+      if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id);
+    }
     this.store.onCleanupChange = () => this.scheduleInventory();
     this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
@@ -105,17 +116,20 @@ export class FactoryService {
     void this.enqueue(async queueWaitMs => {
       this.wanted = false;
       if (!this.stopped) await this.pass({}, reason, queueWaitMs);
-    }, false).catch(error => log('background-pass-failed', { reason, message: safeError(error) }));
+    }, false, { reason }).catch(error => log('background-pass-failed', { reason, message: safeError(error) }));
   }
 
-  private enqueue<T>(work: (queueWaitMs: number) => Promise<T>, foreground = true): Promise<T> {
+  private enqueue<T>(work: (queueWaitMs: number) => Promise<T>, foreground = true, metadata: { reason?: string; context?: ReadContext; id?: string } = {}): Promise<T> {
     const queued = performance.now();
+    const context = metadata.context ?? new ReadContext();
+    context.onStage = () => this.publishWork();
     const result = new Promise<T>((resolve, reject) => {
-      this.pending.push({ foreground, run: async () => {
-        try { resolve(await work(performance.now() - queued)); }
+      this.pending.push({ foreground, reason: metadata.reason ?? (foreground ? 'command' : 'maintenance'), context, id: metadata.id, queuedAt: new Date().toISOString(), run: async () => {
+        try { resolve(await context.run(() => work(performance.now() - queued))); }
         catch (error) { reject(error); }
       } });
     });
+    this.publishWork();
     if (!this.running) this.queue = this.drain();
     return result;
   }
@@ -128,11 +142,26 @@ export class FactoryService {
       const foreground = this.pending.findIndex(item => item.foreground);
       const index = background !== -1 && foregroundCount >= 3 ? background : foreground !== -1 ? foreground : 0;
       const [item] = this.pending.splice(index, 1);
+      if (item.context.controller.signal.aborted) { await item.run(); continue; }
       // Only count commands competing with background work toward the fairness bound.
       foregroundCount = item.foreground && background !== -1 ? foregroundCount + 1 : 0;
+      this.active = { ...item, startedAt: new Date().toISOString() };
+      this.publishWork();
       await item.run();
+      this.active = undefined;
+      this.publishWork();
     }
     this.running = false;
+  }
+
+  private workStatus() {
+    return { queueDepth: this.pending.filter(p => !p.context.controller.signal.aborted).length,
+      active: this.active ? { reason: this.active.reason, requestId: this.active.id, queuedAt: this.active.queuedAt, startedAt: this.active.startedAt, ageMs: Date.now() - Date.parse(this.active.startedAt), stage: this.active.context.stage } : null };
+  }
+  private publishWork() {
+    if (!this.store) return;
+    try { this.store.set('serviceWork', JSON.stringify(this.workStatus())); writeStatus(loadConfig(this.configPath), this.store); }
+    catch (error) { log('work-status-failed', { message: safeError(error) }); }
   }
 
   // Yield to the command response and enqueue only one step. Continuations join the tail,
@@ -154,7 +183,7 @@ export class FactoryService {
         this.cleanupQueued = false;
         if (more) this.scheduleCleanup();
       }
-    }, false), 0);
+    }, false, { reason: 'workspace-cleanup' }), 0);
   }
 
   private scheduleInventory() {
@@ -180,7 +209,7 @@ export class FactoryService {
         this.inventoryQueued = false;
         if (!this.stopped && requested !== this.inventoryRequested) this.scheduleInventory();
       }
-    }, false), 0);
+    }, false, { reason: 'cleanup-inventory' }), 0);
   }
 
   // Session-ticket collection runs the same way: one bounded batch per queued item, behind any command, until nothing remains.
@@ -203,11 +232,11 @@ export class FactoryService {
         this.collectionQueued = false;
         if (more) this.scheduleCollection();
       }
-    }, false), 0);
+    }, false, { reason: 'session-tickets' }), 0);
   }
 
   private async handle(command: ControlCommand): Promise<ControlResult> {
-    if (command.type === 'health') return { code: 0, data: { ok: true, pid: process.pid } };
+    if (command.type === 'health') return { code: 0, data: { ok: true, pid: process.pid, ...this.workStatus() } };
     if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
     if (command.type === 'job-stop') {
@@ -252,9 +281,9 @@ export class FactoryService {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
       return { code: result.reason === 'error' ? 1 : 0, data: result };
     }
-    const result = await this.enqueue(queueWaitMs => this.pass({ ...(command.options as CycleOptions), manual: true }, 'dispatch', queueWaitMs));
-    return { code: ['dispatched', 'would-dispatch', 'plan-started'].includes(result.reason) ? 0 : 1, data: result };
+    return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); });
   }
+
 
   // Allowance readings stay within quota.maxAgeSeconds even when nothing else happens.
   private scheduleQuota(c: Config) {
@@ -266,7 +295,7 @@ export class FactoryService {
       try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3); writeStatus(current, this.store); }
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
       finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
-    }, false), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
+    }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
   }
 
   // Kaneo has no push, so the ready columns are fingerprinted cheaply; any change starts a pass.
@@ -286,13 +315,20 @@ export class FactoryService {
   }
 
   private ensureKaneo(c: Config): Promise<Kaneo> {
-    this.kaneo ??= (async () => { const client = new Kaneo(c.kaneo); await client.connect(); return client; })();
-    return this.kaneo.catch(error => { this.kaneo = undefined; throw error; });
+    return readPhase('kaneo.connect', async signal => {
+      this.kaneo ??= (async () => { const client = new Kaneo(c.kaneo); this.kaneoAbort = new AbortController(); await client.connect(this.kaneoAbort.signal); return client; })();
+      const pending = this.kaneo, controller = this.kaneoAbort;
+      const abort = () => controller?.abort(signal?.reason);
+      signal?.addEventListener('abort', abort, { once: true });
+      try { return await pending; }
+      catch (error) { if (this.kaneo === pending) this.kaneo = undefined; throw error; }
+      finally { signal?.removeEventListener('abort', abort); }
+    });
   }
   // A broken MCP transport cannot be reused; the next pass spawns a fresh client.
-  private dropKaneo() {
+  private async dropKaneo() {
     const dead = this.kaneo; this.kaneo = undefined;
-    dead?.then(k => k.close()).catch(() => {});
+    await dead?.then(k => k.close()).catch(() => {});
   }
 
   private configure(): Config {
@@ -311,6 +347,11 @@ export class FactoryService {
       c = this.configure();
       const kaneo = await this.ensureKaneo(c);
       const result = await cycle(c, this.store, options, { t3: this.t3, kaneo, deferCleanup: true });
+      const jobs = this.store.jobs();
+      for (const id of this.uncertainRequests) {
+        const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
+        if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
+      }
       writeStatus(c, this.store);
       log('pass', { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
       return result;
@@ -318,7 +359,7 @@ export class FactoryService {
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
       this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
       try { writeStatus(c ?? loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
-      this.dropKaneo();
+      await this.dropKaneo();
       throw error;
     } finally {
       if (!options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }

@@ -35,12 +35,31 @@ import SwiftUI
         if let artifacts = ProcessInfo.processInfo.environment["T3_FACTORY_TEST_ARTIFACTS"] {
             FactoryRender.write(FactoryPanel(model: model, compact: false), size: NSSize(width: 780, height: 940), to: "\(artifacts)/native-queue.png")
         }
+        let operations = URL(fileURLWithPath: dir).appendingPathComponent("web-requests")
+        try! FileManager.default.createDirectory(at: operations, withIntermediateDirectories: true)
+        let operation = operations.appendingPathComponent("\(model.requests[0].id).json")
+        func progress(_ phase: String, _ stage: String) {
+            let data = try! JSONSerialization.data(withJSONObject: ["state": "running", "progress": ["phase": phase, "stage": stage]])
+            try! data.write(to: operation, options: .atomic); model.refreshStatus()
+        }
+        progress("queued", "queued")
+        precondition(model.requests[0].message == "Queued at scheduler", "Native row must distinguish accepted queue wait")
+        progress("checking", "kaneo.get_task")
+        precondition(model.requests[0].message == "Checking · kaneo.get_task", "Native row names its current integration")
+        if let artifacts = ProcessInfo.processInfo.environment["T3_FACTORY_TEST_ARTIFACTS"] {
+            FactoryRender.write(FactoryPanel(model: model, compact: false), size: NSSize(width: 780, height: 940), to: "\(artifacts)/native-progress.png")
+        }
+        let restored = FactoryModel(start: false) { _, _ in preconditionFailure("Restoration must never resend an accepted request") }
+        restored.config = model.config; restored.restoreRequests()
+        precondition(restored.requests.map { $0.id } == model.requests.map { $0.id }, "Restoration retains stable request IDs")
+        precondition(restored.requests[0].state == "uncertain" && restored.requests[0].message == "Checking · kaneo.get_task", "Accepted work is reconciled without replay")
+        precondition(restored.requests[1].state == "queued", "Unsent local queue entries remain queued")
         held?.resume(); await first.value
         for _ in 0..<1000 where calls.count < 3 { await Task.yield() }
         let tickets = calls.map { args in args[args.firstIndex(of: "--ticket")! + 1] }
         precondition(tickets == ["APP-1", "APP-2", "APP-3"], "Later native submissions must be accepted while A is checking: \(tickets)")
         precondition(calls[1].contains("opus") && calls[1].contains("--override-limits"), "Queued choices are captured")
-        precondition(Array(calls[2].suffix(2)) == ["--override", "labels"] && model.requests[2].limits == "Override label limits", "A partial override names each limit")
+        precondition(Array(calls[2].dropLast(2).suffix(2)) == ["--override", "labels"] && model.requests[2].limits == "Override label limits", "A partial override names each limit")
         precondition(model.ticketNumber == "99", "Completion must preserve a newer draft")
         precondition(model.requests.map { $0.state } == ["done", "error", "done"], "A refusal does not strand later requests")
         let readiness = model.requests[0].prompt!, chain = model.requests[2].prompt!

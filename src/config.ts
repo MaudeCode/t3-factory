@@ -55,6 +55,7 @@ export const configSchema = z.preprocess(input => {
   } };
 }, z.object({
   enabled: z.boolean(), pollSeconds: positive.min(15), idleMinutes: positive,
+  manualPrelaunchSeconds: positive.max(2_147_483).default(60),
   maxWaitingPRs: z.number().int().positive().nullable(),
   concurrency: z.object({ claude: z.number().int().min(0).default(1), codex: z.number().int().min(0).default(1) }).strict().default({ claude: 1, codex: 1 }),
   models: z.array(preset).min(1),

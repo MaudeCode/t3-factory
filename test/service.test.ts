@@ -51,8 +51,106 @@ import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, stopJob } from '../src/scheduler.ts';
 import { readCleanupCatalog } from '../src/cleanup.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
+
+for (const model of ['sol', 'auto']) for (const afterOwnership of [false, true]) test(`manual expiry at the durable launch boundary: model=${model}, ownership=${afterOwnership}`, async t => {
+  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
+  const entered = deferred(), release = deferred();
+  if (!afterOwnership) f.hooks.quota = async refresh => { if (refresh) { entered.resolve(); await release.promise; } };
+  else t.mock.method(f.t3, 'launch', async (command: unknown) => { f.launches.push(command); entered.resolve(); await release.promise; throw new Error('Lost launch response'); });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  try {
+    const dispatch = internal.handle({ type: 'dispatch', options: { model, ticket: 'FIX-1' } });
+    await entered.promise;
+    t.mock.timers.tick(60_001); release.resolve();
+    const result = await dispatch;
+    assert.equal(f.launches.length, afterOwnership ? 1 : 0, 'expiry before ownership must prevent the external launch');
+    assert.equal(result.code, 1);
+    assert.equal(result.data[afterOwnership ? 'uncertain' : 'notLaunched'], true);
+    assert.equal(f.store.jobs().length, afterOwnership ? 1 : 0);
+  } finally { release.resolve(); await internal.queue; clearTimeout(internal.timer); }
+});
+
+test('manual deadline exposes queued work and expires without a late launch', async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred();
+  const id = '11111111-1111-4111-8111-111111111111';
+  let dispatches = 0;
+  t.mock.method(internal, 'pass', async (_: unknown, reason: string) => {
+    if (reason === 'start') { entered.resolve(); await release.promise; }
+    else dispatches++;
+    return { reason: 'dispatched' };
+  });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  try {
+    await service.start(); await entered.promise;
+    const dispatch = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1', requestId: id } });
+    const health = (await internal.handle({ type: 'health' })).data;
+    assert.equal(health.queueDepth, 1, 'health names pending scheduler work');
+    assert.equal(health.active.reason, 'start');
+    const file = join(f.c.stateDir, 'web-requests', `${id}.json`);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).progress.phase, 'queued');
+    t.mock.timers.tick(60_001);
+    const result = await dispatch;
+    assert.equal(result.data.reason, 'manual-deadline-exceeded');
+    assert.equal(result.data.notLaunched, true);
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).state, 'done');
+    release.resolve(); await internal.queue;
+    assert.equal(dispatches, 0, 'expired queue entries never enter the dispatch pass');
+    assert.deepEqual(await internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1', requestId: id } }), result, 'same ID recovers its durable outcome');
+    assert.equal(dispatches, 0);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('queued manual deadline settles before its held predecessor', async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(); let settled = false, dispatches = 0;
+  t.mock.method(internal, 'pass', async (_: unknown, reason: string) => {
+    if (reason === 'start') { entered.resolve(); await release.promise; } else dispatches++;
+    return { reason: 'dispatched' };
+  });
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  try {
+    await service.start(); await entered.promise;
+    const dispatch = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } }).then((r: any) => { settled = true; return r; });
+    t.mock.timers.tick(60_001); await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, true, 'the queued request gets a bounded not-launched outcome while its predecessor is held');
+    assert.equal((await dispatch).data.notLaunched, true);
+    release.resolve(); await internal.queue; assert.equal(dispatches, 0);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('scheduler restart recovers accepted operation IDs without resending checks or launches', async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const ids = ['queued', 'checking', 'expired', 'uncertain', 'confirmed'].map((_, i) => `11111111-1111-4111-8111-11111111111${i}`);
+  const dir = join(f.c.stateDir, 'web-requests'); mkdirSync(dir, { recursive: true });
+  const options = (id: string) => ({ ticket: 'FIX-1', requestId: id, manual: true });
+  for (const [i, id] of ids.entries()) writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, input: {}, command: options(id), createdAt: new Date().toISOString(), state: i === 2 ? 'done' : i === 3 ? 'uncertain' : 'running',
+    progress: { phase: i < 2 ? ['queued', 'checking'][i] : 'launching', stage: 'fixture', acceptedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString() },
+    ...i === 2 ? { result: { code: 1, data: { reason: 'manual-deadline-exceeded', notLaunched: true } } } : {},
+  }));
+  const store = new Store(f.c.stateDir);
+  store.save({ ...f.job, id: 'known', requestId: ids[4], reason: 'T3 accepted dispatch' }); store.close();
+  let checks = 0;
+  t.mock.method(internal, 'pass', async () => { checks++; return { reason: 'disabled' }; });
+  try {
+    await service.start(); await internal.queue;
+    const before = checks;
+    for (const [i, id] of ids.entries()) {
+      const result = await internal.handle({ type: 'dispatch', options: { requestId: id, manual: true, ticket: 'FIX-1' } });
+      assert.equal(result.data.reason, ['scheduler-restarted', 'scheduler-restarted', 'manual-deadline-exceeded', 'launch-uncertain', 'dispatched'][i]);
+      if (i < 3) assert.equal(result.data.notLaunched, true);
+      if (i === 3) assert.equal(result.data.uncertain, true);
+    }
+    assert.equal(checks, before, 'recovery never executes an accepted request again');
+    const collision = await internal.handle({ type: 'dispatch', options: { ...options(ids[0]), ticket: 'FIX-2' } });
+    assert.match(collision.data.message, /another command/);
+  } finally { await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
 
 // No external services or real workspaces: a completed job without a path still needs the fresh cleanup shell.
 async function maintenanceFixture(t: import('node:test').TestContext) {
@@ -101,7 +199,9 @@ test('manual dispatch passes pending background work without interrupting the ac
     t.mock.timers.tick(150_000); // The display refresh is now pending behind the active pass.
     internal.scheduleCleanup(); t.mock.timers.tick(0);
     const dispatch = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
-    assert.deepEqual(await internal.handle({ type: 'health' }), { code: 0, data: { ok: true, pid: process.pid } });
+    const health = await internal.handle({ type: 'health' });
+    assert.equal(health.data.ok, true); assert.equal(health.data.pid, process.pid);
+    assert.equal(health.data.active.reason, 'start'); assert.equal(health.data.queueDepth, 4);
     assert.deepEqual(events, ['start']);
     release.resolve(); await dispatch; await internal.queue;
     assert.deepEqual(events, ['start', 'dispatch', 'config', 'quota', 'cleanup']);
@@ -355,7 +455,7 @@ for (const failedDispatch of [false, true]) test(`maintenance survives ${failedD
     await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
     internal.store.save(f.job);
     Object.assign(f.thread, { orphanedRun: true });
-    if (failedDispatch) await assert.rejects(internal.handle({ type: 'dispatch', options: { model: 'unknown' } }), /Unknown model/);
+    if (failedDispatch) { const failed = await internal.handle({ type: 'dispatch', options: { model: 'unknown' } }); assert.equal(failed.code, 1); assert.match(failed.data.message, /Unknown model/); }
     else assert.equal((await internal.handle({ type: 'dispatch', options: {} })).data.reason, 'no-eligible-ticket');
     await blocked.promise;
     const saved = internal.store.job(f.job.id);
@@ -462,7 +562,9 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     for (const item of [{ kind: 'snapshot', snapshot: {} }, { kind: 'synchronized' }, { type: 'thread.meta-updated', aggregateId: 'x', sequence: 1 }, { type: 'thread.created', aggregateId: 'y', sequence: 2 }]) emit(item);
     await callControl(c.stateDir, { type: 'wake', reason: 'test' });
     const dry = callControl(c.stateDir, { type: 'once', options: { dryRun: true } });
-    assert.deepEqual(await callControl(c.stateDir, { type: 'health' }), { code: 0, data: { ok: true, pid: process.pid } });
+    const health = await callControl(c.stateDir, { type: 'health' });
+    assert.equal(health?.code, 0); assert.equal((health?.data as any).ok, true); assert.equal((health?.data as any).pid, process.pid);
+    assert.equal((health?.data as any).active.reason, 'start'); assert.equal((health?.data as any).queueDepth, 3);
     release();
     const result = await dispatch;
     assert.equal(result?.code, 0, JSON.stringify(result));
@@ -512,7 +614,7 @@ test('manual submission checks stay FIFO and serial across a refusal and an erro
     const a = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
     await entered.promise;
     const b = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-2' } });
-    const bFailed = assert.rejects(b, /fixture failure/);
+    const bFailed = b.then((r: any) => { assert.equal(r.code, 1); assert.match(r.data.message, /fixture failure/); assert.equal(r.data.notLaunched, true); });
     const c = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-3' } });
     assert.deepEqual(seen, ['FIX-1']);
     release.resolve();

@@ -191,6 +191,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal(calls.filter((c) => c.args[0] === "dispatch").length, 1);
     assert.deepEqual(calls.at(-1)?.args, [
       "dispatch",
+      "--request-id", id,
       "--model",
       "astra",
       "--ticket",
@@ -247,7 +248,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     const reviewId = randomUUID(), reviewInput = { upstream: "UP/Stable", model: "auto", overrideLimits: true };
     const review = (input = reviewInput) => request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": reviewId }, body: JSON.stringify(input) });
     assert.equal((await review()).status, 202);
-    assert.deepEqual(calls.at(-1)!.args, ["dispatch", "--model", "auto", "--upstream", "up/stable", "--override-limits"]);
+    assert.deepEqual(calls.at(-1)!.args, ["dispatch", "--request-id", reviewId, "--model", "auto", "--upstream", "up/stable", "--override-limits"]);
     assert.equal((await review()).status, 200, "review request IDs deduplicate");
     assert.equal((await request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() }, body: JSON.stringify({ ...reviewInput, ticket: "APP-1" }) })).status, 400, "review cannot include a ticket");
     assert.equal((await review({ ...reviewInput, upstream: "up/other" })).status, 409, "one ID cannot change review target");

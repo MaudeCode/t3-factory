@@ -249,5 +249,22 @@ async function runProjects() {
     return { passed: true, viewport: [innerWidth, innerHeight], filters: ["project", "tags OR/AND", "difficulty", "priority", "search", "provider on runs"] };
   } finally { window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); }
 }
-window.queueTests = { run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters };
+async function progress() {
+  await show();
+  operations.value = [
+    { id: 'queued', input: { ticket: 'APP-1', model: 'auto' }, state: 'running', progress: { phase: 'queued', stage: 'queued' } },
+    { id: 'checking', input: { ticket: 'APP-2', model: 'auto' }, state: 'running', progress: { phase: 'checking', stage: 't3.rpc.provider, kaneo.get_task' } },
+    { id: 'expired', input: { ticket: 'APP-3', model: 'auto' }, state: 'done', result: { data: { notLaunched: true, reason: 'manual-deadline-exceeded', message: 'Not launched: manual request deadline exceeded during kaneo.connect' } } },
+    { id: 'old', input: { ticket: 'APP-4', model: 'auto' }, state: 'running' },
+  ];
+  await pause();
+  const rows = [...root.querySelectorAll('.operation')];
+  assert(rows[0].textContent.includes('Queued at scheduler'), 'accepted request identifies scheduler queue wait');
+  assert(rows[1].textContent.includes('t3.rpc.provider, kaneo.get_task'), 'checking row names held integrations');
+  assert(rows[2].textContent.includes('Not launched') && !rows[2].querySelector('.spinner'), 'deadline outcome is terminal');
+  assert(rows[3].textContent.includes('Waiting for scheduler progress'), 'older records do not claim checking without progress');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'request states fit the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.queueTests = { run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress };
 await show();

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { threadSchema, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
 import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
+import { readAll, readPhase } from './read-context.ts';
 
 /** T3 orchestration protocol this client speaks; T3 rejects other versions. */
 export const ORCHESTRATION_PROTOCOL = 2;
@@ -31,16 +32,18 @@ export class T3 {
   reset() { this.providerSnapshot = undefined; }
   constructor(config: Config['t3']) { this.config = config; }
   async request(path: string, body?: unknown): Promise<unknown> {
-    const credential = z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8')));
-    if (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('T3 scheduler credential expired');
-    const r = await fetch(new URL(path, this.config.url), {
-      method: body === undefined ? 'GET' : 'POST', redirect: 'error',
-      headers: { Authorization: `Bearer ${credential.token}`, 'Content-Type': 'application/json', [ORCHESTRATION_PROTOCOL_HEADER]: String(ORCHESTRATION_PROTOCOL) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30_000),
+    return readPhase(path === '/api/orchestration/shell' ? 't3.shell' : path === '/api/auth/websocket-ticket' ? 't3.socket-ticket' : 't3.thread', async signal => {
+      const credential = z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8')));
+      if (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('T3 scheduler credential expired');
+      const r = await fetch(new URL(path, this.config.url), {
+        method: body === undefined ? 'GET' : 'POST', redirect: 'error',
+        headers: { Authorization: `Bearer ${credential.token}`, 'Content-Type': 'application/json', [ORCHESTRATION_PROTOCOL_HEADER]: String(ORCHESTRATION_PROTOCOL) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      });
+      if (r.status === 400) await this.assertProtocol();
+      if (!r.ok) throw new Error(`T3 ${path} returned HTTP ${r.status}`);
+      return r.json();
     });
-    if (r.status === 400) await this.assertProtocol();
-    if (!r.ok) throw new Error(`T3 ${path} returned HTTP ${r.status}`);
-    return r.json();
   }
   /** T3 rejects an unsupported protocol header with a bare 400; name the mismatch when its descriptor shows one. */
   private async assertProtocol() {
@@ -52,9 +55,11 @@ export class T3 {
     if (server !== ORCHESTRATION_PROTOCOL) throw new Error(`T3 orchestration protocol mismatch (scheduler speaks v${ORCHESTRATION_PROTOCOL}, server requires v${server})`);
   }
   async environment() {
-    const r = await fetch(new URL('/.well-known/t3/environment', this.config.url), { redirect: 'error', signal: AbortSignal.timeout(10_000) });
-    if (!r.ok) throw new Error(`T3 environment descriptor returned HTTP ${r.status}`);
-    return z.object({ environmentId: z.string().min(1).optional(), orchestrationProtocolVersion: z.number().int().optional() }).parse(await r.json());
+    return readPhase('t3.environment', async signal => {
+      const r = await fetch(new URL('/.well-known/t3/environment', this.config.url), { redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000) });
+      if (!r.ok) throw new Error(`T3 environment descriptor returned HTTP ${r.status}`);
+      return z.object({ environmentId: z.string().min(1).optional(), orchestrationProtocolVersion: z.number().int().optional() }).parse(await r.json());
+    });
   }
   async threadLink(id: string) {
     const { environmentId } = await this.environment();
@@ -66,7 +71,7 @@ export class T3 {
     if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(t => t.id === thread.id)) shell.threads.push(thread);
     const candidates = new Set<string>();
     // Probe concurrently so slow reads cost one request timeout, not one per stale thread.
-    await Promise.all(shell.threads.map(async t => {
+    await readAll(shell.threads.map(async t => {
       if (t.activeRunId == null || (t.pendingRuntimeRequest != null && humanRequest(t.pendingRuntimeRequest.kind)) || Date.now() - Date.parse(t.updatedAt) < ORPHANED_RUN_GRACE_MINUTES * 60_000) return;
       const key = `${t.id}:${t.updatedAt}`;
       candidates.add(key);
@@ -215,25 +220,39 @@ export class KaneoTaskNotFound extends Error {}
 export class Kaneo {
   client = new Client({ name: 't3-factory', version: '0.1.0' });
   readonly config: Config['kaneo'];
-  constructor(config: Config['kaneo']) { this.config = config; }
-  async connect() {
-    const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
-    const entry = fileURLToPath(new URL('../node_modules/@kaneo/mcp/dist/index.js', import.meta.url));
-    await this.client.connect(new StdioClientTransport({ command: process.execPath, args: [entry, 'serve'], env: { ...env, KANEO_API_URL: this.config.url }, stderr: 'pipe' }));
+  private closing?: Promise<void>;
+  constructor(config: Config['kaneo']) {
+    this.config = config;
+    const close = this.client.close.bind(this.client);
+    // The SDK starts close without awaiting it on handshake failure. Join that same teardown.
+    this.client.close = () => this.closing ??= close();
+  }
+  async connect(signal?: AbortSignal) {
+    return readPhase('kaneo.connect', async scoped => {
+      const abort = AbortSignal.any([AbortSignal.timeout(30_000), ...[signal, scoped].filter((s): s is AbortSignal => !!s)]);
+      const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
+      const entry = fileURLToPath(new URL('../node_modules/@kaneo/mcp/dist/index.js', import.meta.url));
+      try { await this.client.connect(new StdioClientTransport({ command: process.execPath, args: [entry, 'serve'], env: { ...env, KANEO_API_URL: this.config.url }, stderr: 'pipe' }), { signal: abort, timeout: 30_000 }); }
+      catch (error) { await this.close(); throw error; }
+    });
   }
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const r = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 30_000 });
-    const text = z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()) }).parse(r).content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n');
-    if (r.isError) {
-      let detail = '';
-      try { detail = z.object({ error: z.string() }).parse(JSON.parse(text)).error; } catch { /* Unclassified failures remain retryable. */ }
-      // The pinned MCP appends the server's error code; plain 404/not-found prose is not proof of absence.
-      if (['get_task', 'get_task_by_ticket_id'].includes(name) && detail.endsWith(' (NOT_FOUND)')) throw new KaneoTaskNotFound(`Kaneo ${name}: task not found`);
-      throw new Error(`Kaneo ${name} failed; check its authenticated connection`);
-    }
-    return JSON.parse(text);
+    return readPhase(`kaneo.${name}`, async signal => {
+      const r = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 30_000, signal });
+      const text = z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()) }).parse(r).content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n');
+      if (r.isError) {
+        let detail = '';
+        try { detail = z.object({ error: z.string() }).parse(JSON.parse(text)).error; } catch { /* Unclassified failures remain retryable. */ }
+        // The pinned MCP appends the server's error code; plain 404/not-found prose is not proof of absence.
+        if (['get_task', 'get_task_by_ticket_id'].includes(name) && detail.endsWith(' (NOT_FOUND)')) throw new KaneoTaskNotFound(`Kaneo ${name}: task not found`);
+        // Preserve only machine-readable categories, never the server's payload or credential-bearing prose.
+        const category = detail.match(/\(([A-Z_]+)\)$/)?.[1] ?? detail.match(/\bHTTP ([1-5][0-9]{2})\b/)?.[0] ?? 'unclassified';
+        throw new Error(`Kaneo ${name} failed (${category})`);
+      }
+      return JSON.parse(text);
+    });
   }
-  async close() { await this.client.close(); }
+  async close() { await readPhase('kaneo.close', () => this.client.close(), true); }
 }
 
 export const taskSchema = z.object({
