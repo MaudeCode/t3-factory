@@ -1194,13 +1194,6 @@ dialog::backdrop {
   width: 150px;
   border-left: 1px solid var(--line);
 }
-.composer .btn-ghost {
-  border-radius: 0;
-  color: var(--muted);
-}
-.composer .btn-ghost[aria-pressed="true"] {
-  color: var(--accent-text);
-}
 .composer {
   width: fit-content;
   max-width: 100%;
@@ -2343,14 +2336,18 @@ h1 .crumb::after {
   .composer {
     flex-wrap: wrap;
   }
-  /* Two rows: project and number, then model and the two buttons. */
+  /* Two rows: project and number, then model, overrides and start, which share the width. */
   .composer .ticket-number {
     flex: 1 1 140px;
     width: auto;
   }
   .composer .select:not(.ticket-project) {
-    flex: 1 1 160px;
+    flex: 1 1 120px;
+    min-width: 0;
     border-left: 0;
+  }
+  .composer .select.overrides {
+    border-left: 1px solid var(--line);
   }
   .composer > .select:not(.ticket-project),
   .composer > .btn {

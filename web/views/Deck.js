@@ -32,6 +32,8 @@ import {
   isOpen,
   STOPS,
   stopOf,
+  OVERRIDES,
+  overrideText,
 } from "../lib/format.js";
 import { Button, Switch, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
@@ -92,7 +94,7 @@ function Operation({ op }) {
       : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
   return html`<div class=${`operation ${op.state}`} role="status">
     ${running && html`<i class="spinner"></i>`}
-    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${op.input.overrideLimits ? "Override limits" : "Respect limits"}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     ${!op.choiceHandled && d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${() => showReadinessConfirmation(op.id)}>Review and run anyway<//>`}
     ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
@@ -109,7 +111,7 @@ export function Composer({ initialTicket } = {}) {
   const [project, setProject] = useState(linkKey || keys[0] || "");
   const [number, setNumber] = useState(linkNumber);
   const [model, setModel] = useState("auto");
-  const [override, setOverride] = useState(true);
+  const [overrides, setOverrides] = useState(() => OVERRIDES.map(([v]) => v));
   const ticket = number.trim() ? `${project}-${number.trim()}` : "";
   const key = ticketKey(ticket);
   // A bad launch link starts invalid, but picking a project and typing a number repairs it.
@@ -118,14 +120,14 @@ export function Composer({ initialTicket } = {}) {
   const submit = (e) => {
     e.preventDefault();
     if (invalid || pending) return;
-    if (startRun({ ticket: key, model, overrideLimits: override }) && !linked) setNumber("");
+    if (startRun({ ticket: key, model, overrideLimits: overrides.length === OVERRIDES.length || overrides }) && !linked) setNumber("");
   };
   const options = [...new Set([project, ...keys].filter(Boolean))].map((k) => [k, k]);
   return html`${invalid && html`<p class="alert" role="alert">Invalid ticket link. Enter a ticket key to continue.</p>`}<form class="composer" onSubmit=${submit}>
     <${Select} class="ticket-project" label="Ticket project" value=${project} onChange=${setProject} options=${options} />
     <input class="mono ticket-number" value=${number} onInput=${(e) => setNumber(e.target.value.replace(/\D/g, ""))} placeholder=${linked ? "number" : "next"} required=${linked} inputmode="numeric" aria-label="Ticket number" title=${number ? `Ticket ${project}-${number}` : "Leave empty to start the next eligible ticket"} />
     <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Auto"], ...config.value.models.map((m) => [m.id, m.name])]} />
-    <${Button} variant="ghost" icon="zap" aria-pressed=${override} label=${override ? "Override limits: on. Skips idle and reserve thresholds; readiness, difficulty, duplicate and merge checks still apply." : "Override limits: off. Waits for idle time and reserve."} onClick=${() => setOverride((v) => !v)} />
+    <${Select} multiple class="overrides" placeholder="Respect limits" label="Override limits" value=${overrides} onChange=${setOverrides} options=${OVERRIDES} />
     <${Button} variant="primary" type="submit" icon="play" label=${key ? `Start ${key}` : "Start next eligible ticket"} disabled=${invalid || pending} />
   </form>`;
 }

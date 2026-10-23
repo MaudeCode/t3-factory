@@ -226,13 +226,14 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
       body: JSON.stringify({ model: "astra", allowMissingReadyLabel: true }),
     })).status, 400, "confirmation requires a ticket");
     const finishFirst = finish, secondId = randomUUID();
-    const secondInput = { ticket: "APP-9", model: "auto", overrideLimits: false };
+    const secondInput = { ticket: "APP-9", model: "auto", overrideLimits: ["labels"] };
     const second = () => request("/api/dispatch", {
       method: "POST", headers: { Cookie: cookie, "Idempotency-Key": secondId }, body: JSON.stringify(secondInput),
     });
     assert.equal((await second()).status, 202);
     assert.equal((await second()).status, 200, "each request ID deduplicates independently");
     assert.equal(calls.filter(c => c.args[0] === "dispatch").length, 2);
+    assert.deepEqual(calls.at(-1)!.args.slice(-2), ["--override", "labels"], "a partial override names each limit");
     finish({ code: 1, data: { reason: "quota-exhausted", ticket: "APP-9" } });
     const operation = async (requestId: string) => (await request(`/api/operations/${requestId}`, { headers: { Cookie: cookie } })).json();
     assert.equal((await operation(secondId)).result.data.ticket, "APP-9");

@@ -98,6 +98,12 @@ export const DIFFICULTIES = [
   ["med", "Medium"],
   ["high", "High"],
 ];
+// Thresholds a manual start may override; `true` (and older saved requests) means all of them.
+export const OVERRIDES = [["idle", "Idle time"], ["reserve", "Quota reserve"], ["labels", "Label limits"]];
+export const overrideText = (value) => {
+  const names = OVERRIDES.filter(([v]) => value === true || (Array.isArray(value) && value.includes(v))).map(([, name]) => name.toLowerCase());
+  return names.length === OVERRIDES.length ? "Override limits" : names.length ? `Override ${names.join(", ")}` : "Respect limits";
+};
 export const difficultyLabel = (value) => DIFFICULTIES.find(([v]) => v === value)?.[1] ?? "High";
 
 export const STATES = ["dispatching", "running", "waiting", "complete", "dismissed"];

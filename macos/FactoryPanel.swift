@@ -82,9 +82,14 @@ struct FactoryPanel: View {
                     Text("Auto").tag("auto")
                     ForEach(Array(model.configuredModels.enumerated()), id: \.offset) { _, preset in Text(preset["name"] as? String ?? "Model").tag(preset["id"] as? String ?? "") }
                 }.labelsHidden().frame(width: 110)
-                Button { model.overrideLimits.toggle() } label: { Image(systemName: "bolt.fill").foregroundStyle(model.overrideLimits ? Theme.accent : Theme.muted) }
-                    .buttonStyle(.plain).disabled(model.selectedModelUsesCodex)
-                    .help(model.selectedModelUsesCodex ? "Codex runs ignore idle time and reserves." : model.overrideLimits ? "Override limits: on. Skips idle and reserve thresholds; readiness, difficulty, duplicate and merge checks still apply." : "Override limits: off. Waits for idle time and reserve.")
+                Menu {
+                    ForEach(FactoryModel.overrideLimits, id: \.0) { limit in
+                        Toggle(limit.1.prefix(1).uppercased() + limit.1.dropFirst(), isOn: Binding(get: { model.overrides.contains(limit.0) }, set: { on in if on { model.overrides.insert(limit.0) } else { model.overrides.remove(limit.0) } }))
+                            .disabled(model.selectedModelUsesCodex && limit.0 != "labels")
+                    }
+                } label: { Image(systemName: "bolt.fill").foregroundStyle(model.overrides.isEmpty ? Theme.muted : Theme.accent) }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help("\(FactoryModel.overrideText(FactoryModel.overrideArguments(model.overrides))). Readiness, difficulty, duplicate and merge checks still apply.\(model.selectedModelUsesCodex ? " Codex runs ignore idle time and reserves." : "")")
                 Button { Task { await model.dispatch() } } label: { Image(systemName: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty)
                     .help(model.ticketNumber.isEmpty ? "Start the next eligible ticket" : "Start \(model.ticketProject)-\(model.ticketNumber)")
             }
@@ -92,7 +97,7 @@ struct FactoryPanel: View {
                 HStack(alignment: .top, spacing: 8) {
                     if request.state == "running" { ProgressView().controlSize(.small) }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(request.ticket) · \(request.model) · \(request.arguments.contains("--override-limits") ? "Override limits" : "Respect limits")").font(.system(size: 11, weight: .medium))
+                        Text("\(request.ticket) · \(request.model) · \(request.limits)").font(.system(size: 11, weight: .medium))
                         Text(request.message).font(.system(size: 11)).foregroundStyle(request.state == "error" ? Theme.danger : Theme.muted).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)

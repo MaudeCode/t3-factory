@@ -17,6 +17,7 @@ import {
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { oidcSchema, type createOidc } from "./oidc.ts";
+import { overrideLimitsSchema } from "./config.ts";
 import { spawn } from "node:child_process";
 import { z } from "zod";
 
@@ -68,7 +69,7 @@ const dispatchSchema = z
       .string()
       .regex(/^[a-z][a-z0-9-]*$/)
       .default("auto"),
-    overrideLimits: z.boolean().default(true),
+    overrideLimits: overrideLimitsSchema.default(true),
     allowMissingReadyLabel: z.boolean().default(false),
     chain: z.enum(["first", "all"]).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
@@ -486,7 +487,7 @@ export function createFactoryWeb(options: {
             dispatch.model,
             ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
             ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
-            ...(dispatch.overrideLimits ? ["--override-limits"] : []),
+            ...(dispatch.overrideLimits === true ? ["--override-limits"] : dispatch.overrideLimits && dispatch.overrideLimits.length ? ["--override", dispatch.overrideLimits.join(",")] : []),
             ...(dispatch.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
             ...(dispatch.chain ? ["--chain", dispatch.chain] : []),
           ];

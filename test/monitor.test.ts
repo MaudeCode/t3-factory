@@ -168,3 +168,21 @@ for (const answer of ['structured-input', 'message'] as const) test(`an answered
     assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason, needsYou()], ['waiting', 'Approve the migration', 2], 'a new awaiting-human report is a human wait');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a deleted thread dismisses its run; an archived or never-seen thread keeps the slot', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-deleted-')), store = new Store(dir);
+  const old = new Date(Date.now() - 3_600_000).toISOString();
+  const base = { kind: 'ticket', projectId: 'project', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: old, prUrls: [], lastPersonalActivity: null, command: null, completedAt: null, reportPath: join(dir, 'none.json') } as const;
+  const seen = (id: string) => ({ ...base, id, taskId: id, ticketKey: id, threadId: `${id}-thread`, thread: { title: id, status: 'interrupted', branch: `feat/${id}`, worktreePath: join(dir, id), updatedAt: old, pending: null, background: [] } }) as unknown as Job;
+  const unseen = { ...base, id: 'unseen', taskId: 'unseen', ticketKey: 'unseen', threadId: 'unseen-thread' } as unknown as Job;
+  const archived = v2Thread({ id: 'archived-thread', status: 'interrupted', updatedAt: old });
+  const t3 = { shell: async (includeArchived: boolean) => ({ threads: includeArchived ? [archived] : [] }) } as unknown as T3;
+  try {
+    for (const job of [seen('deleted'), seen('archived'), unseen]) store.save(job);
+    await reconcile({ monitoringTimeoutMinutes: 30 } as Config, store, t3, {} as Kaneo, []);
+    const jobs = new Map(store.jobs().map(j => [j.id, j]));
+    assert.deepEqual([jobs.get('deleted')!.state, jobs.get('deleted')!.dismissedBranch], ['dismissed', 'feat/deleted']);
+    assert.equal(jobs.get('archived')!.state, 'dispatching');
+    assert.equal(jobs.get('unseen')!.state, 'dispatching', 'a launch T3 never showed may still land');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

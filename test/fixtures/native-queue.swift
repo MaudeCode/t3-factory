@@ -21,12 +21,12 @@ import SwiftUI
             return CommandResult(text: "{\"reason\":\"\(reason)\",\"ticket\":\"\(ticket)\",\"model\":\"sol\",\"requiredLabel\":\"sf\",\"tree\":{\"tickets\":[]}}", code: 0)
         }
         model.config = ["stateDir": dir, "models": ["auto", "sol", "opus", "changed"].map { ["id": $0, "name": $0 == "changed" ? "Sol" : $0.capitalized] }]
-        model.ticketProject = "APP"; model.ticketNumber = "1"; model.selectedModel = "sol"; model.overrideLimits = false
+        model.ticketProject = "APP"; model.ticketNumber = "1"; model.selectedModel = "sol"; model.overrides = []
         let first = Task { await model.dispatch() }
         while held == nil { await Task.yield() }
-        model.ticketProject = "APP"; model.ticketNumber = "2"; model.selectedModel = "opus"; model.overrideLimits = true
+        model.ticketProject = "APP"; model.ticketNumber = "2"; model.selectedModel = "opus"; model.overrides = Set(FactoryModel.overrideLimits.map(\.0))
         await model.dispatch()
-        model.ticketProject = "APP"; model.ticketNumber = "3"; model.selectedModel = "auto"; model.overrideLimits = false
+        model.ticketProject = "APP"; model.ticketNumber = "3"; model.selectedModel = "auto"; model.overrides = ["labels"]
         await model.dispatch()
         model.ticketProject = "APP"; model.ticketNumber = "99"; model.selectedModel = "changed"
         precondition(calls.count == 1, "Only one command may be in flight")
@@ -40,6 +40,7 @@ import SwiftUI
         let tickets = calls.map { args in args[args.firstIndex(of: "--ticket")! + 1] }
         precondition(tickets == ["APP-1", "APP-2", "APP-3"], "Later native submissions must be accepted while A is checking: \(tickets)")
         precondition(calls[1].contains("opus") && calls[1].contains("--override-limits"), "Queued choices are captured")
+        precondition(Array(calls[2].suffix(2)) == ["--override", "labels"] && model.requests[2].limits == "Override label limits", "A partial override names each limit")
         precondition(model.ticketNumber == "99", "Completion must preserve a newer draft")
         precondition(model.requests.map { $0.state } == ["done", "error", "done"], "A refusal does not strand later requests")
         let readiness = model.requests[0].prompt!, chain = model.requests[2].prompt!

@@ -120,3 +120,9 @@ export function loadConfig(path = process.env.T3_FACTORY_CONFIG ?? defaultConfig
   if (errors.length) throw new Error(`Invalid JSONC: ${errors.map(e => `${printParseErrorCode(e.error)} at ${e.offset}`).join(', ')}`);
   return configSchema.parse(data);
 }
+
+// Thresholds a manual start may skip. `true` skips all of them; a list skips only those named.
+export const overridableLimits = ['idle', 'reserve', 'labels'] as const;
+export type OverridableLimit = typeof overridableLimits[number];
+export const overrideLimitsSchema = z.union([z.boolean(), z.array(z.enum(overridableLimits))]);
+export type OverrideLimits = z.infer<typeof overrideLimitsSchema>;
