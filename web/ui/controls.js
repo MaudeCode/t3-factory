@@ -77,13 +77,13 @@ export function Stepper({ path, value, onChange, min = 0, max = 99, labels = {},
 }
 
 // Run limit picker: Off, quick picks up to `max`, and a last slot that opens a box for any higher limit.
-export function Slots({ path, running = 0, max = 6, label }) {
+export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running now' }) {
   const limit = at(path) ?? 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const custom = limit > max;
   const slot = (n, text = n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
-    aria-label=${`${n} at once`} title=${n <= running ? "running now" : n <= limit ? "free slot" : `allow ${n} at once`} onClick=${() => set(path, n)}>${text}</button>`;
+    aria-label=${`${n} at once`} title=${n <= running ? busyLabel : n <= limit ? "free slot" : `allow ${n} at once`} onClick=${() => set(path, n)}>${text}</button>`;
   // Invalid text never reaches the config; Enter keeps the box open so it can be fixed, leaving it restores the saved limit.
   const commit = (el) => {
     if (el.dataset.cancel) return;
@@ -285,13 +285,14 @@ export const Check = ({ path, label, checked, onChange, hint, ...props }) =>
   </label>`;
 
 // Exclusive filter chips. `options` is a list of [value, name, count?].
-export const Segmented = ({ path, options, value, onChange, label }) => {
+export const Segmented = ({ path, options, value, onChange, label, icons }) => {
   const [current, change] = bind(path, value, onChange);
-  return html`<div class="segmented" role="radiogroup" aria-label=${label}>
+  return html`<div class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label}>
     ${options.map(
       ([v, name, count]) =>
-        html`<button key=${v} type="button" role="radio" aria-checked=${v === current} onClick=${() => change(v)}>
-          ${name}${count != null && html`<small>${count}</small>`}
+        html`<button key=${v} type="button" role="radio" aria-checked=${v === current} class=${icons && cls('slot', v === current && 'open busy')}
+          aria-label=${icons ? name : undefined} title=${icons ? name : undefined} onClick=${() => change(v)}>
+          ${icons ? html`<${Icon} name=${icons[v]} />` : name}${count != null && html`<small>${count}</small>`}
         </button>`,
     )}
   </div>`;

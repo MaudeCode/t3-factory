@@ -79,7 +79,10 @@ export const configSchema = z.preprocess(input => {
     readyStatuses: z.array(z.string()).min(1), doneStatuses: z.array(z.string()).min(1),
     priorityLabels: z.array(z.string().trim().min(1)).refine(labels => new Set(labels).size === labels.length, 'Priority labels must be unique').default([]),
     // Most runs at once for this project's tickets carrying a label, e.g. ones that each boot a simulator.
-    labelLimits: z.record(z.string().trim().min(1), z.number().int().min(0)).default({}),
+    labelLimits: z.record(z.string().trim().min(1), z.union([
+      z.number().int().min(0),
+      z.object({ limit: z.number().int().min(0), mode: z.enum(['full', 'running']) }).strict(),
+    ])).default({}),
     discoveryPromptFile: absolute.optional(),
     upstreams: z.array(z.object({
       // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
