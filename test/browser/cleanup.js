@@ -14,6 +14,7 @@ window.fetch = async (url, init = {}) => {
   if (String(url).startsWith('/api/cleanup?')) {
     reads.push(String(url));
     const query = new URL(url, location.origin).searchParams;
+    if (Number(query.get('limit')) > 100) return Response.json({ message: 'Invalid inventory request: limit must be at most 100' }, { status: 400 });
     const viewOf = i => i.next.group === 'protected' ? 'protected' : i.present ? 'retained' : i.state === 'complete' ? 'removed' : 'missing';
     const matched = items.filter(i => (!query.get('query') || JSON.stringify(i).includes(query.get('query'))) && (!query.get('repository') || i.repository === query.get('repository')));
     const counted = matched.filter(i => !(i.state === 'primary' && ['present', 'ready', 'blocked', 'inuse'].includes(query.get('view'))));
@@ -152,8 +153,8 @@ async function maintainedInventory() {
   return { passed: true, viewport: [innerWidth, innerHeight], reads: reads.length };
 }
 async function liveRefresh() {
-  // Forty more unused rows put a second page behind Show more.
-  items.push(...Array.from({ length: 40 }, (_, n) => ({ ...items[6], path: `/workspace/worktrees/extra-${n}`, branch: `fix/EXTRA-${n}`, jobs: [] })));
+  // 140 more unused rows put three pages behind Show more, past the API's 100-row request limit.
+  items.push(...Array.from({ length: 140 }, (_, n) => ({ ...items[6], path: `/workspace/worktrees/extra-${n}`, branch: `fix/EXTRA-${n}`, jobs: [] })));
   const original = items[7].next;
   try {
     await show();
@@ -167,9 +168,10 @@ async function liveRefresh() {
     await push();
     assert(document.body.textContent.includes('1 selected') && box(items[6]).checked && !box(items[7]), 'a selected row that comes into use leaves the selection');
     items[7].next = original;
-    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 61);
+    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 100);
+    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 150);
     await push();
-    assert(document.querySelectorAll('.cleanup-row').length === 61 && document.body.textContent.includes('1 selected'), 'rows loaded with Show more stay after a status push');
+    assert(document.querySelectorAll('.cleanup-row').length === 150 && document.body.textContent.includes('1 selected') && !document.querySelector('[role=alert]'), 'rows loaded with Show more stay after a status push');
     click('Refresh cleanup inventory'); await until(() => document.body.textContent.includes('0 selected'));
     click('Done selecting worktrees'); await until(() => !box(items[6])); click('Select worktrees'); await until(() => box(items[6])); box(items[6]).click(); await until(() => document.body.textContent.includes('1 selected'));
     [...document.querySelectorAll('.segmented button')].find(b => b.textContent.startsWith('Unused')).click(); await until(() => document.body.textContent.includes('0 selected'));

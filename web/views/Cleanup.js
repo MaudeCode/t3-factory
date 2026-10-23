@@ -22,6 +22,17 @@ const GROUPS = { ready: ["Unused", "ok"], attention: ["Blocked", "attention"], r
 const VIEWS = [["present", "All"], ["ready", "Unused"], ["blocked", "Blocked"], ["inuse", "In use"]];
 const REASON = "Deleted from the Cleanup page";
 
+// Reads up to `want` rows in requests the inventory API accepts, at most 100 rows each.
+async function loadRows(query, want, signal) {
+  let value;
+  for (let offset = 0; offset < want; offset += 100) {
+    const page = await loadCleanup({ ...query, offset, limit: Math.min(100, want - offset) }, signal);
+    value = value ? { ...value, items: [...value.items, ...page.items] } : page;
+    if (offset + page.items.length >= page.total || !page.items.length) break;
+  }
+  return value;
+}
+
 function previousFailure(item) {
   if (item.lastOutcome?.state === "failed") return { message: item.lastOutcome.message, at: item.lastOutcome.updatedAt };
   const job = item.jobs.find(j => j.error);
@@ -121,7 +132,7 @@ export function Cleanup() {
     if (!silent) { generation.current++; batchRead.current?.abort(); setPreparing(false); }
     if (!snapshot || force) setLoading(true);
     const keep = value => { const live = new Set(value.items.filter(selectable).map(keyOf)); return current => current.every(key => live.has(key)) ? current : current.filter(key => live.has(key)); };
-    const timer = setTimeout(() => { rescan.current = false; return loadCleanup({ ...filters, limit: silent ? Math.max(50, snapshot.items.length) : 50, ...force ? { refresh: true } : {} }, abort.signal).then(value => { if (!abort.signal.aborted) { setData(value); setSelected(silent ? keep(value) : []); } }, e => { if (!abort.signal.aborted) setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); }); }, 120);
+    const timer = setTimeout(() => { rescan.current = false; return loadRows({ ...filters, ...force ? { refresh: true } : {} }, silent ? Math.max(50, snapshot.items.length) : 50, abort.signal).then(value => { if (!abort.signal.aborted) { setData(value); setSelected(silent ? keep(value) : []); } }, e => { if (!abort.signal.aborted) setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); }); }, 120);
     return () => { clearTimeout(timer); abort.abort(); };
   }, [JSON.stringify(filters), revision, status.value.at]);
   useEffect(() => () => batchRead.current?.abort(), []);
@@ -136,7 +147,7 @@ export function Cleanup() {
     try {
       let items = [];
       if (selected.length) items = data.items.filter(i => selected.includes(keyOf(i)));
-      else for (let offset = 0; ; offset += 100) { const page = await loadCleanup({ ...filters, view: "ready", offset, limit: 100 }, signal); items.push(...page.items); if (offset + page.items.length >= page.total || !page.items.length) break; }
+      else items = (await loadRows({ ...filters, view: "ready" }, Infinity, signal)).items;
       const forced = selected.length ? items.filter(i => nextOf(i).action === "force") : [], plain = items.filter(i => !forced.includes(i));
       if (!signal.aborted && items.length) confirmAction({ title: `Delete ${items.length} ${items.length === 1 ? "worktree" : "worktrees"}?`, message: `${plain.length ? "Each one is rechecked first: it must be merged into the release branch, idle, and free of tracked or untracked changes. " : ""}${forced.length ? `${forced.length} of them ${forced.length === 1 ? "has" : "have"} unmerged work or local changes that will be lost. ` : ""}Ignored files are deleted with the folder. Branches, reports and threads stay.`, label: "Delete" }, async () => {
         if (plain.length) remove(plain);
