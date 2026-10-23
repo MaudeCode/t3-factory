@@ -527,11 +527,9 @@ export function startCleanup(input, target) {
   }
   const seen = new Set();
   const targets = input.targets.filter(t => { const k = key(t); if (held.has(k) || seen.has(k)) return false; seen.add(k); return true; });
+  // One request per worktree, sent in order, so each row settles on its own as soon as it is done.
   let first = null;
-  for (let offset = 0; offset < targets.length; offset += 20) {
-    const chunk = targets.slice(offset, offset + 20);
-    const id = enqueueOperation({ ...input, targets: chunk }, "cleanup", chunk); first ??= id;
-  }
+  for (const target of targets) { const id = enqueueOperation({ ...input, targets: [target] }, "cleanup", [target]); first ??= id; }
   return first;
 }
 export function stopCleanupQueue() {

@@ -1,4 +1,4 @@
-import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection } from './workspace.ts';
+import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees } from './workspace.ts';
 import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, sep } from 'node:path';
@@ -90,7 +90,18 @@ async function verifyMerged(project: Project, urls: string[]) {
   }
 }
 async function released(project: Project, head: string, release = `refs/remotes/origin/${project.baseBranch}`, signal?: AbortSignal): Promise<boolean> {
-  return git(project.repoPath, ['merge-base', '--is-ancestor', head, release], signal).then(() => true, () => false);
+  const repo = project.repoPath;
+  if (await git(repo, ['merge-base', '--is-ancestor', head, release], signal).then(() => true, () => false)) return true;
+  // A squash merge leaves no ancestry. The branch's whole tree committed once onto its merge base has the same
+  // patch-id as the squash commit, so `git cherry` can find it in the release branch.
+  try {
+    const base = await git(repo, ['merge-base', head, release], signal);
+    const tree = await git(repo, ['rev-parse', `${head}^{tree}`], signal);
+    if (tree === await git(repo, ['rev-parse', `${base}^{tree}`], signal)) return true;
+    const squashed = await git(repo, ['-c', 'user.name=t3-factory', '-c', 'user.email=cleanup@t3-factory.invalid', 'commit-tree', tree, '-p', base, '-m', 'squash-merge check'], signal);
+    const cherry = await git(repo, ['cherry', release, squashed, base], signal);
+    return cherry.split('\n').filter(Boolean).every(line => line.startsWith('-'));
+  } catch { return false; }
 }
 // Manual deletion verifies the remote release tip without mutating repository refs or trusting an old tracking ref.
 export async function verifyReleasedWorkspaceHead(project: Project, head: string, signal?: AbortSignal): Promise<string> {
@@ -98,6 +109,8 @@ export async function verifyReleasedWorkspaceHead(project: Project, head: string
   const remote = await git(project.repoPath, ['ls-remote', '--exit-code', 'origin', ref], signal);
   const fields = remote.split(/\s+/);
   if (fields.length !== 2 || fields[1] !== ref || !/^[a-f0-9]{40,64}$/.test(fields[0])) throw new Error('Remote release branch could not be verified');
+  // The tip is only comparable once its commit is local.
+  if (!await git(project.repoPath, ['cat-file', '-e', `${fields[0]}^{commit}`], signal).then(() => true, () => false)) await git(project.repoPath, ['fetch', '--quiet', 'origin', ref], signal);
   if (!await released(project, head, fields[0], signal)) throw new Error('Workspace HEAD is not verified merged into the remote release branch');
   return fields[0];
 }
@@ -275,6 +288,18 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
   };
   try {
     if (store.cleanupActions().some(a => a.id !== boundary.actionId && [job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].some(p => p && cleanupActionPending(a, p)))) throw new Error('Operator cleanup outcome is uncertain; preserve workspace pending inspection');
+    // A recorded workspace that is neither on disk nor registered leaves nothing to clean; verifying it every retry only churns.
+    const recorded = [...new Set([job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].filter((p): p is string => !!p).map(canonicalPath))];
+    const configured = c.projects.find(p => p.kaneoId === job.projectId);
+    const registered = recorded.length && configured ? (await worktrees(configured.repoPath)).map(t => canonicalPath(t.path)) : [];
+    if (recorded.length && recorded.every(p => !existsSync(p) && !registered.includes(p))) {
+      store.record('cleanup.confirmed', 'Already-absent workspace finalized', { path: recorded[0], outcome: 'already-absent', physicalRemoval: false }, job.id);
+      job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
+      maintenance({ state: 'complete', lastSuccess: job.workspaceCleanedAt });
+      return;
+    }
+    // A worktree of a project that is no longer configured cannot be verified; keep it quietly instead of alarming every retry.
+    if (!configured) { job.workspaceCleanupError = 'Project is no longer configured; worktree kept'; job.workspaceCleanupBlockedAt = new Date().toISOString(); store.save(job); return; }
     const project = projectFor(c, job), fresh = await t3.shell(true), thread = structuredClone(fresh.threads.find(t => t.id === job.threadId));
     if (!thread) throw new Error('Completion thread is unavailable; use explicit deletion review');
     if (thread.projectId !== project.t3Id) throw new Error('Thread no longer belongs to its Factory project');

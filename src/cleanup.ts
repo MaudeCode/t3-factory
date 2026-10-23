@@ -2,7 +2,7 @@ import { cleanupMatches, cleanupOutcomePresentation, projectCleanupResults } fro
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, basename } from 'node:path';
 import { z } from 'zod';
 import type { Config } from './config.ts';
 import type { T3, Kaneo } from './clients.ts';
@@ -13,7 +13,7 @@ import { canonicalPath, inspectWorkspace, worktrees, freeBytes, filesystemSpace,
 
 const target = { projectId: z.string().min(1).max(200), path: z.string().startsWith('/').max(4096) };
 export const cleanupRequestSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('inventory'), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(50), query: z.string().max(500).optional(), repository: z.string().max(4096).optional(), ownership: z.string().max(40).optional(), state: z.string().max(40).optional(), view: z.enum(['overview', 'retained', 'ready', 'attention', 'retrying', 'protected', 'gone', 'missing', 'removed']).optional(), refresh: z.boolean().optional(), sort: z.enum(['action', 'path', 'branch', 'repository', 'attempt', 'size']).optional(), inspectionId: z.uuid().optional() }).strict(),
+  z.object({ type: z.literal('inventory'), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(50), query: z.string().max(500).optional(), repository: z.string().max(4096).optional(), ownership: z.string().max(40).optional(), state: z.string().max(40).optional(), view: z.enum(['overview', 'present', 'blocked', 'inuse', 'retained', 'ready', 'attention', 'retrying', 'protected', 'gone', 'missing', 'removed']).optional(), refresh: z.boolean().optional(), sort: z.enum(['action', 'path', 'branch', 'repository', 'attempt', 'size']).optional(), inspectionId: z.uuid().optional() }).strict(),
   z.object({ type: z.literal('inspect'), ...target, size: z.boolean().default(false), inspectionId: z.uuid().optional() }).strict(),
   z.object({ type: z.literal('review'), ...target, inspectionId: z.uuid().optional() }).strict(),
   z.object({ type: z.enum(['retry', 'remove']), id: z.uuid(), targets: z.array(z.object(target).strict()).min(1).max(20), reason: z.string().trim().min(1).max(800) }).strict(),
@@ -96,9 +96,17 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kaneo: Kan
       if (!['complete', 'dismissed'].includes(job.state)) throw new Error(`Job ${job.id} is ${job.state}`);
       const t = threads.find(t => t.id === job.threadId);
       const finishedAt = job.completedAt ?? job.dismissedAt;
+    }
+    return `${jobs.length} historical jobs, none active`;
+  });
+  // A thread resumed after its run finished may be idle between turns; the operator can override that, live activity never.
+  await check('Resumed after completion', true, () => {
+    if (!shellKnown) throw new Error('T3 ownership is unknown');
+    for (const job of jobs) {
+      const t = threads.find(t => t.id === job.threadId), finishedAt = job.completedAt ?? job.dismissedAt;
       if (finishedAt && [job.resumedAt, t?.latestUserMessageAt, t?.latestRunCompletedAt].some(at => Date.parse(at ?? '') > Date.parse(finishedAt))) throw new Error(`Job ${job.id} resumed after completion`);
     }
-    return `${jobs.length} historical jobs, none active or resumed`;
+    return 'No thread resumed after its run finished';
   });
   let terminals: { threadId: string; terminalId: string; status: string; hasRunningSubprocess: boolean }[] = [];
   await check('Terminals', false, async () => {
@@ -169,15 +177,16 @@ export function cleanupPresentation(item: Pick<CleanupInventoryItem, 'state' | '
   const error = item.jobs.find(j => j.error)?.error ?? '';
   if (item.state === 'primary') return next('protected', 'Primary checkout', 'none');
   if (!item.present) return next('gone', item.state === 'complete' ? 'Directory and Git registration removed' : item.state === 'stale-registration' ? 'Directory gone; Git registration remains' : 'Directory gone; cleanup not verified', item.state === 'complete' ? 'none' : 'inspect');
-  if (item.state === 'active' || /resumed|active (?:or|subagent)|running (?:a command|process)|still using|orphaned T3 run/i.test(error)) return next('protected', /resumed/i.test(error) ? 'Work resumed after completion' : 'Work or a process is still using this folder', item.bindings.length || item.jobs.some(j => j.threadId) ? 'thread' : 'none');
+  if (item.state === 'active' || /active (?:or|subagent)|running (?:a command|process)|still using|orphaned T3 run/i.test(error)) return next('protected', 'Work or a process is still using this folder', item.bindings.length || item.jobs.some(j => j.threadId) ? 'thread' : 'none');
   if (item.ownership === 'unknown') return next('attention', 'T3 ownership could not be verified', 'inspect');
   if (item.lastOutcome?.state === 'confirmed' && Date.parse(item.lastOutcome.updatedAt) <= Date.parse(item.checkedAt)) return next('attention', 'A reported removal still has a directory; inspect its current identity', 'inspect');
   const recordedOutcome = cleanupOutcomePresentation(item.lastOutcome);
-  if (recordedOutcome) return item.lastOutcome?.state === "failed" ? { ...recordedOutcome, action: "remove" } : recordedOutcome;
+  if (recordedOutcome) return recordedOutcome;
   if (/Command stop .*awaiting T3 confirmation/i.test(error)) return next('retrying', 'Waiting for leftover commands to finish', 'retry');
   if (!item.jobs.length) return next('ready', item.bindings.length ? 'Idle T3 worktree; merge and local changes will be checked' : 'No active binding; merge and local changes will be checked', 'remove');
   if (item.jobs.length !== 1 || item.ownership === 'shared') return next('ready', 'Recorded owners are idle; merge and local changes will be checked', 'remove');
-  if (/Ticket is no longer Done|task not found|Completion.*(?:missing|unavailable)|report.*missing|not assigned/i.test(error)) return next('ready', 'Previous completion check failed; merge and local changes will be checked', 'remove');
+  if (/resumed/i.test(error)) return next('attention', 'Work resumed after completion', 'force');
+  if (/Ticket is no longer Done|task not found|Completion.*(?:missing|unavailable)|report.*missing|ENOENT|not assigned|fetch failed|ECONN|ETIMEDOUT/i.test(error)) return next('ready', 'Previous check could not finish; merge and local changes will be checked', 'remove');
   if (/tracked.*untracked|dirty or changed|Preserve dirty workspace/i.test(error)) return next('attention', 'Tracked changes or untracked files remain', 'thread');
   if (/not.*(?:merged|release branch)/i.test(error)) return next('attention', 'Completion or merged work is not verified', 'force');
   if (/terminal:read/i.test(error)) return terminalReadable === true ? next('ready', 'Terminal access is restored; cleanup can be retried', 'remove') : next('attention', terminalReadable === false ? 'T3 terminal visibility could not be verified' : 'Previous cleanup could not read T3 terminals', 'inspect');
@@ -300,10 +309,12 @@ function savedCatalog(c: Config, store: Store): CleanupSnapshot | null {
 function inventoryView(data: CleanupSnapshot, offset: number, limit: number, filters: InventoryFilters) {
   const groups = { ready: 0, attention: 0, retrying: 0, protected: 0, gone: 0 }, views = { retained: 0, protected: 0, missing: 0, removed: 0 };
   const filtered: CleanupInventoryItem[] = [];
-  for (const item of data.items) if (cleanupMatches(item, filters)) {
+  // The page views never list primary checkouts; the older views keep them for state filters and counts.
+  const pageView = ['present', 'ready', 'blocked', 'inuse'].includes(filters.view ?? '');
+  for (const item of data.items) if (cleanupMatches(item, filters) && !(pageView && item.state === 'primary')) {
     const group = item.next!.group, view = group === 'protected' ? 'protected' : item.present ? 'retained' : item.state === 'complete' ? 'removed' : 'missing';
     groups[group]++; views[view]++;
-    if (!filters.view || filters.view === 'overview' && ['ready', 'attention'].includes(group) || filters.view === group || filters.view === view) filtered.push(item);
+    if (!filters.view || filters.view === 'overview' && ['ready', 'attention'].includes(group) || filters.view === 'present' && item.present || filters.view === 'blocked' && item.present && ['attention', 'retrying'].includes(group) || filters.view === 'inuse' && group === 'protected' || filters.view === group || filters.view === view) filtered.push(item);
   }
   filtered.sort((a, b) => filters.sort === 'action' ? compareCleanupItems(a, b) : filters.sort === 'size' ? (b.size.bytes ?? -1) - (a.size.bytes ?? -1) : filters.sort === 'attempt' ? String(b.lastAttempt ?? '').localeCompare(a.lastAttempt ?? '') : String(filters.sort === 'branch' ? a.branch : filters.sort === 'repository' ? a.repository : a.path).localeCompare(String(filters.sort === 'branch' ? b.branch : filters.sort === 'repository' ? b.repository : b.path)));
   const items = filters.view === 'overview' ? ['ready', 'attention'].flatMap(group => filtered.filter(i => i.next!.group === group).slice(offset, offset + Math.max(1, Math.floor(limit / 2)))) : filtered.slice(offset, offset + limit);
@@ -395,7 +406,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
   if (input.type === 'force') {
     review = JSON.parse(store.get(`cleanupReview:${input.reviewId}`) ?? 'null');
     if (!review || Date.parse(review.expiresAt) <= Date.now()) throw new Error('Review expired; inspect this worktree again');
-    if (input.confirmation !== review.input.path) throw new Error('Confirmation must exactly match the reviewed path');
+    if (input.confirmation !== review.input.path && input.confirmation !== basename(review.input.path)) throw new Error('Confirmation must exactly match the reviewed folder name or path');
   }
   const targets = input.type === 'force' ? [review.input] : input.targets;
   const action: CleanupAction = { id: input.id, input, operator, reason: safeError(input.reason), requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: 'requested', targets, outcomes: [], ...(review ? { reviewId: review.id, overridden: review.detail.overridden, identity: review.fingerprint } : {}) };
@@ -409,8 +420,15 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
       if (input.type !== 'retry') {
         const forced = input.type === 'force';
         const inspection = { ...target, size: forced, ...!forced ? { policy: 'unused' as const } : {} };
-        const fresh = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
+        let fresh = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
         const blocked = (detail: typeof fresh) => detail.checks.some(check => check.state !== 'pass' && (!forced || !check.override));
+        // T3 leaves idle setup shells open in worktrees. Like automatic maintenance, close the idle ones and look again.
+        const idleShells = fresh.terminals.filter(t => t.status === 'running' && !t.hasRunningSubprocess);
+        if (idleShells.length === fresh.terminals.length && idleShells.length && !fresh.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name))) {
+          for (const t of idleShells) await t3.closeTerminal(t.threadId, t.terminalId);
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          fresh = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
+        }
         if (forced && (!fresh.forceAllowed || fresh.fingerprint !== review.fingerprint)) throw new Error('Reviewed identity, content or activity changed; review again');
         if (!forced && blocked(fresh)) throw new Error(fresh.checks.filter(check => check.state !== 'pass').map(check => check.detail).join('; '));
         for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanup = { path: fresh.path, branch: fresh.workspace!.branch, head: fresh.workspace!.head }; store.save(job); }
@@ -421,16 +439,21 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
           await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: binding.id, expectedWorktreePath: binding.worktreePath, worktreePath: null, branch: null });
           mutated = false;
         }
-        const afterDetach = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
-        if (afterDetach.workspace?.fingerprint !== fresh.workspace?.fingerprint || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
+        // Later readings compare Git identity and status, not another full content hash: any edit shows in status or inode.
+        type Identity = { head: string; branch: string; inode: string; present: boolean; registered: boolean; common: string; tracked: number; untracked: number; ignored: number; changes: { kind: string; path: string }[] };
+        const identityOf = (w: Identity | null | undefined) => w ? JSON.stringify([w.head, w.branch, w.inode, w.present, w.registered, w.common, w.tracked, w.untracked, w.ignored, w.changes]) : '';
+        const recheck = { ...inspection, size: false };
+        // Nothing was detached for an unbound worktree, so the fresh reading still stands.
+        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kaneo, recheck, boundary) : fresh;
+        if (identityOf(afterDetach.workspace) !== identityOf(fresh.workspace) || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
         // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
         await verifyDetachedOwners(t3, fresh.bindings);
         if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
-        const final = await inspectWorkspace(project.repoPath, target.path, forced, boundary.signal);
-        if (final.fingerprint !== fresh.workspace?.fingerprint) throw new Error('Worktree changed before removal');
+        const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
+        if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
         const result = await removeWorkspace(project.repoPath, target.path, t3, forced, async () => {
-          const evidence = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
-          if (evidence.workspace?.fingerprint !== fresh.workspace?.fingerprint || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
+          const evidence = await inspectCleanup(c, store, t3, kaneo, recheck, boundary);
+          if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
           await verifyDetachedOwners(t3, fresh.bindings);
           if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
         }, () => { mutated = true; });

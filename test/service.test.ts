@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globalAgent } from 'node:http';
@@ -54,7 +54,7 @@ const deferred = () => { let resolve!: () => void; const promise = new Promise<v
 
 // No external services or real workspaces: a completed job without a path still needs the fresh cleanup shell.
 async function maintenanceFixture(t: import('node:test').TestContext) {
-  const dir = mkdtempSync(join(tmpdir(), 'factory-maintenance-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-maintenance-')));
   const budget = { reservePercent: 0, minRemainingPercent: 0 };
   const c = configSchema.parse({ enabled: false, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'gpt-6.1-sol' } }],
