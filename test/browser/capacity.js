@@ -29,10 +29,44 @@ const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, b
 // Opens the last slot's box, types, and presses Enter.
 async function enter(provider, text) {
   more(provider).click(); await pause();
-  const el = field(provider); el.value = text; key(el, 'Enter'); await pause();
+  const el = field(provider); el.value = text; el.dispatchEvent(new Event('input', { bubbles: true })); key(el, 'Enter'); await pause();
   return el;
 }
+async function liveEdit() {
+  await show();
+  for (const provider of ['Claude', 'Codex']) {
+    more(provider).click(); await pause();
+    const el = field(provider);
+    for (const text of ['', '1', '12']) {
+      el.value = text; el.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+      store.clock.value += 1000; await pause();
+      store.applyState(state()); await pause();
+      assert(field(provider) === el && document.activeElement === el, `${provider} keeps the same focused custom input during live refresh`);
+      assert(el.value === text, `${provider} custom draft survives live refresh: expected ${JSON.stringify(text)}, got ${JSON.stringify(el.value)}`);
+      assert(!store.dirty.value, 'typing alone does not commit the custom limit');
+    }
+    key(el, 'Enter'); await pause();
+    assert(more(provider).textContent === '12', `${provider} commits the retained draft`);
+    await store.actions.save(); await mount();
+    assert(more(provider).textContent === '12', `${provider} retained draft survives Save and reload`);
+    more(provider).click(); await pause();
+    const reopened = field(provider);
+    assert(reopened.value === '12', 'reopening starts with the saved limit');
+    reopened.value = '30'; reopened.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+    key(reopened, 'Escape'); await pause();
+    assert(more(provider).textContent === '12', 'Escape discards the retained draft');
+    more(provider).click(); await pause();
+    const blurred = field(provider);
+    assert(blurred.value === '12', 'reopening discards the cancelled draft');
+    blurred.value = '14'; blurred.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+    store.clock.value += 1000; await pause(); blurred.blur(); await pause();
+    assert(more(provider).textContent === '14', 'leaving a valid draft commits it after a refresh');
+    await store.actions.save(); await mount();
+  }
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
 async function run() {
+  await liveEdit();
   await show();
   assert(!field('Claude') && more('Claude').textContent === '7+', 'the custom box stays closed until the last slot is chosen');
   await enter('Claude', '12'); await enter('Codex', '7');
@@ -66,5 +100,5 @@ async function run() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'capacity controls stay within the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight], writes: writes.length };
 }
-window.capacityTests = { run, show, mount };
+window.capacityTests = { run, liveEdit, show, mount };
 await show();
