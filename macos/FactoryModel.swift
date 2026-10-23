@@ -112,6 +112,7 @@ struct RunRequest: Identifiable {
     var prompt: RunPrompt?
     var ticket: String { arguments.firstIndex(of: "--ticket").map { arguments[$0 + 1] } ?? "Next eligible ticket" }
     var model: String { arguments.firstIndex(of: "--model").map { arguments[$0 + 1] } ?? "auto" }
+    var limits: String { FactoryModel.overrideText(arguments) }
 }
 
 @MainActor final class FactoryModel: ObservableObject {
@@ -129,7 +130,7 @@ struct RunRequest: Identifiable {
     @Published var ticketProject = ""
     @Published var ticketNumber = ""
     @Published var selectedModel = "auto"
-    @Published var overrideLimits = true
+    @Published var overrides = Set(FactoryModel.overrideLimits.map(\.0))
     @Published var providers: [[String: Any]] = []
     @Published var catalogLoading = false
     @Published var catalogError: String?
@@ -165,6 +166,18 @@ struct RunRequest: Identifiable {
     var configuredModels: [[String: Any]] { config["models"] as? [[String: Any]] ?? [] }
     var projects: [[String: Any]] { config["projects"] as? [[String: Any]] ?? [] }
     var selectedPreset: [String: Any]? { configuredModels.first { $0["id"] as? String == selectedModel } }
+    // Thresholds a manual start may override, in the scheduler's names.
+    nonisolated static let overrideLimits = [("idle", "idle time"), ("reserve", "quota reserve"), ("labels", "label limits")]
+    // Overriding all of them is the plain flag; a subset names each one.
+    nonisolated static func overrideArguments(_ picked: Set<String>) -> [String] {
+        picked.count == overrideLimits.count ? ["--override-limits"] : picked.isEmpty ? [] : ["--override", overrideLimits.map(\.0).filter(picked.contains).joined(separator: ",")]
+    }
+    nonisolated static func overrideText(_ arguments: [String]) -> String {
+        if arguments.contains("--override-limits") { return "Override limits" }
+        guard let i = arguments.firstIndex(of: "--override"), i + 1 < arguments.count else { return "Respect limits" }
+        let picked = arguments[i + 1].split(separator: ",").map(String.init)
+        return "Override " + overrideLimits.filter { picked.contains($0.0) }.map(\.1).joined(separator: ", ")
+    }
     var selectedModelUsesCodex: Bool {
         guard let selection = selectedPreset?["model"] as? [String: Any] else { return false }
         let provider = providers.first { $0["instanceId"] as? String == selection["instanceId"] as? String }
@@ -407,7 +420,7 @@ struct RunRequest: Identifiable {
             guard !ticketProject.isEmpty else { error = "Choose a project key before naming a ticket."; return }
             args += ["--ticket", "\(ticketProject)-\(number)"]
         }
-        if overrideLimits { args.append("--override-limits") }
+        args += Self.overrideArguments(overrides)
         requests.append(RunRequest(arguments: args))
         ticketNumber = ""
         await drainRequests()

@@ -1,4 +1,5 @@
 import type { CleanupRequest } from './cleanup.ts';
+import { overridableLimits, type OverrideLimits } from './config.ts';
 // The running scheduler answers commands over a Unix socket in its state directory, so the CLI and
 // the web server hand work to the process that already holds the clients and the store instead of
 // racing it for the SQLite claim. Without a running scheduler, callers fall back to doing the work.
@@ -72,7 +73,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; ticket?: string; upstream?: string; model?: string; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
+export function dispatchOptions(args: string[]): { manual: true; ticket?: string; upstream?: string; model?: string; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
@@ -89,6 +90,11 @@ export function dispatchOptions(args: string[]): { manual: true; ticket?: string
       if (value !== 'first' && value !== 'all') throw new Error('--chain requires first or all');
       options.chain = value;
     } else if (args[i] === '--override-limits') options.overrideLimits = true;
+    else if (args[i] === '--override') {
+      const value = (args[++i] ?? '').split(',').filter(Boolean);
+      if (!value.length || value.some(l => !(overridableLimits as readonly string[]).includes(l))) throw new Error(`--override requires a comma-separated list of ${overridableLimits.join(', ')}`);
+      options.overrideLimits = value as OverrideLimits;
+    }
     else if (args[i] === '--allow-missing-ready-label') options.allowMissingReadyLabel = true;
     else if (args[i] === '--dry-run') options.dryRun = true;
     else throw new Error(`Unknown dispatch argument: ${args[i]}`);

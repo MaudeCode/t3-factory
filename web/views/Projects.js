@@ -139,7 +139,7 @@ export function Projects() {
           <${Field} group label="Ready when in" hint="Tickets in these columns may be picked up."><${Chips} label="Ready statuses" path=${[...p, "readyStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>
           <${Field} group label="Done when in" hint="A ticket moved here is finished; its run is settled."><${Chips} label="Done statuses" path=${[...p, "doneStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>
           <${Field} group label="Priority labels" hint="Pick in order of importance. Tickets with a higher label go first; among equals, urgency decides."><${Chips} ordered label="Priority labels" path=${[...p, "priorityLabels"]} options=${labelOptions()} custom="Other label" /><//>
-          <${Field} group label="Runs at once by label" hint="For tickets that compete for one machine resource, such as a simulator. Runs waiting for you free their slot; a run you start by hand with Override limits on may exceed the limit."><${LabelLimits} index=${i} project=${current} /><//>
+          <${Field} group label="Runs at once by label" hint="For tickets that compete for one machine resource, such as a simulator. Runs waiting for you free their slot; a run you start by hand with label limits overridden may exceed it."><${LabelLimits} index=${i} project=${current} /><//>
         <//>
         <${Section} title="Watched releases" hint="Each new release of these repositories gets a review run.">
           ${current.upstreams?.length

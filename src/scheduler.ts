@@ -9,7 +9,7 @@ import { T3, Kaneo, listTasks, listTaskLabels, taskSchema, type Task } from './c
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
-import { loadConfig, type Config, type Project } from './config.ts';
+import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project } from './config.ts';
 
 import { readModelQuota } from './models.ts';
 import { sessionTicketStatus } from './session-tickets.ts';
@@ -742,7 +742,9 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
 }
 
 export interface Skipped { key: string; reason: string; id?: string; missingReadyLabel?: boolean; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: boolean; allowMissingReadyLabel?: boolean; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
+export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
+// The thresholds this start skips; automatic work skips none.
+const skips = (options: CycleOptions) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
 function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsSchema>>, done: (id: string) => Promise<boolean>, limit = readLimiter()) {
   const relations = new Map<string, Promise<z.infer<typeof relationsSchema>>>(), finished = new Map<string, Promise<boolean>>();
@@ -811,7 +813,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const result = { reason, at: new Date().toISOString(), ...extra };
     store.decide(result); log('decision', result); return result;
   };
-  const override = !!options.manual && !!options.overrideLimits;
+  const skip = skips(options);
   const t3 = clients.t3 ?? new T3(c.t3), kaneo = clients.kaneo ?? new Kaneo(c.kaneo), ownsKaneo = !clients.kaneo;
   t3.reset();
   const [shell, providers] = await readAll([t3.shell(), t3.providers()]);
@@ -843,8 +845,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
         stream.quota ??= quota;
         const manualCodex = options.manual && driver === 'codex';
         if (!quota.hasAllowance) reason = 'quota-exhausted';
-        else if (!quota.allowed && (manualCodex || !override)) reason = 'quota-budget';
-        else if (!options.upstream && !manualCodex && !override) {
+        else if (!quota.allowed && (manualCodex || !skip.has('reserve'))) reason = 'quota-budget';
+        else if (!options.upstream && !manualCodex && !skip.has('idle')) {
           // An unreadable activity state holds ticket work back but, like idle time, never a review.
           try {
             if (!activityCache.has(driver!)) activityCache.set(driver!, await personalActivity(t3, shell.threads, jobs, store, c.monitoringTimeoutMinutes, driver, instances));
@@ -872,7 +874,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     catch (error) { if (ticketsOn) throw error; queueRead = false; log('queue-read-failed', { message: safeError(error) }); }
     if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kaneo.readyLabel, message: `Ticket is missing the ${c.kaneo.readyLabel} label. Confirm this run to continue without it.` });
     if (options.manual && options.ticket && !queue.ready.length) {
-      const chained = await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, override, decision);
+      const chained = await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, skip, decision);
       if (chained) return chained;
     }
     if (!options.ticket && !options.upstream && queueRead) store.set('upNext', JSON.stringify(upNext(c, store, queue)));
@@ -889,7 +891,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const planned = new Map<string, number>();
     // Dry runs record nothing, so their would-be runs count against label limits here.
     const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
-    const labelOpen = (t: Candidate) => override || !fullLabel(c, [...store.jobs(), ...started], shell.threads, t);
+    const labelOpen = (t: Candidate) => skip.has('labels') || !fullLabel(c, [...store.jobs(), ...started], shell.threads, t);
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
     const free = (m: { driver: string }) => !busy.has(m.driver);
     while (readyModels.some(free) || (reviews.length && idleModels.some(free))) {
@@ -947,7 +949,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   if (options.model && options.model !== 'auto' && !preset) throw new Error('Unknown model; select a configured model');
   if (!preset) throw new Error('Select a configured model');
   if (!options.manual && !plan) throw new Error('Automatic work requires a provider plan');
-  const override = options.manual === true && options.overrideLimits === true;
+  const skip = skips(options);
   const ticketKey = options.ticket?.trim().toUpperCase();
   if (ticketKey && ((!options.manual && !plan) || !/^[A-Z0-9]+-\d+$/.test(ticketKey))) throw new Error('Enter a ticket key such as APP-123');
   if (ticketKey && !c.projects.some(p => p.enabled && ticketKey.startsWith(`${p.key}-`))) throw new Error('Ticket project is not enabled in the factory settings');
@@ -983,14 +985,14 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
     // Label limits bind every start except a manual one with limits overridden; chain continuations always respect them.
-    const labelGated = !override || !!options.continuation;
+    const labelGated = !skip.has('labels') || !!options.continuation;
     if (labelGated && !ticketKey && !review) {
       const open = queue.ready.filter(t => !fullLabel(c, jobs, shell.threads, t));
       if (queue.ready.length && !open.length) return decision('label-limit', { message: 'Every eligible ticket is waiting for a free label slot' });
       queue.ready = open;
     }
     if (!discovery && !review && !queue.ready.length) {
-      const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, override, decision) : undefined;
+      const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, skip, decision) : undefined;
       return chained ?? decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
     }
     // A chain continuation is still user-authorized work, but it starts later and on its own, so it keeps the automatic quota and idle policy.
@@ -1004,10 +1006,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       : personalActivity(t3, threads, store.jobs(), store, c.monitoringTimeoutMinutes, quota.provider === 'Codex' ? 'codex' : 'claudeAgent', instances);
     const activity = await readActivity(shell.threads);
     const gate = !quota.hasAllowance ? isManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted'
-      : !override && !quota.allowed ? discovery ? 'discovery-quota-reserve' : 'quota-reserve'
+      : !skip.has('reserve') && !quota.allowed ? discovery ? 'discovery-quota-reserve' : 'quota-reserve'
       : c.maxWaitingPRs !== null && parked.length >= c.maxWaitingPRs ? 'waiting-cap'
-      : !isManualCodex && !override && activity.active ? 'personal-provider-running'
-      : !isManualCodex && !override && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
+      : !isManualCodex && !skip.has('idle') && activity.active ? 'personal-provider-running'
+      : !isManualCodex && !skip.has('idle') && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
     queue.selected = review ? undefined : selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
     if (options.doctor) return decision('doctor', { quota, activity, running: running.length, waiting: parked.length, gate: running.length ? 'autonomous-job-running' : gate, eligible: queue.ready.length, next: queue.selected, skipped: queue.skipped });
     if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length, ...(!quota.hasAllowance ? { message: 'The selected model has no allowance left. Choose another model or wait for its quota to reset.' } : {}) });
@@ -1050,16 +1052,19 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const currentActivity = await readActivity(fresh.threads);
     if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
     // Reviews start as soon as a release is found, so only ticket and discovery work wait for idle time.
-    if (!override && ((!currentManualCodex && idleBlocked(c, currentActivity)) || !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
+    if ((!skip.has('idle') && !currentManualCodex && idleBlocked(c, currentActivity)) || (!skip.has('reserve') && !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
     // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (options.continuation && busyProviders(store.jobs(), fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
-    const full = labelGated && queue.selected && fullLabel(c, store.jobs(), fresh.threads, queue.selected);
+    // The final tracker read is authoritative: a label added or removed since the queue read counts here.
+    const full = labelGated && queue.selected && fullLabel(c, store.jobs(), fresh.threads, checked ? { ...queue.selected, labels: checked.labels } : queue.selected);
     if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
     if (review && !(await pendingReviews(c, store, store.jobs(), Date.now(), false)).some(r => r.project.kaneoId === review.project.kaneoId && JSON.stringify(r.upstream) === JSON.stringify(review.upstream))) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
-    const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${override && !currentManualCodex ? ' with idle/quota thresholds overridden for this run' : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kaneo.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');
+    // Manual Codex runs never wait for idle time or reserve, so only a label override is news for them.
+    const waived = [...skip].filter(l => l === 'labels' || !currentManualCodex).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit' })[l]);
+    const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kaneo.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');
     const now = new Date().toISOString(), id = randomUUID();
     const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: review ? 'upstream' : queue.selected ? 'ticket' : 'discovery', ...(review ? { upstream: review.upstream } : {}), projectId: project.kaneoId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
     if (checked) {
@@ -1159,7 +1164,7 @@ export function chainReady(plan: Pick<Plan, 'target' | 'tickets'>, jobs: Job[]) 
   return [...plan.tickets.filter(free), ...(plan.tickets.every(t => t.done) && free(plan.target) ? [plan.target] : [])].toSorted(byPlanPriority);
 }
 // A blocked manual ticket: describe its chain, run the first runnable blocker, or start the whole chain.
-async function chainResponse(c: Config, store: Store, t3: T3, kaneo: Kaneo, instances: Map<string, string>, threads: Thread[], options: CycleOptions, queue: Pick<Queue, 'skipped'>, override: boolean, decision: (reason: string, extra?: Record<string, unknown>) => Decision): Promise<Decision | undefined> {
+async function chainResponse(c: Config, store: Store, t3: T3, kaneo: Kaneo, instances: Map<string, string>, threads: Thread[], options: CycleOptions, queue: Pick<Queue, 'skipped'>, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision): Promise<Decision | undefined> {
   const ticketKey = options.ticket!.trim().toUpperCase();
   const blocked = queue.skipped.find(s => s.key === ticketKey && s.id && /blocker|Umbrella/.test(s.reason));
   if (!blocked?.id) return undefined;
@@ -1173,7 +1178,7 @@ async function chainResponse(c: Config, store: Store, t3: T3, kaneo: Kaneo, inst
     const result = await run({ ...options, chain: undefined, ticket: pick.key, allowMissingReadyLabel: !pick.readyLabel });
     return { ...result, chain: { target: ticketKey, picked: pick.key } };
   }
-  const plan: Plan = { id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', overrideLimits: override, state: 'active' };
+  const plan: Plan = { id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', overrideLimits: [...skip], state: 'active' };
   store.savePlan(plan);
   const dispatches = await runPlans(c, store, t3, kaneo, instances, threads, plan.id);
   const started = dispatches.filter(d => d.reason === 'dispatched').length;

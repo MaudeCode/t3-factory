@@ -20,6 +20,8 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.deepEqual(commandFor(['once']), { type: 'once', options: { dryRun: false, doctor: false } });
     assert.deepEqual(commandFor(['doctor']), { type: 'once', options: { dryRun: false, doctor: true } });
     assert.throws(() => commandFor(['dispatch', '--chain', 'later']), /--chain requires first or all/);
+    assert.deepEqual(commandFor(['dispatch', '--override', 'idle,labels']), { type: 'dispatch', options: { manual: true, overrideLimits: ['idle', 'labels'] } });
+    for (const bad of [[], ['quota']]) assert.throws(() => commandFor(['dispatch', '--override', ...bad]), /--override requires/);
     assert.equal(commandFor(['model-catalog']), undefined);
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });
     assert.deepEqual(commandFor(['session-dismiss', 'task-1']), { type: 'session-dismiss', taskId: 'task-1' });
