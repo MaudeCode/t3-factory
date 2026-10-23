@@ -946,3 +946,41 @@ test('an owned background launch keeps the writer through an uncertain response'
     assert.equal(f.launches.length, 1); assert.equal(f.store.jobs()[0].state, 'dispatching');
   } finally { release.resolve(); await internal.queue; clearTimeout(internal.timer); }
 });
+
+for (const mutation of ['remove', 'register']) test(`suspended cleanup discovery rereads Git after foreground ${mutation}`, { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const git = (...args: string[]) => execFileSync('/usr/bin/git', ['-C', f.dir, ...args], { encoding: 'utf8' });
+  git('init', '-qb', 'main'); writeFileSync(join(f.dir, 'tracked'), 'fixture'); git('add', 'tracked'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'fixture');
+  const tree = join(f.dir, 'mutated');
+  if (mutation === 'remove') git('worktree', 'add', '-qb', 'removed', tree);
+  const threads = Array.from({ length: 256 }, (_, i) => ({ ...f.thread, id: `thread-${i}`, worktreePath: join(f.dir, `tree-${i}`) }));
+  t.mock.method(T3.prototype, 'shell', async () => ({ ...(await f.shell()), threads: structuredClone(threads) }));
+  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
+  let sent = false, foreground: Promise<any> | undefined, snapshot: any;
+  try {
+    await service.start(); await internal.queue;
+    const published = deferred(), get = internal.store.get.bind(internal.store), set = internal.store.set.bind(internal.store);
+    t.mock.method(internal.store, 'get', (key: string) => {
+      if (key.startsWith('cleanupSize:') && !sent) {
+        sent = true;
+        foreground = internal.enqueue(async () => {
+          if (mutation === 'remove') git('worktree', 'remove', tree);
+          else git('worktree', 'add', '-qb', 'registered', tree);
+          // The normal job/cleanup lifecycle notification identifies the affected project.
+          internal.store.save({ ...f.job, id: 'foreground-mutation', reason: 'Foreground workspace mutation' });
+        });
+      }
+      return get(key);
+    });
+    t.mock.method(internal.store, 'set', (key: string, value: string) => {
+      set(key, value);
+      if (key === 'cleanupCatalog' && !snapshot) { snapshot = JSON.parse(value); published.resolve(); }
+    });
+    await internal.handle({ type: 'cleanup', input: { type: 'inventory', refresh: true } });
+    await published.promise; await foreground; await internal.queue;
+    assert.equal(sent, true);
+    const row = snapshot.data.items.find((item: any) => item.path === tree);
+    if (mutation === 'remove') assert.equal(row, undefined, 'first publication must not claim a removed worktree remains registered');
+    else assert.equal(row?.registered, true, 'first publication must include the newly registered worktree');
+  } finally { await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});

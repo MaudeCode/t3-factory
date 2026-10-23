@@ -45,7 +45,7 @@ export function dispatchFixture(t: TestContext) {
   const provider = () => ({ instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'fixture-sol' }], usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: [{ id: 'primary', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() }] } });
   t.mock.method(t3, 'providers', async () => { calls.push('providers'); await hooks.providers(); return [provider()]; });
   t.mock.method(t3, 'provider', async (_id: string, refresh: boolean) => { calls.push(`quota:${refresh}`); await hooks.quota(refresh); return provider(); });
-  t.mock.method(t3, 'launch', async (command: unknown) => { assert.equal(store.jobs()[0]?.state, 'dispatching', 'durable ownership precedes launch'); launches.push(command); return {}; });
+  t.mock.method(t3, 'launch', async (command: unknown) => { assert.equal(store.jobs().find(job => job.threadId === (command as { threadId: string }).threadId)?.state, 'dispatching', 'durable ownership precedes launch'); launches.push(command); return {}; });
   t.mock.method(kaneo, 'call', async (name: string, args: Record<string, unknown>) => {
     const id = String(args.taskId ?? '');
     const isFinal = name === 'list_workspace_labels' ? ++labelReads > 1 : final;

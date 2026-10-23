@@ -95,7 +95,7 @@ export function decisionText(result: { reason: string } & Record<string, unknown
 }
 export class Store {
   db: DatabaseSync;
-  onCleanupChange?: () => void;
+  onCleanupChange?: (projectIds: string[]) => void;
   constructor(dir: string) {
     mkdirSync(join(dir, 'reports'), { recursive: true, mode: 0o700 });
     const path = join(dir, 'state.sqlite');
@@ -126,14 +126,14 @@ export class Store {
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
     for (const url of job.prUrls ?? []) if (!before?.prUrls?.includes(url)) this.record('job.pr', `${label} opened ${url.replace(/^https:\/\/github\.com\//, '')}`, { ...detail, url }, job.id);
     const lifecycle = (j: Job) => JSON.stringify([j.state, j.thread?.worktreePath, j.thread?.branch, j.thread?.status, j.resumedAt, j.workspaceCleanup?.path, j.dismissedWorktreePath, j.workspaceCleanedAt]);
-    if (!before || lifecycle(before) !== lifecycle(job)) this.onCleanupChange?.();
+    if (!before || lifecycle(before) !== lifecycle(job)) this.onCleanupChange?.([...new Set([job.projectId, ...before ? [before.projectId] : []])]);
   }
   cleanupActions(): CleanupAction[] { return this.db.prepare('SELECT data FROM cleanup_actions ORDER BY rowid DESC').all().map(r => JSON.parse(r.data as string)); }
   cleanupAction(id: string): CleanupAction | undefined { const row = this.db.prepare('SELECT data FROM cleanup_actions WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   saveCleanupAction(action: CleanupAction) {
     const before = this.cleanupAction(action.id);
     this.db.prepare('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action));
-    if (!before || action.outcomes.some(outcome => outcome.state === 'confirmed' && outcome.physicalRemoval === true && !before.outcomes.some(old => old.path === outcome.path && old.physicalRemoval === true))) this.onCleanupChange?.();
+    if (!before || action.outcomes.some(outcome => outcome.state === 'confirmed' && outcome.physicalRemoval === true && !before.outcomes.some(old => old.path === outcome.path && old.physicalRemoval === true))) this.onCleanupChange?.([...new Set(action.targets.map(target => target.projectId))]);
   }
   plans(): Plan[] { return this.db.prepare('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   plan(id: string): Plan | undefined { const row = this.db.prepare('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }

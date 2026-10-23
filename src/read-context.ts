@@ -19,6 +19,7 @@ export class ReadContext {
   suspended = false;
   revision = 0;
   needsRefresh = false;
+  readonly invalidatedProjects = new Set<string>();
   private stopping = false;
   requestYield() { this.batch?.controller.abort(BACKGROUND_YIELD); }
   stopBackground() { this.stopping = true; this.batch?.controller.abort(new Error('Scheduler stopping')); }

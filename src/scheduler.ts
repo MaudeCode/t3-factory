@@ -1036,11 +1036,12 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     queue.selected = review ? undefined : selectTicket(queue.ready, store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kaneoId));
     if (options.doctor) return decision('doctor', { quota, activity, running: running.length, waiting: parked.length, gate: running.length ? 'autonomous-job-running' : gate, eligible: queue.ready.length, next: queue.selected, skipped: queue.skipped });
     if (gate) return decision(gate, { quota, activity, running: running.length, waiting: parked.length, ...(!quota.hasAllowance ? { message: 'The selected model has no allowance left. Choose another model or wait for its quota to reset.' } : {}) });
+    const discoveryAvailable = (project: Project, jobs: Job[]) => project.enabled && !plan?.skipProjects.has(project.kaneoId) && !jobs.some(j => j.projectId === project.kaneoId && j.kind === 'discovery' && !['complete', 'dismissed'].includes(j.state)) && Number(store.get(`discoveryAfter:${project.kaneoId}`) ?? 0) <= Date.now();
     let project: Project | undefined;
     if (review) project = review.project;
     else if (queue.selected) project = c.projects.find(p => p.kaneoId === queue.selected!.projectId);
     else {
-      project = c.projects.filter(p => p.enabled && !plan?.skipProjects.has(p.kaneoId) && !jobs.some(j => j.projectId === p.kaneoId && j.kind === 'discovery' && !['complete', 'dismissed'].includes(j.state)) && Number(store.get(`discoveryAfter:${p.kaneoId}`) ?? 0) <= Date.now())
+      project = c.projects.filter(p => discoveryAvailable(p, jobs))
         .toSorted((a, b) => Number(store.get(`discoveryLast:${a.kaneoId}`) ?? 0) - Number(store.get(`discoveryLast:${b.kaneoId}`) ?? 0))[0];
     }
     if (!project) return decision('no-eligible-work', { skipped: queue.skipped });
@@ -1057,8 +1058,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
           const [task, snapshot, blockers, children, prs] = await readAll([
             reader.task(queue.selected.id), labels, rules.blockersOf(queue.selected.id), rules.openChildren(queue.selected.id), openPullRequests(project),
           ]);
-        return { task, labels: snapshot.get(task.id) ?? [], blockers, children, prs };
-      })(),
+          return { task, labels: snapshot.get(task.id) ?? [], blockers, children, prs };
+        })(),
       ]);
       const [artifacts, currentActivity, currentReviews] = await readAll([
         checked && queue.selected ? ticketArtifacts(project!, queue.selected.key, checked.task.id, fresh.threads, store.jobs(), store, Promise.resolve(checked.prs)) : Promise.resolve(undefined),
@@ -1067,6 +1068,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       ]);
       return { fresh, currentQuota, checked, artifacts, currentActivity, currentReviews };
     });
+    const currentJobs = store.jobs();
     if (queue.selected) {
       if (!checked || checked.task.projectId !== project.kaneoId || !project.readyStatuses.includes(checked.task.status)) return decision('ticket-changed-before-dispatch');
       const { task, labels, blockers, children } = checked, key = queue.selected.key;
@@ -1075,23 +1077,24 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       if (difficulty !== queue.selected.difficulty || !acceptsDifficulty(preset, { ...queue.selected, difficulty })) return decision('ticket-changed-before-dispatch', { message: 'The ticket\'s difficulty label changed.' });
       if (!options.allowMissingReadyLabel && !labels.some(l => l.name === c.kaneo.readyLabel)) return decision('ticket-changed-before-dispatch', { message: `The ticket lost its ${c.kaneo.readyLabel} label.` });
       if (blockers === 'cycle' || blockers.length || children.length) return decision('ticket-changed-before-dispatch', { message: 'The ticket gained a blocker or an unfinished child.' });
-      const jobs = store.jobs();
-      if (!artifacts || artifacts.openPR || jobs.some(j => j.taskId === task.id && !['complete', 'dismissed'].includes(j.state)) || fresh.threads.some(t => !artifacts.inactiveThreads.has(t.id) && threadReferencesTicket(t, project.t3Id, key))) return decision('ticket-order-or-eligibility-changed');
+      if (!artifacts || artifacts.openPR || currentJobs.some(j => j.taskId === task.id && !['complete', 'dismissed'].includes(j.state)) || fresh.threads.some(t => !artifacts.inactiveThreads.has(t.id) && threadReferencesTicket(t, project.t3Id, key))) return decision('ticket-order-or-eligibility-changed');
     }
     if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
     const currentManualCodex = manualPolicy && currentQuota.provider === 'Codex';
     if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
+    if (c.maxWaitingPRs !== null && currentJobs.filter(job => job.state === 'waiting').length >= c.maxWaitingPRs) return decision('waiting-cap');
     // Reviews start as soon as a release is found, so only ticket and discovery work wait for idle time.
     if ((!skip.has('idle') && !currentManualCodex && idleBlocked(c, currentActivity)) || (!skip.has('reserve') && !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
     // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
-    if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
-    if (options.continuation && busyProviders(store.jobs(), fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
+    if (!options.manual && plan && busyProviders(currentJobs, fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
+    if (options.continuation && busyProviders(currentJobs, fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
     // The final tracker read is authoritative: a label added or removed since the queue read counts here.
-    const full = labelGated && queue.selected && fullLabel(c, store.jobs(), fresh.threads, checked ? { ...queue.selected, labels: checked.labels } : queue.selected);
+    const full = labelGated && queue.selected && fullLabel(c, currentJobs, fresh.threads, checked ? { ...queue.selected, labels: checked.labels } : queue.selected);
     if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
     if (review && !currentReviews.some(r => r.project.kaneoId === review.project.kaneoId && JSON.stringify(r.upstream) === JSON.stringify(review.upstream))) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
     if (activePlanId && store.plan(activePlanId)?.state !== 'active') return decision('plan-cancelled-before-dispatch');
+    if (discovery && !discoveryAvailable(project, currentJobs)) return decision('discovery-changed-before-dispatch');
     const selectedModel = currentQuota.factoryRouting.model;
     // Manual Codex runs never wait for idle time or reserve, so only a label override is news for them.
     const waived = [...skip].filter(l => l === 'labels' || !currentManualCodex).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit' })[l]);

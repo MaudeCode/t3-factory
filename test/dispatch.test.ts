@@ -375,10 +375,11 @@ test('automatic dispatch keeps ownership and launches serial while reads overlap
   assert.equal(new Set(f.store.jobs().map(j => j.taskId)).size, 2);
 });
 
-for (const change of ['labels', 'blockers', 'quota', 'activity', 'config', 'foreground-slot'] as const) test(`resumed automatic final validation rejects changed ${change}`, async t => {
+for (const change of ['labels', 'blockers', 'quota', 'activity', 'config', 'foreground-slot', 'waiting-cap'] as const) test(`resumed automatic final validation rejects changed ${change}`, async t => {
   const f = dispatchFixture(t);
   const { ReadContext } = await import('../src/read-context.ts');
   const context = new ReadContext();
+  if (change === 'waiting-cap') { f.c.maxWaitingPRs = 1; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c)); }
   let finalSeen = false, changed = false;
   f.hooks.read = async (name, _id, final) => { if (final && name === 'list_workspace_labels') finalSeen = true; };
   const provider = f.provider;
@@ -393,10 +394,29 @@ for (const change of ['labels', 'blockers', 'quota', 'activity', 'config', 'fore
     if (change === 'blockers') f.tasks[1].status = 'to-do';
     if (change === 'activity') f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', status: 'running', activeRunId: 'active', providerInstanceId: 'codex', updatedAt: new Date().toISOString() }));
     if (change === 'config') writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, enabled: false }));
+    if (change === 'waiting-cap') f.store.save({ id: 'parked', kind: 'ticket', projectId: 'FIX', taskId: 'parked-task', ticketKey: 'FIX-99', threadId: 'parked-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'waiting', reason: 'Foreground run needs input', lastPersonalActivity: null, reportPath: join(f.dir, 'parked-report'), command: {}, prUrls: [], completedAt: null, modelSelection: { instanceId: 'claudeAgent', model: 'fixture-other', options: [] }, providerDriver: 'claudeAgent' });
     if (change === 'foreground-slot') f.store.save({ id: 'manual', kind: 'ticket', projectId: 'FIX', taskId: 'manual-task', ticketKey: 'FIX-99', threadId: 'manual-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'dispatching', reason: 'Foreground launch accepted', lastPersonalActivity: null, reportPath: join(f.dir, 'manual-report'), command: {}, prUrls: [], completedAt: null, modelSelection: f.c.models[0].model, providerDriver: 'codex' });
   };
   const result = await context.run(() => f.run('auto', false));
   assert.ok(!(result as any).dispatches?.some((d: any) => d.reason === 'error'), 'validation must reach a policy refusal, not an environment error');
   assert.equal(changed, true, 'the test suspends after a successful final snapshot');
   assert.equal(f.launches.length, 0, `a saved plan cannot launch after ${change} changes`);
+});
+
+test('resumed discovery rejects a foreground discovery owned on another provider', async t => {
+  const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
+  f.tasks.length = 0; f.relations.length = 0;
+  let finalSeen = false, foregroundStarted = false;
+  f.hooks.quota = async refresh => { if (refresh) finalSeen = true; };
+  const context = new ReadContext();
+  context.cooperate = async () => {
+    if (!finalSeen || foregroundStarted) return;
+    foregroundStarted = true; context.suspended = true; context.revision++;
+    f.store.save({ id: 'foreground-discovery', kind: 'discovery', projectId: 'FIX', taskId: null, ticketKey: null, threadId: 'foreground-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'dispatching', reason: 'Foreground discovery accepted', lastPersonalActivity: null, reportPath: join(f.dir, 'foreground-report'), command: {}, prUrls: [], completedAt: null, modelSelection: { instanceId: 'claudeAgent', model: 'fixture-other-provider', options: [] }, providerDriver: 'claudeAgent' });
+  };
+  const result = await context.run(() => f.run('auto', false));
+  assert.equal(foregroundStarted, true);
+  assert.equal(f.launches.length, 0, 'project discovery ownership applies across provider slots');
+  assert.equal(f.store.jobs().filter(j => j.kind === 'discovery').length, 1);
+  assert.ok((result.dispatches as any[]).some(d => d.reason === 'discovery-changed-before-dispatch'));
 });

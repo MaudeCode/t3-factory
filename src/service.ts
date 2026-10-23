@@ -68,7 +68,10 @@ export class FactoryService {
       if (['running', 'uncertain'].includes(operation.state)) recoverOperation(this.stateDir, this.store, operation);
       if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id);
     }
-    this.store.onCleanupChange = () => this.scheduleInventory();
+    this.store.onCleanupChange = projectIds => {
+      for (const item of [this.active, ...this.pending]) if (item && !item.foreground) for (const id of projectIds) item.context.invalidatedProjects.add(id);
+      this.scheduleInventory();
+    };
     this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
     this.watcher = watch(dirname(this.configPath), (_, name) => { if (name === basename(this.configPath)) this.wake('config'); });

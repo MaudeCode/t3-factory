@@ -213,10 +213,12 @@ export async function cleanupTerminalAccess(t3: T3, recordedErrors: (string | un
 async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?: AbortSignal) {
   const physical = new Map<string, { registered: Awaited<ReturnType<typeof worktrees>>; space: Awaited<ReturnType<typeof filesystemSpace>>; error?: string }>();
   for (;;) {
-    const revision = readContext()?.revision;
+    const context = readContext(), revision = context?.revision;
+    for (const project of c.projects) if (context?.invalidatedProjects.has(project.kaneoId)) physical.delete(project.repoPath);
+    context?.invalidatedProjects.clear();
     const data = await scanCleanupInventory(c, store, t3, physical, signal);
-    // Rebuild the cheap projection from current jobs/actions/threads, retaining completed Git batches.
-    if (revision !== readContext()?.revision) continue;
+    // Retain completed Git batches unless the job/cleanup lifecycle changed that repository.
+    if (revision !== context?.revision || context?.invalidatedProjects.size) continue;
     if (!data.errors.length) store.set('cleanupLastScan', data.checkedAt);
     return { ...data, lastSuccessfulScan: store.get('cleanupLastScan') };
   }
