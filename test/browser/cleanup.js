@@ -45,17 +45,18 @@ async function run() {
   await show();
   assert(document.querySelector('.cleanup-row').getBoundingClientRect().top < (innerWidth < 600 ? 430 : 300), 'worktrees appear before diagnostics');
   assert(document.querySelectorAll('.cleanup-row').length === 21, 'every present worktree except the primary checkout is listed on one page');
-  assert(!document.body.textContent.includes('Needs you') && [...document.querySelectorAll('button')].some(b => b.textContent === 'Delete 18 unused'), 'one deletion action owns the workflow and names its candidate count');
+  assert(!document.body.textContent.includes('Needs you') && [...document.querySelectorAll('button')].some(b => b.getAttribute('aria-label') === 'Delete 18 unused worktrees'), 'one deletion action owns the workflow and names its candidate count');
   assert(document.body.textContent.includes('128.00 GiB free'), 'one filesystem free-space observation appears in the header');
   assert(!document.querySelector('.cleanup-row').textContent.includes('/workspace/'), 'rows use readable names');
   const segment = label => [...document.querySelectorAll('.segmented button')].find(b => b.textContent.startsWith(label)).click();
   segment('In use'); await until(() => document.querySelectorAll('.cleanup-row').length === 1);
   assert(document.querySelector('.cleanup-row').textContent.includes('In use'), 'protected work has its own view'); segment('All'); await until(() => document.querySelectorAll('.cleanup-row').length === 21);
-  const picks = [...document.querySelectorAll('.cleanup-row input[type=checkbox]')]; picks[0].click(); picks[1].click(); await until(() => [...document.querySelectorAll('button')].some(b => b.textContent === 'Delete 2 selected'));
-  click('Delete 2 selected'); await until(() => document.querySelector('dialog[open]'));
+  assert(!document.querySelector('.cleanup-row input[type=checkbox]'), 'checkboxes appear only while selecting'); click('Select worktrees'); await until(() => document.querySelector('.cleanup-row input[type=checkbox]'));
+  const picks = [...document.querySelectorAll('.cleanup-row input[type=checkbox]')]; picks[0].click(); picks[1].click(); await until(() => document.body.textContent.includes('2 selected'));
+  click('Delete selected worktrees'); await until(() => document.querySelector('dialog[open]'));
   assert(document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Delete 2 worktrees?', 'bulk removal has one bounded consequence confirmation');
   assert(document.querySelector('dialog[open]').textContent.includes('Ignored files are deleted'), 'bulk confirmation includes the approved ignored-file policy');
-  click('Cancel'); picks[0].click(); picks[1].click(); await pause();
+  click('Cancel'); click('Done selecting worktrees'); await pause();
   const search = document.querySelector('[aria-label="Find a branch or folder"]'); search.value = 'FIX-1'; search.dispatchEvent(new Event('input', { bubbles: true })); await until(() => !document.querySelector('[aria-label="Details /workspace/worktrees/example-6"]'));
   assert(!document.querySelector('[aria-label="Details /workspace/worktrees/example-6"]'), 'search narrows worktrees');
   document.querySelector('[aria-label="Details /workspace/worktrees/fix-FIX-1"]').click(); await until(() => document.querySelector('.cleanup-inspector'));
@@ -69,10 +70,10 @@ async function run() {
   click('Delete anyway…'); await until(() => document.querySelector('dialog[open]'));
   assert(document.querySelector('dialog[open]').getAttribute('aria-label') === 'Delete fix-FIX-1 anyway?', 'a reviewed force asks once, in the shared confirmation');
   assert(document.querySelector('dialog[open]').textContent.includes('will be lost') && !document.querySelector('input[aria-label="Worktree folder name"]'), 'the confirmation names what is lost and needs no typing');
-  const confirm = [...document.querySelectorAll('dialog[open] button')].find(b => b.textContent.trim() === 'Delete'); confirm.click(); confirm.click(); await until(() => calls.filter(c => c === '/api/cleanup/actions').length === 1 && document.body.textContent.includes('Deleting…'));
+  const confirm = [...document.querySelectorAll('dialog[open] button')].find(b => b.textContent.trim() === 'Delete'); confirm.click(); confirm.click(); await until(() => calls.filter(c => c === '/api/cleanup/actions').length === 1 && document.querySelector('.cleanup-row-actions [aria-label^="Deleting…"]'));
   assert(calls.filter(c => c === '/api/cleanup/actions').length === 1, 'double click submits one saved action');
   const row = document.querySelector('[aria-label="Details /workspace/worktrees/fix-FIX-1"]').closest('.cleanup-row-group'), height = row.querySelector('.cleanup-row').getBoundingClientRect().height;
-  assert(row.querySelector('.cleanup-row-actions').textContent.includes('Deleting…'), 'progress shows in the row action');
+  assert(row.querySelector('.cleanup-row-actions [aria-label^="Deleting…"]'), 'progress shows in the row action');
   release(); await until(() => row.querySelector('.cleanup-note [data-tip*="Reviewed identity changed"]')); assert(row.querySelector('.cleanup-row').getBoundingClientRect().height === height, 'a result never changes the row height');
   inspectFailure = true; document.querySelector('[aria-label="Check fix-FIX-1"]').click(); await until(() => document.querySelector('.cleanup-inspector [role=alert]')?.textContent.includes('T3 connection unavailable'));
   assert(document.querySelector('.cleanup-inspector [role=alert]')?.textContent.includes('T3 connection unavailable'), 'failed checks show a recovery message inline');
@@ -97,10 +98,10 @@ async function failedReady() {
 }
 async function deleteUnused() {
   await show();
-  assert([...document.querySelectorAll('button')].some(b => b.textContent === 'Delete 18 unused'), 'one action deletes unused worktrees without sorting old failures');
+  assert([...document.querySelectorAll('button')].some(b => b.getAttribute('aria-label') === 'Delete 18 unused worktrees'), 'one action deletes unused worktrees without sorting old failures');
   assert(!document.body.textContent.includes('Needs you') && !document.body.textContent.includes('Ready to remove'), 'cleanup does not turn old failures into an operator triage queue');
   assert(document.querySelectorAll('.cleanup-row').length === 21, 'worktrees load in one list');
-  click('Delete 18 unused'); await until(() => document.querySelector('dialog[open]'));
+  click('Delete 18 unused worktrees'); await until(() => document.querySelector('dialog[open]'));
   assert(document.querySelector('dialog[open]').getAttribute('aria-label') === 'Delete 18 worktrees?', 'bulk deletion includes every unused candidate across pages');
   assert(document.querySelector('dialog[open]').textContent.includes('Ignored files are deleted'), 'ignored files are disposable under the approved policy');
   assert(!calls.length, 'preparing the confirmation never starts deletion'); click('Cancel');
@@ -128,7 +129,7 @@ async function previousFailure() {
   try {
     await show();
     const row = document.querySelector(`[aria-label="Details ${item.path}"]`).closest('.cleanup-row-group');
-    assert(row.querySelector('.tag').textContent === 'Unused' && row.querySelector('.cleanup-row-actions').textContent === 'Delete', 'a refusal under an obsolete rule is offered for normal deletion');
+    assert(row.querySelector('.tag').textContent === 'Unused' && row.querySelector('.cleanup-row-actions button').getAttribute('aria-label') === 'Delete example-6', 'a refusal under an obsolete rule is offered for normal deletion');
     assert(!row.textContent.includes('requires one Factory-owned job'), 'an obsolete Factory-only rule does not appear as a current blocker');
     row.querySelector('.cleanup-open').click(); await until(() => row.querySelector('.cleanup-inspector'));
     assert(row.querySelector('.cleanup-inspector').textContent.includes('requires one Factory-owned job'), 'the exact historical failure remains available in row details');

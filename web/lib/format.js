@@ -210,9 +210,9 @@ export function cleanupOutcomePresentation(outcome) {
     const m = outcome.message;
     // Refusals under rules that no longer apply are retried by the next delete.
     if (/dirty or ignored|maxBuffer|requires one Factory-owned job/i.test(m)) return { group: "ready", reason: "Rechecked with the current cleanup rules", action: "remove" };
+    if (/resumed/i.test(m)) return { group: "attention", reason: "Work resumed after completion", action: "force" };
     if (/tracked|untracked|dirty|workspace changes/i.test(m)) return { group: "attention", reason: "Local changes would be lost", action: "force" };
     if (/not verified merged|not part of the release|Unmerged work/i.test(m)) return { group: "attention", reason: "Not merged into the release branch", action: "force" };
-    if (/resumed/i.test(m)) return { group: "protected", reason: "Work resumed after completion", action: "thread" };
     if (/terminal|running process|still using|active or pending work/i.test(m)) return { group: "protected", reason: "An open terminal or process uses this folder", action: "inspect" };
     return { group: "attention", reason: `Removal failed: ${m}`, action: "inspect" };
   }

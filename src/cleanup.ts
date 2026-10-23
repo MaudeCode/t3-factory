@@ -96,9 +96,17 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kaneo: Kan
       if (!['complete', 'dismissed'].includes(job.state)) throw new Error(`Job ${job.id} is ${job.state}`);
       const t = threads.find(t => t.id === job.threadId);
       const finishedAt = job.completedAt ?? job.dismissedAt;
+    }
+    return `${jobs.length} historical jobs, none active`;
+  });
+  // A thread resumed after its run finished may be idle between turns; the operator can override that, live activity never.
+  await check('Resumed after completion', true, () => {
+    if (!shellKnown) throw new Error('T3 ownership is unknown');
+    for (const job of jobs) {
+      const t = threads.find(t => t.id === job.threadId), finishedAt = job.completedAt ?? job.dismissedAt;
       if (finishedAt && [job.resumedAt, t?.latestUserMessageAt, t?.latestRunCompletedAt].some(at => Date.parse(at ?? '') > Date.parse(finishedAt))) throw new Error(`Job ${job.id} resumed after completion`);
     }
-    return `${jobs.length} historical jobs, none active or resumed`;
+    return 'No thread resumed after its run finished';
   });
   let terminals: { threadId: string; terminalId: string; status: string; hasRunningSubprocess: boolean }[] = [];
   await check('Terminals', false, async () => {
@@ -169,7 +177,7 @@ export function cleanupPresentation(item: Pick<CleanupInventoryItem, 'state' | '
   const error = item.jobs.find(j => j.error)?.error ?? '';
   if (item.state === 'primary') return next('protected', 'Primary checkout', 'none');
   if (!item.present) return next('gone', item.state === 'complete' ? 'Directory and Git registration removed' : item.state === 'stale-registration' ? 'Directory gone; Git registration remains' : 'Directory gone; cleanup not verified', item.state === 'complete' ? 'none' : 'inspect');
-  if (item.state === 'active' || /resumed|active (?:or|subagent)|running (?:a command|process)|still using|orphaned T3 run/i.test(error)) return next('protected', /resumed/i.test(error) ? 'Work resumed after completion' : 'Work or a process is still using this folder', item.bindings.length || item.jobs.some(j => j.threadId) ? 'thread' : 'none');
+  if (item.state === 'active' || /active (?:or|subagent)|running (?:a command|process)|still using|orphaned T3 run/i.test(error)) return next('protected', 'Work or a process is still using this folder', item.bindings.length || item.jobs.some(j => j.threadId) ? 'thread' : 'none');
   if (item.ownership === 'unknown') return next('attention', 'T3 ownership could not be verified', 'inspect');
   if (item.lastOutcome?.state === 'confirmed' && Date.parse(item.lastOutcome.updatedAt) <= Date.parse(item.checkedAt)) return next('attention', 'A reported removal still has a directory; inspect its current identity', 'inspect');
   const recordedOutcome = cleanupOutcomePresentation(item.lastOutcome);
@@ -177,6 +185,7 @@ export function cleanupPresentation(item: Pick<CleanupInventoryItem, 'state' | '
   if (/Command stop .*awaiting T3 confirmation/i.test(error)) return next('retrying', 'Waiting for leftover commands to finish', 'retry');
   if (!item.jobs.length) return next('ready', item.bindings.length ? 'Idle T3 worktree; merge and local changes will be checked' : 'No active binding; merge and local changes will be checked', 'remove');
   if (item.jobs.length !== 1 || item.ownership === 'shared') return next('ready', 'Recorded owners are idle; merge and local changes will be checked', 'remove');
+  if (/resumed/i.test(error)) return next('attention', 'Work resumed after completion', 'force');
   if (/Ticket is no longer Done|task not found|Completion.*(?:missing|unavailable)|report.*missing|ENOENT|not assigned|fetch failed|ECONN|ETIMEDOUT/i.test(error)) return next('ready', 'Previous check could not finish; merge and local changes will be checked', 'remove');
   if (/tracked.*untracked|dirty or changed|Preserve dirty workspace/i.test(error)) return next('attention', 'Tracked changes or untracked files remain', 'thread');
   if (/not.*(?:merged|release branch)/i.test(error)) return next('attention', 'Completion or merged work is not verified', 'force');

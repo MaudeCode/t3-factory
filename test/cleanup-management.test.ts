@@ -64,8 +64,9 @@ test('read-only inventory includes orphan, shared, missing and cleaned records; 
   } finally { f.close(); }
 });
 
-for (const scenario of ['dirty', 'ignored', 'unmerged', 'orphan', 'shared', 'missing'] as const) test(`force review and confirmed removal: ${scenario}`, async () => {
+for (const scenario of ['dirty', 'ignored', 'unmerged', 'orphan', 'shared', 'missing', 'resumed'] as const) test(`force review and confirmed removal: ${scenario}`, async () => {
   const f = fixture(); try {
+    if (scenario === 'resumed') { const [owner] = f.owners(); f.store.save(f.job()); owner.latestUserMessageAt = '2026-01-03T00:00:00Z'; }
     if (scenario === 'dirty') writeFileSync(join(f.path, 'file'), 'discard\n');
     if (scenario === 'ignored') writeFileSync(join(f.path, 'ignored'), 'secret content never returned');
     if (scenario === 'unmerged') { writeFileSync(join(f.path, 'file'), 'new\n'); execFileSync('git', ['-C', f.path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qam', 'unmerged']); }
