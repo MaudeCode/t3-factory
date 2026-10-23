@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, commandWait, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
+import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, commandWait, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadReferencesTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { configSchema } from '../src/config.ts';
@@ -145,6 +145,12 @@ test('ticket ownership matches exact numbers in branches and titles', () => {
   assert.equal(mentionsTicket('fix/APP-13-bug', 'APP-13'), true);
   assert.equal(mentionsTicket('APP-130', 'APP-13'), false);
   assert.equal(mentionsTicket('TOAPP-13', 'APP-13'), false);
+});
+test('a subagent title does not claim the ticket it was asked to read or redraft', () => {
+  const lineage = { rootThreadId: 'root', parentThreadId: 'root', relationshipToParent: 'subagent' };
+  assert.equal(threadReferencesTicket(v2Thread({ id: 'sub', title: 'Redraft APP-13 and APP-7', branch: 'feat/other', lineage }), 'project-1', 'APP-13'), false);
+  assert.equal(threadReferencesTicket(v2Thread({ id: 'root', title: 'Redraft APP-13 and APP-7', branch: 'feat/other' }), 'project-1', 'APP-13'), true);
+  assert.equal(threadReferencesTicket(v2Thread({ id: 'root', title: 'Other work', branch: 'fix/APP-13-bug' }), 'project-1', 'APP-13'), true);
 });
 test('job ownership survives reopen and prohibits duplicate ticket jobs', () => {
   const dir = mkdtempSync(join(tmpdir(), 't3-factory-test-'));
