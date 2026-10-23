@@ -1017,3 +1017,35 @@ for (const command of ['cancel', 'shutdown']) test(`protected final retry yields
     else { assert.equal(result.error, null); assert.equal(result.value[0].reason, 'error'); assert.match(result.value[0].message, /Scheduler stopping/); }
   } finally { releaseInitial.resolve(); releaseRetry.resolve(); await (stopping ?? service.stop()); }
 });
+
+for (const stage of ['relation', 'completion', 'columns']) test(`cancelled ${stage} dependency reads recover in the resumed inventory batch`, { timeout: 10000 }, async t => {
+  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+  f.c.enabled = false; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  if (stage === 'columns') f.tasks[1].projectId = 'EXTERNAL';
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
+  const entered = deferred(), release = deferred(); let first = true;
+  f.hooks.read = async (name, id) => {
+    const target = stage === 'relation' ? name === 'get_task_relations' && id === 'root'
+      : stage === 'completion' ? name === 'get_task' && id === 'blocker' : name === 'list_project_columns';
+    if (!target || !first) return;
+    first = false;
+    await readPhase('fixture.dependency', async signal => {
+      entered.resolve();
+      await new Promise<void>((resolve, reject) => { release.promise.then(resolve); signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }); });
+    });
+  };
+  const pass = internal.pass.bind(internal);
+  t.mock.method(internal, 'pass', async (options: any, reason: string, wait: number) => reason === 'dispatch' ? { reason: 'dispatched' } : pass(options, reason, wait));
+  try {
+    const background = internal.enqueue(() => internal.pass({}, 'test', 0), false).then((value: any) => ({ value, error: null }), (error: Error) => ({ value: null, error }));
+    await entered.promise;
+    await internal.handle({ type: 'dispatch', options: { ticket: 'FIX-99' } });
+    const result = await background; await internal.queue;
+    assert.equal(result.error, null, 'the new read context must not reuse a rejected promise from its cancelled predecessor');
+    assert.equal(result.value.reason, 'disabled');
+    assert.equal(result.value.eligible, 1, 'cancellation must not hide the eligible ticket when the batch resumes');
+    assert.deepEqual(JSON.parse(f.store.get('upNext') ?? 'null')?.tickets.map((ticket: any) => ticket.key), ['FIX-1']);
+    assert.equal(f.launches.length, 0);
+  } finally { release.resolve(); await internal.queue; clearTimeout(internal.timer); }
+});

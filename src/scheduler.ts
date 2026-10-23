@@ -623,6 +623,12 @@ function readLimiter() {
   };
 }
 
+// Retain successful/shared reads, but let a cancelled or failed read be retried in a fresh context.
+function cachedRead<T>(cache: Map<string, Promise<T>>, id: string, read: () => Promise<T>): Promise<T> {
+  if (!cache.has(id)) cache.set(id, read().catch(error => { cache.delete(id); throw error; }));
+  return cache.get(id)!;
+}
+
 export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, allowMissingReadyLabel = false) {
   const projects = c.projects.filter(p => p.enabled);
   const all = new Map<string, Task>();
@@ -650,22 +656,18 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
   const getTask = (id: string): Promise<Task> => {
     const known = all.get(id);
     if (known) return Promise.resolve(known);
-    if (!fetched.has(id)) fetched.set(id, kaneo.call('get_task', { taskId: id }).then(t => {
+    return cachedRead(fetched, id, () => kaneo.call('get_task', { taskId: id }).then(t => {
       const parsed = taskSchema.parse(t), task = { ...parsed, labels: labels.get(parsed.id) ?? [] };
       all.set(id, task); return task;
-    }).catch(error => { fetched.delete(id); throw error; }));
-    return fetched.get(id)!;
+    }));
   };
   const isDone = async (id: string) => {
     const task = await getTask(id);
-    if (!finalStatuses.has(task.projectId)) finalStatuses.set(task.projectId, kaneo.call('list_project_columns', { projectId: task.projectId }).then(r => z.array(z.object({ slug: z.string(), isFinal: z.boolean() }).passthrough()).parse(r).filter(c => c.isFinal).map(c => c.slug)));
-    return (await finalStatuses.get(task.projectId)!).includes(task.status);
+    const statuses = await cachedRead(finalStatuses, task.projectId, () => kaneo.call('list_project_columns', { projectId: task.projectId }).then(r => z.array(z.object({ slug: z.string(), isFinal: z.boolean() }).passthrough()).parse(r).filter(c => c.isFinal).map(c => c.slug)));
+    return statuses.includes(task.status);
   };
   const relationCache = new Map<string, Promise<z.infer<typeof relationsSchema>>>();
-  const relationsFor = (id: string) => {
-    if (!relationCache.has(id)) relationCache.set(id, kaneo.call('get_task_relations', { taskId: id }).then(r => relationsSchema.parse(r)).catch(error => { relationCache.delete(id); throw error; }));
-    return relationCache.get(id)!;
-  };
+  const relationsFor = (id: string) => cachedRead(relationCache, id, () => kaneo.call('get_task_relations', { taskId: id }).then(r => relationsSchema.parse(r)));
   // Drain each project's independent artifact reads before moving on to ticket batches.
   const needed = [...new Set(potential.map(t => t.projectId))].map(id => projects.find(p => p.kaneoId === id)!);
   const refs = new Map<string, string>(), prs = new Map<string, Awaited<ReturnType<typeof openPullRequests>>>();
@@ -753,14 +755,8 @@ const skips = (options: CycleOptions) => new Set<OverridableLimit>(!options.manu
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
 function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsSchema>>, done: (id: string) => Promise<boolean>, limit = readLimiter()) {
   const relations = new Map<string, Promise<z.infer<typeof relationsSchema>>>(), finished = new Map<string, Promise<boolean>>();
-  const relationsFor = (id: string) => {
-    if (!relations.has(id)) relations.set(id, limit(() => rels(id)));
-    return relations.get(id)!;
-  };
-  const isDone = (id: string) => {
-    if (!finished.has(id)) finished.set(id, limit(() => done(id)));
-    return finished.get(id)!;
-  };
+  const relationsFor = (id: string) => cachedRead(relations, id, () => limit(() => rels(id)));
+  const isDone = (id: string) => cachedRead(finished, id, () => limit(() => done(id)));
   const blockersOf = async (id: string, ancestors = new Set<string>()): Promise<string[] | 'cycle'> => {
     if (ancestors.has(id)) return 'cycle';
     const visited = new Set([...ancestors, id]);
