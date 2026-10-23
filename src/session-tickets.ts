@@ -3,6 +3,7 @@
 // contract, confirms each reported ticket against the tracker, and keeps its progress in the Store so a restart
 // resumes where it stopped. It never changes a ticket, starts work, or alters automatic scheduling.
 import { z } from 'zod';
+import { backgroundCheckpoint, backgroundRead } from './read-context.ts';
 import { T3, Kaneo, KaneoTaskNotFound, taskSchema, listTaskLabels, type Session } from './clients.ts';
 import { Store, type Job, type SessionRef, type SessionSource, type SessionThread, type SessionTicket } from './store.ts';
 import { ticketDifficulty } from './policy.ts';
@@ -107,14 +108,16 @@ function sessionSourceFilter(jobs: Job[], sessions: SessionThread[]) {
 async function catalog(c: Config, store: Store, kaneo: Kaneo, reread = false): Promise<Catalog> {
   const cached = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
   if (cached && !reread && Date.now() - cached.at < CATALOG_MS) return cached;
-  const projects = z.array(z.object({ id: z.string(), name: z.string(), slug: z.string(), archivedAt: z.string().nullish() }).passthrough()).parse(await kaneo.call('list_projects', { workspaceId: c.kaneo.workspaceId })).filter(p => !p.archivedAt);
+  const projects = z.array(z.object({ id: z.string(), name: z.string(), slug: z.string(), archivedAt: z.string().nullish() }).passthrough()).parse(await backgroundRead(() => kaneo.call('list_projects', { workspaceId: c.kaneo.workspaceId }))).filter(p => !p.archivedAt);
   const column = z.object({ slug: z.string(), isFinal: z.boolean(), position: z.number() }).passthrough();
-  const entries = await Promise.all(projects.map(async (p): Promise<CatalogProject> => {
+  const entries: CatalogProject[] = [];
+  for (const p of projects) {
+    await backgroundCheckpoint();
     const configured = c.projects.find(x => x.kaneoId === p.id);
-    if (configured) return { id: p.id, name: configured.name, slug: configured.key, ready: configured.readyStatuses, final: configured.doneStatuses };
-    const columns = z.array(column).parse(await kaneo.call('list_project_columns', { projectId: p.id })).toSorted((a, b) => a.position - b.position);
-    return { id: p.id, name: p.name, slug: p.slug, ready: [columns.find(x => !x.isFinal)?.slug ?? columns[0]?.slug].filter(Boolean), final: columns.filter(x => x.isFinal).map(x => x.slug) };
-  }));
+    if (configured) { entries.push({ id: p.id, name: configured.name, slug: configured.key, ready: configured.readyStatuses, final: configured.doneStatuses }); continue; }
+    const columns = z.array(column).parse(await backgroundRead(() => kaneo.call('list_project_columns', { projectId: p.id }))).toSorted((a, b) => a.position - b.position);
+    entries.push({ id: p.id, name: p.name, slug: p.slug, ready: [columns.find(x => !x.isFinal)?.slug ?? columns[0]?.slug].filter(Boolean), final: columns.filter(x => x.isFinal).map(x => x.slug) });
+  }
   const fresh: Catalog = { at: Date.now(), projects: Object.fromEntries(entries.map(e => [e.id, e])) };
   store.set('sessionCatalog', JSON.stringify(fresh));
   return fresh;
@@ -122,7 +125,7 @@ async function catalog(c: Config, store: Store, kaneo: Kaneo, reread = false): P
 
 // Read one page of a session and record what it reports. Progress is written only with its candidates.
 async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Session, workspaceId: string) {
-  const page = await t3.conversation(session.id, rec.backfill?.cursor);
+  const page = await backgroundRead(() => t3.conversation(session.id, rec.backfill?.cursor));
   if (page.items.some(item => item.type === 'user_message' && item.text && UPSTREAM_REVIEW_REQUEST.test(item.text.trim()))) {
     rec.upstreamReview = true; rec.updatedAt = session.updatedAt; delete rec.backfill;
     store.saveSessionThread(rec);
@@ -179,13 +182,14 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   let includeSource = sessionSourceFilter(store.jobs(), store.sessionThreads());
   let more = false;
   let labels: ReturnType<typeof listTaskLabels> | undefined;
-  const labelsOf = async (taskId: string) => ((await (labels ??= listTaskLabels(kaneo))).get(taskId) ?? []).map(l => l.name);
+  const labelsOf = async (taskId: string) => ((await (labels ??= listTaskLabels(kaneo).catch(error => { labels = undefined; throw error; }))).get(taskId) ?? []).map(l => l.name);
   let listed: Set<string> | undefined;
   try {
     let reads = 0;
-    const sessions = (await t3.sessions()).filter(session => includeSource(session.id, session.title)).toSorted(recentFirst);
+    const sessions = (await backgroundRead(() => t3.sessions())).filter(session => includeSource(session.id, session.title)).toSorted(recentFirst);
     listed = new Set(sessions.map(s => s.id));
     for (const session of sessions) {
+      await backgroundCheckpoint();
       const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
       const replay = rec.reportVersion !== REPORT_VERSION;
       if (!replay && rec.upstreamReview !== undefined && !rec.backfill && rec.updatedAt === session.updatedAt) continue;
@@ -214,18 +218,20 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   let lookups = 0, refreshedCatalog = false;
   for (const rec of cat ? due : []) {
     for (const ref of [...rec.pending]) {
+      await backgroundCheckpoint();
       if (ref.retryAfter && Date.parse(ref.retryAfter) > now) continue;
       if (lookups++ >= limits.lookups) { more = true; break; }
       try {
-        let task = await lookup(c, kaneo, cat!, ref);
+        let task = await backgroundRead(() => lookup(c, kaneo, cat!, ref));
         // A project created since the catalog was cached is read once, fresh, before its reference is discarded.
         if (!task && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kaneo, true); task = await lookup(c, kaneo, cat, ref); }
+        const taskLabels = task ? await backgroundRead(() => labelsOf(task.id)) : [];
         const created = task ? Date.parse(task.createdAt) : NaN;
         // Creation evidence: the ticket came into being during this session, no later than the report.
         if (task && created >= Date.parse(rec.createdAt) - CLOCK_SKEW_MS && created <= Date.parse(ref.at) + CLOCK_SKEW_MS) {
           const project = cat!.projects[task.projectId];
           const row: SessionTicket = store.sessionTicket(task.id) ?? { taskId: task.id, projectId: task.projectId, key: `${project.slug}-${task.number}`, number: task.number, title: task.title, priority: task.priority, status: task.status, labels: [], createdAt: task.createdAt, firstSeenAt: at, refreshedAt: at, sources: [] };
-          Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: await labelsOf(task.id), refreshedAt: at, refreshAfter: new Date(now + REFRESH_MS).toISOString(), refreshError: undefined });
+          Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: taskLabels, refreshedAt: at, refreshAfter: new Date(now + REFRESH_MS).toISOString(), refreshError: undefined });
           if (!row.sources.some(s => s.threadId === rec.id && s.messageId === ref.messageId)) row.sources.push({ threadId: rec.id, messageId: ref.messageId, projectId: rec.projectId, title: rec.title, at: ref.at });
           const first = !store.sessionTicket(task.id);
           store.saveSessionTicket(row);
@@ -243,10 +249,18 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
   const stale = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
   if (stale.length > limits.refreshes) more = true;
-  for (const row of stale.slice(0, limits.refreshes)) {
+  for (const cached of stale.slice(0, limits.refreshes)) {
+    await backgroundCheckpoint();
+    let row = store.sessionTicket(cached.taskId)!;
+    if (row.dismissedAt || row.consumed) continue;
     try {
-      const task = trackerTask.parse(await kaneo.call('get_task', { taskId: row.taskId }));
-      Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels: await labelsOf(task.id), refreshedAt: at, refreshAfter: new Date(now + REFRESH_MS).toISOString(), refreshError: undefined });
+      const { task, labels } = await backgroundRead(async () => {
+        const task = trackerTask.parse(await kaneo.call('get_task', { taskId: cached.taskId }));
+        return { task, labels: await labelsOf(task.id) };
+      });
+      row = store.sessionTicket(cached.taskId)!;
+      if (row.dismissedAt || row.consumed) continue;
+      Object.assign(row, { title: task.title, priority: task.priority, status: task.status, labels, refreshedAt: at, refreshAfter: new Date(now + REFRESH_MS).toISOString(), refreshError: undefined });
     } catch (error) { row.refreshError = safeError(error); row.refreshAfter = new Date(now + RETRY_MS).toISOString(); errors.push(`Refreshing ${row.key}: ${row.refreshError}`); }
     store.saveSessionTicket(row);
   }

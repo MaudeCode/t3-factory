@@ -13,7 +13,7 @@ import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailur
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
-import { ReadContext, readPhase } from './read-context.ts';
+import { ReadContext, readPhase, backgroundRead } from './read-context.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
@@ -47,7 +47,7 @@ export class FactoryService {
   private readonly timing: ServiceTiming;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly pending: { foreground: boolean; run: () => Promise<void>; reason: string; context: ReadContext; id?: string; queuedAt: string }[] = [];
-  private active?: { reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string };
+  private active?: { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string };
   private readonly requests = new Map<string, Promise<ControlResult>>();
   private readonly uncertainRequests = new Set<string>();
   private kaneoAbort?: AbortController;
@@ -68,7 +68,10 @@ export class FactoryService {
       if (['running', 'uncertain'].includes(operation.state)) recoverOperation(this.stateDir, this.store, operation);
       if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id);
     }
-    this.store.onCleanupChange = () => this.scheduleInventory();
+    this.store.onCleanupChange = projectIds => {
+      for (const item of [this.active, ...this.pending]) if (item && !item.foreground) for (const id of projectIds) item.context.invalidatedProjects.add(id);
+      this.scheduleInventory();
+    };
     this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
     this.watcher = watch(dirname(this.configPath), (_, name) => { if (name === basename(this.configPath)) this.wake('config'); });
@@ -91,6 +94,7 @@ export class FactoryService {
     this.stopped = true;
     for (const controller of this.inspections.values()) controller.abort();
     this.abort.abort();
+    for (const item of [this.active, ...this.pending]) if (item && !item.foreground) item.context.stopBackground();
     clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
@@ -124,11 +128,28 @@ export class FactoryService {
     const context = metadata.context ?? new ReadContext();
     context.onStage = () => this.publishWork();
     const result = new Promise<T>((resolve, reject) => {
-      this.pending.push({ foreground, reason: metadata.reason ?? (foreground ? 'command' : 'maintenance'), context, id: metadata.id, queuedAt: new Date().toISOString(), run: async () => {
-        try { resolve(await context.run(() => work(performance.now() - queued))); }
-        catch (error) { reject(error); }
-      } });
+      let segment = Promise.withResolvers<void>(), resume: (() => void) | undefined, started = false;
+      const item = { foreground, reason: metadata.reason ?? (foreground ? 'command' : 'maintenance'), context, id: metadata.id, queuedAt: new Date().toISOString(), run: async () => {
+        segment = Promise.withResolvers<void>();
+        if (started) { resume!(); }
+        else {
+          started = true;
+          void context.run(() => work(performance.now() - queued)).then(resolve, reject).finally(() => segment.resolve());
+        }
+        await segment.promise;
+      } };
+      if (!foreground) context.cooperate = async () => {
+        if (this.stopped || !this.pending.some(p => p.foreground && !p.context.controller.signal.aborted)) return;
+        const gate = Promise.withResolvers<void>(); resume = gate.resolve;
+        context.suspended = true;
+        context.revision++;
+        this.pending.push(item); // The continuation retains its state, but rejoins the same fair queue.
+        segment.resolve();
+        await gate.promise;
+      };
+      this.pending.push(item);
     });
+    if (foreground && this.active && !this.active.foreground) this.active.context.requestYield();
     this.publishWork();
     if (!this.running) this.queue = this.drain();
     return result;
@@ -345,8 +366,9 @@ export class FactoryService {
     let c: Config | undefined;
     try {
       c = this.configure();
-      const kaneo = await this.ensureKaneo(c);
+      const kaneo = await backgroundRead(() => this.ensureKaneo(c!));
       const result = await cycle(c, this.store, options, { t3: this.t3, kaneo, deferCleanup: true });
+      if (this.active?.context.needsRefresh && !this.active.foreground) this.wake('resume');
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
@@ -356,6 +378,7 @@ export class FactoryService {
       log('pass', { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
       return result;
     } catch (error) {
+      if (this.stopped && !this.active?.foreground) return { reason: 'stopped' };
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
       this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
       try { writeStatus(c ?? loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
@@ -364,6 +387,7 @@ export class FactoryService {
     } finally {
       if (!options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
       if (!this.stopped && (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= (c?.pollSeconds ?? 60) * 1000)) this.scheduleInventory();
+      clearTimeout(this.timer);
       if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
     }
   }
