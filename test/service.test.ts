@@ -234,7 +234,7 @@ test('foreground FIFO permits a background item after every three foreground com
       ...Array.from({ length: 6 }, (_, n) => internal.handle({ type: 'dispatch', options: { ticket: `dispatch-${n}` } })),
     ];
     release.resolve(); await Promise.all(commands); await internal.queue;
-    assert.deepEqual(events, ['start', 'stop', 'cancel', 'doctor', 'config', 'dry', 'dispatch-0', 'dispatch-1', 'quota', 'dispatch-2', 'dispatch-3', 'dispatch-4', 'quota', 'dispatch-5']);
+    assert.deepEqual(events, ['start', 'stop', 'cancel', 'doctor', 'config', 'dry', 'dispatch-0', 'dispatch-1', 'quota', 'dispatch-2', 'dispatch-3', 'dispatch-4', 'quota', 'dispatch-5', 'quota']);
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
@@ -983,4 +983,37 @@ for (const mutation of ['remove', 'register']) test(`suspended cleanup discovery
     if (mutation === 'remove') assert.equal(row, undefined, 'first publication must not claim a removed worktree remains registered');
     else assert.equal(row?.registered, true, 'first publication must include the newly registered worktree');
   } finally { await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+for (const command of ['cancel', 'shutdown']) test(`protected final retry yields to a second foreground ${command} before ownership`, { timeout: 10000 }, async t => {
+  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+  f.c.enabled = false; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  t.mock.method(T3.prototype, 'subscribe', async (_: unknown, signal: AbortSignal) => new Promise<void>(resolve => signal.addEventListener('abort', () => resolve())));
+  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
+  t.mock.method(internal, 'scheduleInventory', () => {});
+  const initial = deferred(), releaseInitial = deferred(), retry = deferred(), releaseRetry = deferred();
+  let refreshes = 0, stopping: Promise<void> | undefined;
+  f.hooks.quota = async refresh => {
+    if (!refresh) return;
+    if (++refreshes === 1) { initial.resolve(); await releaseInitial.promise; }
+    if (refreshes === 2) { retry.resolve(); await releaseRetry.promise; }
+  };
+  try {
+    await service.start(); await internal.queue;
+    const target = { ...f.tasks[0], key: 'FIX-1', difficulty: 'med' as const, readyLabel: true, runnable: true, blockedBy: [], done: false };
+    internal.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
+    const { runPlans } = await import('../src/scheduler.ts');
+    const background = internal.enqueue(() => runPlans(f.c, internal.store, f.t3, f.kaneo, new Map([['codex', 'codex']]), []), false, { reason: 'chain-continuation' }).then((value: any) => ({ value, error: null }), (error: Error) => ({ value: null, error }));
+    await initial.promise;
+    const first = internal.handle({ type: 'once', options: { doctor: true } });
+    releaseInitial.resolve(); await first; await retry.promise;
+    let second: Promise<any>;
+    if (command === 'cancel') second = internal.handle({ type: 'plan-cancel', planId: 'chain' });
+    else { stopping = service.stop(); second = stopping; }
+    releaseRetry.resolve();
+    const result = await background; await second; await internal.queue;
+    assert.equal(f.launches.length, 0, 'a completed protected read cannot bypass a later cancellation or shutdown');
+    if (command === 'cancel') { assert.equal(f.store.plan('chain')!.state, 'cancelled'); assert.equal(result.error, null); }
+    else { assert.equal(result.error, null); assert.equal(result.value[0].reason, 'error'); assert.match(result.value[0].message, /Scheduler stopping/); }
+  } finally { releaseInitial.resolve(); releaseRetry.resolve(); await (stopping ?? service.stop()); }
 });

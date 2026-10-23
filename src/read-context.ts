@@ -42,11 +42,9 @@ export class ReadContext {
         const result = await child.run(work);
         await child.drain(); child.check();
         this.batch = undefined;
-        if (!attempt) {
-          const revision = this.revision;
-          await this.checkpoint();
-          if (revision !== this.revision) continue; // A command may have changed even a successfully read snapshot.
-        }
+        const revision = this.revision;
+        await this.checkpoint();
+        if (revision !== this.revision) continue; // A command may have changed even a successfully read snapshot.
         return result;
       } catch (error) {
         await child.drain();
