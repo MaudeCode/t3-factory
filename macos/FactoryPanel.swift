@@ -76,7 +76,7 @@ struct FactoryPanel: View {
                 }.labelsHidden().frame(width: 90).help("Ticket project")
                 Text("-").foregroundStyle(Theme.muted)
                 DarkTextField(placeholder: "next", text: $model.ticketNumber, mono: true).frame(width: 72).onSubmit { Task { await model.dispatch() } }
-                    .onChange(of: model.ticketNumber) { _, value in let digits = value.filter(\.isNumber); if digits != value { model.ticketNumber = digits } }
+                    .onChange(of: model.ticketNumber) { _, value in model.takeTicketInput(value) }
                     .help("Ticket number; leave empty to start the next eligible ticket")
                 Picker("", selection: $model.selectedModel) {
                     Text("Auto").tag("auto")

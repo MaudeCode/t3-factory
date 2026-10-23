@@ -98,6 +98,11 @@ import SwiftUI
         precondition(restored.requests[0].state == "running" && restored.requests[0].message == "Checking · kaneo.get_task", "Accepted work takes its state from the scheduler without replay")
         model.refreshRequestProgress()
         precondition(calls.count == 6 && model.requests.last!.id == lost.id, "Accepted requests are never resent after local CLI failure")
+        model.config["projects"] = [["key": "APP", "enabled": true], ["key": "T3F", "enabled": true], ["key": "OFF", "enabled": false]]
+        for (text, expected) in [("T3F-48", "T3F-48"), ("app-7", "APP-7"), ("XYZ-12", "APP-12"), ("OFF-3", "APP-3"), (" 42 ", "APP-42"), ("12T3F-48", "T3F-48")] {
+            model.ticketProject = "APP"; model.takeTicketInput(text)
+            precondition("\(model.ticketProject)-\(model.ticketNumber)" == expected, "Pasting \(text) must name \(expected)")
+        }
         print("Native queue passed")
     }
 }

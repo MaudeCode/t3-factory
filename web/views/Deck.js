@@ -20,6 +20,7 @@ import {
   toneOf,
   ticketLink,
   ticketKey,
+  parseTicketInput,
   safeLink,
   prLabel,
   threadLink,
@@ -128,7 +129,7 @@ export function Composer({ initialTicket } = {}) {
   const options = [...new Set([project, ...keys].filter(Boolean))].map((k) => [k, k]);
   return html`${invalid && html`<p class="alert" role="alert">Invalid ticket link. Enter a ticket key to continue.</p>`}<form class="composer" onSubmit=${submit}>
     <${Select} class="ticket-project" label="Ticket project" value=${project} onChange=${setProject} options=${options} />
-    <input class="mono ticket-number" value=${number} onInput=${(e) => setNumber(e.target.value.replace(/\D/g, ""))} placeholder=${linked ? "number" : "next"} required=${linked} inputmode="numeric" aria-label="Ticket number" title=${number ? `Ticket ${project}-${number}` : "Leave empty to start the next eligible ticket"} />
+    <input class="mono ticket-number" value=${number} onInput=${(e) => { const parsed = parseTicketInput(e.target.value, keys); if (parsed.project) setProject(parsed.project); setNumber(e.target.value = parsed.number); }} placeholder=${linked ? "number" : "next"} required=${linked} inputmode="numeric" aria-label="Ticket number" title=${number ? `Ticket ${project}-${number}` : "Leave empty to start the next eligible ticket"} />
     <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Auto"], ...config.value.models.map((m) => [m.id, m.name])]} />
     <${Select} multiple class="overrides" placeholder="Respect limits" label="Override limits" value=${overrides} onChange=${setOverrides} options=${OVERRIDES} />
     <${Button} variant="primary" type="submit" icon="play" label=${key ? `Start ${key}` : "Start next eligible ticket"} disabled=${invalid || pending} />
