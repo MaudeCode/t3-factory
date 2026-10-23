@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globalAgent } from 'node:http';
+import { readPhase } from '../src/read-context.ts';
 import { serveControl, callControl, commandFor } from '../src/control.ts';
 
 // The control socket is how the CLI and the web server hand work to the running scheduler.
@@ -180,7 +181,7 @@ async function maintenanceFixture(t: import('node:test').TestContext) {
   return { dir, c, path, thread, job, shell };
 }
 
-test('manual dispatch passes pending background work without interrupting the active pass', { timeout: 10000 }, async t => {
+test('manual dispatch passes pending background work without interrupting an indivisible active mutation', { timeout: 10000 }, async t => {
   const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
   const entered = deferred(), release = deferred(), events: string[] = [];
   let active = 0, maximum = 0;
@@ -233,7 +234,7 @@ test('foreground FIFO permits a background item after every three foreground com
       ...Array.from({ length: 6 }, (_, n) => internal.handle({ type: 'dispatch', options: { ticket: `dispatch-${n}` } })),
     ];
     release.resolve(); await Promise.all(commands); await internal.queue;
-    assert.deepEqual(events, ['start', 'stop', 'cancel', 'doctor', 'config', 'dry', 'dispatch-0', 'dispatch-1', 'quota', 'dispatch-2', 'dispatch-3', 'dispatch-4', 'dispatch-5']);
+    assert.deepEqual(events, ['start', 'stop', 'cancel', 'doctor', 'config', 'dry', 'dispatch-0', 'dispatch-1', 'quota', 'dispatch-2', 'dispatch-3', 'dispatch-4', 'quota', 'dispatch-5']);
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
@@ -383,7 +384,8 @@ test('service dispatch returns before blocked cleanup and queued commands run be
     internal.store.save({ ...f.job, id: 'second', threadId: 'second' });
     let reads = 0;
     t.mock.method(T3.prototype, 'shell', async () => {
-      if (++reads === 2) { events.push('cleanup-start'); entered.resolve(); await release.promise; }
+      reads++;
+      if (internal.active?.reason === 'workspace-cleanup' && !events.includes('cleanup-start')) { events.push('cleanup-start'); entered.resolve(); await release.promise; }
       return { ...(await f.shell()), threads: [f.thread, { ...f.thread, id: 'second' }] };
     });
     const dispatch = internal.handle({ type: 'dispatch', options: {} }).then((r: any) => { events.push('dispatch-result'); return r; });
@@ -398,7 +400,9 @@ test('service dispatch returns before blocked cleanup and queued commands run be
       const result = original.call(this, job); if (job.id === 'second' && job.workspaceCleanedAt) secondDone.resolve(); return result;
     });
     assert.equal(internal.store.job('completed').workspaceCleanedAt, undefined);
-    assert.equal(reads, 2, 'the queued command cannot reconcile while cleanup holds the writer');
+    const heldReads = reads;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(reads, heldReads, 'the queued command cannot reconcile while cleanup holds the writer');
     release.resolve(); await command;
     await secondDone.promise;
     assert.ok(internal.store.job('second').workspaceCleanedAt);
@@ -427,7 +431,8 @@ test('an ordinary pass renews a sweep while its cleanup continuation is queued',
   t.mock.method(T3.prototype, 'terminals', async () => []);
   t.mock.method(T3.prototype, 'removeWorktree', async (_: string, path: string) => { git('worktree', 'remove', path); });
   try {
-    await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
+    await service.start(); await internal.queue;
+    await internal.handle({ type: 'once', options: { dryRun: true } });
     internal.store.save(f.job);
     await internal.handle({ type: 'dispatch', options: {} });
     await entered.promise;
@@ -452,7 +457,8 @@ for (const failedDispatch of [false, true]) test(`maintenance survives ${failedD
     return result;
   });
   try {
-    await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
+    await service.start(); await internal.queue;
+    await internal.handle({ type: 'once', options: { dryRun: true } });
     internal.store.save(f.job);
     Object.assign(f.thread, { orphanedRun: true });
     if (failedDispatch) { const failed = await internal.handle({ type: 'dispatch', options: { model: 'unknown' } }); assert.equal(failed.code, 1); assert.match(failed.data.message, /Unknown model/); }
@@ -505,8 +511,7 @@ for (const options of [{ manual: true }, { manual: true, model: 'sol' }, { dryRu
   });
 }
 
-// The service runs passes in series: a manual dispatch sent while a pass is running waits for it and
-// never sees a store-claim error; T3 events and commands coalesce into one queued pass.
+// The shared writer yields an active read batch, while T3 wake bursts still coalesce.
 test('the service answers dispatches during a pass and folds wake-ups into one queued pass', { timeout: 10000 }, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-service-')), repo = join(dir, 'repo'); mkdirSync(repo);
   execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -547,9 +552,10 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     throw new Error(name);
   });
   const service = new FactoryService(process.env.T3_FACTORY_CONFIG, { kaneoPollMs: 60 });
-  const internal = service as any, backgroundDone = deferred(), queueUpdated = deferred();
+  const internal = service as any, backgroundDone = deferred(), queueUpdated = deferred(), passReasons: string[] = [];
   const pass = internal.pass.bind(internal);
   t.mock.method(internal, 'pass', async (options: unknown, reason: string, queueWaitMs: number) => {
+    passReasons.push(reason);
     const result = await pass(options, reason, queueWaitMs);
     if (reason === 't3' || reason === 'test') backgroundDone.resolve();
     const status = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
@@ -576,7 +582,7 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     await backgroundDone.promise; clearTimeout(internal.settle); await internal.queue;
     const status = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
     assert.equal(status.jobs.length, 1);
-    assert.ok(shellReads >= 3 && shellReads <= 6, `start, dispatch, final check, and one coalesced pass: ${shellReads} shell reads`);
+    assert.deepEqual(passReasons, ['start', 'dispatch', 'once', 'test'], 'suspension retries reads without duplicating passes or wake bursts');
     assert.equal(connects, 1, 'one Kaneo client serves every pass');
     assert.ok(listed.some(a => a.status === 'to-do'), 'automatic passes read ready columns only');
     assert.ok(listed.some(a => a.status === undefined), 'a named ticket is read from every column');
@@ -663,7 +669,8 @@ test('command Stop is deferred behind dispatch, serialized, and confirmed after 
   });
   let service = new FactoryService(f.path), internal = service as any;
   try {
-    await service.start(); await internal.handle({ type: 'once', options: { dryRun: true } });
+    await service.start(); await internal.queue;
+    await internal.handle({ type: 'once', options: { dryRun: true } });
     internal.store.save(f.job);
     const dispatch = internal.handle({ type: 'dispatch', options: {} });
     assert.equal(await Promise.race([dispatch.then(() => 'dispatch'), entered.promise.then(() => 'stop')]), 'dispatch');
@@ -763,4 +770,179 @@ test('run completion refreshes one maintained cleanup catalog and explicit refre
     await publication.promise;
     assert.ok(readCleanupCatalog(f.c, internal.store).items.some(item => item.path === external), 'background discovery finds worktrees outside Factory');
   } finally { await close(); }
+});
+
+test('active cycle yields its drained read batch to manual dispatch and Stop before inventory', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  let first = true;
+  t.mock.method(T3.prototype, 'shell', async () => {
+    if (first) { first = false; entered.resolve(); await release.promise; events.push('batch-drained'); }
+    return f.shell();
+  });
+  const call = Kaneo.prototype.call;
+  t.mock.method(Kaneo.prototype, 'call', async function(this: Kaneo, name: string, args: any) {
+    if (name === 'list_tasks') events.push('inventory');
+    return call.call(this, name, args);
+  });
+  const pass = internal.pass.bind(internal);
+  t.mock.method(internal, 'pass', async (options: any, reason: string, wait: number) => {
+    if (reason === 'dispatch') { events.push('manual'); return { reason: 'dispatched' }; }
+    return pass(options, reason, wait);
+  });
+  try {
+    await service.start(); await entered.promise;
+    const job = internal.store.job.bind(internal.store);
+    t.mock.method(internal.store, 'job', (id: string) => { events.push('stop'); return job(id); });
+    const manual = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
+    const stop = assert.rejects(internal.handle({ type: 'job-stop', jobId: 'missing' }), /not active/);
+    release.resolve(); await Promise.all([manual, stop]); await internal.queue;
+    assert.deepEqual(events.slice(0, 4), ['batch-drained', 'manual', 'stop', 'inventory']);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('foreground cancellation drains all active cycle siblings before handing off and retries the read', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), cancelled = deferred(), drain = deferred(), events: string[] = [];
+  let reads = 0, live = 0;
+  t.mock.method(T3.prototype, 'shell', () => readPhase('fixture.shell', async signal => {
+    if (++reads === 1) {
+      live++; entered.resolve();
+      try { await new Promise<void>((_, reject) => signal!.addEventListener('abort', () => { cancelled.resolve(); reject(signal!.reason); }, { once: true })); }
+      finally { await drain.promise; live--; events.push('drained'); }
+    }
+    return f.shell();
+  }));
+  const pass = internal.pass.bind(internal);
+  t.mock.method(internal, 'pass', async (options: any, reason: string, wait: number) => {
+    if (reason === 'dispatch') { assert.equal(live, 0); events.push('manual'); return { reason: 'dispatched' }; }
+    return pass(options, reason, wait);
+  });
+  try {
+    await service.start(); await entered.promise;
+    const manual = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
+    await cancelled.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(events, [], 'cancellation cannot release an undrained reader');
+    drain.resolve(); await manual; await internal.queue;
+    assert.deepEqual(events, ['drained', 'manual']); assert.ok(reads >= 2, 'the cancelled snapshot is read again');
+  } finally { drain.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+for (const kind of ['cleanup-inventory', 'session-tickets', 'quota-refresh']) test(`${kind} yields through its service scheduling entry point`, { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  let held = false;
+  t.mock.method(internal, 'pass', async (_: unknown, reason: string) => { if (reason === 'dispatch') events.push('manual'); return { reason: 'disabled' }; });
+  const hold = async () => { if (!held) { held = true; entered.resolve(); await release.promise; events.push('batch'); } };
+  t.mock.method(T3.prototype, 'shell', async () => { await hold(); return f.shell(); });
+  t.mock.method(T3.prototype, 'sessions', async () => { await hold(); return []; });
+  t.mock.method(T3.prototype, 'providers', async () => { await hold(); return []; });
+  const set = Store.prototype.set;
+  t.mock.method(Store.prototype, 'set', function(this: Store, key: string, value: string) {
+    if ((kind === 'cleanup-inventory' && key === 'cleanupCatalog') || (kind === 'session-tickets' && key === 'sessionTickets:at') || (kind === 'quota-refresh' && key === 'streams')) events.push('publish');
+    set.call(this, key, value);
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await service.start(); await internal.queue;
+    if (kind === 'cleanup-inventory') { internal.scheduleInventory(); t.mock.timers.tick(0); }
+    else if (kind === 'session-tickets') { internal.scheduleCollection(); t.mock.timers.tick(0); }
+    else t.mock.timers.tick(150_000);
+    await entered.promise;
+    const manual = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
+    release.resolve(); await manual; await internal.queue;
+    assert.deepEqual(events, ['batch', 'manual', 'publish']);
+  } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('large active inventory retains finished ticket batches when a command interrupts a later batch', { timeout: 10000 }, async t => {
+  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  f.c.enabled = false; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.tasks.splice(0, f.tasks.length, ...Array.from({ length: 120 }, (_, i) => f.task(`task-${i}`, i + 1, 'to-do'))); f.relations.length = 0;
+  for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  f.hooks.read = async (name, id) => {
+    if (name !== 'get_task_relations') return;
+    events.push(id);
+    if (id === 'task-12' && !events.includes('manual')) { entered.resolve(); await release.promise; }
+  };
+  const pass = internal.pass.bind(internal);
+  t.mock.method(internal, 'pass', async (options: any, reason: string, wait: number) => {
+    if (reason === 'dispatch') { events.push('manual'); return { reason: 'dispatched' }; }
+    const result = await pass(options, reason, wait);
+    if (reason === 'test') {
+      assert.equal(events.filter(e => e === 'task-0').length, 1, 'completed batches are retained through suspension');
+      assert.ok(events.indexOf('manual') < events.indexOf('task-18'), 'the next batch starts after the command');
+    }
+    return result;
+  });
+  try {
+    service.wake('test'); await entered.promise;
+    const manual = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-999' } });
+    release.resolve(); await manual; await internal.queue;
+    assert.equal(f.launches.length, 0);
+    assert.equal(JSON.parse(f.store.get('upNext')!).tickets.length, 120);
+  } finally { release.resolve(); await internal.queue; clearTimeout(internal.timer); }
+});
+
+test('large cleanup projection yields, retains Git discovery, and publishes current thread activity', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
+  execFileSync('/usr/bin/git', ['init', '-q', f.dir]);
+  const oldPath = process.env.PATH, bin = join(f.dir, 'bin'), scans = join(f.dir, 'git-scans'); mkdirSync(bin);
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\nprintf 'scan\\n' >> '${scans}'\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+  process.env.PATH = `${bin}:${oldPath}`;
+  const threads = Array.from({ length: 256 }, (_, i) => ({ ...f.thread, id: `thread-${i}`, worktreePath: join(f.dir, `tree-${i}`) }));
+  t.mock.method(T3.prototype, 'shell', async () => ({ ...(await f.shell()), threads: structuredClone(threads) }));
+  let projected = 0, atCommand = 0, sent = false, manual: Promise<any> | undefined;
+  t.mock.method(internal, 'pass', async (_: unknown, reason: string) => {
+    if (reason === 'dispatch') { atCommand = projected; threads[200].activeRunId = 'resumed'; }
+    return { reason: 'disabled' };
+  });
+  try {
+    await service.start(); await internal.queue;
+    const published = deferred(), get = internal.store.get.bind(internal.store), set = internal.store.set.bind(internal.store);
+    t.mock.method(internal.store, 'get', (key: string) => {
+      if (key.startsWith('cleanupSize:')) {
+        projected++;
+        if (!sent) { sent = true; manual = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } }); }
+      }
+      return get(key);
+    });
+    t.mock.method(internal.store, 'set', (key: string, value: string) => { set(key, value); if (key === 'cleanupCatalog') published.resolve(); });
+    await internal.handle({ type: 'cleanup', input: { type: 'inventory', refresh: true } });
+    await published.promise; await manual; await internal.queue;
+    assert.ok(atCommand > 0 && atCommand < threads.length, 'a command runs between projection batches');
+    const row = readCleanupCatalog(f.c, internal.store, 0, 1000).items.find(item => item.path === threads[200].worktreePath)!;
+    assert.equal(row.state, 'active', 'the projection refreshes mutable activity after suspension');
+    assert.ok(row.bindings[0].activeRunId);
+    assert.equal(readFileSync(scans, 'utf8').trim().split('\n').length, 1, 'projection invalidation does not repeat completed Git discovery');
+  } finally { await service.stop(); process.env.PATH = oldPath; rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('an owned background launch keeps the writer through an uncertain response', { timeout: 10000 }, async t => {
+  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
+  const entered = deferred(), release = deferred(), events: string[] = [];
+  t.mock.method(f.t3, 'launch', (command: unknown) => readPhase('fixture.launch', async signal => {
+    assert.equal(signal, undefined, 'durable launch ownership ends disposable read cancellation');
+    f.launches.push(command); events.push('launch'); entered.resolve(); await release.promise;
+    events.push('uncertain'); throw new Error('Lost launch response');
+  }));
+  const pass = internal.pass.bind(internal);
+  t.mock.method(internal, 'pass', async (options: any, reason: string, wait: number) => {
+    if (reason === 'dispatch') { events.push('manual'); return { reason: 'dispatched' }; }
+    return pass(options, reason, wait);
+  });
+  try {
+    service.wake('test'); await entered.promise;
+    const manual = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-999' } });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(events, ['launch']);
+    release.resolve(); await manual; await internal.queue;
+    assert.deepEqual(events, ['launch', 'uncertain', 'manual']);
+    assert.equal(f.launches.length, 1); assert.equal(f.store.jobs()[0].state, 'dispatching');
+  } finally { release.resolve(); await internal.queue; clearTimeout(internal.timer); }
 });

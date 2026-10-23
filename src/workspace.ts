@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { readPhase } from './read-context.ts';
 import type { Thread } from './policy.ts';
 // Filesystem evidence shared by automatic maintenance and operator reviews. Never follows worktree symlinks.
 import { execFile } from 'node:child_process';
@@ -10,8 +11,8 @@ import { dirname, basename, join, resolve, sep } from 'node:path';
 import type { T3 } from './clients.ts';
 
 const exec = promisify(execFile);
-const workspaceGit = async (repo: string, args: string[], signal?: AbortSignal) =>
-  (await exec('git', ['-C', repo, ...args], { timeout: 20_000, maxBuffer: 4_000_000, signal, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout;
+const workspaceGit = async (repo: string, args: string[], signal?: AbortSignal) => readPhase('git.workspace', async scoped =>
+  (await exec('git', ['-C', repo, ...args], { timeout: 20_000, maxBuffer: 4_000_000, signal: signal && scoped ? AbortSignal.any([signal, scoped]) : signal ?? scoped, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout);
 export function canonicalPath(path: string): string {
   return existsSync(path) ? realpathSync(path) : join(canonicalPath(dirname(path)), basename(path));
 }

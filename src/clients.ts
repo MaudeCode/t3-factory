@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { threadSchema, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
 import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
-import { readAll, readPhase } from './read-context.ts';
+import { readAll, readPhase, backgroundRead } from './read-context.ts';
 
 /** T3 orchestration protocol this client speaks; T3 rejects other versions. */
 export const ORCHESTRATION_PROTOCOL = 2;
@@ -281,7 +281,7 @@ export async function listTasks(kaneo: Kaneo, projectId: string, labels?: TaskLa
   const taskLabels = labels === null ? null : labels ?? await listTaskLabels(kaneo);
   const tasks = new Map<string, Task>();
   for (const status of statuses ?? [undefined]) for (let page = 1; ; page++) {
-    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(taskSchema) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await kaneo.call('list_tasks', { projectId, page, limit: 100, ...(status ? { status } : {}) }));
+    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(taskSchema) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await backgroundRead(() => kaneo.call('list_tasks', { projectId, page, limit: 100, ...(status ? { status } : {}) })));
     if (r.data.workspaceId !== kaneo.config.workspaceId) throw new Error('Kaneo workspace mismatch');
     for (const col of r.data.columns) for (const task of col.tasks) {
       if (task.projectId !== projectId) throw new Error('Kaneo project mismatch');

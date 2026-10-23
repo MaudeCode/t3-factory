@@ -148,3 +148,21 @@ test('independent final dependency reads fan out with a bound of six', async t =
   assert.equal(maximum, 6, 'dependency reads cannot exceed the bound');
   for (let n = 0; n < 12; n++) assert.equal(f.calls.filter(x => x === `get_task:dep-${n}:true`).length, 1);
 });
+
+test('cancelling a chain during suspended final validation cannot launch or restore the plan', async t => {
+  const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
+  const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, readyLabel: true, runnable: true, blockedBy: [], done: false };
+  f.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
+  let finalSeen = false, cancelled = false;
+  f.hooks.read = async (name, _id, final) => { if (final && name === 'list_workspace_labels') finalSeen = true; };
+  const context = new ReadContext();
+  context.cooperate = async () => {
+    if (!finalSeen || cancelled) return;
+    cancelPlan(f.store, 'chain'); cancelled = true; context.revision++; context.suspended = true;
+  };
+  const results = await context.run(() => runPlans(f.c, f.store, f.t3, f.kaneo, new Map([['codex', 'codex']]), []));
+  assert.equal(cancelled, true);
+  assert.equal(f.launches.length, 0);
+  assert.equal(f.store.plan('chain')!.state, 'cancelled');
+  assert.equal(results[0].reason, 'plan-cancelled-before-dispatch');
+});

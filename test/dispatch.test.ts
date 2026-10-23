@@ -374,3 +374,29 @@ test('automatic dispatch keeps ownership and launches serial while reads overlap
   assert.equal(f.launches.length, 2);
   assert.equal(new Set(f.store.jobs().map(j => j.taskId)).size, 2);
 });
+
+for (const change of ['labels', 'blockers', 'quota', 'activity', 'config', 'foreground-slot'] as const) test(`resumed automatic final validation rejects changed ${change}`, async t => {
+  const f = dispatchFixture(t);
+  const { ReadContext } = await import('../src/read-context.ts');
+  const context = new ReadContext();
+  let finalSeen = false, changed = false;
+  f.hooks.read = async (name, _id, final) => { if (final && name === 'list_workspace_labels') finalSeen = true; };
+  const provider = f.provider;
+  t.mock.method(f.t3, 'detail', async () => ({ messages: [], responses: [] }));
+  t.mock.method(f.t3, 'provider', async () => {
+    const p = provider(); if (changed && change === 'quota') p.usageLimits.windows[0].usedPercent = 100; return p;
+  });
+  context.cooperate = async () => {
+    if (!finalSeen || changed) return;
+    changed = true; context.suspended = true; context.revision++;
+    if (change === 'labels') f.tasks[0].labels = [{ name: 'med' }];
+    if (change === 'blockers') f.tasks[1].status = 'to-do';
+    if (change === 'activity') f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', status: 'running', activeRunId: 'active', providerInstanceId: 'codex', updatedAt: new Date().toISOString() }));
+    if (change === 'config') writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, enabled: false }));
+    if (change === 'foreground-slot') f.store.save({ id: 'manual', kind: 'ticket', projectId: 'FIX', taskId: 'manual-task', ticketKey: 'FIX-99', threadId: 'manual-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'dispatching', reason: 'Foreground launch accepted', lastPersonalActivity: null, reportPath: join(f.dir, 'manual-report'), command: {}, prUrls: [], completedAt: null, modelSelection: f.c.models[0].model, providerDriver: 'codex' });
+  };
+  const result = await context.run(() => f.run('auto', false));
+  assert.ok(!(result as any).dispatches?.some((d: any) => d.reason === 'error'), 'validation must reach a policy refusal, not an environment error');
+  assert.equal(changed, true, 'the test suspends after a successful final snapshot');
+  assert.equal(f.launches.length, 0, `a saved plan cannot launch after ${change} changes`);
+});

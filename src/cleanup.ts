@@ -1,4 +1,5 @@
 import { cleanupMatches, cleanupOutcomePresentation, projectCleanupResults } from '../web/lib/format.js';
+import { backgroundCheckpoint, backgroundRead, readContext } from './read-context.ts';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
@@ -210,7 +211,20 @@ export async function cleanupTerminalAccess(t3: T3, recordedErrors: (string | un
 }
 
 async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?: AbortSignal) {
-  signal = AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
+  const physical = new Map<string, { registered: Awaited<ReturnType<typeof worktrees>>; space: Awaited<ReturnType<typeof filesystemSpace>>; error?: string }>();
+  for (;;) {
+    const revision = readContext()?.revision;
+    const data = await scanCleanupInventory(c, store, t3, physical, signal);
+    // Rebuild the cheap projection from current jobs/actions/threads, retaining completed Git batches.
+    if (revision !== readContext()?.revision) continue;
+    if (!data.errors.length) store.set('cleanupLastScan', data.checkedAt);
+    return { ...data, lastSuccessfulScan: store.get('cleanupLastScan') };
+  }
+}
+
+async function scanCleanupInventory(c: Config, store: Store, t3: T3, physical: Map<string, { registered: Awaited<ReturnType<typeof worktrees>>; space: Awaited<ReturnType<typeof filesystemSpace>>; error?: string }>, signal?: AbortSignal) {
+  // Service scans are bounded per read batch; time spent suspended is not a scan timeout.
+  signal = readContext()?.cooperate ? signal ?? new AbortController().signal : AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
   // Reuse path readings only within this inventory; destructive reviews still inspect fresh identity.
   const canonicalPaths = new Map<string, string>();
   const canonical = (path: string) => {
@@ -220,14 +234,14 @@ async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?
   let work = 0;
   const checkpoint = async () => {
     signal!.throwIfAborted();
-    if (++work % 64 === 0) await yieldToEventLoop(undefined, { signal });
+    if (++work % 64 === 0) { await yieldToEventLoop(undefined, { signal }); await backgroundCheckpoint(); }
   };
   const append = <T>(index: Map<string, T[]>, path: string, value: T) => {
     const values = index.get(path) ?? []; values.push(value); index.set(path, values);
   };
   const at = new Date().toISOString(), jobs = store.jobs(), actions = store.cleanupActions(), errors: { repository: string; message: string }[] = [];
   let threads: Thread[] = [], shellKnown = false;
-  try { threads = (await t3.shell(true)).threads; shellKnown = true; } catch (e) { errors.push({ repository: 'T3', message: safeError(e) }); }
+  try { threads = (await backgroundRead(() => t3.shell(true))).threads; shellKnown = true; } catch (e) { errors.push({ repository: 'T3', message: safeError(e) }); }
   const bindingsByPath = new Map<string, Thread[]>(), threadPaths = new Map<string, string>();
   for (const thread of threads) {
     if (thread.worktreePath) {
@@ -239,9 +253,14 @@ async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?
   const filesystems: { id: string | null; freeBytes: number | null; repositories: string[] }[] = [];
   for (const project of c.projects) {
     signal?.throwIfAborted();
-    let registered: Awaited<ReturnType<typeof worktrees>> = [];
-    try { registered = await worktrees(project.repoPath, signal); } catch (e) { errors.push({ repository: project.repoPath, message: safeError(e) }); }
-    const space = await filesystemSpace(project.repoPath);
+    if (!physical.has(project.repoPath)) {
+      let registered: Awaited<ReturnType<typeof worktrees>> = [], error: string | undefined;
+      try { registered = await backgroundRead(() => worktrees(project.repoPath, signal)); } catch (e) { error = safeError(e); }
+      const space = await filesystemSpace(project.repoPath);
+      physical.set(project.repoPath, { registered, space, error });
+    }
+    const { registered, space, error } = physical.get(project.repoPath)!;
+    if (error) errors.push({ repository: project.repoPath, message: error });
     repositories.push({ path: project.repoPath, freeBytes: space.freeBytes });
     const filesystem = space.id ? filesystems.find(f => f.id === space.id) : undefined;
     if (filesystem) filesystem.repositories.push(project.repoPath);
@@ -287,10 +306,9 @@ async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?
         state, lastAttempt, lastOutcome: lastOutcomes.get(path), jobs: jobRows, bindings: bindings.map(threadIdentity), size, checkedAt: at });
     }
   }
-  const terminalAccess = shellKnown ? await cleanupTerminalAccess(t3, jobs.map(j => j.workspaceCleanupError)) : null;
+  const terminalAccess = shellKnown ? await backgroundRead(() => cleanupTerminalAccess(t3, jobs.map(j => j.workspaceCleanupError))) : null;
   for (const item of items) item.next = cleanupPresentation(item, terminalAccess ? terminalAccess.state === 'available' : undefined);
   signal.throwIfAborted();
-  if (!errors.length) store.set('cleanupLastScan', at);
   const maintenance = JSON.parse(store.get('cleanupMaintenance') ?? 'null');
   const stalled = !!maintenance && ['pending', 'inspecting'].includes(maintenance.state) && Date.now() - Date.parse(maintenance.lastAttempt) > Math.max(c.pollSeconds ?? 60, 900) * 2000;
   return { lastSuccessfulScan: store.get('cleanupLastScan'), stalled, items, checkedAt: at, errors, repositories, filesystems, terminalAccess, resultsCheckedAt: at, policy: { ignoredFiles: "disposable" }, automationEnabled: c.enabled, maintenance, actions: actions.slice(0, 50) };

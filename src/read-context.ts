@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 // Like cleanup's signal, but scoped here so every existing integration caller shares the deadline.
 const current = new AsyncLocalStorage<ReadContext>();
@@ -12,6 +13,51 @@ export class ReadContext {
   private timer?: NodeJS.Timeout;
   private reads = new Map<symbol, string>();
   private owned = false;
+  private batch?: ReadContext;
+  private readonly pendingReads = new Set<Promise<unknown>>();
+  cooperate?: () => Promise<void>;
+  suspended = false;
+  revision = 0;
+  needsRefresh = false;
+  private stopping = false;
+  requestYield() { this.batch?.controller.abort(BACKGROUND_YIELD); }
+  stopBackground() { this.stopping = true; this.batch?.controller.abort(new Error('Scheduler stopping')); }
+  async checkpoint() {
+    if (this.stopping) throw new Error('Scheduler stopping');
+    if (this.cooperate) await yieldToEventLoop();
+    this.check(); await this.cooperate?.(); this.check();
+    if (this.stopping) throw new Error('Scheduler stopping');
+  }
+  async backgroundRead<T>(work: () => Promise<T>): Promise<T> {
+    if (!this.cooperate) return work();
+    // After one cancellation, finish a batch before yielding again so commands cannot starve a scan.
+    for (let attempt = 0; ; attempt++) {
+      const child = new ReadContext();
+      child.onStage = () => this.setStage(child.stage);
+      const abort = () => child.controller.abort(this.controller.signal.reason);
+      this.controller.signal.addEventListener('abort', abort, { once: true });
+      if (!attempt) this.batch = child;
+      try {
+        const result = await child.run(work);
+        await child.drain(); child.check();
+        this.batch = undefined;
+        if (!attempt) {
+          const revision = this.revision;
+          await this.checkpoint();
+          if (revision !== this.revision) continue; // A command may have changed even a successfully read snapshot.
+        }
+        return result;
+      } catch (error) {
+        await child.drain();
+        if (child.controller.signal.reason !== BACKGROUND_YIELD) throw error;
+      } finally {
+        this.batch = undefined;
+        this.controller.signal.removeEventListener('abort', abort);
+      }
+      await this.checkpoint();
+    }
+  }
+  private async drain() { while (this.pendingReads.size) await Promise.allSettled([...this.pendingReads]); }
   stage = 'queued';
   onStage?: () => void;
   ownership?: { jobId?: string; threadId?: string; planId?: string };
@@ -38,10 +84,20 @@ export class ReadContext {
   async read<T>(stage: string, work: (signal?: AbortSignal) => Promise<T>, draining = false): Promise<T> {
     if (!draining) this.check();
     const key = Symbol(); this.reads.set(key, stage); this.setStage([...new Set(this.reads.values())].join(', '));
-    try { const result = await work(draining ? undefined : this.signal); if (!draining) this.check(); return result; }
-    finally { this.reads.delete(key); if (!this.controller.signal.aborted && this.reads.size) this.setStage([...new Set(this.reads.values())].join(', ')); }
+    const pending = Promise.resolve().then(() => work(draining ? undefined : this.signal));
+    this.pendingReads.add(pending);
+    try { const result = await pending; if (!draining) this.check(); return result; }
+    finally { this.pendingReads.delete(pending); this.reads.delete(key); if (!this.controller.signal.aborted && this.reads.size) this.setStage([...new Set(this.reads.values())].join(', ')); }
   }
 }
+const BACKGROUND_YIELD = new Error('Background read yielding to a command');
+export async function backgroundCheckpoint() {
+  const context = readContext(), revision = context?.revision;
+  await context?.checkpoint();
+  return revision !== context?.revision;
+}
+// Only wrap disposable reads: publication and external mutations belong after the batch.
+export function backgroundRead<T>(work: () => Promise<T>): Promise<T> { return readContext()?.backgroundRead(work) ?? work(); }
 export function readPhase<T>(stage: string, work: (signal?: AbortSignal) => Promise<T>, draining = false): Promise<T> {
   return current.getStore()?.read(stage, work, draining) ?? work();
 }
