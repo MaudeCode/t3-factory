@@ -6,7 +6,7 @@ import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
 
 const state = {
-  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kaneoId: "p", key: "APP", name: "Example", enabled: true }, { kaneoId: "off", key: "OFF", name: "Disabled", enabled: false }], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
+  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kaneoId: "p", key: "APP", name: "Example", enabled: true }, { kaneoId: "f", key: "T3F", name: "Factory", enabled: true }, { kaneoId: "off", key: "OFF", name: "Disabled", enabled: false }], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
   status: { jobs: [], journal: [] },
 };
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -63,7 +63,7 @@ async function run() {
   await show('/start?ticket=bad');
   const picker = root.querySelector('[aria-label^="Ticket project"]');
   picker.click(); await pause();
-  assert([...document.getElementById(picker.getAttribute('aria-controls')).children].map(li => li.textContent).join() === 'APP', 'disabled projects are not offered as ticket keys');
+  assert([...document.getElementById(picker.getAttribute('aria-controls')).children].map(li => li.textContent).join() === 'APP,T3F', 'disabled projects are not offered as ticket keys');
   picker.click(); await pause();
   const number = root.querySelector('[aria-label="Ticket number"]');
   number.value = '7'; number.dispatchEvent(new Event('input', { bubbles: true })); await pause();
@@ -84,6 +84,7 @@ async function run() {
   await pause();
   assert(root.querySelector('.operation')?.textContent.includes('quota-exhausted'), 'existing request row shows refusals');
   await whitespace();
+  await paste();
   await statusLayout();
   await show();
   assert(document.documentElement.scrollWidth <= innerWidth, 'launch form fits viewport');
@@ -106,6 +107,30 @@ async function whitespace() {
     await pause();
   }
   return { passed: true, contexts: ['manual', 'linked'] };
+}
+// A pasted key keeps only its own number and selects its enabled project, even when the key contains digits.
+async function paste() {
+  for (const [text, expected] of [["T3F-48", "T3F-48"], ["app-7", "APP-7"], ["APP-481", "APP-481"], ["XYZ-12", "APP-12"], [" 42 ", "APP-42"], ["See T3F-9: details", "T3F-9"], ["12T3F-48", "T3F-48"]]) {
+    await show('/');
+    const input = root.querySelector('[aria-label="Ticket number"]');
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await pause();
+    assert(named() === expected, `pasting "${text}" names ${expected}, got ${named()}`);
+    assert(root.querySelector('button[type="submit"]').getAttribute('aria-label') === `Start ${expected}`, `start action names ${expected}`);
+  }
+  // Pasting the ticket already named changes no state, yet leaves no key text in the field.
+  const input = root.querySelector('[aria-label="Ticket number"]');
+  input.value = "T3F-48";
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await pause();
+  assert(named() === 'T3F-48', `re-pasting the named ticket keeps T3F-48, got ${named()}`);
+  calls = []; release = null;
+  root.querySelector('button[type="submit"]').click();
+  await pause();
+  try { assert(calls.length === 1 && calls[0].input.ticket === 'T3F-48', 'the pasted project and number dispatch together'); } finally { release?.(); }
+  await pause();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 async function showDecision(decision = { reason: 'dispatched', ticket: 'APP-123', model: 'Example model' }) {
   await show('/');
@@ -134,5 +159,5 @@ async function statusLayout() {
   await showDecision();
   return { passed: true, viewport: [innerWidth, innerHeight], decisions: 3 };
 }
-window.startTests = { show, run, whitespace, showDecision, statusLayout };
+window.startTests = { show, run, whitespace, paste, showDecision, statusLayout };
 await show();

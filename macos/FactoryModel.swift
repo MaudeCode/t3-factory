@@ -468,6 +468,15 @@ struct RunRequest: Identifiable, Codable {
             refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
+    /// Text typed or pasted into the ticket number: a key such as T3F-48 gives its own number and, when it names an enabled project, that project; anything else keeps its digits.
+    func takeTicketInput(_ text: String) {
+        var number = text.filter(\.isNumber)
+        if let match = text.firstMatch(of: #/([A-Za-z][A-Za-z0-9]*)-([0-9]+)/#) {
+            number = String(match.2)
+            if let project = projectKeys.first(where: { $0.uppercased() == match.1.uppercased() }) { ticketProject = project }
+        }
+        if number != ticketNumber { ticketNumber = number }
+    }
     // Accept immediately, before awaiting the serialized command drain, and leave newer drafts alone.
     func dispatch() async {
         guard !config.isEmpty else { return }

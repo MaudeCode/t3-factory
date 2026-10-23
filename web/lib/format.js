@@ -19,6 +19,14 @@ export function ticketKey(value) {
   return /^[A-Z0-9]+-\d+$/.test(key) ? key : "";
 }
 
+// Text typed or pasted into a ticket-number field: a key such as T3F-48 gives its own number and, when it names one of `keys`, that project; anything else keeps its digits.
+export function parseTicketInput(text, keys = []) {
+  const match = text.match(/([A-Za-z][A-Za-z0-9]*)-(\d+)/);
+  if (!match) return { number: text.replace(/\D/g, "") };
+  const project = keys.find((k) => k.toUpperCase() === match[1].toUpperCase());
+  return project ? { project, number: match[2] } : { number: match[2] };
+}
+
 export const uuid = () =>
   crypto.randomUUID?.() ??
   "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
