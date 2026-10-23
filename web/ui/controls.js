@@ -80,6 +80,7 @@ export function Stepper({ path, value, onChange, min = 0, max = 99, labels = {},
 export function Slots({ path, running = 0, max = 6, label }) {
   const limit = at(path) ?? 0;
   const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   const custom = limit > max;
   const slot = (n, text = n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
     aria-label=${`${n} at once`} title=${n <= running ? "running now" : n <= limit ? "free slot" : `allow ${n} at once`} onClick=${() => set(path, n)}>${text}</button>`;
@@ -98,11 +99,11 @@ export function Slots({ path, running = 0, max = 6, label }) {
     <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>Off</button>
     ${Array.from({ length: max }, (_, i) => slot(i + 1))}
     ${editing
-      ? html`<input type="number" class="slot-custom" min="0" step="1" max=${Number.MAX_SAFE_INTEGER} required value=${custom ? limit : max + 1}
+      ? html`<input type="number" class="slot-custom" min="0" step="1" max=${Number.MAX_SAFE_INTEGER} required value=${draft} onInput=${(e) => setDraft(e.currentTarget.value)}
           aria-label=${`${label}, custom limit`} ref=${(el) => el && el !== document.activeElement && (el.focus(), el.select())}
           onKeyDown=${onKeyDown} onBlur=${(e) => commit(e.currentTarget)} />`
       : html`<button type="button" role="radio" aria-checked=${custom} class=${cls("slot", custom && "open", custom && running > max && "busy")}
-          aria-label=${custom ? `${limit} at once, change` : `More than ${max} at once`} title=${custom ? "Change the limit" : "Set a higher limit"} onClick=${() => setEditing(true)}>${custom ? limit : `${max + 1}+`}</button>`}
+          aria-label=${custom ? `${limit} at once, change` : `More than ${max} at once`} title=${custom ? "Change the limit" : "Set a higher limit"} onClick=${() => { setDraft(String(custom ? limit : max + 1)); setEditing(true); }}>${custom ? limit : `${max + 1}+`}</button>`}
   </div>`;
 }
 
