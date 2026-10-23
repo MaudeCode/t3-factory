@@ -800,8 +800,13 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
 // The first of a ticket's limited labels whose runs in its project already fill the limit.
 export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[], threads: Thread[], ticket: { projectId: string; labels?: { name: string }[] }): string | undefined {
   const limits = c.projects.find(p => p.kaneoId === ticket.projectId)?.labelLimits ?? {};
-  const held = jobs.filter(j => j.projectId === ticket.projectId && holdsSlot(j, threads.find(t => t.id === j.threadId), c.monitoringTimeoutMinutes));
-  return ticket.labels?.map(l => l.name).find(name => name in limits && held.filter(j => j.labels?.includes(name)).length >= limits[name]);
+  return ticket.labels?.map(l => l.name).find(name => {
+    if (!(name in limits)) return false;
+    const setting = limits[name], full = typeof setting !== 'number' && setting.mode === 'full';
+    const held = jobs.filter(j => j.projectId === ticket.projectId && j.labels?.includes(name) &&
+      (full ? !['complete', 'dismissed'].includes(j.state) : holdsSlot(j, threads.find(t => t.id === j.threadId), c.monitoringTimeoutMinutes)));
+    return held.length >= (typeof setting === 'number' ? setting : setting.limit);
+  });
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {

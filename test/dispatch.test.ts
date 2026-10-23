@@ -186,11 +186,18 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
             for (const options of [{ model: 'auto' }, { model: 'astra' }, { model: 'astra', overrideLimits: ['idle', 'reserve'] as ('idle' | 'reserve')[] }, { model: 'astra', ticket: waitingApp()[0] }, { model: 'auto', ticket: waitingApp()[0] }])
               assert.equal((await cycle(c, store, { manual: true, ...options })).reason, 'label-limit', `a manual start respects label limits: ${JSON.stringify(options)}`);
             assert.equal(attempts.length, 4);
-            const first = store.jobs().find(j => j.labels?.includes('app'))!;
-            first.state = 'waiting'; store.save(first);
+            c.projects[0].labelLimits = { app: { limit: 2, mode: 'full' } };
+            writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+            for (const job of store.jobs().filter(j => j.labels?.includes('app'))) { job.state = 'waiting'; store.save(job); }
             await cycle(c, store);
-            assert.equal(attempts.length, 5, 'a run waiting for the user frees its label slot');
+            assert.equal(attempts.length, 4, 'two waiting app runs retain both full-block resource slots');
+            for (const model of ['auto', 'astra'])
+              assert.equal((await cycle(c, store, { manual: true, model, ticket: waitingApp()[0] })).reason, 'label-limit', 'manual starts also respect full blocks');
             assert.equal((await cycle(c, store, { manual: true, model: 'astra', ticket: waitingApp()[0], overrideLimits: ['labels'] })).reason, 'dispatched', 'overriding label limits exceeds a full label');
+            c.projects[0].labelLimits = { app: { limit: 2, mode: 'running' } };
+            writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+            await cycle(c, store);
+            assert.equal(attempts.length, 6, 'running blocks release human-waiting slots');
           }
           if (scenario === 'parallel') {
             await cycle(c, store);

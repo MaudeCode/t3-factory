@@ -1,7 +1,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
-import { Button, Field, Input, Select, Chips, Slots, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Page, RowBody } from "../ui/index.js";
+import { Button, Field, Input, Select, Segmented, Chips, Slots, Toggle, Range, Tag, Link, Facts, Dialog, Empty, Section, Page, RowBody } from "../ui/index.js";
 import { follow } from "../lib/router.js";
 
 const t3Options = (current) => {
@@ -19,14 +19,16 @@ const labelOptions = () => (sources.value?.kaneo.labels ?? []).map((l) => [l, l]
 function LabelLimits({ index, project }) {
   const path = ["projects", String(index), "labelLimits"];
   const limits = project.labelLimits ?? {};
-  const running = (label) => jobs.value.filter((j) => j.projectId === project.kaneoId && isActive(j) && j.labels?.includes(label)).length;
   const free = labelOptions().filter(([label]) => !(label in limits));
   return html`<div class="label-limits">
     ${Object.keys(limits).map((label) => {
-      const n = running(label);
+      const setting = limits[label], legacy = typeof setting === 'number', mode = legacy ? 'running' : setting.mode;
+      const n = jobs.value.filter((j) => j.projectId === project.kaneoId && (mode === 'full' ? isOpen(j) : isActive(j)) && j.labels?.includes(label)).length;
       return html`<div class="label-limit" key=${label}>
-        <span><${Tag}>${label}<//> <small class="muted">${n} running</small></span>
-        <${Slots} label=${`${label} runs at once`} path=${[...path, label]} running=${n} />
+        <span><${Tag}>${label}<//> <small class="muted">${n} ${mode === 'full' ? 'open' : 'running'}</small></span>
+        <${Segmented} label=${`${label} block mode`} value=${mode} options=${[['full', 'Full block'], ['running', 'Running block']]} icons=${{ full: 'lock', running: 'play' }}
+          onChange=${(mode) => set([...path, label], { limit: legacy ? setting : setting.limit, mode })} />
+        <${Slots} label=${`${label} runs at once`} path=${legacy ? [...path, label] : [...path, label, 'limit']} running=${n} busyLabel=${mode === 'full' ? 'reserved by an open run' : undefined} />
         <${Button} variant="ghost" size="sm" icon="x" label=${`Remove the ${label} limit`} onClick=${() => update((c) => delete c.projects[index].labelLimits[label])} />
       </div>`;
     })}
@@ -139,7 +141,7 @@ export function Projects() {
           <${Field} group label="Ready when in" hint="Tickets in these columns may be picked up."><${Chips} label="Ready statuses" path=${[...p, "readyStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>
           <${Field} group label="Done when in" hint="A ticket moved here is finished; its run is settled."><${Chips} label="Done statuses" path=${[...p, "doneStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>
           <${Field} group label="Priority labels" hint="Pick in order of importance. Tickets with a higher label go first; among equals, urgency decides."><${Chips} ordered label="Priority labels" path=${[...p, "priorityLabels"]} options=${labelOptions()} custom="Other label" /><//>
-          <${Field} group label="Runs at once by label" hint="For tickets that compete for one machine resource, such as a simulator. Runs waiting for you free their slot; a run you start by hand with label limits overridden may exceed it."><${LabelLimits} index=${i} project=${current} /><//>
+          <${Field} group label="Runs at once by label" hint="Full block counts running and waiting runs; Running block frees slots while waiting for you. A manual label-limit override may exceed either limit."><${LabelLimits} index=${i} project=${current} /><//>
         <//>
         <${Section} title="Watched releases" hint="Each new release of these repositories gets a review run.">
           ${current.upstreams?.length
