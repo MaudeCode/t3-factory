@@ -169,8 +169,9 @@ export function selectTicket(candidates: Candidate[], lastProject: string | null
 export function mentionsTicket(text: string, key: string): boolean {
   return new RegExp(`(?:^|[^A-Z0-9])${key}(?![0-9])`, 'i').test(text);
 }
+// Subagents share their parent's worktree and branch; their titles name tickets they were only asked to read or redraft.
 export function threadReferencesTicket(thread: Thread, projectId: string, key: string): boolean {
-  return thread.projectId === projectId && mentionsTicket(`${thread.title}\n${thread.branch ?? ''}`, key);
+  return thread.projectId === projectId && thread.lineage?.relationshipToParent !== 'subagent' && mentionsTicket(`${thread.title}\n${thread.branch ?? ''}`, key);
 }
 
 // The order the scheduler would take these tickets in if nothing else changed: each pick rotates projects as a real dispatch would.
