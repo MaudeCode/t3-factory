@@ -6,6 +6,7 @@ import { overridableLimits, type OverrideLimits } from './config.ts';
 import { createServer, request, type Server } from 'node:http';
 import { existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 
 export type ControlCommand =
   | { type: 'dispatch'; options: Record<string, unknown> }
@@ -57,7 +58,7 @@ export function callControl(stateDir: string, command: ControlCommand, timeoutMs
     });
     req.on('finish', () => { sent = true; }); // the request body reached the socket, so the scheduler may act on it
     req.on('error', () => resolve(sent ? uncertain : null));
-    if (timeoutMs) req.on('timeout', () => { req.destroy(); resolve({ code: 1, data: { message: 'The scheduler did not answer in time' } }); });
+    if (timeoutMs) req.on('timeout', () => { req.destroy(); resolve(uncertain); });
     req.end(JSON.stringify(command));
   });
 }
@@ -73,10 +74,11 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; ticket?: string; upstream?: string; model?: string; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
+export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; model?: string; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; dryRun?: boolean; chain?: 'first' | 'all' } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
+    else if (args[i] === '--request-id') options.requestId = z.uuid().parse(args[++i]);
     else if (args[i] === '--upstream') {
       const value = args[++i];
       if (!/^[\w.-]+\/[\w.-]+$/.test(value ?? '')) throw new Error('--upstream requires owner/repo');

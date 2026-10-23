@@ -1,4 +1,5 @@
 import { cleanupOperationState } from '../web/lib/format.js';
+import { readOperation, saveOperation, type Operation } from './operations.ts';
 import { cleanupRequestSchema } from './cleanup.ts';
 import {
   createServer,
@@ -51,13 +52,6 @@ export const webConfigSchema = z
   }, "The address must be HTTPS, or HTTP on your private network");
 type WebConfig = z.infer<typeof webConfigSchema>;
 type Result = { code: number; data: any };
-type Operation = {
-  id: string;
-  input: unknown;
-  state: "running" | "done" | "failed" | "pending" | "uncertain";
-  createdAt: string;
-  result?: Result;
-};
 const dispatchSchema = z
   .object({
     ticket: z
@@ -194,7 +188,7 @@ export function createFactoryWeb(options: {
   )) {
     const file = join(operations, name),
       saved = JSON.parse(readFileSync(file, "utf8")) as Operation;
-    if (saved.state === "running")
+    if (saved.state === "running" && !saved.command)
       saveJSON(file, {
         ...saved,
         state: "uncertain",
@@ -483,6 +477,7 @@ export function createFactoryWeb(options: {
           const dispatch = input as z.infer<typeof dispatchSchema>;
           const args = path === "/api/cleanup/actions" ? ["cleanup", `web-session:${sign(req.headers.cookie ?? "").slice(0, 16)}`] : [
             "dispatch",
+            "--request-id", id,
             "--model",
             dispatch.model,
             ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
@@ -491,23 +486,18 @@ export function createFactoryWeb(options: {
             ...(dispatch.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
             ...(dispatch.chain ? ["--chain", dispatch.chain] : []),
           ];
-          void run(args, path === "/api/cleanup/actions" ? input : undefined)
-            .then((result) =>
-              saveJSON(file, { ...operation, state: path === "/api/cleanup/actions" ? cleanupOperationState(result) : "done", result }),
-            )
-            .catch(() =>
-              saveJSON(file, {
-                ...operation,
-                state: "uncertain",
-                result: {
-                  code: 1,
-                  data: {
-                    message:
-                      "Operation response was lost. Inspect its result before submitting another request.",
-                  },
-                },
-              }),
-            );
+          const finish = (result: Result) => {
+            const current = readOperation(dataDir, id) ?? operation;
+            // A lost control response can precede the scheduler's eventual result. Never overwrite that result.
+            if (current.command) {
+              if (current.state === "running" && result.data?.uncertain) saveOperation(dataDir, { ...current, state: "uncertain", result });
+              return;
+            }
+            saveOperation(dataDir, { ...current, state: path === "/api/cleanup/actions" ? cleanupOperationState(result) : result.data?.uncertain ? "uncertain" : "done", result });
+          };
+          void run(args, path === "/api/cleanup/actions" ? input : undefined).then(finish).catch(() => finish({ code: 1, data: {
+            uncertain: true, message: "Operation response was lost. Inspect its result before submitting another request.",
+          } }));
           return json(res, 202, operation);
         }
         if (path.startsWith("/api/operations/") && req.method === "GET") {

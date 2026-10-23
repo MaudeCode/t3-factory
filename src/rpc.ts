@@ -8,6 +8,7 @@ import * as RpcGroup from 'effect/unstable/rpc/RpcGroup';
 import * as RpcClient from 'effect/unstable/rpc/RpcClient';
 import * as RpcSerialization from 'effect/unstable/rpc/RpcSerialization';
 import * as Socket from 'effect/unstable/socket/Socket';
+import { readPhase } from './read-context.ts';
 
 // Same transport and method contracts as T3. Validate the fields we consume at the caller.
 const group = RpcGroup.make(
@@ -45,18 +46,20 @@ export async function subscribeT3Shell(socketUrl: () => Promise<string>, onItem:
   }
 }
 export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string; force?: boolean } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string }): Promise<unknown> {
-  const protocol = transport(socketUrl);
-  return Effect.runPromise(Effect.gen(function* () {
-    const client = yield* RpcClient.make(group);
-    if (action.type === 'dispatch') return yield* client['orchestration.dispatchCommand'](action.command);
-    if (action.type === 'launch') return yield* client['orchestration.launchThread'](action.input);
-    if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: action.force ?? false });
-    // The metadata stream opens with a snapshot of every terminal.
-    if (action.type === 'terminals') return Option.getOrNull(yield* Stream.runHead(client['subscribeTerminalMetadata']({})));
-    // Without terminalId, T3 closes every terminal of the thread, including busy ones.
-    if (action.type === 'close-terminal') return yield* client['terminal.close']({ threadId: action.threadId, terminalId: action.terminalId, deleteHistory: false });
-    // T3 only invalidates its cached capability/usage probe when refreshModels is set.
-    if (action.refreshInstance) yield* client['server.refreshProviders']({ instanceId: action.refreshInstance, refreshModels: true });
-    return yield* client['server.getConfig']({});
-  }).pipe(Effect.provide(protocol), Effect.scoped, Effect.timeout('60 seconds')));
+  return readPhase(`t3.rpc.${action.type}`, async signal => {
+    const protocol = transport(socketUrl);
+    return Effect.runPromise(Effect.gen(function* () {
+      const client = yield* RpcClient.make(group);
+      if (action.type === 'dispatch') return yield* client['orchestration.dispatchCommand'](action.command);
+      if (action.type === 'launch') return yield* client['orchestration.launchThread'](action.input);
+      if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: action.force ?? false });
+      // The metadata stream opens with a snapshot of every terminal.
+      if (action.type === 'terminals') return Option.getOrNull(yield* Stream.runHead(client['subscribeTerminalMetadata']({})));
+      // Without terminalId, T3 closes every terminal of the thread, including busy ones.
+      if (action.type === 'close-terminal') return yield* client['terminal.close']({ threadId: action.threadId, terminalId: action.terminalId, deleteHistory: false });
+      // T3 only invalidates its cached capability/usage probe when refreshModels is set.
+      if (action.refreshInstance) yield* client['server.refreshProviders']({ instanceId: action.refreshInstance, refreshModels: true });
+      return yield* client['server.getConfig']({});
+    }).pipe(Effect.provide(protocol), Effect.scoped, Effect.timeout('60 seconds')), { signal });
+  });
 }

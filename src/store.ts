@@ -15,6 +15,7 @@ export function cleanupActionPending(action: CleanupAction, path: string, canoni
 }
 
 export interface Job {
+  requestId?: string;
   id: string; kind: 'ticket' | 'discovery' | 'upstream'; projectId: string; taskId: string | null;
   // An upstream review covers base..candidate of one watched repository.
   upstream?: { name: string; repo: string; base: string; candidate: string };
@@ -54,7 +55,7 @@ export interface PlanTicket {
   id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
   difficulty?: Difficulty; labelRank?: number; readyLabel: boolean; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
 }
-export interface Plan { id: string; createdAt: string; target: PlanTicket; tickets: PlanTicket[]; model: string; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
+export interface Plan { requestId?: string; id: string; createdAt: string; target: PlanTicket; tickets: PlanTicket[]; model: string; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }
 // A ticket that a T3 session reported creating, with every session and message that reported it.
 export interface SessionSource { threadId: string; messageId: string; projectId: string; title: string; at: string }

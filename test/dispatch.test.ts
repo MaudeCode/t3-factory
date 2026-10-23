@@ -297,9 +297,11 @@ for (const change of ['blocker', 'child', 'sf', 'difficulty', 'status', 'open-pr
       }
       return p;
     });
-    const result = await f.run('auto'), last = (result.dispatches as { reason: string; message?: string }[])[0];
-    if (change === 'read-failure') { assert.equal(last.reason, 'error'); assert.match(last.message!, /Required relation read failed/); }
-    else assert.equal(last.reason, ['open-pr', 'thread'].includes(change) ? 'ticket-order-or-eligibility-changed' : change === 'config' ? 'configuration-changed-before-dispatch' : change === 'mapping' ? 'provider-mapping-changed' : 'ticket-changed-before-dispatch');
+    if (change === 'read-failure') await assert.rejects(f.run('auto'), /Required relation read failed/);
+    else {
+      const result = await f.run('auto'), last = (result.dispatches as { reason: string }[])[0];
+      assert.equal(last.reason, ['open-pr', 'thread'].includes(change) ? 'ticket-order-or-eligibility-changed' : change === 'config' ? 'configuration-changed-before-dispatch' : change === 'mapping' ? 'provider-mapping-changed' : 'ticket-changed-before-dispatch');
+    }
     assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
   });
 }

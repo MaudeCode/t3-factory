@@ -1,3 +1,4 @@
+import { runManualRequest } from './manual-request.ts';
 import { manageCleanup, cleanupRequestSchema, readCleanupCatalog } from './cleanup.ts';
 import { readFileSync, writeFileSync, renameSync, existsSync, watch } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
@@ -201,8 +202,13 @@ if (command === 'web') {
       await delay(500); claimed = store.claim();
     }
     if (!claimed) { store.close(); store = undefined; throw new Error('The scheduler is busy and not answering on its control socket. Try again shortly.'); }
-    const result = await cycle(c, store, options);
-    if (options.manual && !['dispatched', 'would-dispatch', 'plan-started'].includes(result.reason)) process.exitCode = 1;
+    const result = options.manual
+      ? (await runManualRequest(c, store, options, async (work, _foreground, meta) => { await meta.context.run(() => work(0)); }, opts => cycle(c, store!, opts))).data
+      : await cycle(c, store, options);
+    if (options.manual) {
+      log('decision', result as Record<string, unknown>);
+      if (!['dispatched', 'would-dispatch', 'plan-started'].includes((result as { reason: string }).reason)) process.exitCode = 1;
+    }
     writeStatus(c, store);
   } catch (e) {
     const message = safeError(e); log('error', { message });

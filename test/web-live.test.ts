@@ -9,6 +9,8 @@ import { createServer } from "node:net";
 import { createFactoryWeb, webConfigSchema } from "../src/web.ts";
 import { dispatchFixture } from "./dispatch-fixture.ts";
 import { matchesRunFilters } from "../web/lib/format.js";
+import { randomUUID } from 'node:crypto';
+import { saveOperation, type Operation } from '../src/operations.ts';
 
 const freePort = () => new Promise<number>((resolve) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 async function pairSession(url: string, secret: string) {
@@ -18,6 +20,42 @@ async function pairSession(url: string, secret: string) {
   const signed = await fetch(`${url}/api/session`, { method: "POST", headers, body: JSON.stringify({ code }) });
   return { ...headers, Cookie: signed.headers.get("set-cookie")!.split(";")[0] };
 }
+
+test('web restart preserves scheduler-owned queued, checking, expired and uncertain operations without replay', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-operation-reload-')), secret = 'f'.repeat(64), port = await freePort(), url = `http://127.0.0.1:${port}`;
+  const input = { ticket: 'APP-1', model: 'auto', overrideLimits: true, allowMissingReadyLabel: false };
+  const operations: Operation[] = ['queued', 'checking', 'expired', 'uncertain'].map(phase => ({ id: randomUUID(), input, command: { manual: true, ticket: 'APP-1' }, createdAt: new Date().toISOString(),
+    state: phase === 'expired' ? 'done' : phase === 'uncertain' ? 'uncertain' : 'running',
+    progress: { phase: phase === 'queued' ? 'queued' : phase === 'checking' ? 'checking' : 'launching', stage: 'kaneo.get_task', acceptedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString() },
+    ...phase === 'expired' ? { result: { code: 1, data: { reason: 'manual-deadline-exceeded', notLaunched: true } } } : phase === 'uncertain' ? { result: { code: 1, data: { uncertain: true, jobId: 'existing-job', threadId: 'existing-thread' } } } : {},
+  }));
+  operations.forEach(operation => saveOperation(dir, operation));
+  let sends = 0;
+  const server = createFactoryWeb({ config: webConfigSchema.parse({ publicOrigin: url }), secret, dataDir: dir, readState: () => ({}), run: async args => {
+    sends++;
+    const id = args[args.indexOf('--request-id') + 1];
+    saveOperation(dir, { ...operations[1], id });
+    return { code: 1, data: { uncertain: true, message: 'The scheduler stopped answering after taking the request.' } };
+  } });
+  await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
+  try {
+    const headers = await pairSession(url, secret);
+    for (const operation of operations) {
+      assert.deepEqual(await (await fetch(`${url}/api/operations/${operation.id}`, { headers })).json(), operation);
+      assert.deepEqual(await (await fetch(`${url}/api/dispatch`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': operation.id }, body: JSON.stringify(input) })).json(), operation);
+    }
+    assert.equal(sends, 0, 'reload and duplicate submissions only read existing outcomes');
+    const confirmed = { ...operations[3], state: 'done' as const, result: { code: 0, data: { reason: 'dispatched', jobId: 'existing-job', threadId: 'existing-thread' } } };
+    saveOperation(dir, confirmed);
+    assert.deepEqual(await (await fetch(`${url}/api/operations/${confirmed.id}`, { headers })).json(), confirmed, 'reconciliation becomes visible without another dispatch');
+    const lostId = randomUUID();
+    await fetch(`${url}/api/dispatch`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': lostId }, body: JSON.stringify(input) });
+    const lost = await (await fetch(`${url}/api/operations/${lostId}`, { headers })).json();
+    assert.equal(lost.state, 'uncertain', 'a lost accepted control response must not leave an indefinite spinner');
+    assert.equal(lost.result.data.uncertain, true); assert.equal(lost.progress.stage, 'kaneo.get_task');
+    assert.equal(sends, 1);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
+});
 
 // A real CLI process covers main.ts composition, which injected createFactoryWeb callbacks bypass.
 test("the web CLI exposes filterable snapshot metadata through state, history and reports", { timeout: 10000 }, async t => {

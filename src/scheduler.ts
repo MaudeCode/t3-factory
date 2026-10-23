@@ -1,3 +1,5 @@
+import { readAll, readContext, readPhase } from './read-context.ts';
+export { readAll } from './read-context.ts';
 import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees } from './workspace.ts';
 import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -41,10 +43,10 @@ export function safeError(error: unknown): string {
   return String(text).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
 }
 async function git(path: string, args: string[], signal?: AbortSignal): Promise<string> {
-  return (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000, signal })).stdout.trim();
+  return readPhase('git.read', async scoped => (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000, signal: signal && scoped ? AbortSignal.any([signal, scoped]) : signal ?? scoped })).stdout.trim());
 }
 async function gh(args: string[]): Promise<unknown> {
-  return JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000 })).stdout);
+  return readPhase('github.read', async signal => JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000, signal })).stdout));
 }
 const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedAt: z.string() }));
 export interface PendingReview { project: Project; upstream: NonNullable<Job['upstream']> }
@@ -547,7 +549,7 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       if (thread && (thread.settledOverride !== 'settled' || executing(thread) || (thread.branch !== branch && !cleanedBinding) || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
       const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath ?? job.workspaceCleanup?.path;
       if (worktreePath && existsSync(worktreePath)) {
-        const [head, changes] = await Promise.all([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
+        const [head, changes] = await readAll([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
         if (head !== dismissedHead || changes) continue;
       }
       branches.set(branch, dismissedHead); if (thread) inactiveThreads.add(thread.id); continue;
@@ -558,7 +560,7 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
           Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.completedAt) ||
           Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.completedAt)) return;
       if (thread.worktreePath && existsSync(thread.worktreePath)) {
-        const [current, changes] = await Promise.all([git(thread.worktreePath, ['rev-parse', 'HEAD']), git(thread.worktreePath, ['status', '--porcelain'])]);
+        const [current, changes] = await readAll([git(thread.worktreePath, ['rev-parse', 'HEAD']), git(thread.worktreePath, ['status', '--porcelain'])]);
         if (current !== head || changes) return;
       }
       inactiveThreads.add(thread.id);
@@ -605,11 +607,6 @@ async function ticketArtifacts(project: Project, key: string, taskId: string, th
   return { ...artifacts, openPR };
 }
 
-// Keep a failed phase open until every read it started has settled.
-export async function readAll<T extends unknown[]>(reads: [...T]): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
-  try { return await Promise.all(reads); }
-  catch (error) { await Promise.allSettled(reads); throw error; }
-}
 const READ_CONCURRENCY = 6;
 // Limit I/O, rather than recursive walks, so deep or shared ancestry cannot deadlock.
 function readLimiter() {
@@ -742,7 +739,7 @@ export async function inventory(c: Config, kaneo: Kaneo, threads: Thread[], jobs
 }
 
 export interface Skipped { key: string; reason: string; id?: string; missingReadyLabel?: boolean; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
+export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
 // The thresholds this start skips; automatic work skips none.
 const skips = (options: CycleOptions) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
@@ -825,7 +822,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   const instances = new Map(providers.map(p => [p.instanceId, p.driver]));
   if (ownsKaneo) await kaneo.connect();
   try {
-    await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor, !options.manual && !clients.deferCleanup);
+    await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor && !options.manual, !options.manual && !clients.deferCleanup);
     // Chains the user started run whether or not automation is on; they take their slots first.
     if (!options.manual && !options.doctor && !options.dryRun) await runPlans(c, store, t3, kaneo, instances, shell.threads);
     const jobs = store.jobs();
@@ -933,6 +930,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
           if (assignment && /ticket|eligib/.test(result.reason)) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
         }
       } catch (error) {
+        if (options.manual) throw error;
         stream.reason = safeError(error); busy.add(selected.driver);
         if (assignment && store.jobs().some(j => j.taskId === assignment.ticket.id)) candidates.splice(candidates.findIndex(t => t.id === assignment.ticket.id), 1);
         // An ambiguous launch still owns its review; another provider must not start the same range.
@@ -976,7 +974,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   const kaneo = plan?.kaneo ?? clients.kaneo ?? new Kaneo(c.kaneo), ownsKaneo = !(plan?.kaneo ?? clients.kaneo);
   if (ownsKaneo) await kaneo.connect();
   try {
-    if (!plan) await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor, !options.manual && !clients.deferCleanup);
+    if (!plan) await reconcile(c, store, t3, kaneo, shell.threads, !options.dryRun && !options.doctor && !options.manual, !options.manual && !clients.deferCleanup);
     const jobs = store.jobs();
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
@@ -1087,7 +1085,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       workspaceStrategy: { type: 'worktree', baseRef: project.baseBranch, branch, startFromOrigin: true },
       initialMessage: { messageId: job.messageId, text: promptFor(job, project, c, manualPolicy), attachments: [] },
     };
-    store.save(job); // Durable ownership precedes the external write, including ambiguous timeouts.
+    job.requestId = options.requestId;
+    const context = readContext();
+    if (context) context.own({ jobId: job.id, threadId: job.threadId }, () => store.save(job));
+    else store.save(job); // Durable ownership precedes the external write, including ambiguous timeouts.
     store.set('lastProject', project.kaneoId);
     if (job.kind === 'discovery') store.set(`discoveryLast:${project.kaneoId}`, String(Date.now()));
     await t3.launch(job.command);
@@ -1183,8 +1184,10 @@ async function chainResponse(c: Config, store: Store, t3: T3, kaneo: Kaneo, inst
     const result = await run({ ...options, chain: undefined, ticket: pick.key, allowMissingReadyLabel: !pick.readyLabel });
     return { ...result, chain: { target: ticketKey, picked: pick.key } };
   }
-  const plan: Plan = { id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', overrideLimits: [...skip], state: 'active' };
-  store.savePlan(plan);
+  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', overrideLimits: [...skip], state: 'active' };
+  const context = readContext();
+  if (context) context.own({ planId: plan.id }, () => store.savePlan(plan));
+  else store.savePlan(plan);
   const dispatches = await runPlans(c, store, t3, kaneo, instances, threads, plan.id);
   const started = dispatches.filter(d => d.reason === 'dispatched').length;
   return decision('plan-started', { ticket: ticketKey, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Chain to ${ticketKey} started: ${started} of ${count} ticket${count === 1 ? '' : 's'} running now, the rest as they unblock.` });
@@ -1274,6 +1277,7 @@ export function upstreamRows(c: Config, store: Store) {
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {
   const result = {
+    work: JSON.parse(store.get('serviceWork') ?? 'null'),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kaneoId, lastAt: iso(store.get(`discoveryLast:${p.kaneoId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kaneoId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
