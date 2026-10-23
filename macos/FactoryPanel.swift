@@ -84,7 +84,7 @@ struct FactoryPanel: View {
                 }.labelsHidden().frame(width: 110)
                 Button { model.overrideLimits.toggle() } label: { Image(systemName: "bolt.fill").foregroundStyle(model.overrideLimits ? Theme.accent : Theme.muted) }
                     .buttonStyle(.plain).disabled(model.selectedModelUsesCodex)
-                    .help(model.selectedModelUsesCodex ? "Codex runs ignore idle time and reserves." : model.overrideLimits ? "Override limits: on. Skips idle and reserve thresholds; readiness, difficulty, duplicate and merge checks still apply." : "Override limits: off. Waits for idle time and reserve.")
+                    .help(model.selectedModelUsesCodex ? "Codex runs ignore idle time and reserves." : model.overrideLimits ? "Override limits: on. Skips idle, reserve and label-limit thresholds; readiness, difficulty, duplicate and merge checks still apply." : "Override limits: off. Waits for idle time, reserve and label limits.")
                 Button { Task { await model.dispatch() } } label: { Image(systemName: "play.fill") }.buttonStyle(PrimaryButton()).disabled(model.config.isEmpty)
                     .help(model.ticketNumber.isEmpty ? "Start the next eligible ticket" : "Start \(model.ticketProject)-\(model.ticketNumber)")
             }

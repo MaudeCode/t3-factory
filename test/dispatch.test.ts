@@ -182,10 +182,15 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
             const next = await cycle(c, store);
             assert.equal(attempts.length, 4, 'a full label holds its remaining tickets');
             assert.ok((next as any).streams.some((s: any) => s.reason === 'label-limit'));
+            const waitingApp = () => ['FIX-1', 'FIX-2', 'FIX-3', 'FIX-4'].filter(k => !store.jobs().some(j => j.ticketKey === k));
+            for (const options of [{ model: 'auto' }, { model: 'astra' }, { model: 'astra', ticket: waitingApp()[0] }, { model: 'auto', ticket: waitingApp()[0] }])
+              assert.equal((await cycle(c, store, { manual: true, ...options })).reason, 'label-limit', `a manual start respects label limits: ${JSON.stringify(options)}`);
+            assert.equal(attempts.length, 4);
             const first = store.jobs().find(j => j.labels?.includes('app'))!;
             first.state = 'waiting'; store.save(first);
             await cycle(c, store);
             assert.equal(attempts.length, 5, 'a run waiting for the user frees its label slot');
+            assert.equal((await cycle(c, store, { manual: true, model: 'astra', ticket: waitingApp()[0], overrideLimits: true })).reason, 'dispatched', 'Override limits exceeds a label limit');
           }
           if (scenario === 'parallel') {
             await cycle(c, store);

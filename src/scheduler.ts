@@ -174,21 +174,29 @@ export async function verifyCompletionReport(c: Config, kaneo: Kaneo, job: Job, 
     }
   }
 }
+// Dismissal keeps the workspace's branch, path and head so cleanup can still verify it.
+async function dismissJob(store: Store, job: Job, reason: string, at?: { branch: string | null; worktreePath: string | null }) {
+  job.state = 'dismissed'; job.reason = reason; job.dismissedAt = new Date().toISOString();
+  job.dismissedBranch = at?.branch ?? undefined; job.dismissedWorktreePath = at?.worktreePath ?? undefined;
+  if (at?.worktreePath && existsSync(at.worktreePath)) {
+    try { job.dismissedHead = await git(at.worktreePath, ['rev-parse', 'HEAD']); } catch { /* Keep unknown artifacts protected. */ }
+  }
+  store.save(job); log('job-dismissed', { jobId: job.id, threadId: job.threadId });
+}
+
 export async function reconcile(c: Config, store: Store, t3: T3, kaneo: Kaneo, threads: Thread[], allowMonitorStop = true, allowCleanup = true) {
+  let listed: Promise<Thread[]> | undefined;
   for (const job of store.jobs().filter(j => j.state !== 'dismissed' || !j.workspaceCleanedAt)) {
     const t = threads.find(t => t.id === job.threadId);
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kaneo, job);
     if (job.state === 'dismissed') continue;
-    if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
-      job.state = 'dismissed'; job.reason = 'Dismissed by settling the task in T3'; job.dismissedAt = new Date().toISOString();
-      job.dismissedBranch = t.branch ?? undefined; job.dismissedWorktreePath = t.worktreePath ?? undefined;
-      if (t.worktreePath && existsSync(t.worktreePath)) {
-        try { job.dismissedHead = await git(t.worktreePath, ['rev-parse', 'HEAD']); } catch { /* Keep unknown artifacts protected. */ }
-      }
-      store.save(job); log('job-dismissed', { jobId: job.id, threadId: job.threadId }); continue;
-    }
+    if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) { await dismissJob(store, job, 'Dismissed by settling the task in T3', t); continue; }
     if (job.state === 'complete') continue;
     if (!t) {
+      // A thread T3 has shown before and no longer lists, even among archived threads, was deleted: its run cannot resume.
+      if (job.thread && !(await (listed ??= t3.shell(true).then(s => s.threads))).some(x => x.id === job.threadId)) {
+        await dismissJob(store, job, 'Dismissed because its T3 thread was deleted', job.thread); continue;
+      }
       if (Date.now() - Date.parse(job.createdAt) > 5 * 60_000) {
         job.state = 'dispatching'; job.reason = 'Dispatch outcome unknown; retain the execution slot until T3 can be reconciled';
       }
@@ -881,7 +889,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const planned = new Map<string, number>();
     // Dry runs record nothing, so their would-be runs count against label limits here.
     const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
-    const labelOpen = (t: Candidate) => !fullLabel(c, [...store.jobs(), ...started], shell.threads, t);
+    const labelOpen = (t: Candidate) => override || !fullLabel(c, [...store.jobs(), ...started], shell.threads, t);
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
     const free = (m: { driver: string }) => !busy.has(m.driver);
     while (readyModels.some(free) || (reviews.length && idleModels.some(free))) {
@@ -928,7 +936,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     for (const stream of streams) if (stream.reason === 'ready') stream.reason = candidates.length && !candidates.some(labelOpen) ? 'label-limit' : queue.ready.length ? 'difficulty-limit' : skipped.some(s => /difficulty/.test(s.reason)) ? 'needs-classification' : 'no-eligible-ticket';
     const reason = options.doctor ? 'doctor' : results.some(r => r.reason === 'dispatched') ? 'dispatched'
       : results.some(r => r.reason === 'would-dispatch') ? 'would-dispatch'
-      : options.upstream ? results.at(-1)?.reason ?? 'no-eligible-model' : options.manual ? 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
+      : options.upstream ? results.at(-1)?.reason ?? 'no-eligible-model' : options.manual ? candidates.length && !candidates.some(labelOpen) ? 'label-limit' : 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
     store.set('streams', JSON.stringify(streams));
     return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length });
   } finally { if (ownsKaneo) await kaneo.close(); }
@@ -974,6 +982,13 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const discovery = !ticketKey && !options.manual && !review;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
+    // Label limits bind every start except a manual one with limits overridden; chain continuations always respect them.
+    const labelGated = !override || !!options.continuation;
+    if (labelGated && !ticketKey && !review) {
+      const open = queue.ready.filter(t => !fullLabel(c, jobs, shell.threads, t));
+      if (queue.ready.length && !open.length) return decision('label-limit', { message: 'Every eligible ticket is waiting for a free label slot' });
+      queue.ready = open;
+    }
     if (!discovery && !review && !queue.ready.length) {
       const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kaneo, instances, shell.threads, options, queue, override, decision) : undefined;
       return chained ?? decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
@@ -1039,7 +1054,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
     if (!options.manual && plan && busyProviders(store.jobs(), fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
     if (options.continuation && busyProviders(store.jobs(), fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
-    const full = (!options.manual || options.continuation) && queue.selected && fullLabel(c, store.jobs(), fresh.threads, queue.selected);
+    const full = labelGated && queue.selected && fullLabel(c, store.jobs(), fresh.threads, queue.selected);
     if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
     if (review && !(await pendingReviews(c, store, store.jobs(), Date.now(), false)).some(r => r.project.kaneoId === review.project.kaneoId && JSON.stringify(r.upstream) === JSON.stringify(review.upstream))) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
     if (JSON.stringify(loadConfig()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
