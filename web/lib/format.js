@@ -124,7 +124,7 @@ export const STOPS = ["Queued", "Working", "Needs you", "Done"];
 export const stopOf = (state) => ({ dispatching: 1, running: 2, waiting: 3, complete: 4, dismissed: 4 })[state] ?? 1;
 export const toneOf = (state) => ({ dispatching: "on", running: "on", waiting: "attention", complete: "ok", dismissed: "", pending: "on", active: "on", eligible: "ok", confirmed: "ok", blocked: "attention", failed: "attention", uncertain: "attention", unknown: "attention", "stale-registration": "attention" })[state] ?? "";
 export const isActive = (job) => ["running", "dispatching"].includes(job.state);
-export const isOpen = (job) => !["complete", "dismissed"].includes(job.state);
+export const isOpen = (job) => !job.historyOnly && !["complete", "dismissed"].includes(job.state);
 export const isFinished = (job) => !isOpen(job);
 export const PENDING_KINDS = { approval: "waiting for an approval", question: "asked a question", input: "waiting for input" };
 

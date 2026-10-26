@@ -354,6 +354,7 @@ function collectorFixture(t: test.TestContext) {
     if (name === 'labels') return [...f.labels].flatMap(([taskId, names]) => names.map(n => ({ name: n, taskId, workspaceId: 'workspace' })));
     if (name === 'projects') return structuredClone(f.projects);
     if (name === 'columns') return [{ slug: 'backlog', name: 'Backlog', isFinal: false, position: 0 }, { slug: 'todo', name: 'To do', isFinal: false, position: 0 }, { slug: 'done', name: 'Done', isFinal: true, position: 1 }];
+    if (name === 'tickets') return { data: { columns: [{ tasks: f.tasks.filter(row => row.projectId === args.projectId) }] }, pagination: { totalPages: 1 } };
     if (name === 'ticketByKey') { const found = f.tasks.find(x => `${x.projectId}-${x.number}` === args.ticketId && x.projectId === args.projectId); if (!found) throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible'); return structuredClone(found); }
     if (name === 'ticket') { const found = f.tasks.find(x => x.id === args.taskId); if (!found) throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible'); return structuredClone(found); }
     throw new Error(`Unexpected Kanvil tool ${name}`);

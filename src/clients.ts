@@ -323,8 +323,8 @@ export class Kanvil {
     }
     return this.snapshots.get(projectId)!.pending;
   }
-  async tasks(projectId: string, statuses?: string[]): Promise<Task[]> {
-    return (await this.snapshot(projectId)).tickets.filter(t => !t.archived && (!statuses || statuses.includes(t.status))).map(ticket => {
+  async tasks(projectId: string, statuses?: string[], includeArchived = false): Promise<Task[]> {
+    return (await this.snapshot(projectId)).tickets.filter(t => (includeArchived || !t.archived) && (!statuses || statuses.includes(t.status))).map(ticket => {
       const cached = this.tasksById.get(ticket.id);
       return cached?.version === ticket.version && cached.readiness ? { ...normalized(ticket), readiness: cached.readiness } : normalized(ticket);
     });
@@ -390,7 +390,7 @@ export class Kanvil {
   projectSynchronized(projectId: string) { return this.connected && this.projectStreams.get(projectId)?.connected === true; }
   // Unscoped feeds cannot report membership revocation after the caller loses visibility.
   // A scoped stream revalidates that project's access, without polling its inventory.
-  private async ensureProjectStream(projectId: string) {
+  async ensureProjectStream(projectId: string) {
     if (!this.watching) return;
     if (!this.connected) throw new Error('Kanvil event stream is not synchronized');
     let entry = this.projectStreams.get(projectId);

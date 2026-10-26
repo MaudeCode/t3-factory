@@ -1128,7 +1128,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
 // Ask T3 to stop a run's thread; the next pass reconciles the job from T3.
 export async function stopJob(c: Config, store: Store, t3: T3, jobId: string) {
   const job = store.job(jobId);
-  if (!job || ['complete', 'dismissed'].includes(job.state)) throw new Error('That run is not active');
+  if (!job || job.historyOnly || ['complete', 'dismissed'].includes(job.state)) throw new Error('That run is not active');
   try { await t3.stop(job.threadId); }
   catch (error) { throw new Error(`Stop not confirmed: ${safeError(error)}`); }
   job.reason = 'Stop requested from the web app; waiting for T3 to confirm'; store.save(job);
@@ -1315,7 +1315,7 @@ export function writeStatus(c: Config, store: Store) {
     jobs: store.jobs().filter(j => j.state !== 'dismissed').map(({ command, ...job }) => ({ ...job, label: jobLabel(job) })),
     // The menu app reads only this file, so it gets the recent journal and the last finished runs here.
     journal: store.events(60),
-    recent: store.jobs().filter(j => ['complete', 'dismissed'].includes(j.state)).map(({ command, ...job }) => ({ ...job, label: jobLabel(job) }))
+    recent: store.history().filter(j => ['complete', 'dismissed'].includes(j.state)).map(job => ({ ...job, label: jobLabel(job) }))
       .toSorted((a, b) => (b.completedAt ?? b.dismissedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.dismissedAt ?? a.createdAt)).slice(0, 15),
   };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);

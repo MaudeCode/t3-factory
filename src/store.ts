@@ -15,6 +15,8 @@ export function cleanupActionPending(action: CleanupAction, path: string, canoni
 }
 
 export interface Job {
+  historyOnly?: boolean;
+  sourceIdentity?: { backend: 'kaneo'; projectId: string; taskId: string | null; ticketKey: string | null };
   requestId?: string;
   id: string; kind: 'ticket' | 'discovery' | 'upstream'; projectId: string; taskId: string | null;
   // An upstream review covers base..candidate of one watched repository.
@@ -60,6 +62,7 @@ export interface FactoryEvent { id: number; time: string; kind: string; jobId: s
 // A ticket that a T3 session reported creating, with every session and message that reported it.
 export interface SessionSource { threadId: string; messageId: string; projectId: string; title: string; at: string }
 export interface SessionTicket {
+  archived?: boolean;
   taskId: string; projectId: string; key: string; number: number; title: string; priority: string; status: string; labels: string[]; createdAt: string;
   difficulty?: 'low' | 'med' | 'high' | null; automationReady?: boolean; holdReason?: string | null;
   // `refreshedAt` is the last successful tracker read; `refreshAfter` is when the next read is due, later after a failure.
@@ -104,6 +107,7 @@ export class Store {
     chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, task_id TEXT UNIQUE, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS job_history(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cleanup_actions(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
@@ -117,9 +121,17 @@ export class Store {
   jobs(): Job[] { return this.db.prepare('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   // Hot inventory reads need lifecycle metadata, not historical dispatch prompts and commands.
   jobSummaries(): Omit<Job, 'command'>[] { return this.db.prepare("SELECT json_remove(data, '$.command') AS data FROM jobs ORDER BY rowid").all().map(row => JSON.parse(row.data as string)); }
-  job(id: string): Job | undefined { const row = this.db.prepare('SELECT data FROM jobs WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  history(): Omit<Job, 'command'>[] {
+    return this.db.prepare("SELECT json_remove(data, '$.command') AS data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT json_remove(data, '$.command') AS data FROM jobs").all()
+      .map(r => JSON.parse(r.data as string)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  archiveJob(job: Job) {
+    this.db.prepare('INSERT INTO job_history VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(job.id, JSON.stringify({ ...job, historyOnly: true }));
+  }
+  job(id: string): Job | undefined { const row = this.db.prepare('SELECT data FROM jobs WHERE id=? UNION ALL SELECT data FROM job_history WHERE id=? LIMIT 1').get(id, id); return row ? JSON.parse(row.data as string) : undefined; }
   // Every job write passes through here, so the journal records each state change and delivered PR once.
   save(job: Job) {
+    if (job.historyOnly || this.db.prepare('SELECT id FROM job_history WHERE id=?').get(job.id)) throw new Error('Historical runs are read-only');
     const before = this.job(job.id);
     this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job));
     const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
