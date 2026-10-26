@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Store, type Job, type SessionTicket, type SessionThread } from './store.ts';
 import { taskSchema, type Task } from './clients.ts';
-import { refreshTicket } from './session-tickets.ts';
+import { refreshTicket, REPORT_VERSION } from './session-tickets.ts';
 
 // Import only identities explicitly recorded by Kanvil's importer. Ticket numbers can change.
 export function importedTickets(tickets: Task[]) {
@@ -24,6 +24,7 @@ export function migrateKaneoState(source: DatabaseSync, target: Store, tickets: 
   if (missing.length) throw new Error(`Missing verified Kanvil identities for ${missing.length} session tickets`);
   if (rows.some(row => !identities.get(row.taskId)!.description?.includes(`\nKaneo source: ${row.key}\nSource task ID: ${row.taskId}\n`))) throw new Error('Imported source key does not match the legacy ledger');
   if (threads.some(t => t.pending.length || t.backfill || t.error)) throw new Error('Legacy session collection must be settled before migration');
+  if ([...threads, ...target.sessionThreads()].some(t => (t.reportVersion ?? 1) > REPORT_VERSION)) throw new Error('Cannot migrate a newer session scan version');
   const marker = 'migration:kaneo-state';
   const prior = target.get(marker);
   if (prior) return { ...JSON.parse(prior), alreadyMigrated: true } as { jobs: number; sessionTickets: number; sessionThreads: number; events: number; alreadyMigrated: boolean };
@@ -50,7 +51,8 @@ export function migrateKaneoState(source: DatabaseSync, target: Store, tickets: 
     for (const thread of threads) {
       const current = target.sessionThread(thread.id);
       // A completed current scan may include new post-cutover messages. Keep its greater progress.
-      if (!current || (current.lastOrdinal ?? -1) < (thread.lastOrdinal ?? -1)) target.saveSessionThread(thread);
+      const retained = current && (current.lastOrdinal ?? -1) >= (thread.lastOrdinal ?? -1) ? current : thread;
+      target.saveSessionThread({ ...retained, reportVersion: REPORT_VERSION });
     }
     const insert = target.db.prepare('INSERT INTO events(id,time,kind,job_id,text,data) VALUES(?,?,?,?,?,?)');
     const lastLegacyId = Number(events.at(-1)?.id ?? 0);

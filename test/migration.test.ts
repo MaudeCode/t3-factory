@@ -7,6 +7,7 @@ import { Store, type Job, type SessionTicket } from '../src/store.ts';
 import { Kanvil, type T3, type Task } from '../src/clients.ts';
 import type { Config } from '../src/config.ts';
 import { collectSessionTickets, sessionTicketStatus } from '../src/session-tickets.ts';
+import { ReadContext, readPhase } from '../src/read-context.ts';
 
 test('historical runs remain readable without entering live ownership or cleanup', t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-migration-'));
@@ -68,7 +69,7 @@ test('state migration preserves session evidence and tombstones while replacing 
   source.saveSessionTicket(row);
   source.record('legacy-event', 'Original journal');
   target.record('current-event', 'New journal');
-  source.saveSessionThread({ id: 'thread', projectId: 't3-project', title: 'Source', createdAt: row.createdAt, updatedAt: row.refreshedAt, lastOrdinal: 90, reportVersion: 2, upstreamReview: false, pending: [] });
+  source.saveSessionThread({ id: 'thread', projectId: 't3-project', title: 'Source', createdAt: row.createdAt, updatedAt: row.refreshedAt, lastOrdinal: 90, reportVersion: 1, upstreamReview: false, pending: [] });
   const { migrateKaneoState } = await import('../src/migration.ts');
   const native: Task = { id: 'native-ticket', projectId: 'native-project', key: 'FIX-3', number: 3, title: 'Imported', priority: 'medium', status: 'todo', labels: [{ name: 'sf' }], difficulty: 'med', automationReady: true, holdReason: null, archived: false, parentId: null, createdAt: '2026-10-26T01:00:00Z', description: '\n---\nKaneo source: FIX-8\nSource task ID: old-ticket\nSource created: 2026-01-01T01:00:00Z\nSource state: to-do' };
   const result = migrateKaneoState(source.db, target, [native], { 'old-project': 'native-project' });
@@ -80,6 +81,7 @@ test('state migration preserves session evidence and tombstones while replacing 
   assert.deepEqual(migrated.sources, row.sources);
   assert.deepEqual(target.events().map(event => event.kind), ['current-event', 'legacy-event']);
   assert.equal(target.sessionThread('thread')?.lastOrdinal, 90, 'migration must not replay old history and flood the API');
+  assert.equal(target.sessionThread('thread')?.reportVersion, 2, 'verified version-1 progress must be upgraded without replay');
   assert.equal(target.sessionThread('thread')?.pending.length, 0);
   assert.throws(() => migrateKaneoState(source.db, target, [native, { ...native, id: 'ambiguous' }], {}), /ambiguous/i);
   assert.equal(target.sessionTickets().length, 1, 'a rejected mapping cannot mutate the target');
@@ -99,4 +101,28 @@ test('state migration preserves session evidence and tombstones while replacing 
   assert.equal(status.error, null, 'restored cursors avoid the failing historical HTTP lookup path');
   assert.deepEqual(status.rows.map(row => row.key), ['FIX-3']);
   assert.deepEqual(calls, ['native-project'], 'persisted rows regain scoped access monitoring after restart');
+});
+
+test('a retained project stream yields to a foreground command before its connection is released', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-migration-yield-')), store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  store.saveSessionTicket({ taskId: 'ticket', projectId: 'project', key: 'FIX-1', number: 1, title: 'Retained', priority: 'high', status: 'todo', labels: [], createdAt: '2026-01-01', firstSeenAt: '2026-01-01', refreshedAt: new Date().toISOString(), refreshAfter: new Date(Date.now() + 60_000).toISOString(), sources: [{ threadId: 'thread', messageId: 'message', projectId: 't3', title: 'Session', at: '2026-01-01' }] });
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), events: string[] = [];
+  let commandQueued = false;
+  const context = new ReadContext();
+  context.cooperate = async () => { if (commandQueued) { commandQueued = false; events.push('foreground'); } };
+  const client = { realtime: true, ensureProjectStream: async () => {
+    if (events.includes('foreground')) return;
+    await readPhase('kanvil.project-stream', signal => new Promise<void>((resolve, reject) => {
+      signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      entered.resolve(); void release.promise.then(resolve);
+    }));
+  } } as unknown as Kanvil;
+  const work = context.run(() => collectSessionTickets({ projects: [] } as unknown as Config, store, { sessions: async () => [] } as unknown as T3, client));
+  try {
+    await entered.promise;
+    commandQueued = true; context.requestYield();
+    for (let n = 0; n < 10; n++) await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(events, ['foreground'], 'foreground work must run while the project connection is still held');
+  } finally { release.resolve(); await work; }
 });

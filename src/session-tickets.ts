@@ -15,7 +15,7 @@ const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
-const REPORT_VERSION = 2;
+export const REPORT_VERSION = 2;
 const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
@@ -250,7 +250,8 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
   const retained = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
   if (kanvil.realtime) for (const projectId of new Set(retained.map(r => r.projectId))) {
-    try { await kanvil.ensureProjectStream(projectId); }
+    await backgroundCheckpoint();
+    try { await backgroundRead(() => kanvil.ensureProjectStream(projectId)); }
     catch (error) { errors.push(`Watching session tickets: ${safeError(error)}`); }
   }
   const stale = retained.filter(r => (!kanvil.realtime || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
