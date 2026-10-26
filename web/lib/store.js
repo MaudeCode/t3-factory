@@ -384,6 +384,7 @@ export function startRun(input) {
 }
 function enqueueOperation(input, kind = "dispatch", cleanupTargets) {
   const id = uuid();
+  if (kind === "dispatch" && input.ticket && !("ticketKeyRevision" in input) && status.value.ticketKeyRevision) input = { ...input, ticketKeyRevision: status.value.ticketKeyRevision };
   operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued", ...(cleanupTargets ? { cleanupTargets: clone(cleanupTargets) } : {}) }];
   saveOperations();
   void drainOperations();
@@ -410,7 +411,7 @@ function answerRequest(choice, reason, extra) {
   const op = request(choice?.id);
   if (!op || op.choiceHandled || op.result?.data?.reason !== reason) return;
   updateOperation(op.id, { choiceHandled: true });
-  return startRun({ ...op.input, ...extra });
+  return startRun({ ...op.input, ticketKeyRevision: op.input.ticketKeyRevision, ...extra });
 }
 export function runChain(mode) {
   const choice = blocked.value;

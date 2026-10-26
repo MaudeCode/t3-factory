@@ -16,11 +16,12 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     });
   const calls: { args: string[]; input: unknown }[] = [];
   let finish: (value: any) => void = () => {};
+  let ticketKeyRevision: string | undefined;
   const server = createFactoryWeb({
     config,
     secret,
     dataDir: dir,
-    readState: () => ({ config: { enabled: false }, status: { jobs: [] } }),
+    readState: () => ({ config: { enabled: false }, status: { jobs: [], ticketKeyRevision } }),
     threadLink: async (id) => `t3code://threads/environment/${encodeURIComponent(id)}`,
     run: async (args, input) => {
       calls.push({ args, input });
@@ -268,6 +269,30 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
       ).status,
       400,
     );
+    ticketKeyRevision = "restored-keys";
+    const beforeCutoverChecks = calls.length;
+    for (const revision of [undefined, "previous-keys"]) {
+      const staleId = randomUUID();
+      const stale = await request("/api/dispatch", {
+        method: "POST", headers: { Cookie: cookie, "Idempotency-Key": staleId },
+        body: JSON.stringify({ ...input, ticketKeyRevision: revision }),
+      });
+      assert.equal(stale.status, 202);
+      const rejected = await stale.json() as any;
+      assert.equal(rejected.state, "done");
+      assert.equal(rejected.result.data.reason, "ticket-keys-changed");
+      assert.equal(rejected.result.data.notLaunched, true);
+      const persisted = await request(`/api/operations/${staleId}`, { headers: { Cookie: cookie } });
+      assert.equal((await persisted.json() as any).result.data.reason, "ticket-keys-changed");
+    }
+    assert.equal(calls.length, beforeCutoverChecks, "old browser requests never reach dispatch");
+    const fresh = await request("/api/dispatch", {
+      method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() },
+      body: JSON.stringify({ ...input, ticketKeyRevision }),
+    });
+    assert.equal(fresh.status, 202);
+    assert.equal(calls.length, beforeCutoverChecks + 1);
+    finish({ code: 1, data: { reason: "no-eligible-ticket" } });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
