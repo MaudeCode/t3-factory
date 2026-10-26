@@ -93,7 +93,7 @@ export function Runs() {
       label="State"
       value=${state}
       onChange=${setState}
-      options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", counts.running + counts.dispatching + counts.waiting], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
+      options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", all.filter(isOpen).length], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
     ${state === "next"
       ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} />`
@@ -122,7 +122,7 @@ export function RunDetail({ id }) {
     ticket = ticketLink(c, job),
     report = detail.report;
   return html`<${Page} class="run-detail" title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
-    lead=${`${job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
+    lead=${`${job.historyOnly ? "Archived run" : job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
     <div class="links-row">
       <a href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow}>Cleanup review</a>

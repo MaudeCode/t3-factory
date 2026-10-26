@@ -62,6 +62,9 @@ test("the web CLI exposes filterable snapshot metadata through state, history an
   const f = dispatchFixture(t), port = await freePort(), secret = "c".repeat(64), url = `http://127.0.0.1:${port}`;
   const job = { id: "metadata", kind: "ticket" as const, projectId: "FIX", taskId: "root", ticketKey: "FIX-1", threadId: "thread", messageId: "message", createdAt: new Date().toISOString(), state: "running" as const, reason: "Fixture", lastPersonalActivity: null, reportPath: join(f.dir, "report.json"), command: null, prUrls: [], completedAt: null, labels: ["bug", "web"], priority: "urgent", difficulty: "med" as const };
   f.store.save(job);
+  const archived = { ...job, id: 'archived-run', historyOnly: true, state: 'waiting', createdAt: '2025-01-01T00:00:00Z', ticketKey: 'FIX-OLD' };
+  f.store.db.exec('CREATE TABLE IF NOT EXISTS job_history(id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+  f.store.db.prepare('INSERT INTO job_history VALUES(?,?)').run(archived.id, JSON.stringify(archived));
   writeFileSync(join(f.c.stateDir, "status.json"), JSON.stringify({ jobs: [job] }));
   const envFile = join(f.dir, ".env"); writeFileSync(envFile, "");
   const child = spawn(process.execPath, [new URL("../src/main.ts", import.meta.url).pathname, "web"], { env: { ...process.env, T3_FACTORY_ENV: envFile, FACTORY_AUTH_MODE: "pairing", FACTORY_WEB_HOST: "127.0.0.1", FACTORY_WEB_PORT: String(port), FACTORY_PUBLIC_ORIGIN: url, FACTORY_WEB_SESSION_SECRET: secret }, stdio: ["ignore", "pipe", "pipe"] });
@@ -77,6 +80,10 @@ test("the web CLI exposes filterable snapshot metadata through state, history an
     const state = await (await fetch(`${url}/api/state`, { headers })).json();
     const history = await (await fetch(`${url}/api/history`, { headers })).json();
     const report = await (await fetch(`${url}/api/jobs/metadata/report`, { headers })).json();
+    assert.equal(history.length, 2, 'the actual Runs API must retain the archived backend history');
+    assert.equal(history.find((row: any) => row.id === archived.id)?.historyOnly, true);
+    const archivedReport = await (await fetch(`${url}/api/jobs/${archived.id}/report`, { headers })).json();
+    assert.equal(archivedReport.job.historyOnly, true, 'historical report routes remain readable and read-only');
     for (const row of [state.status.jobs[0], history[0], report.job]) {
       assert.equal(matchesRunFilters(row, { tags: ["bug", "web"], tagMode: "and", priorities: ["urgent"] }), true, "actual API runs must match tag and priority filters");
       assert.deepEqual(row.labels, job.labels);

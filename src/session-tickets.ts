@@ -15,7 +15,7 @@ const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
-const REPORT_VERSION = 2;
+export const REPORT_VERSION = 2;
 const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
@@ -97,7 +97,7 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
 export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
 
 // Job ownership and stored origin/title evidence cover current and legacy Factory sessions.
-function sessionSourceFilter(jobs: Job[], sessions: SessionThread[]) {
+function sessionSourceFilter(jobs: Pick<Job, 'kind' | 'threadId'>[], sessions: SessionThread[]) {
   const discovery = (title: string) => /^Factory discovery:/i.test(title);
   const excluded = new Set([...jobs.filter(job => job.kind === 'upstream' || job.kind === 'discovery').map(job => job.threadId), ...sessions.filter(session => session.upstreamReview || discovery(session.title)).map(session => session.id)]);
   return (threadId: string, title = '') => !excluded.has(threadId) && !discovery(title);
@@ -168,10 +168,10 @@ async function lookup(c: Config, kanvil: Kanvil, cat: Catalog, ref: SessionRef) 
 }
 
 // Both confirmation and refresh publish native identity and preserve any concurrent event invalidation.
-function refreshTicket(row: SessionTicket, task: Task, project: CatalogProject, reading: { at: string; now: number; changed: boolean }) {
+export function refreshTicket(row: SessionTicket, task: Task, project: Pick<CatalogProject, 'slug'>, reading: { at: string; now: number; changed: boolean }) {
   Object.assign(row, { projectId: task.projectId, key: task.key ?? `${project.slug}-${task.number}`, number: task.number,
     difficulty: task.difficulty, automationReady: task.automationReady, holdReason: task.holdReason,
-    title: task.title, priority: task.priority, status: task.status, labels: (task.labels ?? []).map(l => l.name),
+    title: task.title, priority: task.priority, status: task.status, archived: task.archived, labels: (task.labels ?? []).map(l => l.name),
     refreshedAt: reading.at, refreshAfter: new Date(reading.changed ? 0 : reading.now + REFRESH_MS).toISOString(), refreshError: undefined });
 }
 
@@ -180,7 +180,7 @@ function refreshTicket(row: SessionTicket, task: Task, project: CatalogProject, 
 export async function collectSessionTickets(c: Config, store: Store, t3: T3, kanvil: Kanvil, budget: Budget = {}): Promise<boolean> {
   const limits = { reads: 8, lookups: 10, refreshes: 10, ...budget };
   const now = Date.now(), at = new Date(now).toISOString(), errors: string[] = [];
-  let includeSource = sessionSourceFilter(store.jobs(), store.sessionThreads());
+  let includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
   let more = false;
   let listed: Set<string> | undefined;
   try {
@@ -208,7 +208,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (store.sessionThread(session.id)?.backfill) more = true;
     }
   } catch (error) { errors.push(`Listing sessions: ${safeError(error)}`); }
-  includeSource = sessionSourceFilter(store.jobs(), store.sessionThreads());
+  includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
   let cat: Catalog | undefined;
   const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now)).toSorted(recentFirst);
   if (due.length) {
@@ -248,7 +248,17 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   }
   // A failed read keeps the row's last honest reading and waits before trying again, so an outage cannot loop on the same rows.
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
-  const stale = store.sessionTickets().filter(r => (!kanvil.realtime || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
+  const retained = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
+  if (kanvil.realtime) for (const projectId of new Set(retained.map(r => r.projectId))) {
+    await backgroundCheckpoint();
+    try { await backgroundRead(() => kanvil.ensureProjectStream(projectId)); }
+    catch (error) { errors.push(`Watching session tickets: ${safeError(error)}`); }
+  }
+  const stale = retained.filter(r => (!kanvil.realtime || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
+  if (kanvil.realtime) for (const projectId of new Set(stale.slice(0, limits.refreshes).map(r => r.projectId))) {
+    try { await backgroundRead(() => kanvil.tasks(projectId)); }
+    catch (error) { errors.push(`Reading session snapshot: ${safeError(error)}`); }
+  }
   if (stale.length > limits.refreshes) more = true;
   for (const cached of stale.slice(0, limits.refreshes)) {
     await backgroundCheckpoint();
@@ -256,7 +266,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     if (row.dismissedAt || row.consumed) continue;
     try {
       const revision = kanvil.revision;
-      const task = trackerTask.parse(await backgroundRead(() => kanvil.task(cached.taskId)));
+      const task = trackerTask.parse(await backgroundRead(() => kanvil.task(cached.taskId, undefined, true)));
       cat ??= await catalog(c, store, kanvil);
       if (!cat.projects[task.projectId] && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); }
       const project = cat.projects[task.projectId];
@@ -304,8 +314,8 @@ export function dismissSessionTicket(store: Store, taskId: string) {
 // The list as the page shows it: actionable, not dismissed, not consumed by a confirmed Factory start, in priority order.
 export function sessionTicketStatus(c: Config, store: Store) {
   const jobs = store.jobs(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
-  const includeSource = sessionSourceFilter(jobs, store.sessionThreads());
-  const rows = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
+  const includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
+  const rows = store.sessionTickets().filter(r => !r.archived && !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
     const bySession = new Map<string, SessionSource>();
     for (const source of r.sources) {
       if (!includeSource(source.threadId, source.title)) continue;

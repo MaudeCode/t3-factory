@@ -34,7 +34,7 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
-  const compact = (j: any) => ({ id: j.id, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
+  const compact = (j: any) => ({ id: j.id, historyOnly: j.historyOnly, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
   // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
   const viaService = async (args: string[], input?: unknown) => {
     const command = args[0] === 'cleanup' ? { type: 'cleanup' as const, input: cleanupRequestSchema.parse(input), operator: args[1] } : commandFor(args);
@@ -58,7 +58,7 @@ if (command === 'web') {
       }
       return { ...data, errors: inventoryError ? [...data.errors, { repository: 'Inventory', message: inventoryError }] : data.errors, refreshing: !inventoryError && (data.refreshing || !!input.refresh) };
     },
-    history: () => store.jobs().map(compact).toReversed(),
+    history: () => store.history().map(compact).toReversed(),
     threadLink: (id) => new T3(loadConfig(configPath).t3).threadLink(id),
     report: (id) => {
       const job = store.job(id);
