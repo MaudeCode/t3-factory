@@ -66,6 +66,7 @@ const dispatchSchema = z
     overrideLimits: overrideLimitsSchema.default(true),
     allowMissingReadyLabel: z.boolean().default(false),
     chain: z.enum(["first", "all"]).optional(),
+    ticketKeyRevision: z.string().min(1).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
   })
   .strict()
@@ -470,11 +471,18 @@ export function createFactoryWeb(options: {
             state: "running",
             createdAt: new Date(now()).toISOString(),
           };
+          const dispatch = input as z.infer<typeof dispatchSchema>;
+          const revision = (options.readState() as { status?: { ticketKeyRevision?: string } }).status?.ticketKeyRevision;
+          if (path === "/api/dispatch" && dispatch.ticket && revision && dispatch.ticketKeyRevision !== revision) {
+            operation.state = "done";
+            operation.result = { code: 1, data: { reason: "ticket-keys-changed", notLaunched: true, message: "Ticket numbers changed. Reload Factory and select the ticket again." } };
+            saveOperation(dataDir, operation);
+            return json(res, 202, operation);
+          }
           writeFileSync(file, JSON.stringify(operation), {
             flag: "wx",
             mode: 0o600,
           });
-          const dispatch = input as z.infer<typeof dispatchSchema>;
           const args = path === "/api/cleanup/actions" ? ["cleanup", `web-session:${sign(req.headers.cookie ?? "").slice(0, 16)}`] : [
             "dispatch",
             "--request-id", id,

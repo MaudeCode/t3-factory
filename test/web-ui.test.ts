@@ -132,6 +132,39 @@ async function untilChecked(predicate: () => boolean) {
   assert.ok(predicate(), 'dispatch state settled');
 }
 
+test('named requests capture the ticket-key revision and recovery never relabels old requests', async () => {
+  const originalFetch = globalThis.fetch;
+  const state = { ...fixture(), status: { jobs: [], ticketKeyRevision: 'restored-keys' } };
+  const writes: any[] = [];
+  globalThis.fetch = async (url: any, init?: RequestInit) => {
+    if (url !== '/api/dispatch') return Response.json(state);
+    const input = JSON.parse(init!.body as string);
+    writes.push(input);
+    return Response.json({ id: (init!.headers as any)['Idempotency-Key'], input, state: 'done', result: { data: { reason: 'ticket-keys-changed', notLaunched: true } } });
+  };
+  try {
+    store.operations.value = []; saved.clear();
+    store.applyState(state, true);
+    store.startRun({ ticket: 'APP-1', model: 'auto', overrideLimits: true });
+    await untilChecked(() => writes.length === 1 && store.operations.value.every((op: any) => op.state === 'done'));
+    assert.equal(writes[0].ticketKeyRevision, 'restored-keys');
+    saved.set('factoryOperations', JSON.stringify([{ id: 'old-request', input: { ticket: 'APP-2', model: 'auto', overrideLimits: true }, state: 'queued' }]));
+    store.operations.value = [];
+    await store.restoreOperation();
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].ticketKeyRevision, undefined, 'recovered requests retain their original identity context');
+    store.operations.value = [{ id: 'old-readiness', input: { ticket: 'APP-3', model: 'auto', overrideLimits: true }, state: 'done', result: { data: { reason: 'ready-label-confirmation-required' } } }];
+    store.showReadinessConfirmation('old-readiness');
+    store.runWithoutReadyLabel();
+    await untilChecked(() => writes.length === 3 && store.operations.value.every((op: any) => op.state === 'done'));
+    assert.equal(writes[2].ticketKeyRevision, undefined, 'answering an old readiness prompt cannot adopt the new mapping');
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.operations.value = []; saved.clear();
+    store.applyState(fixture(), true);
+  }
+});
+
 test('manual submissions queue behind a deferred check with captured inputs and keep draining after refusal', async () => {
   store.applyState(fixture(), true);
   const calls: any[] = [];
