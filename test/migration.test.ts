@@ -9,6 +9,17 @@ import type { Config } from '../src/config.ts';
 import { collectSessionTickets, sessionTicketStatus } from '../src/session-tickets.ts';
 import { ReadContext, readPhase } from '../src/read-context.ts';
 
+test('migration preserves the parser version actually used instead of certifying unparsed historical reports', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-migration-parser-'));
+  const source = new Store(join(dir, 'source')), target = new Store(join(dir, 'target'));
+  t.after(() => { source.close(); target.close(); rmSync(dir, { recursive: true, force: true }); });
+  source.saveSessionThread({ id: 'source', projectId: 'project', title: 'Source', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T01:00:00Z', lastOrdinal: 20, reportVersion: 3, upstreamReview: false, pending: [] });
+  const { migrateKaneoState } = await import('../src/migration.ts');
+  migrateKaneoState(source.db, target, [], {});
+  assert.equal(target.sessionThread('source')?.reportVersion, 3, 'only a real parser scan can advance the parser version');
+  assert.equal(target.sessionThread('source')?.lastOrdinal, 20, 'migration preserves durable progress for bounded replay');
+});
+
 test('historical runs remain readable without entering live ownership or cleanup', t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-migration-'));
   const store = new Store(dir);
@@ -69,7 +80,7 @@ test('state migration preserves session evidence and tombstones while replacing 
   source.saveSessionTicket(row);
   source.record('legacy-event', 'Original journal');
   target.record('current-event', 'New journal');
-  source.saveSessionThread({ id: 'thread', projectId: 't3-project', title: 'Source', createdAt: row.createdAt, updatedAt: row.refreshedAt, lastOrdinal: 90, reportVersion: 1, upstreamReview: false, pending: [] });
+  source.saveSessionThread({ id: 'thread', projectId: 't3-project', title: 'Source', createdAt: row.createdAt, updatedAt: row.refreshedAt, lastOrdinal: 90, reportVersion: 4, upstreamReview: false, pending: [] });
   const { migrateKaneoState } = await import('../src/migration.ts');
   const native: Task = { id: 'native-ticket', projectId: 'native-project', key: 'FIX-3', number: 3, title: 'Imported', priority: 'medium', status: 'todo', labels: [{ name: 'sf' }], difficulty: 'med', automationReady: true, holdReason: null, archived: false, parentId: null, createdAt: '2026-10-26T01:00:00Z', description: '\n---\nKaneo source: FIX-8\nSource task ID: old-ticket\nSource created: 2026-01-01T01:00:00Z\nSource state: to-do' };
   const result = migrateKaneoState(source.db, target, [native], { 'old-project': 'native-project' });
@@ -81,7 +92,7 @@ test('state migration preserves session evidence and tombstones while replacing 
   assert.deepEqual(migrated.sources, row.sources);
   assert.deepEqual(target.events().map(event => event.kind), ['current-event', 'legacy-event']);
   assert.equal(target.sessionThread('thread')?.lastOrdinal, 90, 'migration must not replay old history and flood the API');
-  assert.equal(target.sessionThread('thread')?.reportVersion, 3, 'verified version-1 progress must be upgraded without replay');
+  assert.equal(target.sessionThread('thread')?.reportVersion, 4, 'verified current-parser progress is preserved without replay');
   assert.equal(target.sessionThread('thread')?.pending.length, 0);
   assert.throws(() => migrateKaneoState(source.db, target, [native, { ...native, id: 'ambiguous' }], {}), /ambiguous/i);
   assert.equal(target.sessionTickets().length, 1, 'a rejected mapping cannot mutate the target');

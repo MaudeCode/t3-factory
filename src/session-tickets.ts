@@ -9,13 +9,14 @@ import { Store, type Job, type SessionRef, type SessionSource, type SessionThrea
 import { ticketDifficulty } from './policy.ts';
 import { log, safeError } from './scheduler.ts';
 import type { Config } from './config.ts';
+import { importedTickets, importedTicketSource } from './imported-tickets.ts';
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'];
 const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
-export const REPORT_VERSION = 3;
+export const REPORT_VERSION = 4;
 const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
@@ -36,7 +37,8 @@ const FUTURE = /\b(?:will|planning to|going to|intend to|please)\b[^.\n]{0,40}\b
 const CLAUSE = /[,;:]|\s(?:so|but|and|then|yet)\s/i;
 const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/projects\/([^/\s)]+)\/tickets\/([\w-]+)/g;
-const reportBoundary = (line: string) => /^(?:existing|related|next|examples?|references|unfiled|not created|see also)\b/i.test(line.replace(/^\s*(?:(?:#{1,6}|[-*+•]|\d+[.)])\s+)?(?:\*\*|__)?/, ''));
+const LEGACY_LINK = /\/dashboard\/workspace\/[^/\s)]+\/project\/[^/\s)]+\/task\/([\w-]+)/g;
+const reportBoundary = (line: string) => /^(?:existing|related|next|examples?|references|unfiled|not (?:created|filed|opened)|see also)\b/i.test(line.replace(/^\s*(?:(?:#{1,6}|[-*+•]|\d+[.)])\s+)?(?:\*\*|__)?/, ''));
 // Explicit skill commands and the legacy release-review launch request, not titles or discussion of the skill.
 const UPSTREAM_REVIEW_REQUEST = /^(?:[$/](?:skills[:/])?upstream-release-review\b|Review [^\n]+?\bfrom\b[^\n]+?\bto\b[^\n]+?\bwith\b[^\n]*\bupstream-release-review`?\s+skill(?=[.!?](?:\s|$)|\s*$))/i;
 // Walk a block clause by clause. A clause with a creation verb sets the polarity (affirmed, or negated when a
@@ -72,7 +74,9 @@ function expandReportKeys(text: string) {
 export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'>[] {
   const refs = new Map<string, Pick<SessionRef, 'kind' | 'value'>>();
   let section = false;
-  for (const block of text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').split(/\n\s*\n/)) {
+  const blocks = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')
+    .replace(/^(#{1,6}\s+[^\n]+|\*\*[^\n]+\*\*|__[^\n]+__)\s*$/gm, '\n\n$1\n\n').split(/\n\s*\n/);
+  for (const block of blocks) {
     const lines = block.split('\n').filter(line => !/^\s*>/.test(line));
     const plain = expandReportKeys(lines.filter(line => !/^\s*\|/.test(line)).join('\n')).trim();
     const table = lines.filter(line => /^\s*\|/.test(line)).map(line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(cell => cell.trim()));
@@ -98,7 +102,8 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
     if (summary) for (const range of plain.matchAll(/\bNumbers\s+(?:run|range(?: from)?)\s+([^.!?\n]+)/gi)) reported.push(range[1]!);
     const body = reported.join('\n');
     for (const [, , taskId] of body.matchAll(LINK)) refs.set(`task:${taskId}`, { kind: 'task', value: taskId });
-    for (const [, key] of body.replace(LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
+    for (const [, taskId] of body.matchAll(LEGACY_LINK)) refs.set(`legacy-task:${taskId}`, { kind: 'legacy-task', value: taskId });
+    for (const [, key] of body.replace(LINK, ' ').replace(LEGACY_LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
   }
   return [...refs.values()];
 }
@@ -174,10 +179,18 @@ async function readTicket(kanvil: Kanvil, id: string, cached = false) {
   }
 }
 // The tracker's own record for a reference, or null when the reference cannot be a ticket in this workspace.
-async function lookup(c: Config, kanvil: Kanvil, cat: Catalog, ref: SessionRef) {
-  const task = await readTicket(kanvil, ref.value);
-  if (!task || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId)) return null;
-  return cat.projects[task.projectId] ? task : null;
+async function lookup(c: Config, kanvil: Kanvil, cat: Catalog, ref: SessionRef, imports: (cat: Catalog) => Promise<Map<string, Task>>) {
+  let task: z.infer<typeof trackerTask> | null = ref.kind === 'legacy-task'
+    ? (await imports(cat)).get(ref.value) ?? null : await readTicket(kanvil, ref.value);
+  // Old keys may now name another ticket. Search explicit source keys before applying creation-time evidence.
+  if (ref.kind === 'key' && (!task || Date.parse(task.createdAt) > Date.parse(ref.at) + CLOCK_SKEW_MS)) {
+    const matches = [...(await imports(cat)).values()].filter(ticket => importedTicketSource(ticket)?.key === ref.value);
+    if (matches.length > 1) throw new Error('Ambiguous Kaneo source key');
+    task = matches[0] ?? task;
+  }
+  if (!task || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId) || !cat.projects[task.projectId]) return null;
+  const source = importedTicketSource(task);
+  return source ? { ...task, createdAt: source.createdAt } : task;
 }
 
 // Both confirmation and refresh publish native identity and preserve any concurrent event invalidation.
@@ -223,6 +236,21 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   } catch (error) { errors.push(`Listing sessions: ${safeError(error)}`); }
   includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
   let cat: Catalog | undefined;
+  let imported: { catalog: Catalog; revision: number; records: Promise<Map<string, Task>> } | undefined;
+  const imports = (catalog: Catalog) => {
+    if (!imported || imported.catalog !== catalog || imported.revision !== kanvil.revision) {
+      const records = async () => {
+        const tickets: Task[] = [];
+        for (const project of Object.values(catalog.projects)) {
+          await backgroundCheckpoint();
+          tickets.push(...await backgroundRead(() => kanvil.tasks(project.id, undefined, true)));
+        }
+        return importedTickets(tickets);
+      };
+      imported = { catalog, revision: kanvil.revision, records: records() };
+    }
+    return imported.records;
+  };
   const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now)).toSorted(recentFirst);
   if (due.length) {
     try { cat = await catalog(c, store, kanvil); } catch (error) { errors.push(`Reading tracker projects: ${safeError(error)}`); }
@@ -235,9 +263,9 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (lookups++ >= limits.lookups) { more = true; break; }
       try {
         const revision = kanvil.revision;
-        let task = await backgroundRead(() => lookup(c, kanvil, cat!, ref));
+        let task = await backgroundRead(() => lookup(c, kanvil, cat!, ref, imports));
         // A project created since the catalog was cached is read once, fresh, before its reference is discarded.
-        if (!task && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); task = await lookup(c, kanvil, cat, ref); }
+        if (!task && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); task = await lookup(c, kanvil, cat, ref, imports); }
         const created = task ? Date.parse(task.createdAt) : NaN;
         // Creation evidence: the ticket came into being during this session, no later than the report.
         if (task && created >= Date.parse(rec.createdAt) - CLOCK_SKEW_MS && created <= Date.parse(ref.at) + CLOCK_SKEW_MS) {

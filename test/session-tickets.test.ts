@@ -81,7 +81,83 @@ test('the scheduler collects a session-created ticket into status on its own and
 const { collectSessionTickets, creationReports, dismissSessionTicket, sessionTicketStatus } = await import('../src/session-tickets.ts');
 const { Store } = await import('../src/store.ts');
 const { T3: T3Client, Kanvil: KanvilClient } = await import('../src/clients.ts');
-const LINK = (taskId: string, project = 'FIX') => `https://kanvil.example.test/projects/${project}/tickets/${taskId}`;
+const LINK = (taskId: string, project = 'FIX', legacy = false) => legacy
+  ? `https://tracker.example.test/dashboard/workspace/old-workspace/project/${project}/task/${taskId}`
+  : `https://kanvil.example.test/projects/${project}/tickets/${taskId}`;
+const sectionedBatch = (legacy = false) => {
+  const ref = (n: number) => `[FIX-${n}](${LINK(legacy ? `source-${n}` : `task-${n}`, legacy ? 'old-project' : 'FIX', legacy)})`;
+  const rows = (numbers: number[]) => '| Ticket | What it adds | Difficulty |\n|---|---|---|\n' + numbers.map(n => `| ${ref(n)} | Feature ${n}, related to FIX-99 | med |`).join('\n');
+  return `I filed 9 tickets: the foundation plus 8 group tickets.\n\n**Foundation**\n- ${ref(1)} Foundation.\n\n**Blocked by FIX-1 (6 tickets)**\n\n${rows([2, 3, 4, 5, 6, 7])}\n\n**Not blocked, linked as related (2 tickets)**\n\n${rows([8, 9])}\n\n**Not filed:**\n- FIX-99 is only an idea.`;
+};
+
+test('sectioned creation batches retain heading-adjacent lists and all associated tables', () => {
+  for (const legacy of [false, true]) {
+    const refs = creationReports(sectionedBatch(legacy));
+    assert.deepEqual(refs.filter(r => r.kind === 'key').map(r => r.value), Array.from({ length: 9 }, (_, i) => `FIX-${i + 1}`));
+    assert.deepEqual(refs.filter(r => r.kind !== 'key').map(r => r.value), Array.from({ length: 9 }, (_, i) => `${legacy ? 'source' : 'task'}-${i + 1}`));
+  }
+  for (const heading of ['**Existing tickets**', '## Related tickets', '**Examples**', '**Not created**']) {
+    assert.deepEqual(creationReports(`Filed tickets.\n\n${heading}\n- FIX-99`), [], heading);
+  }
+});
+
+test('historical creation confirmation uses imported original dates instead of native import times', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  for (let n = 1; n <= 9; n++) f.tasks.push(task(`native-${n}`, n, 'FIX', {
+    createdAt: '2026-03-10T00:00:00Z', status: n === 9 ? 'done' : 'todo',
+    description: `Original work.\n---\nKaneo source: FIX-${n}\nSource task ID: source-${n}\nSource created: ${AT.created}\n`,
+  }));
+  f.bounded.set('s1', { items: [message('filed', 'assistant_message', 'Filed tickets: ' + f.tasks.map(t => `FIX-${t.number}`).join(', '), 2, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect({ lookups: 100 });
+  assert.equal(f.store.sessionTickets().length, 9, 'all nine original creations are confirmed');
+  assert.equal(f.keys().length, 8, 'only the eight To do records are actionable');
+  assert.ok(f.store.sessionTickets().every(row => row.createdAt === AT.created));
+});
+
+test('version-3 histories recover all imported creations by stable legacy IDs after renumbering', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  for (let n = 1; n <= 9; n++) f.tasks.push(task(`native-${n}`, 100 + n, 'FIX', {
+    createdAt: '2026-03-10T00:00:00Z', status: n === 9 ? 'done' : 'todo',
+    description: `Original work.\n---\nKaneo source: FIX-${n}\nSource task ID: source-${n}\nSource created: ${AT.created}\n`,
+  }));
+  // A current number collision must never replace the original task's stable import identity.
+  f.tasks.push(task('collision', 1, 'FIX', { createdAt: '2026-03-10T00:00:00Z' }));
+  f.store.saveSessionThread({ id: 's1', title: 'Source', projectId: 'FIX', createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 20, reportVersion: 3, upstreamReview: false, pending: [] });
+  f.bounded.set('s1', { items: [message('latest', 'assistant_message', 'Nothing new.', 20, AT.reported, 's1')], cursor: 'older', more: true });
+  f.history.set('older', { items: [message('filed', 'assistant_message', sectionedBatch(true), 2, AT.reported, 's1')], cursor: null, more: false });
+  assert.equal(await f.collect({ reads: 1 }), true, 'the current old parser version starts bounded recovery');
+  f.store.close(); f.store = new Store(f.c.stateDir);
+  f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=conversation');
+  await f.collect({ reads: 1 });
+  const rec = f.store.sessionThread('s1')!;
+  assert.equal(rec.backfill?.cursor, 'older');
+  delete rec.retryAfter; f.store.saveSessionThread(rec);
+  const before = f.calls.filter(c => c === 'tickets').length;
+  await f.collect({ lookups: 100 });
+  assert.equal(f.store.sessionTickets().length, 9);
+  assert.deepEqual(f.keys(), Array.from({ length: 8 }, (_, i) => `FIX-${101 + i}`));
+  assert.equal(f.store.sessionTicket('collision'), undefined);
+  assert.ok(f.store.sessionTickets().every(row => row.createdAt === AT.created && row.sources.length === 1 && row.sources[0]!.messageId === 'message-filed'));
+  assert.ok(f.calls.filter(c => c === 'tickets').length - before <= f.projects.length, 'references share project snapshots within the batch');
+  await f.drain();
+  assert.equal(f.store.sessionTickets().length, 9, 'replay remains idempotent');
+});
+
+for (const invalid of ['duplicate', 'bad-date', 'unavailable']) test(`historical import ${invalid} keeps creation evidence pending`, async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  const description = `Original.\n---\nKaneo source: FIX-7\nSource task ID: source-7\nSource created: ${invalid === 'bad-date' ? 'invalid-date' : AT.created}\n`;
+  f.tasks.push(task('native', 77, 'FIX', { description, createdAt: '2026-03-10T00:00:00Z' }));
+  if (invalid === 'duplicate') f.tasks.push(task('duplicate', 78, 'FIX', { description, createdAt: '2026-03-10T00:00:00Z' }));
+  if (invalid === 'unavailable') f.failing.add('tickets');
+  f.bounded.set('s1', { items: [message('filed', 'assistant_message', `Filed [FIX-7](${LINK('source-7', 'old-project', true)}).`, 2, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  assert.equal(f.keys().length, 0);
+  assert.ok(f.store.sessionThread('s1')!.pending.length > 0, 'bad provenance or a failed snapshot is retryable, never silently retired');
+  assert.ok(f.status().error);
+});
 
 test('session sources are unique by thread and retain the latest creation report', async t => {
   const f = collectorFixture(t);
