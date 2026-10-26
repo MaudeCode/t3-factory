@@ -404,7 +404,7 @@ test('session ticket keys resolve with their native project context', async t =>
   assert.ok(paths.includes('/api/v1/projects/FIX/tickets/FIX-7'), 'key lookup uses the tracker endpoint directly');
 });
 
-test('missing session ticket references stop retrying without losing the known list', async t => {
+test('missing session ticket references retire and missing saved tickets leave the actionable list', async t => {
   const f = collectorFixture(t);
   f.tasks.push(task('task-7', 7));
   f.sessions.push(f.session('s1'));
@@ -422,9 +422,65 @@ test('missing session ticket references stop retrying without losing the known l
   const row = f.store.sessionTicket('task-7')!;
   f.store.saveSessionTicket({ ...row, refreshAfter: '2000-01-01T00:00:00Z' });
   await f.collect();
-  assert.deepEqual(f.keys(), ['FIX-7'], 'absence on refresh preserves an already listed row');
+  assert.deepEqual(f.keys(), [], 'absence on refresh removes a missing ticket from the actionable list');
+  assert.equal(f.store.sessionTicket('task-7')!.missing, true, 'the stored row and its provenance remain recoverable');
   assert.equal(f.store.sessionTicket('task-7')!.refreshedAt, row.refreshedAt);
-  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7: Kanvil ticket not found/);
+  assert.equal(f.status().error, null, 'missing tickets do not make collection fail');
+});
+
+test('missing saved tickets back off and recover without an event, including after restart', async t => {
+  for (const realtime of [false, true]) await t.test(`realtime=${realtime}`, async t => {
+    const f = collectorFixture(t);
+    f.tasks.push(task('task-7', 7), task('task-8', 8));
+    f.sessions.push(f.session('s1'));
+    f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7 and FIX-8.', 1, AT.reported, 's1')], cursor: null, more: false });
+    await f.collect();
+    Object.defineProperty(f.kanvil, 'realtime', { value: realtime });
+    const saved = f.store.sessionTicket('task-7')!;
+    f.tasks.shift();
+    f.store.saveSessionTicket({ ...saved, refreshError: 'Kanvil ticket not found or inaccessible', refreshAfter: new Date(0).toISOString() });
+    await f.collect();
+    assert.deepEqual(f.keys(), ['FIX-8'], 'healthy tickets remain actionable');
+    assert.equal(f.status().error, null, 'an old missing-ticket error clears after classification');
+    const missing = f.store.sessionTicket('task-7')!;
+    assert.equal(missing.missing, true);
+    assert.equal(missing.refreshError, undefined);
+    assert.equal(missing.refreshedAt, saved.refreshedAt, 'absence is not a successful metadata read');
+    assert.deepEqual(missing.sources, saved.sources);
+    const reads = f.calls.filter(c => c === 'ticket').length;
+    await f.collect();
+    assert.equal(f.calls.filter(c => c === 'ticket').length, reads, 'missing tickets wait for the retry deadline');
+    f.tasks.unshift(task('task-7', 11, 'OTH', { key: 'OTH-11', title: 'Restored ticket' }));
+    f.store.saveSessionTicket({ ...missing, refreshAfter: new Date(Date.now() - 1).toISOString() });
+    const reopened = new Store(f.c.stateDir);
+    try {
+      assert.deepEqual(sessionTicketStatus(f.c, reopened).rows.map(r => r.key), ['FIX-8']);
+      await collectSessionTickets(f.c, reopened, f.t3, f.kanvil);
+      assert.deepEqual(sessionTicketStatus(f.c, reopened).rows.map(r => r.key), ['FIX-8', 'OTH-11']);
+      const recovered = reopened.sessionTicket('task-7')!;
+      assert.equal(recovered.missing, undefined);
+      assert.equal(recovered.title, 'Restored ticket');
+      assert.deepEqual(recovered.sources, saved.sources);
+      assert.equal(sessionTicketStatus(f.c, reopened).error, null);
+    } finally { reopened.close(); }
+  });
+});
+
+test('saved-ticket outages keep the last list and the collection error throughout retry backoff', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  const saved = f.store.sessionTicket('task-7')!;
+  await httpTracker(t, f, () => { throw new Error('Kanvil request failed (HTTP 503, unavailable)'); });
+  f.store.saveSessionTicket({ ...saved, refreshAfter: new Date(0).toISOString() });
+  await f.collect();
+  assert.deepEqual(f.keys(), ['FIX-7']);
+  assert.equal(f.store.sessionTicket('task-7')!.missing, undefined);
+  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7:.*HTTP 503/);
+  await f.collect();
+  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7:.*HTTP 503/, 'backoff does not clear an unresolved outage');
 });
 
 test('task lookup errors without explicit absence remain retryable', async t => {

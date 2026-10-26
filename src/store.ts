@@ -63,6 +63,8 @@ export interface FactoryEvent { id: number; time: string; kind: string; jobId: s
 export interface SessionSource { threadId: string; messageId: string; projectId: string; title: string; at: string }
 export interface SessionTicket {
   archived?: boolean;
+  // Hidden while Kanvil cannot resolve the identity; retain history and retry in case access returns.
+  missing?: boolean;
   taskId: string; projectId: string; key: string; number: number; title: string; priority: string; status: string; labels: string[]; createdAt: string;
   difficulty?: 'low' | 'med' | 'high' | null; automationReady?: boolean; holdReason?: string | null;
   // `refreshedAt` is the last successful tracker read; `refreshAfter` is when the next read is due, later after a failure.
