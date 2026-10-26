@@ -93,7 +93,7 @@ export function Runs() {
       label="State"
       value=${state}
       onChange=${setState}
-      options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", counts.running + counts.dispatching + counts.waiting], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
+      options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", all.filter(isOpen).length], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
     ${state === "next"
       ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} />`
