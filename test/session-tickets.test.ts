@@ -145,18 +145,52 @@ test('version-3 histories recover all imported creations by stable legacy IDs af
   assert.equal(f.store.sessionTickets().length, 9, 'replay remains idempotent');
 });
 
-for (const invalid of ['duplicate', 'bad-date', 'unavailable']) test(`historical import ${invalid} keeps creation evidence pending`, async t => {
+for (const invalid of ['duplicate', 'bad-date', 'truncated', 'unavailable', 'missing-project']) test(`historical import ${invalid} keeps creation evidence pending`, async t => {
   const f = collectorFixture(t);
   f.sessions.push(f.session('s1'));
-  const description = `Original.\n---\nKaneo source: FIX-7\nSource task ID: source-7\nSource created: ${invalid === 'bad-date' ? 'invalid-date' : AT.created}\n`;
+  const description = `Original.\n---\nKaneo source: FIX-7\nSource task ID: source-7\n` + (invalid === 'truncated' ? '' : `Source created: ${invalid === 'bad-date' ? 'invalid-date' : AT.created}\n`);
   f.tasks.push(task('native', 77, 'FIX', { description, createdAt: '2026-03-10T00:00:00Z' }));
   if (invalid === 'duplicate') f.tasks.push(task('duplicate', 78, 'FIX', { description, createdAt: '2026-03-10T00:00:00Z' }));
   if (invalid === 'unavailable') f.failing.add('tickets');
+  if (invalid === 'missing-project') t.mock.method(f.kanvil, 'tasks', async () => { throw new KanvilTaskNotFound('Project snapshot unavailable'); });
   f.bounded.set('s1', { items: [message('filed', 'assistant_message', `Filed [FIX-7](${LINK('source-7', 'old-project', true)}).`, 2, AT.reported, 's1')], cursor: null, more: false });
   await f.collect();
   assert.equal(f.keys().length, 0);
-  assert.ok(f.store.sessionThread('s1')!.pending.length > 0, 'bad provenance or a failed snapshot is retryable, never silently retired');
+  assert.ok(f.store.sessionThread('s1')!.pending.some(ref => ref.kind === 'legacy-task'), 'bad provenance or a failed snapshot retains the stable legacy reference');
   assert.ok(f.status().error);
+});
+
+test('historical confirmation preserves migrated dismissal and consumption tombstones', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  for (const n of [7, 8]) {
+    f.tasks.push(task(`native-${n}`, 10 * n, 'FIX', { createdAt: '2026-03-10T00:00:00Z', description: `Original.\n---\nKaneo source: FIX-${n}\nSource task ID: source-${n}\nSource created: ${AT.created}\n` }));
+    f.store.saveSessionTicket({ taskId: `native-${n}`, projectId: 'FIX', key: `FIX-${10 * n}`, number: 10 * n, title: 'Retained', priority: 'high', status: 'todo', labels: [], createdAt: AT.created, firstSeenAt: AT.reported, refreshedAt: AT.reported, sources: [], ...(n === 7 ? { dismissedAt: AT.reported } : { consumed: { jobId: 'launched', at: AT.reported } }) });
+  }
+  f.bounded.set('s1', { items: [message('filed', 'assistant_message', `Filed tickets:\n- [FIX-7](${LINK('source-7', 'old-project', true)})\n- [FIX-8](${LINK('source-8', 'old-project', true)})`, 2, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect({ lookups: 100 });
+  assert.deepEqual(f.keys(), []);
+  assert.equal(f.store.sessionTickets().length, 2);
+  assert.equal(f.store.sessionTicket('native-7')!.dismissedAt, AT.reported);
+  assert.equal(f.store.sessionTicket('native-8')!.consumed?.jobId, 'launched');
+  assert.ok(f.store.sessionTickets().every(row => row.sources.length === 1));
+});
+
+test('tracker events invalidate historical identity snapshots before the next reference', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  for (const n of [7, 8]) f.tasks.push(task(`native-${n}`, 10 * n, 'FIX', { createdAt: '2026-03-10T00:00:00Z', description: `Original.\n---\nKaneo source: FIX-${n}\nSource task ID: source-${n}\nSource created: ${AT.created}\n` }));
+  const tasks = f.kanvil.tasks.bind(f.kanvil);
+  let reads = 0;
+  t.mock.method(f.kanvil, 'tasks', async (...args: Parameters<Kanvil['tasks']>) => {
+    const rows = await tasks(...args);
+    if (args[0] === 'FIX' && ++reads === 1) { f.tasks[0]!.title = 'Updated by event'; f.kanvil.revision++; }
+    return rows;
+  });
+  f.bounded.set('s1', { items: [message('filed', 'assistant_message', `Filed tickets:\n- [FIX-7](${LINK('source-7', 'old-project', true)})\n- [FIX-8](${LINK('source-8', 'old-project', true)})`, 2, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect({ lookups: 100 });
+  assert.equal(f.store.sessionTicket('native-7')!.title, 'Updated by event');
+  assert.equal(reads, 2, 'an event replaces the shared snapshot; aliases reuse the replacement');
 });
 
 test('session sources are unique by thread and retain the latest creation report', async t => {
