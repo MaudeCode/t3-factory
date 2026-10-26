@@ -1,19 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { Store, type Job, type SessionTicket, type SessionThread } from './store.ts';
-import { taskSchema, type Task } from './clients.ts';
+import type { Task } from './clients.ts';
 import { refreshTicket, REPORT_VERSION } from './session-tickets.ts';
-
-// Import only identities explicitly recorded by Kanvil's importer. Ticket numbers can change.
-export function importedTickets(tickets: Task[]) {
-  const ids = new Map<string, Task>();
-  for (const ticket of tickets) {
-    const matches = [...(ticket.description ?? '').matchAll(/\n---\nKaneo source: ([A-Z0-9]+-\d+)\nSource task ID: ([^\n]+)\nSource created: ([^\n]+)/g)];
-    if (!matches.length) continue;
-    if (matches.length !== 1 || ids.has(matches[0]![2]!)) throw new Error('Ambiguous Kaneo import identity');
-    ids.set(matches[0]![2]!, taskSchema.parse(ticket));
-  }
-  return ids;
-}
+import { importedTickets } from './imported-tickets.ts';
+export { importedTickets } from './imported-tickets.ts';
 
 export function migrateKaneoState(source: DatabaseSync, target: Store, tickets: Task[], projects: Record<string, string>) {
   const identities = importedTickets(tickets);
@@ -52,7 +42,7 @@ export function migrateKaneoState(source: DatabaseSync, target: Store, tickets: 
       const current = target.sessionThread(thread.id);
       // A completed current scan may include new post-cutover messages. Keep its greater progress.
       const retained = current && (current.lastOrdinal ?? -1) >= (thread.lastOrdinal ?? -1) ? current : thread;
-      target.saveSessionThread({ ...retained, reportVersion: REPORT_VERSION });
+      target.saveSessionThread(retained);
     }
     const insert = target.db.prepare('INSERT INTO events(id,time,kind,job_id,text,data) VALUES(?,?,?,?,?,?)');
     const lastLegacyId = Number(events.at(-1)?.id ?? 0);

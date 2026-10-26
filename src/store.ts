@@ -73,7 +73,7 @@ export interface SessionTicket {
   dismissedAt?: string; consumed?: { jobId: string; at: string };
 }
 // A ticket reference extracted from a session message, waiting for the tracker to confirm it.
-export interface SessionRef { kind: 'key' | 'task'; value: string; messageId: string; at: string; attempts: number; error?: string; retryAfter?: string }
+export interface SessionRef { kind: 'key' | 'task' | 'legacy-task'; value: string; messageId: string; at: string; attempts: number; error?: string; retryAfter?: string }
 // Scan progress through one session's conversation. `lastOrdinal` is the newest turn item fully processed;
 // `backfill` is an unfinished walk back through older history pages toward that mark.
 export interface SessionThread {
