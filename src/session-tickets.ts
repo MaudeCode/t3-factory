@@ -103,7 +103,9 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
     const body = reported.join('\n');
     for (const [, , taskId] of body.matchAll(LINK)) refs.set(`task:${taskId}`, { kind: 'task', value: taskId });
     for (const [, taskId] of body.matchAll(LEGACY_LINK)) refs.set(`legacy-task:${taskId}`, { kind: 'legacy-task', value: taskId });
-    for (const [, key] of body.replace(LINK, ' ').replace(LEGACY_LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
+    // A legacy link's label is in the old key namespace; its stable source ID is the reference.
+    const keyBody = body.replace(/\[[^\]\n]*\]\(([^)]*)\)/g, (link: string, url: string) => url.match(LEGACY_LINK) ? ' ' : link);
+    for (const [, key] of keyBody.replace(LINK, ' ').replace(LEGACY_LINK, ' ').matchAll(KEY)) refs.set(`key:${key}`, { kind: 'key', value: key });
   }
   return [...refs.values()];
 }

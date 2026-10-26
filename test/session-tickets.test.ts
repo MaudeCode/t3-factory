@@ -93,7 +93,8 @@ const sectionedBatch = (legacy = false) => {
 test('sectioned creation batches retain heading-adjacent lists and all associated tables', () => {
   for (const legacy of [false, true]) {
     const refs = creationReports(sectionedBatch(legacy));
-    assert.deepEqual(refs.filter(r => r.kind === 'key').map(r => r.value), Array.from({ length: 9 }, (_, i) => `FIX-${i + 1}`));
+    assert.deepEqual(refs.filter(r => r.kind === 'key').map(r => r.value), legacy ? [] : Array.from({ length: 9 }, (_, i) => `FIX-${i + 1}`));
+    if (legacy) assert.equal(refs.length, 9, 'legacy labels cannot create candidates in the current key namespace');
     assert.deepEqual(refs.filter(r => r.kind !== 'key').map(r => r.value), Array.from({ length: 9 }, (_, i) => `${legacy ? 'source' : 'task'}-${i + 1}`));
   }
   for (const heading of ['**Existing tickets**', '## Related tickets', '**Examples**', '**Not created**']) {
@@ -123,7 +124,7 @@ test('version-3 histories recover all imported creations by stable legacy IDs af
     description: `Original work.\n---\nKaneo source: FIX-${n}\nSource task ID: source-${n}\nSource created: ${AT.created}\n`,
   }));
   // A current number collision must never replace the original task's stable import identity.
-  f.tasks.push(task('collision', 1, 'FIX', { createdAt: '2026-03-10T00:00:00Z' }));
+  f.tasks.push(task('collision', 1, 'FIX', { createdAt: AT.created }));
   f.store.saveSessionThread({ id: 's1', title: 'Source', projectId: 'FIX', createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 20, reportVersion: 3, upstreamReview: false, pending: [] });
   f.bounded.set('s1', { items: [message('latest', 'assistant_message', 'Nothing new.', 20, AT.reported, 's1')], cursor: 'older', more: true });
   f.history.set('older', { items: [message('filed', 'assistant_message', sectionedBatch(true), 2, AT.reported, 's1')], cursor: null, more: false });
