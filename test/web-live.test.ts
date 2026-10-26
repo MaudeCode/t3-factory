@@ -26,7 +26,7 @@ test('web restart preserves scheduler-owned queued, checking, expired and uncert
   const input = { ticket: 'APP-1', model: 'auto', overrideLimits: true, allowMissingReadyLabel: false };
   const operations: Operation[] = ['queued', 'checking', 'expired', 'uncertain'].map(phase => ({ id: randomUUID(), input, command: { manual: true, ticket: 'APP-1' }, createdAt: new Date().toISOString(),
     state: phase === 'expired' ? 'done' : phase === 'uncertain' ? 'uncertain' : 'running',
-    progress: { phase: phase === 'queued' ? 'queued' : phase === 'checking' ? 'checking' : 'launching', stage: 'kaneo.get_task', acceptedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString() },
+    progress: { phase: phase === 'queued' ? 'queued' : phase === 'checking' ? 'checking' : 'launching', stage: 'kanvil.ticket', acceptedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString() },
     ...phase === 'expired' ? { result: { code: 1, data: { reason: 'manual-deadline-exceeded', notLaunched: true } } } : phase === 'uncertain' ? { result: { code: 1, data: { uncertain: true, jobId: 'existing-job', threadId: 'existing-thread' } } } : {},
   }));
   operations.forEach(operation => saveOperation(dir, operation));
@@ -52,7 +52,7 @@ test('web restart preserves scheduler-owned queued, checking, expired and uncert
     await fetch(`${url}/api/dispatch`, { method: 'POST', headers: { ...headers, 'Idempotency-Key': lostId }, body: JSON.stringify(input) });
     const lost = await (await fetch(`${url}/api/operations/${lostId}`, { headers })).json();
     assert.equal(lost.state, 'uncertain', 'a lost accepted control response must not leave an indefinite spinner');
-    assert.equal(lost.result.data.uncertain, true); assert.equal(lost.progress.stage, 'kaneo.get_task');
+    assert.equal(lost.result.data.uncertain, true); assert.equal(lost.progress.stage, 'kanvil.ticket');
     assert.equal(sends, 1);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -103,7 +103,7 @@ test("state is pushed over the event stream whenever the factory writes, and run
     history: () => [{ id: "a1", state: "complete" }],
     report: (id) => (id === "a1" ? { job: { id }, events: [], report: { status: "complete", reason: "done" } } : undefined),
     watch: (fn) => { notify = fn; return () => {}; },
-    run: async (args) => { stopped.push(args.join(" ")); return { code: 0, data: args[0] === "sources" ? { t3: [], kaneo: { projects: [], columns: {}, labels: [] } } : { ok: true } }; },
+    run: async (args) => { stopped.push(args.join(" ")); return { code: 0, data: args[0] === "sources" ? { t3: [], kanvil: { projects: [], columns: {}, labels: [] } } : { ok: true } }; },
   });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${port}`;
@@ -130,7 +130,7 @@ test("state is pushed over the event stream whenever the factory writes, and run
     assert.equal((await fetch(`${url}/api/jobs/a1/stop`, { method: "POST", headers: auth })).status, 200);
     assert.equal((await fetch(`${url}/api/session-tickets/task-1/dismiss`, { method: "POST", headers: auth })).status, 200);
     assert.equal((await fetch(`${url}/api/session-tickets/task-1/dismiss`, { headers: auth })).status, 404, "dismissal is a POST");
-    assert.deepEqual((await (await fetch(`${url}/api/sources`, { headers: auth })).json()).kaneo.labels, []);
+    assert.deepEqual((await (await fetch(`${url}/api/sources`, { headers: auth })).json()).kanvil.labels, []);
     assert.deepEqual(stopped, ["job-stop a1", "session-dismiss task-1", "sources"], "stop, dismissal and the catalogs go through the CLI");
   } finally {
     server.close();

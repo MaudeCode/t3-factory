@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { cycle, runPlans, cancelPlan } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
@@ -26,12 +27,12 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     models: [{ id: 'opus', name: 'Opus', model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, automatic: true, maxDifficulty: 'high' }, { id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'gpt-5.6-sol' }, automatic: false, maxDifficulty: 'high' }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'], priorityLabels: ['security'] }],
+    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], priorityLabels: ['security'] }],
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
-  const task = (number: number, priority: string, labels: string[]) => ({ id: `task-${number}`, projectId: 'FIX', title: `Work ${number}`, number, status: 'to-do', priority, createdAt: `2026-01-${String(number).padStart(2, '0')}T00:00:00Z`, labels: labels.map(name => ({ name })) });
+  const task = (number: number, priority: string, labels: string[]) => ({ id: `task-${number}`, projectId: 'FIX', title: `Work ${number}`, number, status: 'todo', priority, createdAt: `2026-01-${String(number).padStart(2, '0')}T00:00:00Z`, labels: labels.map(name => ({ name })) });
   const tasks = [task(50, 'urgent', ['sf', 'med']), task(49, 'low', ['sf', 'low']), task(48, 'high', ['sf', 'med']), task(47, 'medium', ['low', 'bug']), task(13, 'low', ['sf', 'low', 'security'])];
   const relations = [
     { sourceTaskId: 'task-49', targetTaskId: 'task-50', relationType: 'blocks' }, { sourceTaskId: 'task-48', targetTaskId: 'task-50', relationType: 'blocks' },
@@ -50,12 +51,12 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     threads.push(v2Thread({ id: command.threadId, projectId: 'FIX', title: command.title, providerInstanceId: command.modelSelection.instanceId, modelSelection: command.modelSelection, status: 'running', activeRunId: 'run', latestRunCompletedAt: null, updatedAt: new Date().toISOString() }));
     return { ok: true };
   });
-  t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
-  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-    if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(x => !args.status || x.status === args.status) }] }, pagination: { total: tasks.length, totalPages: 1 } };
-    if (name === 'get_task') { const { labels, ...task } = tasks.find(task => task.id === args.taskId)!; return task; } // Kaneo's single-task read carries no labels
-    if (name === 'get_task_relations') return relations.filter(r => r.sourceTaskId === args.taskId || r.targetTaskId === args.taskId);
+  t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
+  mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {
+    if (name === 'labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
+    if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(x => !args.status || x.status === args.status) }] }, pagination: { total: tasks.length, totalPages: 1 } };
+    if (name === 'ticket') { const { labels, ...task } = tasks.find(task => task.id === args.taskId)!; return task; } // Kanvil's single-task read carries no labels
+    if (name === 'relations') return relations.filter(r => r.sourceTaskId === args.taskId || r.targetTaskId === args.taskId);
     throw new Error(name);
   });
   const store = new Store(c.stateDir);
@@ -91,18 +92,18 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     assert.match(launches[1].workspaceStrategy.branch, /^chore\/FIX-48-factory-/, 'no kind label falls back to chore');
     assert.equal(store.plan(planId)!.tickets.find(x => x.key === 'FIX-49')!.note, 'Waiting for a free Claude slot');
     const instances = new Map(providers.map(p => [p.instanceId, p.driver]));
-    assert.equal((await runPlans(c, store, new T3(c.t3), new Kaneo(c.kaneo), instances, threads)).length, 0, 'nothing more fits while both slots are busy');
+    assert.equal((await runPlans(c, store, new T3(c.t3), new Kanvil(c.kanvil), instances, threads)).length, 0, 'nothing more fits while both slots are busy');
     finish('FIX-48');
-    await runPlans(c, store, new T3(c.t3), new Kaneo(c.kaneo), instances, threads);
+    await runPlans(c, store, new T3(c.t3), new Kanvil(c.kanvil), instances, threads);
     assert.deepEqual(launches.slice(3).map(l => l.title), ['Factory: FIX-49']);
     assert.match(launches[1].initialMessage.text, /Manual dispatch/, 'the launches made as the user chose the chain are manual');
     assert.doesNotMatch(launches[3].initialMessage.text, /Manual dispatch/, 'a continuation keeps the automatic policy');
     assert.match(launches[3].initialMessage.text, /Started by a chain the user requested/);
     finish('FIX-47'); finish('FIX-49');
-    await runPlans(c, store, new T3(c.t3), new Kaneo(c.kaneo), instances, threads);
+    await runPlans(c, store, new T3(c.t3), new Kanvil(c.kanvil), instances, threads);
     assert.deepEqual(launches.slice(4).map(l => l.title), ['Factory: FIX-50'], 'the target starts once every ticket ahead of it is done');
     finish('FIX-50');
-    await runPlans(c, store, new T3(c.t3), new Kaneo(c.kaneo), instances, threads);
+    await runPlans(c, store, new T3(c.t3), new Kanvil(c.kanvil), instances, threads);
     assert.equal(store.plan(planId)!.state, 'done');
     assert.throws(() => cancelPlan(store, planId), /not active/);
     assert.deepEqual(store.events(20).filter(e => e.kind.startsWith('plan.')).map(e => e.text).toReversed(), ['Chain to FIX-50 started with 3 tickets ahead of it', 'Chain to FIX-50 finished']);
@@ -120,7 +121,7 @@ test('shared dependency ancestors reuse reads without becoming cycles', async t 
     ['left', 'root'], ['right', 'root'], ['shared', 'left'], ['shared', 'right'],
   ].map(([sourceTaskId, targetTaskId]) => ({ sourceTaskId, targetTaskId, relationType: 'subtask' })));
   assert.equal((await f.run()).reason, 'dispatched');
-  assert.equal(f.calls.filter(x => x === 'get_task_relations:shared:true').length, 1, 'shared ancestor reads are cached independently of the ancestry path');
+  assert.equal(f.calls.filter(x => x === 'relations:shared:true').length, 1, 'shared ancestor reads are cached independently of the ancestry path');
 });
 
 test('dependency ancestor cycles still refuse dispatch', async t => {
@@ -135,7 +136,7 @@ test('independent final dependency reads fan out with a bound of six', async t =
   for (let n = 0; n < 12; n++) { const id = `dep-${n}`; f.tasks.push(f.task(id, n + 3)); f.relations.push({ sourceTaskId: id, targetTaskId: 'root', relationType: 'blocks' }); }
   let active = 0, maximum = 0;
   f.hooks.read = async (name, id, final) => {
-    if (final && name === 'get_task' && id.startsWith('dep-')) {
+    if (final && name === 'ticket' && id.startsWith('dep-')) {
       active++; maximum = Math.max(maximum, active); started.resolve();
       await release.promise; active--;
     }
@@ -146,7 +147,7 @@ test('independent final dependency reads fan out with a bound of six', async t =
   release.resolve(); assert.equal((await pending).reason, 'dispatched');
   assert.equal(simultaneous, 6, 'independent dependencies must start together up to the read bound');
   assert.equal(maximum, 6, 'dependency reads cannot exceed the bound');
-  for (let n = 0; n < 12; n++) assert.equal(f.calls.filter(x => x === `get_task:dep-${n}:true`).length, 1);
+  for (let n = 0; n < 12; n++) assert.equal(f.calls.filter(x => x === `ticket:dep-${n}:true`).length, 1);
 });
 
 test('cancelling a chain during suspended final validation cannot launch or restore the plan', async t => {
@@ -154,13 +155,13 @@ test('cancelling a chain during suspended final validation cannot launch or rest
   const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, readyLabel: true, runnable: true, blockedBy: [], done: false };
   f.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
   let finalSeen = false, cancelled = false;
-  f.hooks.read = async (name, _id, final) => { if (final && name === 'list_workspace_labels') finalSeen = true; };
+  f.hooks.read = async (name, _id, final) => { if (final && name === 'labels') finalSeen = true; };
   const context = new ReadContext();
   context.cooperate = async () => {
     if (!finalSeen || cancelled) return;
     cancelPlan(f.store, 'chain'); cancelled = true; context.revision++; context.suspended = true;
   };
-  const results = await context.run(() => runPlans(f.c, f.store, f.t3, f.kaneo, new Map([['codex', 'codex']]), []));
+  const results = await context.run(() => runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), []));
   assert.equal(cancelled, true);
   assert.equal(f.launches.length, 0);
   assert.equal(f.store.plan('chain')!.state, 'cancelled');

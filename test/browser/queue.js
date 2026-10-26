@@ -10,7 +10,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const ticket = (n, modelId = "preset-sol") => ({ id: `t${n}`, key: `APP-${n}`, title: `Queued ticket ${n}`, projectId: "p", difficulty: "med", priority: n === 1 ? "high" : "medium", labelRank: 0, modelId, model: modelId ? "Sol" : null });
 const state = {
-  config: { enabled: false, kaneo: { url: "https://tracker.example", workspaceId: "w" }, models: [{ id: "preset-sol", name: "Sol", model: { instanceId: "codex", model: "sol" } }], projects: [{ kaneoId: "p", name: "Example", priorityLabels: ["agent-compat"] }] },
+  config: { enabled: false, kanvil: { url: "https://tracker.example", workspaceId: "w" }, models: [{ id: "preset-sol", name: "Sol", model: { instanceId: "codex", model: "sol" } }], projects: [{ kanvilId: "p", name: "Example", priorityLabels: ["agent-compat"] }] },
   status: { jobs: [], upNext: { at: new Date().toISOString(), tickets: [ticket(1), ticket(2), ticket(3, null)], held: [] } },
 };
 let calls = [], release;
@@ -105,7 +105,7 @@ async function layout() {
   return { passed: true, viewport: [innerWidth, innerHeight], contexts: ["deck", "runs"] };
 }
 const filterState = {
-  config: { ...state.config, projects: [{ kaneoId: "p", key: "APP", name: "Alpha" }, { kaneoId: "q", key: "WEB", name: "Beta" }, { kaneoId: "empty", key: "EMPTY", name: "Empty" }] },
+  config: { ...state.config, projects: [{ kanvilId: "p", key: "APP", name: "Alpha" }, { kanvilId: "q", key: "WEB", name: "Beta" }, { kanvilId: "empty", key: "EMPTY", name: "Empty" }] },
   status: { jobs: [], upNext: { at: new Date().toISOString(), tickets: [
     { ...ticket(1), title: "Fix uploads", labels: ["bug", "web"], difficulty: "med", priority: "high" },
     { ...ticket(2), projectId: "q", key: "WEB-2", labels: ["bug"], difficulty: "low", priority: "low" },
@@ -253,14 +253,14 @@ async function progress() {
   await show();
   operations.value = [
     { id: 'queued', input: { ticket: 'APP-1', model: 'auto' }, state: 'running', progress: { phase: 'queued', stage: 'queued' } },
-    { id: 'checking', input: { ticket: 'APP-2', model: 'auto' }, state: 'running', progress: { phase: 'checking', stage: 't3.rpc.provider, kaneo.get_task' } },
-    { id: 'expired', input: { ticket: 'APP-3', model: 'auto' }, state: 'done', result: { data: { notLaunched: true, reason: 'manual-deadline-exceeded', message: 'Not launched: manual request deadline exceeded during kaneo.connect' } } },
+    { id: 'checking', input: { ticket: 'APP-2', model: 'auto' }, state: 'running', progress: { phase: 'checking', stage: 't3.rpc.provider, kanvil.get_task' } },
+    { id: 'expired', input: { ticket: 'APP-3', model: 'auto' }, state: 'done', result: { data: { notLaunched: true, reason: 'manual-deadline-exceeded', message: 'Not launched: manual request deadline exceeded during kanvil.connect' } } },
     { id: 'old', input: { ticket: 'APP-4', model: 'auto' }, state: 'running' },
   ];
   await pause();
   const rows = [...root.querySelectorAll('.operation')];
   assert(rows[0].textContent.includes('Queued at scheduler'), 'accepted request identifies scheduler queue wait');
-  assert(rows[1].textContent.includes('t3.rpc.provider, kaneo.get_task'), 'checking row names held integrations');
+  assert(rows[1].textContent.includes('t3.rpc.provider, kanvil.get_task'), 'checking row names held integrations');
   assert(rows[2].textContent.includes('Not launched') && !rows[2].querySelector('.spinner'), 'deadline outcome is terminal');
   assert(rows[3].textContent.includes('Waiting for scheduler progress'), 'older records do not claim checking without progress');
   assert(document.documentElement.scrollWidth <= innerWidth, 'request states fit the viewport');

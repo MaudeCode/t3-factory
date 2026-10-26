@@ -13,7 +13,7 @@ let saved = structuredClone(initial), writes = [], fixtureJobs = [];
 const state = () => ({ config: saved, status: { jobs: fixtureJobs, journal: [] } });
 window.fetch = async (url, init) => {
   if (url === '/api/config' && init?.method === 'POST') { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
-  if (url === '/api/sources') return Response.json({ t3: [], kaneo: { projects: [], columns: {}, labels: ['app', 'web', 'test'] } });
+  if (url === '/api/sources') return Response.json({ t3: [], kanvil: { projects: [], columns: {}, labels: ['app', 'web', 'test'] } });
   return Response.json(state());
 };
 const root = document.querySelector('#root');
@@ -102,7 +102,7 @@ async function run() {
   return { passed: true, viewport: [innerWidth, innerHeight], writes: writes.length };
 }
 async function showLabels() {
-  saved = { ...structuredClone(initial), kaneo: { url: 'https://tracker.example.test', workspaceId: 'workspace' }, discovery: { emptyCooldownHours: 24 }, projects: [{ name: 'Example app', key: 'APP', kaneoId: 'app-project', t3Id: 'app-project', enabled: true, repoPath: '/example/app', githubRepo: 'example/app', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'], priorityLabels: [], labelLimits: { app: 2, web: 1 }, upstreams: [] }] };
+  saved = { ...structuredClone(initial), kanvil: { url: 'https://tracker.example.test', workspaceId: 'workspace' }, discovery: { emptyCooldownHours: 24 }, projects: [{ name: 'Example app', key: 'APP', kanvilId: 'app-project', t3Id: 'app-project', enabled: true, repoPath: '/example/app', githubRepo: 'example/app', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], priorityLabels: [], labelLimits: { app: 2, web: 1 }, upstreams: [] }] };
   writes = [];
   fixtureJobs = [
     ...['one', 'two'].map(id => ({ id, projectId: 'app-project', labels: ['app'], state: 'waiting' })),

@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import { z } from 'zod';
-import { DEFAULT_MONITORING_TIMEOUT_MINUTES } from './policy.ts';
+import { DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketStatuses } from './policy.ts';
 
 const positive = z.number().positive();
 const absolute = z.string().startsWith('/');
@@ -63,7 +63,7 @@ export const configSchema = z.preprocess(input => {
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
   stateDir: absolute,
   t3: z.object({ url: z.url(), credentialFile: absolute, autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
-  kaneo: z.object({ url: z.url(), workspaceId: z.string().min(1), readyLabel: z.string().min(1) }).strict(),
+  kanvil: z.object({ url: z.url().refine(value => { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, 'Use a Kanvil HTTP(S) origin without credentials or a path'), workspaceId: z.string().min(1), readyLabel: z.string().min(1) }).strict(),
   quota: z.object({
     maxAgeSeconds: positive,
     claude: z.object({ fiveHour: budget, weekly: budget, fable: budget }).strict(),
@@ -75,9 +75,9 @@ export const configSchema = z.preprocess(input => {
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),
-    kaneoId: z.string().min(1), t3Id: z.string().min(1), repoPath: absolute,
+    kanvilId: z.string().min(1), t3Id: z.string().min(1), repoPath: absolute,
     githubRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), baseBranch: z.string().min(1),
-    readyStatuses: z.array(z.string()).min(1), doneStatuses: z.array(z.string()).min(1),
+    readyStatuses: z.array(z.enum(ticketStatuses).transform((value): string => value)).min(1), doneStatuses: z.array(z.enum(ticketStatuses).transform((value): string => value)).min(1),
     priorityLabels: z.array(z.string().trim().min(1)).refine(labels => new Set(labels).size === labels.length, 'Priority labels must be unique').default([]),
     // Most runs at once for this project's tickets carrying a label, e.g. ones that each boot a simulator.
     labelLimits: z.record(z.string().trim().min(1), z.union([
@@ -98,7 +98,7 @@ export const configSchema = z.preprocess(input => {
   if (new Set(ids).size !== ids.length || ids.includes('auto')) {
     ctx.addIssue({ code: 'custom', path: ['models'], message: 'Model IDs must be unique and cannot be auto' });
   }
-  for (const key of ['kaneoId', 't3Id', 'key'] as const) {
+  for (const key of ['kanvilId', 't3Id', 'key'] as const) {
     if (new Set(c.projects.map(p => p[key])).size !== c.projects.length) ctx.addIssue({ code: 'custom', message: `Duplicate project ${key}` });
   }
   const upstreams = c.projects.flatMap(p => p.upstreams.map(u => u.repo));

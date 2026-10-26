@@ -17,12 +17,11 @@
     "node": ">=24.13"
   },
   "dependencies": {
-    "@kaneo/mcp": "0.1.13",
-    "@modelcontextprotocol/sdk": "1.30.0",
     "effect": "4.0.0-beta.103",
     "jsonc-parser": "3.3.1",
     "openid-client": "6.8.8",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "eventsource-parser": "4.1.2"
   },
   "devDependencies": {
     "@lobehub/icons-static-svg": "^1.95.1",

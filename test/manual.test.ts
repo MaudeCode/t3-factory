@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema, configuredModel } from '../src/config.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import { saveSettings } from '../src/settings.ts';
@@ -24,18 +25,18 @@ test('manual override runs the specified ticket/model while paused, but retains 
     fable: { enabled: true, model: { instanceId: 'claudeAgent', model: 'claude-fable-5-1' } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'),
     t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'token') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     quota: { maxAgeSeconds: 300, fiveHourReservePercent: 40, weeklyReservePercent: 70 },
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'Fixture', enabled: true, key: 'FIX', kaneoId: 'kp', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+    projects: [{ name: 'Fixture', enabled: true, key: 'FIX', kanvilId: 'kp', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
-  const other = { ...c.projects[0], name: 'Library', key: 'LIB', kaneoId: 'library', t3Id: 'library' };
+  const other = { ...c.projects[0], name: 'Library', key: 'LIB', kanvilId: 'library', t3Id: 'library' };
   c.projects.push(other);
   writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
   c.models.forEach(m => { m.automatic = false; });
   const file = join(dir, 'config.jsonc'); process.env.T3_FACTORY_CONFIG = file;
   writeFileSync(file, '// preserve this comment\n' + JSON.stringify(c));
-  const tasks = [1, 2, 3, 4, 5].map(number => ({ id: `task-${number}`, projectId: 'kp', title: 'Fixture', number, description: '', status: 'to-do', priority: number === 1 ? 'urgent' : 'low', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }));
+  const tasks = [1, 2, 3, 4, 5].map(number => ({ id: `task-${number}`, projectId: 'kp', title: 'Fixture', number, description: '', status: 'todo', priority: number === 1 ? 'urgent' : 'low', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }));
   const store = new Store(c.stateDir); const dispatches: Record<string, any>[] = []; let blocked = true, usedPercent = 99;
   const owned: Thread[] = [];
   let claudeAvailable = true, codexUsed = 20, codexReady = true, codexAdvertised = true, codexStale = false, exhaustOnRefresh = false;
@@ -61,17 +62,17 @@ test('manual override runs the specified ticket/model while paused, but retains 
   ] } };
   });
   t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => { dispatches.push(command); return { threadId: command.threadId }; });
-  t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
-  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-    if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') {
+  t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
+  mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {
+    if (name === 'labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
+    if (name === 'tickets') {
       listed.push(args);
-      if (unrelatedUnavailable && args.projectId === other.kaneoId) throw new Error('Unrelated project unavailable');
+      if (unrelatedUnavailable && args.projectId === other.kanvilId) throw new Error('Unrelated project unavailable');
       const matching = tasks.filter(task => task.projectId === args.projectId && (!args.status || task.status === args.status));
       return { data: { workspaceId: 'workspace', columns: [{ tasks: matching }] }, pagination: { total: matching.length, totalPages: 1 } };
     }
-    if (name === 'get_task') return tasks.find(t => t.id === args.taskId);
-    if (name === 'get_task_relations') return blocked && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
+    if (name === 'ticket') return tasks.find(t => t.id === args.taskId);
+    if (name === 'relations') return blocked && args.taskId === 'task-2' ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
     throw new Error(name);
   });
   try {
@@ -92,7 +93,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
           const closed = await cycle(c, store, options);
           assert.equal(closed.reason, 'no-eligible-ticket');
           assert.match(JSON.stringify(closed.skipped), /Ticket is done/);
-          tasks[0].status = 'to-do';
+          tasks[0].status = 'todo';
           tasks[0].labels = [{ name: 'high' }];
           assert.equal((await cycle(c, store, options)).reason, 'ready-label-confirmation-required');
           assert.equal((await cycle(c, store, { ...options, allowMissingReadyLabel: true })).reason, 'would-dispatch');
@@ -110,7 +111,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
         assert.equal(dispatches.length, 0, 'dry-run probes never launch');
       } finally {
         preset.automatic = false; unrelatedUnavailable = false; other.enabled = true;
-        tasks[0].status = 'to-do'; tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];
+        tasks[0].status = 'todo'; tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];
       }
     });
     assert.equal((await cycle(c, store, { manual: true, ticket: 'fix-2' })).reason, 'blocked-ticket-plan-required', 'a blocked ticket is offered as a chain, not started');
@@ -196,7 +197,7 @@ test('manual explicit and automatic model final checks use one fresh label and r
   for (const model of ['sol', 'auto']) await t.test(model, async t => {
     const f = dispatchFixture(t);
     assert.equal((await f.run(model)).reason, 'dispatched');
-    assert.equal(f.calls.filter(x => x.startsWith('list_workspace_labels:')).length, 2, 'inventory and final validation each read labels once, including dependency tasks');
-    assert.equal(f.calls.filter(x => x === 'get_task_relations:root:true').length, 1, 'blockers and children share the final relation snapshot');
+    assert.equal(f.calls.filter(x => x === 'ticket:root:true').length, 1, 'final validation reads the selected ticket with its full native labels once');
+    assert.equal(f.calls.filter(x => x === 'relations:root:true').length, 1, 'blockers and children share the final relation snapshot');
   });
 });

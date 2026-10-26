@@ -16,8 +16,8 @@
     // Non-Factory autonomous workflows that should not block personal idle.
     "autonomousThreadIds": []
   },
-  "kaneo": {
-    "url": "https://kaneo.example.com",
+  "kanvil": {
+    "url": "https://kanvil.example.com",
     "workspaceId": "YOUR_WORKSPACE_ID",
     "readyLabel": "sf"
   },
@@ -62,7 +62,7 @@
       "name": "Example application",
       "enabled": true,
       "key": "APP",
-      "kaneoId": "YOUR_KANEO_PROJECT_ID",
+      "kanvilId": "YOUR_KANVIL_PROJECT_ID",
       "t3Id": "YOUR_T3_PROJECT_ID",
       "repoPath": "/absolute/path/to/repository",
       "githubRepo": "OWNER/REPOSITORY",

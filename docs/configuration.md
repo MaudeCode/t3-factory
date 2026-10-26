@@ -9,7 +9,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | Setting | Meaning |
 | --- | --- |
 | `enabled` | Allows new automatic ticket and discovery work; explicit manual runs remain available while paused. Upstream reviews have their own `upstream.enabled`. |
-| `pollSeconds` | Time between cycles, at least 15 seconds. |
+| `pollSeconds` | Maintenance fallback cadence, at least 15 seconds. Kanvil inventory changes arrive through SSE. |
 | `idleMinutes` | Required inactivity for the relevant provider in T3 before ticket and discovery work. Upstream reviews do not wait for it. |
 | `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts; manual runs may exceed them. |
 | `maxWaitingPRs` | Maximum parked jobs before further dispatches are held; `null` means unlimited. |
@@ -17,7 +17,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |
 | `t3` | Local server origin and private session credential file. |
-| `kaneo` | API origin, workspace ID, and readiness label. |
+| `kanvil` | HTTP(S) origin, workspace ID, and readiness label. The API credential is `KANVIL_API_KEY` in the environment. |
 
 Changes to the JSONC file are read on later cycles. Running jobs retain their original prompts and models. Invalid settings block dispatch. Move state only as a deliberate migration with the services stopped; changing `stateDir` is not a safe way to reset job ownership.
 
@@ -25,7 +25,7 @@ Changes to the JSONC file are read on later cycles. Running jobs retain their or
 
 The order of `models` is the ranking order, highest first. Each entry has a unique local `id`, a display `name`, a T3 `model` selection, an `automatic` flag, and a `maxDifficulty` of `low`, `med`, or `high`.
 
-Use `model-catalog` to discover provider instance IDs, model slugs, and supported options. New presets default to manual-only. Difficulty ceilings apply to manual runs too. Missing or conflicting difficulty labels make a ticket ineligible; the scheduler never changes labels to fit an available model.
+Use `model-catalog` to discover provider instance IDs, model slugs, and supported options. New presets default to manual-only. Difficulty ceilings apply to manual runs too. A missing native difficulty or conflicting difficulty labels make a ticket ineligible; the scheduler never changes difficulty to fit an available model.
 
 `quotaWindowId` optionally associates a Claude preset with a dedicated allowance reported by T3. The current budget schema names this pool `quota.claude.fable`. Leave the field absent for general Claude models. Do not assign an arbitrary window ID to bypass the provider's applicable budget.
 
@@ -46,13 +46,13 @@ Manual overrides are described in [operations](operations.md#manual-runs). Exist
 
 ## Projects
 
-Each entry maps a Kaneo project to a T3 project and a local Git repository. `key` is the ticket prefix, such as `APP`; `githubRepo` is `OWNER/REPOSITORY`. `readyStatuses` and `doneStatuses` contain actual Kaneo column slugs, not assumed display names. New worktrees start from `origin/<baseBranch>`.
+Each entry maps a Kanvil project to a T3 project and a local Git repository. `key` is the ticket prefix, such as `APP`; `githubRepo` is `OWNER/REPOSITORY`. `readyStatuses` and `doneStatuses` contain native Kanvil status categories, not custom state names or slugs. New worktrees start from `origin/<baseBranch>`.
 
-The readiness label is configured once at `kaneo.readyLabel`. Dependencies, parent blockers, open children, existing branches, T3 activity, and open PRs are checked separately from the label. Disable a project with `enabled: false` instead of deleting it while it owns unfinished jobs.
+The readiness label is configured once at `kanvil.readyLabel`. Native `automationReady` must also be true, `holdReason` must be empty, and the ticket must be unarchived. Native `difficulty` determines model eligibility; a conflicting difficulty label holds dispatch. The final native server readiness check retains description, acceptance criteria, duplicate and claim gates. A manual missing-label waiver waives only the label. It cannot override native readiness or another worker's ownership. Dependencies, parent blockers, open children, existing branches, T3 activity, and open PRs are checked separately from the label. Disable a project with `enabled: false` instead of deleting it while it owns unfinished jobs.
 
-`priorityLabels` is an ordered list of exact Kaneo label names, highest first, editable in Projects on the web or Mac app. For example, `["security", "compatibility"]` puts security tickets ahead of compatibility tickets, and both ahead of unmatched tickets. A ticket with multiple matching labels uses its highest rank. Ranks are compared across enabled projects: a first-ranked label in any project beats a second-ranked label elsewhere. Within each rank, the existing urgency, model order, project backlog size, rotation, and oldest-ticket rules apply. An empty list, the default, leaves urgency ordering unchanged. Labels never bypass readiness, blockers, classification, model capacity, or quota checks. Manual dispatch of a specific ticket remains explicit. Upstream reviews retain their existing precedence over ticket work.
+`priorityLabels` is an ordered list of exact Kanvil label names, highest first, editable in Projects on the web or Mac app. For example, `["security", "compatibility"]` puts security tickets ahead of compatibility tickets, and both ahead of unmatched tickets. A ticket with multiple matching labels uses its highest rank. Ranks are compared across enabled projects: a first-ranked label in any project beats a second-ranked label elsewhere. Within each rank, the existing urgency, model order, project backlog size, rotation, and oldest-ticket rules apply. An empty list, the default, leaves urgency ordering unchanged. Labels never bypass readiness, blockers, classification, model capacity, or quota checks. Manual dispatch of a specific ticket remains explicit. Upstream reviews retain their existing precedence over ticket work.
 
-`labelLimits` maps a Kaneo label to a limit for this project's runs; edit it under Runs at once by label in Projects. Each label has two radio buttons beside its limit: a lock for Full block and a play icon for Running block. Tooltips name both modes. Full block counts running and human-waiting runs until completion or dismissal, protecting resources such as simulators that may remain active while a run waits. Running block frees human-waiting slots. For example, `{ "app": { "limit": 2, "mode": "full" }, "web": { "limit": 3, "mode": "running" } }` protects two app resource slots while allowing three running web jobs. Existing numbers such as `{ "app": 2 }` retain Running block behavior; newly selected labels also start with Running block. Zero stops starts for that label. Both modes gate automatic starts, chain continuations and manual runs; only a manual run that overrides label limits may exceed them. Provider run limits and the waiting cap keep their separate policies. The default `{}` limits nothing.
+`labelLimits` maps a Kanvil label to a limit for this project's runs; edit it under Runs at once by label in Projects. Each label has two radio buttons beside its limit: a lock for Full block and a play icon for Running block. Tooltips name both modes. Full block counts running and human-waiting runs until completion or dismissal, protecting resources such as simulators that may remain active while a run waits. Running block frees human-waiting slots. For example, `{ "app": { "limit": 2, "mode": "full" }, "web": { "limit": 3, "mode": "running" } }` protects two app resource slots while allowing three running web jobs. Existing numbers such as `{ "app": 2 }` retain Running block behavior; newly selected labels also start with Running block. Zero stops starts for that label. Both modes gate automatic starts, chain continuations and manual runs; only a manual run that overrides label limits may exceed them. Provider run limits and the waiting cap keep their separate policies. The default `{}` limits nothing.
 
 ## Workflow skills
 

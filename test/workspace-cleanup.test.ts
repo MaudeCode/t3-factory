@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { reconcile, cleanupNextWorkspace, busyProviders } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
-import { T3, type Kaneo } from '../src/clients.ts';
+import { T3, type Kanvil } from '../src/clients.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
 const commandScenarios = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
@@ -26,7 +26,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
     writeFileSync(join(dir, 'gh'), `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({ state: scenario.endsWith('unmerged') ? 'OPEN' : 'MERGED', headRefName: mergedBranch, headRefOid: head, baseRefName: 'main', mergeCommit: { oid: head } })}'\n`, { mode: 0o755 });
     const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
     let store = new Store(join(dir, 'state'));
-    const project = { kaneoId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', doneStatuses: ['done'] };
+    const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', doneStatuses: ['done'] };
     const c = { monitoringTimeoutMinutes: 30, projects: [project] } as Config;
     const job: Job = { id: 'job', kind: scenario === 'discovery' ? 'discovery' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Verified complete', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: scenario.startsWith('no-pr') ? [] : ['https://github.com/fixture/repo/pull/1'], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, latestRunCompletedAt: job.createdAt, status: 'completed', activeRunId: null });
@@ -65,10 +65,10 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       git('worktree', 'remove', ...force ? ['--force'] : [], path);
     }, terminals: async () => { terminalReads++; if (scenario === 'terminal-snapshot-failure') throw new Error('T3 terminal snapshot unavailable'); return terminals(); },
     closeTerminal: async (threadId: string, terminalId: string) => { closes.push({ threadId, terminalId }); if (terminalProcess) { const exited = once(terminalProcess, 'exit'); terminalProcess.kill(); await exited; } } } as unknown as T3;
-    const kaneo = { call: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status: scenario.endsWith('not-done') ? 'to-do' : 'done' }) } as unknown as Kaneo;
+    const kanvil = { task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status: scenario.endsWith('not-done') ? 'todo' : 'done' }) } as unknown as Kanvil;
     const runReconcile = async (allow = true) => {
-      await reconcile(c, store, t3, kaneo, threads, allow, mode === 'direct');
-      if (allow && mode === 'deferred') await cleanupNextWorkspace(c, store, t3, kaneo, new Set());
+      await reconcile(c, store, t3, kanvil, threads, allow, mode === 'direct');
+      if (allow && mode === 'deferred') await cleanupNextWorkspace(c, store, t3, kanvil, new Set());
     };
     let childProcess: ReturnType<typeof spawn> | undefined;
     try {
@@ -98,7 +98,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'monitor-subagent') threads.push(subagent('subagent', thread.id, { pendingBackgroundTasks: [{ taskId: 'pr-watch', kind: 'monitor' }] }));
       if (scenario === 'process' || scenario === 'command-process') { childProcess = spawn('sleep', ['60'], { cwd: tree }); await once(childProcess, 'spawn'); }
       if (scenario.endsWith('-terminal')) { terminalProcess = spawn('sleep', ['60'], { cwd: tree }); await once(terminalProcess, 'spawn'); }
-      // A blocked cleanup makes no T3, Kaneo, Git or process call until its retry window passes.
+      // A blocked cleanup makes no T3, Kanvil, Git or process call until its retry window passes.
       const skipsUntilRetry = async () => {
         const reads = () => [shellReads, terminalReads, attempts, detachAttempts, commands.length];
         const before = reads(); await runReconcile();

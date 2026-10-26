@@ -34,11 +34,17 @@ Set `t3.url` to its loopback HTTP or HTTPS origin. Use that build's native authe
 
 The required T3 endpoints and RPC methods are listed in [development](development.md#t3-compatibility). This repository does not bundle or install T3 Code.
 
-## Connect Kaneo and map projects
+## Connect Kanvil and map projects
 
-The scheduler uses the pinned `@kaneo/mcp` dependency. Authenticate its device flow under the same OS account that runs the factory, or set `KANEO_API_KEY` in `.env` to a Kaneo API key. `kaneo.url` supplies the API origin without an `/api` suffix. The factory launches the MCP server automatically; it does not require a separate long-running MCP process.
+The scheduler talks directly to Kanvil's HTTP API and durable server-sent event feed. Create a revocable API credential with `read` access to every project the factory will inspect, then set `KANVIL_API_KEY` privately in `.env` under the OS account running Factory. The delivery worker uses its own Kanvil integration for writes. Keep credentials out of JSONC, Git and command arguments. No MCP subprocess or device login is needed by the scheduler.
 
-For each project, obtain the actual Kaneo project ID, workspace ID, column slugs, and the T3 project ID. Match those to the local repository path and GitHub `OWNER/REPOSITORY`. Project names alone are not identifiers. The configured base branch must exist on `origin`.
+Set `kanvil.url` to the HTTP(S) web origin, without `/api` or `/mcp`. Set `kanvil.workspaceId` to the verified workspace ID. For each project, set `kanvilId` to its actual Kanvil project ID and `key` to its current ticket prefix, alongside the T3 project ID, local repository path and GitHub `OWNER/REPOSITORY`. Use native status categories such as `todo` and `done`, including for custom workflow states. The configured base branch must exist on `origin`.
+
+The server must support `/api/v1/checkpoint`, `/snapshot`, `/events`, `/tickets/resolve`, project workflow states, and native ticket readiness. A reverse proxy must preserve SSE streaming and disable buffering. Ticket changes wake Factory immediately; there is no periodic ticket-inventory or label scan. A lost connection replays from its processed cursor, and an expired cursor starts a new snapshot. Automation waits while the event feed is disconnected. The general maintenance and allowance timers still run.
+
+### Migrate an existing installation
+
+Pause the old scheduler and let its owned jobs finish before changing backends. Back up its private configuration and state. Replace the `kaneo` configuration section with `kanvil`, replace project `kaneoId` fields with verified Kanvil IDs, and replace old column slugs with native status categories. IDs from the old tracker are not interchangeable with Kanvil IDs. Use a fresh `stateDir` for Kanvil; retain the old state directory for its job history and cleanup evidence. Factory does not import tickets or rewrite historical job ownership. Re-map the projects through Sources and confirm native readiness before enabling automation. This source change does not restart or deploy the running installation.
 
 Prepare the delivery and discovery skills described in [configuration](configuration.md#workflow-skills), and put their local paths in your settings.
 

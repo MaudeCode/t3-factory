@@ -52,7 +52,7 @@ export const Meta = ({ project, kind, model, priority, difficulty, labels = [], 
   ${project && html`<span class="meta-project" title="Project">${project}</span>`}
   ${model}
   ${kind && html`<${Tag} title="Kind of run">${kind}<//>`}
-  ${priority && priority !== "no-priority" && html`<${Tag} title=${`Priority: ${priority}`}><small>P</small>${priority}<//>`}
+  ${priority && priority !== "none" && html`<${Tag} title=${`Priority: ${priority}`}><small>P</small>${priority}<//>`}
   ${difficulty ? html`<${Tag} title=${`Difficulty: ${difficulty}`}><small>D</small>${difficulty}<//>` : difficulty === false ? html`<${Tag} tone="attention" title="Needs a difficulty label before it can run">no difficulty<//>` : null}
   ${labels.map((l) => html`<${Tag} key=${l} tone=${highlight.includes(l) ? "on" : "label"} title=${highlight.includes(l) ? "Priority label: moves the ticket up the queue" : "Label"}>${l}<//>`)}
 </span>`;

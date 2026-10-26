@@ -18,7 +18,7 @@ export const history = signal(null); // every job, newest first, loaded on deman
 export const providers = signal([]);
 // The driver behind a provider instance, from T3's catalog once loaded; an instance named after its driver needs no catalog.
 export const instanceDriver = (instanceId) => providers.value.find((p) => p.instanceId === instanceId)?.driver ?? (instanceId === "codex" ? "codex" : "claudeAgent");
-export const sources = signal(null); // T3 projects, Kaneo projects with columns, and labels; loaded on demand
+export const sources = signal(null); // T3 projects, Kanvil projects with columns, and labels; loaded on demand
 export const live = signal({ enabled: false, upstream: false, concurrency: { claude: 1, codex: 1 } });
 export const busy = signal(false);
 export const operations = signal([]);
@@ -185,7 +185,7 @@ export const actions = {
       } finally {
         await load();
       }
-      message("Removed from Session tickets. Kaneo tickets are unchanged.");
+      message("Removed from Session tickets. Kanvil tickets are unchanged.");
     }),
   stopJob: (id) =>
     run(async () => {
@@ -230,19 +230,19 @@ export const actions = {
   ensureSources: () => {
     if (!sources.value) loadSources().catch((e) => message(e.message, true));
   },
-  // A project starts from what T3 and Kaneo already know about it; everything stays editable.
-  addProject: (t3, kaneo) => {
+  // A project starts from what T3 and Kanvil already know about it; everything stays editable.
+  addProject: (t3, kanvil) => {
     update((c) =>
       c.projects.push({
-        name: t3?.title ?? kaneo?.name ?? "New project",
+        name: t3?.title ?? kanvil?.name ?? "New project",
         enabled: false,
-        key: kaneo?.slug ?? "",
-        kaneoId: kaneo?.id ?? "",
+        key: kanvil?.slug ?? "",
+        kanvilId: kanvil?.id ?? "",
         t3Id: t3?.id ?? "",
         repoPath: t3?.workspaceRoot ?? "",
-        githubRepo: kaneo?.githubRepo ?? repoFromPath(t3?.workspaceRoot),
+        githubRepo: kanvil?.githubRepo ?? repoFromPath(t3?.workspaceRoot),
         baseBranch: "main",
-        ...statusesFor(kaneo?.id),
+        ...statusesFor(kanvil?.id),
         priorityLabels: [],
         upstreams: [],
       }),
@@ -257,21 +257,21 @@ export const actions = {
     const t3 = sources.value?.t3.find((p) => p.id === id);
     update((c) => Object.assign(c.projects[index], { t3Id: id, repoPath: t3?.workspaceRoot ?? c.projects[index].repoPath }));
   },
-  linkKaneo: (index, id) => {
-    const kaneo = sources.value?.kaneo.projects.find((p) => p.id === id);
-    update((c) => Object.assign(c.projects[index], { kaneoId: id, key: kaneo?.slug ?? c.projects[index].key, ...statusesFor(id) }));
+  linkKanvil: (index, id) => {
+    const kanvil = sources.value?.kanvil.projects.find((p) => p.id === id);
+    update((c) => Object.assign(c.projects[index], { kanvilId: id, key: kanvil?.slug ?? c.projects[index].key, ...statusesFor(id) }));
   },
   addUpstream: (project, entry) => update((c) => (c.projects[project].upstreams ??= []).push(entry)),
   setUpstream: (project, index, entry) => update((c) => (c.projects[project].upstreams[index] = entry)),
   removeUpstream: (project, index) => update((c) => c.projects[project].upstreams.splice(index, 1)),
 };
 
-// Ready is the first column, done is every final column, when the Kaneo catalog knows the project.
-export function statusesFor(kaneoId) {
-  const columns = sources.value?.kaneo.columns[kaneoId];
-  if (!columns?.length) return { readyStatuses: ["to-do"], doneStatuses: ["done"] };
+// Ready is the first column, done is every final column, when the Kanvil catalog knows the project.
+export function statusesFor(kanvilId) {
+  const columns = sources.value?.kanvil.columns[kanvilId];
+  if (!columns?.length) return { readyStatuses: ["todo"], doneStatuses: ["done"] };
   const done = columns.filter((c) => c.isFinal).map((c) => c.slug);
-  return { readyStatuses: [columns.find((c) => !c.isFinal)?.slug ?? columns[0].slug], doneStatuses: done.length ? done : [columns.at(-1).slug] };
+  return { readyStatuses: [columns.find((c) => c.slug === "todo")?.slug ?? columns.find((c) => !c.isFinal)?.slug ?? columns[0].slug], doneStatuses: done.length ? done : [columns.at(-1).slug] };
 }
 
 export function chooseModel(index, instance, slug) {

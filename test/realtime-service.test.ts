@@ -1,0 +1,29 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadConfig } from '../src/config.ts';
+import { T3 } from '../src/clients.ts';
+import { FactoryService } from '../src/service.ts';
+
+test('idle scheduler does not schedule tracker inventory polling', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-event-regression-'));
+  const config = loadConfig(new URL('../config.example.jsonc', import.meta.url).pathname);
+  config.stateDir = join(dir, 'state');
+  const path = join(dir, 'config.jsonc'); writeFileSync(path, JSON.stringify(config));
+  const intervals: number[] = [], interval = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', ((callback: (...args: any[]) => void, ms: number, ...args: any[]) => {
+    intervals.push(ms); return interval(callback, ms, ...args);
+  }) as typeof setInterval);
+  t.mock.method(T3.prototype, 'subscribe', async (_onItem: unknown, signal: AbortSignal) => {
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+  });
+  const service = new FactoryService(path), internal = service as any;
+  // Keep the real service lifecycle and scheduling; isolate unrelated T3/ticket dispatch work.
+  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
+  try {
+    await service.start(); await internal.queue;
+    assert.deepEqual(intervals, [], 'ticket changes must use the event feed instead of a periodic inventory poll');
+  } finally { await service.stop(); rmSync(dir, { recursive: true, force: true }); }
+});

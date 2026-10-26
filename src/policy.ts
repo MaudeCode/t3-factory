@@ -1,5 +1,8 @@
+import type { Task } from './clients.ts';
 import { z } from 'zod';
 import type { ModelPreset } from './config.ts';
+
+export const ticketStatuses = ['backlog', 'todo', 'in_progress', 'in_review', 'done', 'cancelled'] as const;
 
 // T3 orchestration protocol v2 thread shell. `status` is the latest run's status, or idle before any run.
 const activeStatuses = ['preparing', 'queued', 'starting', 'running'] as const;
@@ -124,7 +127,7 @@ export function quotaDecision(raw: unknown, c: { maxAgeSeconds: number; fiveHour
   });
   return { allowed: windows.every(w => (ignoreWeeklyReserve && w.name === 'weekly') || w.remaining > w.reserved), capturedAt: entry.updatedAt, windows, weeklyReserveApplied: !ignoreWeeklyReserve };
 }
-export const priorities = ['urgent', 'high', 'medium', 'low', 'no-priority'] as const;
+export const priorities = ['urgent', 'high', 'medium', 'low', 'none'] as const;
 export type Difficulty = 'low' | 'med' | 'high';
 export function ticketDifficulty(labels: { name: string }[]): Difficulty | undefined {
   const found = [...new Set(labels.map(l => l.name).filter((s): s is Difficulty => ['low', 'med', 'high'].includes(s)))];
@@ -196,4 +199,19 @@ export function selectAssignment(candidates: Candidate[], models: { preset: Mode
     }
   }
   return undefined;
+}
+
+// Kanvil's native fields are authoritative; inconsistent label metadata fails closed.
+export function taskDifficulty(task: Task) {
+  const label = ticketDifficulty(task.labels ?? []);
+  if (label && label !== task.difficulty) throw new Error('Native difficulty and label disagree');
+  return task.difficulty ?? undefined;
+}
+export function taskHold(task: Task): string {
+  if (task.archived) return 'Ticket is archived';
+  if (task.holdReason) return `Ticket is on hold: ${task.holdReason}`;
+  if (!task.automationReady) return 'Agent work is not enabled in Kanvil';
+  if (task.readiness && !task.readiness.ready && !task.readiness.reasons.length) return 'Kanvil has not confirmed readiness';
+  // The dependency walker retains its full chain view. Every other server gate remains mandatory.
+  return task.readiness?.reasons.filter(r => r.code !== 'dependency').map(r => r.message).join('; ') ?? '';
 }

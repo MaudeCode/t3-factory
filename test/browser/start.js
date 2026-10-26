@@ -6,7 +6,7 @@ import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
 
 const state = {
-  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kaneoId: "p", key: "APP", name: "Example", enabled: true }, { kaneoId: "f", key: "T3F", name: "Factory", enabled: true }, { kaneoId: "off", key: "OFF", name: "Disabled", enabled: false }], kaneo: { url: "https://tracker.example", workspaceId: "w" } },
+  config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true }, { kanvilId: "f", key: "T3F", name: "Factory", enabled: true }, { kanvilId: "off", key: "OFF", name: "Disabled", enabled: false }], kanvil: { url: "https://tracker.example", workspaceId: "w" } },
   status: { jobs: [], journal: [] },
 };
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));

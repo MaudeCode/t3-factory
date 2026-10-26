@@ -53,8 +53,8 @@ import SwiftUI
         }
         progress("queued", "queued")
         precondition(model.requests[0].message == "Queued at scheduler", "Native row must distinguish accepted queue wait")
-        progress("checking", "kaneo.get_task")
-        precondition(model.requests[0].message == "Checking · kaneo.get_task", "Native row names its current integration")
+        progress("checking", "kanvil.get_task")
+        precondition(model.requests[0].message == "Checking · kanvil.get_task", "Native row names its current integration")
         if let artifacts = ProcessInfo.processInfo.environment["T3_FACTORY_TEST_ARTIFACTS"] {
             FactoryRender.write(FactoryPanel(model: model, compact: false), size: NSSize(width: 780, height: 940), to: "\(artifacts)/native-progress.png")
         }
@@ -95,7 +95,7 @@ import SwiftUI
             FactoryRender.write(FactoryPanel(model: model, compact: false), size: NSSize(width: 780, height: 940), to: "\(artifacts)/native-lost-response.png")
         }
         precondition(lost.state == "running" && lost.message == "Starting T3 run", "A lost CLI response must keep reconciling accepted scheduler progress")
-        precondition(restored.requests[0].state == "running" && restored.requests[0].message == "Checking · kaneo.get_task", "Accepted work takes its state from the scheduler without replay")
+        precondition(restored.requests[0].state == "running" && restored.requests[0].message == "Checking · kanvil.get_task", "Accepted work takes its state from the scheduler without replay")
         model.refreshRequestProgress()
         precondition(calls.count == 6 && model.requests.last!.id == lost.id, "Accepted requests are never resent after local CLI failure")
         model.config["projects"] = [["key": "APP", "enabled": true], ["key": "T3F", "enabled": true], ["key": "OFF", "enabled": false]]

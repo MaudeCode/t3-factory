@@ -42,7 +42,7 @@ test('capacity counts active, resumed and uncertain runs but releases waiting an
 
 test('full label blocks retain waiting resource reservations independently of provider capacity', () => {
   const c = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
-  const projectId = c.projects[0].kaneoId;
+  const projectId = c.projects[0].kanvilId;
   // Structured limits are the new opt-in; numbers retain running-only behavior.
   c.projects[0].labelLimits = { app: { limit: 2, mode: 'full' }, web: 2 };
   const jobs = ['one', 'two'].map(id => ({ id, threadId: id, projectId, state: 'waiting', labels: ['app', 'web'], providerDriver: 'codex' }) as Job);

@@ -213,7 +213,7 @@ export function UpNext({ limit = 5, children, filters, query = "" }) {
     tickets = (q?.tickets ?? []).filter(t => matchesRunFilters(t, filters, query)),
     held = (q?.held ?? []).filter(t => matchesRunFilters(t, filters, query)),
     all = limit === Infinity;
-  const project = (id) => c.projects.find((p) => p.kaneoId === id);
+  const project = (id) => c.projects.find((p) => p.kanvilId === id);
   return html`<${Section} title="Up next" count=${q ? tickets.length : null} aside=${children}>
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`

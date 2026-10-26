@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import assert from 'node:assert/strict';
 import type { TestContext } from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
-import { T3, Kaneo, type Task } from '../src/clients.ts';
+import { T3, Kanvil, type Task } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
@@ -26,15 +27,15 @@ export function dispatchFixture(t: TestContext) {
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'fixture-sol' }, automatic: true, maxDifficulty: 'high' }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     stateDir: join(dir, 'state'), t3: { url: 'http://localhost', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' }, factorySkill: join(dir, 'skill'),
+    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
   const task = (id: string, number: number, status = 'done'): Task => ({ id, number, projectId: 'FIX', title: 'Fixture', priority: 'high', status, createdAt: '2026-01-01', labels: [{ name: 'sf' }, { name: 'med' }] });
-  const tasks = [task('root', 1, 'to-do'), task('blocker', 2)];
+  const tasks = [task('root', 1, 'todo'), task('blocker', 2)];
   const relations = [{ sourceTaskId: 'blocker', targetTaskId: 'root', relationType: 'blocks' }];
   const threads: Thread[] = [], calls: string[] = [], launches: unknown[] = [];
-  const store = new Store(c.stateDir), t3 = new T3(c.t3), kaneo = new Kaneo(c.kaneo);
+  const store = new Store(c.stateDir), t3 = new T3(c.t3), kanvil = new Kanvil(c.kanvil);
   const hooks = {
     shell: async (_final: boolean) => {}, providers: async () => {},
     quota: async (_refresh: boolean) => {}, read: async (_name: string, _id: string, _final: boolean) => {},
@@ -46,19 +47,19 @@ export function dispatchFixture(t: TestContext) {
   t.mock.method(t3, 'providers', async () => { calls.push('providers'); await hooks.providers(); return [provider()]; });
   t.mock.method(t3, 'provider', async (_id: string, refresh: boolean) => { calls.push(`quota:${refresh}`); await hooks.quota(refresh); return provider(); });
   t.mock.method(t3, 'launch', async (command: unknown) => { assert.equal(store.jobs().find(job => job.threadId === (command as { threadId: string }).threadId)?.state, 'dispatching', 'durable ownership precedes launch'); launches.push(command); return {}; });
-  t.mock.method(kaneo, 'call', async (name: string, args: Record<string, unknown>) => {
+  mockTracker(t, kanvil, async (name: string, args: Record<string, unknown>) => {
     const id = String(args.taskId ?? '');
-    const isFinal = name === 'list_workspace_labels' ? ++labelReads > 1 : final;
+    const isFinal = name === 'labels' ? ++labelReads > 1 : final;
     calls.push(`${name}:${id}:${isFinal}`); await hooks.read(name, id, isFinal);
-    if (name === 'list_workspace_labels') return tasks.flatMap(t => t.labels!.map(l => ({ ...l, taskId: t.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: structuredClone(tasks.filter(t => t.projectId === args.projectId && (!args.status || t.status === args.status))) }] }, pagination: { totalPages: 1, total: tasks.length } };
-    if (name === 'get_task') { const { labels, ...found } = tasks.find(t => t.id === id)!; return structuredClone(found); }
-    if (name === 'get_task_relations') return structuredClone(relations.filter(r => r.sourceTaskId === id || r.targetTaskId === id));
-    if (name === 'list_project_columns') return [{ slug: 'done', isFinal: true }];
+    if (name === 'labels') return tasks.flatMap(t => t.labels!.map(l => ({ ...l, taskId: t.id, workspaceId: 'workspace' })));
+    if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: structuredClone(tasks.filter(t => t.projectId === args.projectId && (!args.status || t.status === args.status))) }] }, pagination: { totalPages: 1, total: tasks.length } };
+    if (name === 'ticket') { const { labels, ...found } = tasks.find(t => t.id === id)!; return structuredClone(found); }
+    if (name === 'relations') return structuredClone(relations.filter(r => r.sourceTaskId === id || r.targetTaskId === id));
+    if (name === 'columns') return [{ slug: 'done', isFinal: true }];
     throw new Error(name);
   });
   t.after(() => { store.close(); process.env.PATH = oldPath; if (oldConfig === undefined) delete process.env.T3_FACTORY_CONFIG; else process.env.T3_FACTORY_CONFIG = oldConfig; rmSync(dir, { recursive: true, force: true }); });
-  return { c, dir, store, t3, kaneo, calls, hooks, tasks, task, relations, threads, launches, provider,
-    run: (model = 'sol', manual = true) => cycle(c, store, manual ? { manual: true, model, ticket: 'FIX-1' } : {}, { t3, kaneo }),
+  return { c, dir, store, t3, kanvil, calls, hooks, tasks, task, relations, threads, launches, provider,
+    run: (model = 'sol', manual = true) => cycle(c, store, manual ? { manual: true, model, ticket: 'FIX-1' } : {}, { t3, kanvil }),
   };
 }

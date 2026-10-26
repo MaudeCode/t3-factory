@@ -11,7 +11,7 @@ const keyOf = item => `${item.projectId}:${item.path}`;
 const targetOf = item => ({ projectId: item.projectId, path: item.path });
 const stamp = at => at ? ago(at, serverNow()) : "Not recorded";
 const folderOf = item => item.path.split("/").at(-1);
-const projectOf = item => config.value.projects.find(p => p.kaneoId === item.projectId)?.name || item.repository.split("/").at(-1);
+const projectOf = item => config.value.projects.find(p => p.kanvilId === item.projectId)?.name || item.repository.split("/").at(-1);
 const targetsOf = op => op.cleanupTargets ?? op.input.targets ?? [];
 const pendingState = state => ["queued", "running", "uncertain"].includes(state);
 const nextOf = item => item.next ?? { group: "attention", reason: "Not checked yet", action: "inspect" };

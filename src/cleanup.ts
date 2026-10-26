@@ -6,7 +6,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { z } from 'zod';
 import type { Config } from './config.ts';
-import type { T3, Kaneo } from './clients.ts';
+import type { T3, Kanvil } from './clients.ts';
 import { cleanupActionPending, type Store, type Job } from './store.ts';
 import { subagentDescendants, type Thread } from './policy.ts';
 import { cleanupCompletedWorkspace, verifyCleanupHead, verifyReleasedWorkspaceHead, verifyCompletionReport, readCompletionReport, safeError } from './scheduler.ts';
@@ -42,7 +42,7 @@ const publicJob = (j: Omit<Job, 'command'>) => ({ id: j.id, taskId: j.taskId, ti
 const threadIdentity = (t: Thread) => ({ id: t.id, projectId: t.projectId, worktreePath: t.worktreePath, branch: t.branch, status: t.status,
   activeRunId: t.activeRunId, updatedAt: t.updatedAt, latestUserMessageAt: t.latestUserMessageAt, latestRunCompletedAt: t.latestRunCompletedAt,
   pending: t.pendingRuntimeRequest ? { kind: t.pendingRuntimeRequest.kind, createdAt: t.pendingRuntimeRequest.createdAt } : null, background: t.pendingBackgroundTasks.map(b => ({ taskId: b.taskId, kind: b.kind })), lineage: t.lineage ? { parentThreadId: t.lineage.parentThreadId, relationshipToParent: t.lineage.relationshipToParent } : null, orphanedRun: t.orphanedRun });
-const projectFor = (c: Config, id: string) => { const p = c.projects.find(p => p.kaneoId === id); if (!p) throw new Error('Repository is not configured'); return p; };
+const projectFor = (c: Config, id: string) => { const p = c.projects.find(p => p.kanvilId === id); if (!p) throw new Error('Repository is not configured'); return p; };
 
 async function verifyDetachedOwners(t3: T3, bindings: ReturnType<typeof threadIdentity>[]) {
   const shell = await t3.shell(true);
@@ -53,7 +53,7 @@ async function verifyDetachedOwners(t3: T3, bindings: ReturnType<typeof threadId
   }
 }
 
-export async function inspectCleanup(c: Config, store: Store, t3: T3, kaneo: Kaneo, input: { projectId: string; path: string; size?: boolean; policy?: "unused" }, boundary: Boundary = {}) {
+export async function inspectCleanup(c: Config, store: Store, t3: T3, kanvil: Kanvil, input: { projectId: string; path: string; size?: boolean; policy?: "unused" }, boundary: Boundary = {}) {
   const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...boundary.signal ? [boundary.signal] : []]);
   const project = projectFor(c, input.projectId), checkedAt = new Date().toISOString();
   const checks: { name: string; state: 'pass' | 'blocked' | 'unknown'; override: boolean; detail: string; checkedAt: string }[] = [];
@@ -143,10 +143,10 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kaneo: Kan
     if (existsSync(job.reportPath)) {
       const report = readCompletionReport(job);
       if (report.status === 'awaiting-human') throw new Error('Completion is awaiting human input');
-      await verifyCompletionReport(c, kaneo, job, thread, report);
+      await verifyCompletionReport(c, kanvil, job, thread, report);
       reports.push({ jobId: job.id, status: report.status, reason: safeError(report.reason), prUrls: report.prUrls });
     } else throw new Error('Completion report is missing');
-    const head = await verifyCleanupHead(c, store, kaneo, job, threads, physical.branch, path);
+    const head = await verifyCleanupHead(c, store, kanvil, job, threads, physical.branch, path);
     if (head !== physical.head) throw new Error('Workspace HEAD differs from verified merged HEAD');
     return 'Completion, tracker and merged HEAD verified';
   });
@@ -214,7 +214,7 @@ async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?
   const physical = new Map<string, { registered: Awaited<ReturnType<typeof worktrees>>; space: Awaited<ReturnType<typeof filesystemSpace>>; error?: string }>();
   for (;;) {
     const context = readContext(), revision = context?.revision;
-    for (const project of c.projects) if (context?.invalidatedProjects.has(project.kaneoId)) physical.delete(project.repoPath);
+    for (const project of c.projects) if (context?.invalidatedProjects.has(project.kanvilId)) physical.delete(project.repoPath);
     context?.invalidatedProjects.clear();
     const data = await scanCleanupInventory(c, store, t3, physical, signal);
     // Retain completed Git batches unless the job/cleanup lifecycle changed that repository.
@@ -267,8 +267,8 @@ async function scanCleanupInventory(c: Config, store: Store, t3: T3, physical: M
     const filesystem = space.id ? filesystems.find(f => f.id === space.id) : undefined;
     if (filesystem) filesystem.repositories.push(project.repoPath);
     else filesystems.push({ ...space, repositories: [project.repoPath] });
-    const localJobs = jobs.filter(j => j.projectId === project.kaneoId), localThreads = threads.filter(t => t.projectId === project.t3Id);
-    const localActions = actions.filter(a => a.targets.some(t => t.projectId === project.kaneoId));
+    const localJobs = jobs.filter(j => j.projectId === project.kanvilId), localThreads = threads.filter(t => t.projectId === project.t3Id);
+    const localActions = actions.filter(a => a.targets.some(t => t.projectId === project.kanvilId));
     const paths = new Set<string>(), treesByPath = new Map<string, typeof registered[number]>(), jobsByPath = new Map<string, Job[]>();
     const unresolved = new Set<string>(), confirmed = new Set<string>(), actionAttempt = new Map<string, string>(), lastOutcomes = new Map<string, NonNullable<CleanupInventoryItem['lastOutcome']>>();
     for (const tree of registered) {
@@ -284,7 +284,7 @@ async function scanCleanupInventory(c: Config, store: Store, t3: T3, physical: M
     for (const thread of localThreads) {
       const path = threadPaths.get(thread.id); if (path) paths.add(path); await checkpoint();
     }
-    for (const action of localActions) for (const target of action.targets.filter(t => t.projectId === project.kaneoId)) {
+    for (const action of localActions) for (const target of action.targets.filter(t => t.projectId === project.kanvilId)) {
       const path = canonical(target.path); paths.add(path);
       if (cleanupActionPending(action, path, canonical)) unresolved.add(path);
       if (action.outcomes.some(o => canonical(o.path) === path && o.state === 'confirmed')) confirmed.add(path);
@@ -301,9 +301,9 @@ async function scanCleanupInventory(c: Config, store: Store, t3: T3, physical: M
       const tree = treesByPath.get(path), present = existsSync(path), primary = primaryPath === path;
       const active = bindings.some(t => t.activeRunId || t.pendingRuntimeRequest || t.pendingBackgroundTasks.length || ['preparing', 'queued', 'starting', 'running', 'waiting'].includes(t.status)) || owned.some(j => !['complete', 'dismissed'].includes(j.state));
       const state = primary ? 'primary' : active ? 'active' : !shellKnown ? 'unknown' : unresolved.has(path) ? 'blocked' : !present ? tree ? 'stale-registration' : confirmed.has(path) || owned.some(j => j.workspaceCleanedAt) ? 'complete' : 'missing' : owned.some(j => j.workspaceCleanupError) ? 'blocked' : owned.some(j => !j.workspaceCleanedAt) ? 'pending' : 'review';
-      const cached = JSON.parse(store.get(`cleanupSize:${digest([project.kaneoId, path])}`) ?? 'null');
+      const cached = JSON.parse(store.get(`cleanupSize:${digest([project.kanvilId, path])}`) ?? 'null');
       const size = cached ? { state: cached.state === 'error' ? 'error' : Date.now() - Date.parse(cached.checkedAt) < 300_000 && cached.head === tree?.head ? 'known' : 'stale', bytes: cached.bytes, checkedAt: cached.checkedAt } : { state: 'unknown', bytes: null };
-      items.push({ projectId: project.kaneoId, repository: project.repoPath, path, branch: tree?.branch ?? bindings[0]?.branch ?? '', head: tree?.head ?? '', present, registered: !!tree,
+      items.push({ projectId: project.kanvilId, repository: project.repoPath, path, branch: tree?.branch ?? bindings[0]?.branch ?? '', head: tree?.head ?? '', present, registered: !!tree,
         ownership: !shellKnown ? 'unknown' : owned.length > 1 || bindings.length > 1 ? 'shared' : owned.length ? 'factory' : bindings.length ? 't3-only' : 'orphan',
         state, lastAttempt, lastOutcome: lastOutcomes.get(path), jobs: jobRows, bindings: bindings.map(threadIdentity), size, checkedAt: at });
     }
@@ -318,7 +318,7 @@ async function scanCleanupInventory(c: Config, store: Store, t3: T3, physical: M
 
 type CleanupSnapshot = Awaited<ReturnType<typeof discoverCleanupInventory>>;
 type InventoryFilters = { query?: string; repository?: string; ownership?: string; state?: string; view?: string; sort?: string };
-const catalogIdentity = (c: Config) => digest([c.stateDir, c.projects.map(p => [p.kaneoId, p.t3Id, p.repoPath, p.baseBranch]), c.t3]);
+const catalogIdentity = (c: Config) => digest([c.stateDir, c.projects.map(p => [p.kanvilId, p.t3Id, p.repoPath, p.baseBranch]), c.t3]);
 function savedCatalog(c: Config, store: Store): CleanupSnapshot | null {
   try {
     const saved = JSON.parse(store.get('cleanupCatalog') ?? 'null');
@@ -396,7 +396,7 @@ function confirmAbsentActions(store: Store, detail: Awaited<ReturnType<typeof in
   detail.actions = store.cleanupActions().filter(a => a.targets.some(t => t.projectId === detail.projectId && canonicalPath(t.path) === detail.path));
 }
 
-export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kaneo, raw: unknown, operator = 'authenticated operator', boundary: Boundary = {}): Promise<any> {
+export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kanvil, raw: unknown, operator = 'authenticated operator', boundary: Boundary = {}): Promise<any> {
   boundary.signal?.throwIfAborted();
   const input = cleanupRequestSchema.parse(raw);
   if (input.type === 'inventory') {
@@ -404,13 +404,13 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
     return readCleanupCatalog(c, store, input.offset, input.limit, input);
   }
   if (input.type === 'inspect') {
-    const detail = await inspectCleanup(c, store, t3, kaneo, { ...input, policy: "unused" }, boundary);
+    const detail = await inspectCleanup(c, store, t3, kanvil, { ...input, policy: "unused" }, boundary);
     confirmAbsentActions(store, detail);
     if (input.size) store.set(`cleanupSize:${digest([input.projectId, detail.path])}`, JSON.stringify({ ...detail.size, head: detail.workspace?.head }));
     return detail;
   }
   if (input.type === 'review') {
-    const detail = await inspectCleanup(c, store, t3, kaneo, { ...input, size: true }, boundary);
+    const detail = await inspectCleanup(c, store, t3, kanvil, { ...input, size: true }, boundary);
     boundary.signal?.throwIfAborted();
     const id = randomUUID(), expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
     const review = { id, expiresAt, input: { projectId: input.projectId, path: detail.path }, fingerprint: detail.fingerprint, detail };
@@ -440,14 +440,14 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
       if (input.type !== 'retry') {
         const forced = input.type === 'force';
         const inspection = { ...target, size: forced, ...!forced ? { policy: 'unused' as const } : {} };
-        let fresh = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
+        let fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
         const blocked = (detail: typeof fresh) => detail.checks.some(check => check.state !== 'pass' && (!forced || !check.override));
         // T3 leaves idle setup shells open in worktrees. Like automatic maintenance, close the idle ones and look again.
         const idleShells = fresh.terminals.filter(t => t.status === 'running' && !t.hasRunningSubprocess);
         if (idleShells.length === fresh.terminals.length && idleShells.length && !fresh.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name))) {
           for (const t of idleShells) await t3.closeTerminal(t.threadId, t.terminalId);
           await new Promise(resolve => setTimeout(resolve, 1500));
-          fresh = await inspectCleanup(c, store, t3, kaneo, inspection, boundary);
+          fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
         }
         if (forced && (!fresh.forceAllowed || fresh.fingerprint !== review.fingerprint)) throw new Error('Reviewed identity, content or activity changed; review again');
         if (!forced && blocked(fresh)) throw new Error(fresh.checks.filter(check => check.state !== 'pass').map(check => check.detail).join('; '));
@@ -464,7 +464,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
         const identityOf = (w: Identity | null | undefined) => w ? JSON.stringify([w.head, w.branch, w.inode, w.present, w.registered, w.common, w.tracked, w.untracked, w.ignored, w.changes]) : '';
         const recheck = { ...inspection, size: false };
         // Nothing was detached for an unbound worktree, so the fresh reading still stands.
-        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kaneo, recheck, boundary) : fresh;
+        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kanvil, recheck, boundary) : fresh;
         if (identityOf(afterDetach.workspace) !== identityOf(fresh.workspace) || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
         // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
         await verifyDetachedOwners(t3, fresh.bindings);
@@ -472,7 +472,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
         const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
         if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
         const result = await removeWorkspace(project.repoPath, target.path, t3, forced, async () => {
-          const evidence = await inspectCleanup(c, store, t3, kaneo, recheck, boundary);
+          const evidence = await inspectCleanup(c, store, t3, kanvil, recheck, boundary);
           if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
           await verifyDetachedOwners(t3, fresh.bindings);
           if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
@@ -490,7 +490,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kaneo: Kane
         if (!['complete', 'dismissed'].includes(job.state) && !job.workspaceCleanup) throw new Error('Job is active; cleanup cannot dispatch or finish work');
         const wasPresent = existsSync(target.path);
         // Calling the normal verifier directly bypasses only its retry cooldown. Each step re-reads ownership.
-        const result = await cleanupCompletedWorkspace(c, store, t3, kaneo, store.job(job.id)!, { ...boundary, actionId: action.id });
+        const result = await cleanupCompletedWorkspace(c, store, t3, kanvil, store.job(job.id)!, { ...boundary, actionId: action.id });
         mutated = !!result?.uncertain;
         const current = store.job(job.id)!, physical = await inspectWorkspace(project.repoPath, target.path);
         if (current.workspaceCleanupError) throw new Error(current.workspaceCleanupError);

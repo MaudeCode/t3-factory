@@ -9,17 +9,17 @@ const root = document.querySelector("#root");
 const pause = () => new Promise((resolve) => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const at = new Date(Date.now() - 90_000).toISOString();
-const row = (taskId, key, priority, extra = {}) => ({ taskId, projectId: "p", project: "Example", key, number: Number(key.split("-")[1]), title: `Ticket ${key}`, priority, status: "to-do", labels: ["feat", "web"], difficulty: "med", createdAt: at, refreshedAt: at, refreshError: null,
+const row = (taskId, key, priority, extra = {}) => ({ taskId, projectId: "p", project: "Example", key, number: Number(key.split("-")[1]), title: `Ticket ${key}`, priority, status: "todo", labels: ["feat", "web"], difficulty: "med", createdAt: at, refreshedAt: at, refreshError: null,
   sources: [{ threadId: `thread-${taskId}`, messageId: `m-${taskId}`, title: `Plan ${key}`, at }], unavailable: null, ...extra });
 // Rows arrive in the scheduler's order: priority, then project key and number.
 const rows = [
   row("t9", "WEB-9", "urgent", { projectId: "q", project: "Other project", labels: ["bug"], difficulty: "low", unavailable: "Project not configured in Factory" }),
   row("t2", "APP-2", "high"),
-  row("t5", "APP-5", "medium", { labels: ["chore"], difficulty: null, refreshError: "Kaneo get_task failed; check its authenticated connection" }),
+  row("t5", "APP-5", "medium", { labels: ["chore"], difficulty: null, refreshError: "Kanvil get_task failed; check its authenticated connection" }),
   row("t1", "APP-1", "low", { title: "Dismissed later in the test", sources: [{ threadId: "thread-t1", messageId: "m-t1", title: "Plan APP-1", at }, { threadId: "thread-t1b", messageId: "m-t1b", title: "Second look", at }, { threadId: "thread-t1c", messageId: "m-t1c", title: "Third look", at }] }),
 ];
 const base = {
-  config: { enabled: false, kaneo: { url: "https://tracker.example", workspaceId: "w" }, models: [{ id: "preset-sol", name: "Sol", model: { instanceId: "codex", model: "sol" } }], projects: [{ kaneoId: "p", key: "APP", name: "Example", enabled: true, priorityLabels: ["agent-compat"] }] },
+  config: { enabled: false, kanvil: { url: "https://tracker.example", workspaceId: "w" }, models: [{ id: "preset-sol", name: "Sol", model: { instanceId: "codex", model: "sol" } }], projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true, priorityLabels: ["agent-compat"] }] },
   status: { jobs: [], sessionTickets: { at, error: null, rows } },
 };
 let state = structuredClone(base), calls = [], release = () => {};

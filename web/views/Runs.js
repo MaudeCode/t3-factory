@@ -42,7 +42,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
   const picked = (key) => filters[key] ?? [];
   const tags = [...new Set([...picked("tags"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
-  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kaneoId) || rows.some(row => row.projectId === p.kaneoId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode })));
+  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kanvilId) || rows.some(row => row.projectId === p.kanvilId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode })));
   // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
   const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
   const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
@@ -51,7 +51,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
     <${Popover} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
       ${children ?? html`
       ${sessions && html`<${Field} group label="Session"><${Select} multiple placeholder="Any" label="Session" value=${filters.sessions ?? []} options=${sessionOptions} onChange=${value => change("sessions", value)} /><//>`}
-      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kaneoId, p.name])} onChange=${value => change("projects", value)} /><//>
+      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kanvilId, p.name])} onChange=${value => change("projects", value)} /><//>
       <${Field} group label="Tags">
         <div class="tags-pick">
           <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tags.map(tag => [tag, tag])} onChange=${value => change("tags", value)} />
@@ -60,7 +60,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
         </div>
       <//>
       ${chips("difficulties", "Difficulty", [glyph("low", "bars1", "Low"), glyph("med", "bars2", "Medium"), glyph("high", "bars3", "High")])}
-      ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("no-priority", "circleSlash", "No priority")])}
+      ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("none", "circleSlash", "No priority")])}
       ${providers && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
       `}
       ${active > 0 && html`<${Button} variant="ghost" size="sm" onClick=${() => { onFilters({}); onQuery(""); }}>Clear all<//>`}
@@ -126,10 +126,10 @@ export function RunDetail({ id }) {
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
     <div class="links-row">
       <a href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow}>Cleanup review</a>
-      ${ticket && html`<${Link} href=${ticket}>Ticket in Kaneo<//>`}
+      ${ticket && html`<${Link} href=${ticket}>Ticket in Kanvil<//>`}
       ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
       ${job.threadId && html`<a href=${threadLink(job)}>Open in T3 Code</a>`}
-      ${project && html`<${Link} href=${projectLink(c, project.kaneoId)}>${project.name}<//>`}
+      ${project && html`<${Link} href=${projectLink(c, project.kanvilId)}>${project.name}<//>`}
     </div>
     <div class="run-grid">
     <div>

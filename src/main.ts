@@ -14,7 +14,7 @@ import { dismissSessionTicket } from './session-tickets.ts';
 import { saveSettings } from './settings.ts';
 import type { CycleOptions } from './scheduler.ts';
 import { z, ZodError } from 'zod';
-import { T3, Kaneo } from './clients.ts';
+import { T3, Kanvil } from './clients.ts';
 import { createFactoryWeb, runFactory, webSettings } from './web.ts';
 
 import { loadEnvironment } from './env.ts';
@@ -78,7 +78,7 @@ if (command === 'web') {
   const result = await callControl(c.stateDir, { type: 'cleanup-cancel', inspectionId: z.uuid().parse(process.argv[3]) });
   console.log(JSON.stringify(result?.data ?? { cancelled: false }));
 } else if (command === 'cleanup') {
-  let store: Store | undefined, kaneo: Kaneo | undefined;
+  let store: Store | undefined, kanvil: Kanvil | undefined;
   try {
     const input = cleanupRequestSchema.parse(JSON.parse(readFileSync(0, 'utf8'))), c = loadConfig(configPath);
     const forwarded = await callControl(c.stateDir, { type: 'cleanup', input, operator: process.argv[3] });
@@ -86,12 +86,12 @@ if (command === 'web') {
     else {
       store = new Store(c.stateDir);
       if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; cleanup refused');
-      const lazy = { call: async (tool: string, args: any) => { if (!kaneo) { kaneo = new Kaneo(c.kaneo); await kaneo.connect(); } return kaneo.call(tool, args); } } as Kaneo;
+      const lazy = { task: async (id: string) => { if (!kanvil) { kanvil = new Kanvil(c.kanvil); await kanvil.connect(); } return kanvil.task(id); } } as Kanvil;
       console.log(JSON.stringify(await manageCleanup(c, store, new T3(c.t3), lazy, input, process.argv[3] ?? 'local CLI operator')));
       if (!['inspect', 'review'].includes(input.type)) writeStatus(c, store);
     }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
-  finally { await kaneo?.close().catch(() => {}); store?.close(); }
+  finally { await kanvil?.close().catch(() => {}); store?.close(); }
 } else if (command === 'job-stop') {
   // The running scheduler stops the thread and reconciles at once; otherwise stop it here and leave reconciliation to the next pass.
   try {
@@ -133,24 +133,23 @@ if (command === 'web') {
     console.log(JSON.stringify({ providers: providers.filter(p => ['claudeAgent', 'codex'].includes(p.driver)).map(({ instanceId, driver, status, enabled, installed, models }) => ({ instanceId, driver, status, enabled, installed, models })) }));
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'sources') {
-  // Catalogs the settings pages pick from: T3 projects, Kaneo projects with their columns, and workspace labels.
-  const c = loadConfig(configPath), kaneo = new Kaneo(c.kaneo);
+  // Catalogs the settings pages pick from: T3 projects, Kanvil projects with their columns, and workspace labels.
+  const c = loadConfig(configPath), kanvil = new Kanvil(c.kanvil);
   try {
     const t3 = z.object({ projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await new T3(c.t3).request('/api/orchestration/shell')).projects;
-    await kaneo.connect();
-    const projects = z.array(z.object({ id: z.string(), name: z.string(), slug: z.string(), description: z.string().nullish(), archivedAt: z.string().nullish() }).passthrough()).parse(await kaneo.call('list_projects', { workspaceId: c.kaneo.workspaceId })).filter(p => !p.archivedAt);
-    const labels = z.array(z.object({ name: z.string().min(1), deletionStartedAt: z.string().nullish() }).passthrough()).parse(await kaneo.call('list_workspace_labels', { workspaceId: c.kaneo.workspaceId }));
-    const column = z.object({ slug: z.string(), name: z.string(), isFinal: z.boolean(), position: z.number() }).passthrough();
-    const columns = await Promise.all(projects.map(async p => [p.id, z.array(column).parse(await kaneo.call('list_project_columns', { projectId: p.id })).sort((a, b) => a.position - b.position).map(({ slug, name, isFinal }) => ({ slug, name, isFinal }))] as const));
+    await kanvil.connect();
+    const projects = await kanvil.projects();
+    const labels = await kanvil.labels();
+    const columns = await Promise.all(projects.map(async p => [p.id, await kanvil.columns(p.id)] as const));
     console.log(JSON.stringify({
       t3: t3.map(({ id, title, workspaceRoot }) => ({ id, title, workspaceRoot })),
-      kaneo: {
+      kanvil: {
         projects: projects.map(p => ({ id: p.id, name: p.name, slug: p.slug, githubRepo: p.description?.match(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?=[\s.,;)]|$)/)?.[1] ?? null })),
         columns: Object.fromEntries(columns),
-        labels: [...new Set(labels.filter(l => !l.deletionStartedAt).map(l => l.name))].sort(),
+        labels: labels,
       },
     }));
-  } catch (e) { console.error(safeError(e)); process.exitCode = 1; } finally { await kaneo.close().catch(() => {}); }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; } finally { await kanvil.close().catch(() => {}); }
 } else if (command === 'config-get' || command === 'config-save') {
   try {
     const result = command === 'config-get' ? loadConfig(configPath) : saveSettings(JSON.parse(readFileSync(0, 'utf8')), configPath);

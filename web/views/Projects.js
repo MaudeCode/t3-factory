@@ -8,12 +8,12 @@ const t3Options = (current) => {
   const list = sources.value?.t3 ?? [];
   return [...(current && !list.some((p) => p.id === current) ? [[current, current]] : []), ...list.map((p) => [p.id, p.title])];
 };
-const kaneoOptions = (current) => {
-  const list = sources.value?.kaneo.projects ?? [];
+const kanvilOptions = (current) => {
+  const list = sources.value?.kanvil.projects ?? [];
   return [...(current && !list.some((p) => p.id === current) ? [[current, current]] : []), ...list.map((p) => [p.id, `${p.name} (${p.slug})`])];
 };
-const columnOptions = (kaneoId) => (sources.value?.kaneo.columns[kaneoId] ?? []).map((c) => [c.slug, c.name]);
-const labelOptions = () => (sources.value?.kaneo.labels ?? []).map((l) => [l, l]);
+const columnOptions = (kanvilId) => (sources.value?.kanvil.columns[kanvilId] ?? []).map((c) => [c.slug, c.name]);
+const labelOptions = () => (sources.value?.kanvil.labels ?? []).map((l) => [l, l]);
 
 // One run limit per label; runs in this project count against every limited label they carry.
 function LabelLimits({ index, project }) {
@@ -23,7 +23,7 @@ function LabelLimits({ index, project }) {
   return html`<div class="label-limits">
     ${Object.keys(limits).map((label) => {
       const setting = limits[label], legacy = typeof setting === 'number', mode = legacy ? 'running' : setting.mode;
-      const n = jobs.value.filter((j) => j.projectId === project.kaneoId && (mode === 'full' ? isOpen(j) : isActive(j)) && j.labels?.includes(label)).length;
+      const n = jobs.value.filter((j) => j.projectId === project.kanvilId && (mode === 'full' ? isOpen(j) : isActive(j)) && j.labels?.includes(label)).length;
       return html`<div class="label-limit" key=${label}>
         <span><${Tag}>${label}<//> <small class="muted">${n} ${mode === 'full' ? 'open' : 'running'}</small></span>
         <${Segmented} label=${`${label} block mode`} value=${mode} options=${[['full', 'Full block'], ['running', 'Running block']]} icons=${{ full: 'lock', running: 'play' }}
@@ -36,29 +36,29 @@ function LabelLimits({ index, project }) {
   </div>`;
 }
 
-// New projects start from the T3 and Kaneo catalogs so nothing has to be typed.
+// New projects start from the T3 and Kanvil catalogs so nothing has to be typed.
 function AddProject({ open, onClose }) {
   const [t3, setT3] = useState("");
-  const [kaneo, setKaneo] = useState("");
+  const [kanvil, setKanvil] = useState("");
   const src = sources.value;
-  const taken = new Set(config.value.projects.flatMap((p) => [p.t3Id, p.kaneoId]));
+  const taken = new Set(config.value.projects.flatMap((p) => [p.t3Id, p.kanvilId]));
   const t3Choices = (src?.t3 ?? []).filter((p) => !taken.has(p.id)).map((p) => [p.id, p.title]);
-  const kaneoChoices = (src?.kaneo.projects ?? []).filter((p) => !taken.has(p.id)).map((p) => [p.id, `${p.name} (${p.slug})`]);
+  const kanvilChoices = (src?.kanvil.projects ?? []).filter((p) => !taken.has(p.id)).map((p) => [p.id, `${p.name} (${p.slug})`]);
   const t3Project = src?.t3.find((p) => p.id === t3),
-    kaneoProject = src?.kaneo.projects.find((p) => p.id === kaneo);
+    kanvilProject = src?.kanvil.projects.find((p) => p.id === kanvil);
   const add = () => {
-    actions.addProject(t3Project, kaneoProject);
+    actions.addProject(t3Project, kanvilProject);
     setT3("");
-    setKaneo("");
+    setKanvil("");
     onClose();
   };
   return html`<${Dialog} open=${open} onClose=${onClose} title="Add a project"
-    actions=${html`<${Button} variant="ghost" onClick=${onClose}>Cancel<//><${Button} variant="primary" disabled=${!t3Project && !kaneoProject} onClick=${add}>Add project<//>`}>
+    actions=${html`<${Button} variant="ghost" onClick=${onClose}>Cancel<//><${Button} variant="primary" disabled=${!t3Project && !kanvilProject} onClick=${add}>Add project<//>`}>
     ${src
       ? html`<${Field} label="T3 project" hint="Sets the repository path T3 works in."><${Select} label="T3 project" value=${t3} options=${[["", "Choose"], ...t3Choices]} onChange=${setT3} /><//>
-        <${Field} label="Kaneo project" hint="Sets the ticket prefix and which columns mean ready and done."><${Select} label="Kaneo project" value=${kaneo} options=${[["", "Choose"], ...kaneoChoices]} onChange=${setKaneo} /><//>
-        ${(t3Project || kaneoProject) && html`<${Facts} items=${[["Path", t3Project?.workspaceRoot], ["Tickets", kaneoProject && `${kaneoProject.slug}-…`], ["GitHub", kaneoProject?.githubRepo]]} />`}`
-      : html`<p class="muted">Loading the T3 and Kaneo catalogs…</p>`}
+        <${Field} label="Kanvil project" hint="Sets the ticket prefix and which columns mean ready and done."><${Select} label="Kanvil project" value=${kanvil} options=${[["", "Choose"], ...kanvilChoices]} onChange=${setKanvil} /><//>
+        ${(t3Project || kanvilProject) && html`<${Facts} items=${[["Path", t3Project?.workspaceRoot], ["Tickets", kanvilProject && `${kanvilProject.slug}-…`], ["GitHub", kanvilProject?.githubRepo]]} />`}`
+      : html`<p class="muted">Loading the T3 and Kanvil catalogs…</p>`}
   <//>`;
 }
 
@@ -74,26 +74,26 @@ export function Projects() {
     current = entries[i];
   const all = history.value ?? jobs.value;
   const stats = (project) => {
-    const mine = all.filter((j) => j.projectId === project.kaneoId);
+    const mine = all.filter((j) => j.projectId === project.kanvilId);
     return {
-      active: jobs.value.filter((j) => j.projectId === project.kaneoId && isActive(j)).length,
-      waiting: jobs.value.filter((j) => j.projectId === project.kaneoId && j.state === "waiting").length,
+      active: jobs.value.filter((j) => j.projectId === project.kanvilId && isActive(j)).length,
+      waiting: jobs.value.filter((j) => j.projectId === project.kanvilId && j.state === "waiting").length,
       done: mine.filter((j) => j.state === "complete").length,
     };
   };
   const s = stats(current);
-  const inUse = jobs.value.some((j) => j.projectId === current.kaneoId && isOpen(j));
-  const discovery = (status.value.discovery || []).find((d) => d.projectId === current.kaneoId);
+  const inUse = jobs.value.some((j) => j.projectId === current.kanvilId && isOpen(j));
+  const discovery = (status.value.discovery || []).find((d) => d.projectId === current.kanvilId);
   const t3Project = sources.value?.t3.find((x) => x.id === current.t3Id);
   const pathMismatch = t3Project && t3Project.workspaceRoot !== current.repoPath;
-  const columns = columnOptions(current.kaneoId);
-  return html`<${Page} title="Projects" hint="A project pairs a T3 project with a Kaneo project." actions=${html`<${Button} variant="primary" size="sm" icon="plus" label="Add project" onClick=${() => setAdding(true)} />`}>
+  const columns = columnOptions(current.kanvilId);
+  return html`<${Page} title="Projects" hint="A project pairs a T3 project with a Kanvil project." actions=${html`<${Button} variant="primary" size="sm" icon="plus" label="Add project" onClick=${() => setAdding(true)} />`}>
     <${AddProject} open=${adding} onClose=${() => setAdding(false)} />
     <div class="split">
       <div class="list" role="listbox" aria-label="Projects">
         ${entries.map((x, j) => {
           const st = stats(x);
-          return html`<div class=${`item ${j === i ? "current" : ""}`} key=${x.kaneoId || j} role="option" aria-selected=${j === i} tabindex="0"
+          return html`<div class=${`item ${j === i ? "current" : ""}`} key=${x.kanvilId || j} role="option" aria-selected=${j === i} tabindex="0"
             onClick=${() => (selectedProject.value = j)} onKeyDown=${(e) => e.key === "Enter" && (selectedProject.value = j)}>
             <${RowBody} title=${html`<b>${x.name}</b>`}>
               <span class="mono">${x.githubRepo || x.repoPath || "not set"}</span> · ${st.active} running${st.waiting ? `, ${st.waiting} need you` : ""}${x.upstreams?.length ? `, ${x.upstreams.length} watched` : ""}
@@ -108,7 +108,7 @@ export function Projects() {
             <h2>${current.name}</h2>
             <p class="links-row">
               ${current.githubRepo && html`<${Link} href=${repoLink(current.githubRepo)}>GitHub<//>`}
-              ${current.kaneoId && html`<${Link} href=${projectLink(c, current.kaneoId)}>Kaneo<//>`}
+              ${current.kanvilId && html`<${Link} href=${projectLink(c, current.kanvilId)}>Kanvil<//>`}
             </p>
           </div>
           <${Button} variant="danger" size="sm" disabled=${inUse || entries.length === 1} icon="trash" label=${inUse ? "Runs are still open for this project" : "Remove project"} onClick=${() => actions.removeProject(i)} />
@@ -135,7 +135,7 @@ export function Projects() {
         <//>
         <${Section} title="Tickets">
           <div class="grid-2">
-            <${Field} label="Kaneo project"><${Select} label="Kaneo project" value=${current.kaneoId} options=${kaneoOptions(current.kaneoId)} onChange=${(v) => actions.linkKaneo(i, v)} /><//>
+            <${Field} label="Kanvil project"><${Select} label="Kanvil project" value=${current.kanvilId} options=${kanvilOptions(current.kanvilId)} onChange=${(v) => actions.linkKanvil(i, v)} /><//>
             <${Field} label="Ticket prefix"><${Input} mono path=${[...p, "key"]} /><//>
           </div>
           <${Field} group label="Ready when in" hint="Tickets in these columns may be picked up."><${Chips} label="Ready statuses" path=${[...p, "readyStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>

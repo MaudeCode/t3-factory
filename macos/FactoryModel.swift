@@ -198,9 +198,9 @@ struct RunRequest: Identifiable, Codable {
     var journal: [[String: Any]] { status["journal"] as? [[String: Any]] ?? [] }
     var recentJobs: [[String: Any]] { status["recent"] as? [[String: Any]] ?? [] }
     var t3Projects: [[String: Any]] { sources?["t3"] as? [[String: Any]] ?? [] }
-    var kaneoProjects: [[String: Any]] { (sources?["kaneo"] as? [String: Any])?["projects"] as? [[String: Any]] ?? [] }
-    var workspaceLabels: [String] { (sources?["kaneo"] as? [String: Any])?["labels"] as? [String] ?? [] }
-    func columns(_ kaneoId: String) -> [[String: Any]] { ((sources?["kaneo"] as? [String: Any])?["columns"] as? [String: Any])?[kaneoId] as? [[String: Any]] ?? [] }
+    var kanvilProjects: [[String: Any]] { (sources?["kanvil"] as? [String: Any])?["projects"] as? [[String: Any]] ?? [] }
+    var workspaceLabels: [String] { (sources?["kanvil"] as? [String: Any])?["labels"] as? [String] ?? [] }
+    func columns(_ kanvilId: String) -> [[String: Any]] { ((sources?["kanvil"] as? [String: Any])?["columns"] as? [String: Any])?[kanvilId] as? [[String: Any]] ?? [] }
     // The scheduler's view of a configured model on its last pass.
     func liveModelState(_ id: String) -> String {
         for s in streams {
@@ -232,14 +232,14 @@ struct RunRequest: Identifiable, Codable {
     // Facets of a ticket or run as one line: project, "P high", "D med", and its tracker labels.
     func facets(_ row: [String: Any], model: String? = nil) -> String {
         var parts = [projectName(row["projectId"] as? String), model ?? ""]
-        if let priority = row["priority"] as? String, priority != "no-priority", !priority.isEmpty { parts.append("P " + priority) }
+        if let priority = row["priority"] as? String, priority != "none", !priority.isEmpty { parts.append("P " + priority) }
         if let difficulty = row["difficulty"] as? String, !difficulty.isEmpty { parts.append("D " + difficulty) }
         parts += (row["labels"] as? [String] ?? [])
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
     // Keys of enabled projects only; the scheduler refuses a named ticket from a disabled one.
     var projectKeys: [String] { Array(NSOrderedSet(array: projects.filter { $0["enabled"] as? Bool == true }.compactMap { $0["key"] as? String }.filter { !$0.isEmpty })) as? [String] ?? [] }
-    func projectName(_ kaneoId: String?) -> String { projects.first { $0["kaneoId"] as? String == kaneoId }?["name"] as? String ?? "" }
+    func projectName(_ kanvilId: String?) -> String { projects.first { $0["kanvilId"] as? String == kanvilId }?["name"] as? String ?? "" }
     func modelName(_ job: [String: Any]) -> String {
         let slug = (job["modelSelection"] as? [String: Any])?["model"] as? String ?? ""
         return configuredModels.first { ($0["model"] as? [String: Any])?["model"] as? String == slug }?["name"] as? String ?? (slug.isEmpty ? "Factory" : slug)
@@ -368,33 +368,33 @@ struct RunRequest: Identifiable, Codable {
             sources = object; sourcesError = nil
         } catch { sourcesError = error.localizedDescription }
     }
-    // A project starts from what T3 and Kaneo already know about it; everything stays editable.
-    func addProject(t3: [String: Any]?, kaneo: [String: Any]?) -> Int {
+    // A project starts from what T3 and Kanvil already know about it; everything stays editable.
+    func addProject(t3: [String: Any]?, kanvil: [String: Any]?) -> Int {
         var items = draft["projects"] as? [[String: Any]] ?? []
-        let kaneoId = kaneo?["id"] as? String ?? ""
+        let kanvilId = kanvil?["id"] as? String ?? ""
         let root = t3?["workspaceRoot"] as? String ?? ""
         let parts = root.split(separator: "/")
         let guessed = parts.count >= 4 ? "\(parts[parts.count - 2])/\(parts[parts.count - 1])" : ""
-        items.append(["name": t3?["title"] as? String ?? kaneo?["name"] as? String ?? "New project", "enabled": false, "key": kaneo?["slug"] as? String ?? "", "kaneoId": kaneoId, "t3Id": t3?["id"] as? String ?? "",
-                      "repoPath": root, "githubRepo": kaneo?["githubRepo"] as? String ?? guessed, "baseBranch": "main", "priorityLabels": [], "upstreams": []].merging(statuses(for: kaneoId)) { _, b in b })
+        items.append(["name": t3?["title"] as? String ?? kanvil?["name"] as? String ?? "New project", "enabled": false, "key": kanvil?["slug"] as? String ?? "", "kanvilId": kanvilId, "t3Id": t3?["id"] as? String ?? "",
+                      "repoPath": root, "githubRepo": kanvil?["githubRepo"] as? String ?? guessed, "baseBranch": "main", "priorityLabels": [], "upstreams": []].merging(statuses(for: kanvilId)) { _, b in b })
         update(["projects"], items)
         return items.count - 1
     }
-    // Ready is the first column, done is every final column, when the Kaneo catalog knows the project.
-    func statuses(for kaneoId: String) -> [String: Any] {
-        let cols = columns(kaneoId)
-        guard !cols.isEmpty else { return ["readyStatuses": ["to-do"], "doneStatuses": ["done"]] }
+    // Ready is the first column, done is every final column, when the Kanvil catalog knows the project.
+    func statuses(for kanvilId: String) -> [String: Any] {
+        let cols = columns(kanvilId)
+        guard !cols.isEmpty else { return ["readyStatuses": ["todo"], "doneStatuses": ["done"]] }
         let done = cols.filter { $0["isFinal"] as? Bool == true }.compactMap { $0["slug"] as? String }
-        return ["readyStatuses": [cols.first { $0["isFinal"] as? Bool != true }?["slug"] as? String ?? cols[0]["slug"] as? String ?? "to-do"], "doneStatuses": done.isEmpty ? [cols.last?["slug"] as? String ?? "done"] : done]
+        return ["readyStatuses": [cols.first { $0["slug"] as? String == "todo" }?["slug"] as? String ?? cols.first { $0["isFinal"] as? Bool != true }?["slug"] as? String ?? cols[0]["slug"] as? String ?? "todo"], "doneStatuses": done.isEmpty ? [cols.last?["slug"] as? String ?? "done"] : done]
     }
     func linkT3(_ index: Int, id: String) {
         let project = t3Projects.first { $0["id"] as? String == id }
         update(["projects", String(index), "t3Id"], id)
         if let root = project?["workspaceRoot"] as? String { update(["projects", String(index), "repoPath"], root) }
     }
-    func linkKaneo(_ index: Int, id: String) {
-        let project = kaneoProjects.first { $0["id"] as? String == id }
-        update(["projects", String(index), "kaneoId"], id)
+    func linkKanvil(_ index: Int, id: String) {
+        let project = kanvilProjects.first { $0["id"] as? String == id }
+        update(["projects", String(index), "kanvilId"], id)
         if let slug = project?["slug"] as? String { update(["projects", String(index), "key"], slug) }
         for (key, value) in statuses(for: id) { update(["projects", String(index), key], value) }
     }
@@ -606,8 +606,8 @@ struct RunRequest: Identifiable, Codable {
     }
     // Without a task this opens the project.
     func openTicket(_ projectId: String?, taskId: String?) {
-        guard let kaneo = config["kaneo"] as? [String: Any], let base = kaneo["url"] as? String, let workspace = kaneo["workspaceId"] as? String, let projectId,
-              let url = URL(string: "\(base)/dashboard/workspace/\(workspace)/project/\(projectId)" + (taskId.map { "/task/\($0)" } ?? "")) else { return }
+        guard let kanvil = config["kanvil"] as? [String: Any], let base = kanvil["url"] as? String, let projectId,
+              let url = URL(string: "\(base)/projects/\(projectId)" + (taskId.map { "/tickets/\($0)" } ?? "")) else { return }
         NSWorkspace.shared.open(url)
     }
     func openPullRequest(_ job: [String: Any]) {
