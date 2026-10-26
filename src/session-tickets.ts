@@ -164,17 +164,20 @@ async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Se
 }
 
 const trackerTask = taskSchema.extend({ workspaceId: z.string().optional() });
-// The tracker's own record for a reference, or null when the reference cannot be a ticket in this workspace.
-async function lookup(c: Config, kanvil: Kanvil, cat: Catalog, ref: SessionRef) {
+// Confirmation and refresh distinguish native absence from a failed tracker read in the same place.
+async function readTicket(kanvil: Kanvil, id: string, cached = false) {
   try {
-    const found = await kanvil.task(ref.value);
-    const task = trackerTask.parse(found);
-    if (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId) return null;
-    return cat.projects[task.projectId] ? task : null;
+    return trackerTask.parse(await kanvil.task(id, undefined, cached));
   } catch (error) {
     if (error instanceof KanvilTaskNotFound) return null;
     throw error;
   }
+}
+// The tracker's own record for a reference, or null when the reference cannot be a ticket in this workspace.
+async function lookup(c: Config, kanvil: Kanvil, cat: Catalog, ref: SessionRef) {
+  const task = await readTicket(kanvil, ref.value);
+  if (!task || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId)) return null;
+  return cat.projects[task.projectId] ? task : null;
 }
 
 // Both confirmation and refresh publish native identity and preserve any concurrent event invalidation.
@@ -182,7 +185,7 @@ export function refreshTicket(row: SessionTicket, task: Task, project: Pick<Cata
   Object.assign(row, { projectId: task.projectId, key: task.key ?? `${project.slug}-${task.number}`, number: task.number,
     difficulty: task.difficulty, automationReady: task.automationReady, holdReason: task.holdReason,
     title: task.title, priority: task.priority, status: task.status, archived: task.archived, labels: (task.labels ?? []).map(l => l.name),
-    refreshedAt: reading.at, refreshAfter: new Date(reading.changed ? 0 : reading.now + REFRESH_MS).toISOString(), refreshError: undefined });
+    refreshedAt: reading.at, refreshAfter: new Date(reading.changed ? 0 : reading.now + REFRESH_MS).toISOString(), refreshError: undefined, missing: undefined });
 }
 
 // One bounded batch: scan changed sessions, confirm pending references, refresh listed tickets, mark consumed
@@ -258,13 +261,13 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   }
   // A failed read keeps the row's last honest reading and waits before trying again, so an outage cannot loop on the same rows.
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
-  const retained = store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
-  if (kanvil.realtime) for (const projectId of new Set(retained.map(r => r.projectId))) {
+  const retained = () => store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
+  if (kanvil.realtime) for (const projectId of new Set(retained().map(r => r.projectId))) {
     await backgroundCheckpoint();
     try { await backgroundRead(() => kanvil.ensureProjectStream(projectId)); }
     catch (error) { errors.push(`Watching session tickets: ${safeError(error)}`); }
   }
-  const stale = retained.filter(r => (!kanvil.realtime || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
+  const stale = retained().filter(r => (!kanvil.realtime || r.missing || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
   if (kanvil.realtime) for (const projectId of new Set(stale.slice(0, limits.refreshes).map(r => r.projectId))) {
     try { await backgroundRead(() => kanvil.tasks(projectId)); }
     catch (error) { errors.push(`Reading session snapshot: ${safeError(error)}`); }
@@ -276,7 +279,16 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     if (row.dismissedAt || row.consumed) continue;
     try {
       const revision = kanvil.revision;
-      const task = trackerTask.parse(await backgroundRead(() => kanvil.task(cached.taskId, undefined, true)));
+      const task = await backgroundRead(() => readTicket(kanvil, cached.taskId, true));
+      row = store.sessionTicket(cached.taskId)!;
+      if (row.dismissedAt || row.consumed) continue;
+      if (!task) {
+        row.missing = true; delete row.refreshError;
+        row.refreshAfter = new Date(revision !== kanvil.revision ? 0 : now + RETRY_MS).toISOString();
+        if (revision !== kanvil.revision) more = true;
+        store.saveSessionTicket(row);
+        continue;
+      }
       cat ??= await catalog(c, store, kanvil);
       if (!cat.projects[task.projectId] && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); }
       const project = cat.projects[task.projectId];
@@ -298,7 +310,10 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     store.set('sessionTickets:at', at);
     // A reference whose last lookup failed is still unresolved; the notice stays until a retry succeeds or the read is dropped.
     // A session T3 no longer lists is never read again, so its old read failure is not a current one.
-    const lingering = store.sessionThreads().filter(rec => includeSource(rec.id)).flatMap(rec => [...rec.pending.filter(ref => ref.error).map(ref => `Confirming ${ref.value}: ${ref.error}`), ...(rec.error && listed?.has(rec.id) ? [rec.error] : [])]);
+    const lingering = [
+      ...store.sessionThreads().filter(rec => includeSource(rec.id)).flatMap(rec => [...rec.pending.filter(ref => ref.error).map(ref => `Confirming ${ref.value}: ${ref.error}`), ...(rec.error && listed?.has(rec.id) ? [rec.error] : [])]),
+      ...retained().filter(row => row.refreshError).map(row => `Refreshing ${row.key}: ${row.refreshError}`),
+    ];
     store.set('sessionTickets:error', lingering.length ? JSON.stringify({ at: JSON.parse(store.get('sessionTickets:error') || 'null')?.at ?? at, message: lingering.slice(0, 3).join('; ') }) : '');
   }
   return more;
@@ -325,7 +340,7 @@ export function dismissSessionTicket(store: Store, taskId: string) {
 export function sessionTicketStatus(c: Config, store: Store) {
   const jobs = store.jobs(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
   const includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
-  const rows = store.sessionTickets().filter(r => !r.archived && !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
+  const rows = store.sessionTickets().filter(r => !r.archived && !r.missing && !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
     const bySession = new Map<string, SessionSource>();
     for (const source of r.sources) {
       if (!includeSource(source.threadId, source.title)) continue;
