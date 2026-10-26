@@ -81,7 +81,7 @@ test('state migration preserves session evidence and tombstones while replacing 
   assert.deepEqual(migrated.sources, row.sources);
   assert.deepEqual(target.events().map(event => event.kind), ['current-event', 'legacy-event']);
   assert.equal(target.sessionThread('thread')?.lastOrdinal, 90, 'migration must not replay old history and flood the API');
-  assert.equal(target.sessionThread('thread')?.reportVersion, 2, 'verified version-1 progress must be upgraded without replay');
+  assert.equal(target.sessionThread('thread')?.reportVersion, 3, 'verified version-1 progress must be upgraded without replay');
   assert.equal(target.sessionThread('thread')?.pending.length, 0);
   assert.throws(() => migrateKaneoState(source.db, target, [native, { ...native, id: 'ambiguous' }], {}), /ambiguous/i);
   assert.equal(target.sessionTickets().length, 1, 'a rejected mapping cannot mutate the target');

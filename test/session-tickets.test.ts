@@ -215,13 +215,13 @@ test('new ticket confirmations wait until an older origin is classified', async 
   assert.equal(f.status().error, null);
 });
 
-test('creation reports name keys and task links, not mentions, prompts, examples, quotes, tables, code or negations', () => {
+test('creation reports name keys and task links, not mentions, prompts, examples, quotes, illustrative tables, code or negations', () => {
   const refs = (text: string) => creationReports(text).map(r => `${r.kind}:${r.value}`);
   assert.deepEqual(refs('Created FIX-7: Fix uploads.'), ['key:FIX-7']);
   assert.deepEqual(refs(`Filed two tickets:\n- [FIX-8](${LINK('task-8')}) uploads\n- FIX-9 downloads`), ['task:task-8', 'key:FIX-8', 'key:FIX-9']);
   assert.deepEqual(refs('Opened OTH-3 in the other project.'), ['key:OTH-3']);
   assert.deepEqual(refs('FIX-3 is related; see also FIX-4 and the SHA-256 digest.'), [], 'a mention is not a report');
-  assert.deepEqual(refs('Created tickets:\n| Ticket | Scope |\n|---|---|\n| FIX-5 | web |'), [], 'a table is illustrative');
+  assert.deepEqual(refs('Example tickets:\n| Ticket | Scope |\n|---|---|\n| FIX-5 | web |'), [], 'an illustrative table is not a creation report');
   assert.deepEqual(refs('> Created FIX-6 earlier\n\nNothing else.'), [], 'quoted text is not this session\'s report');
   assert.deepEqual(refs('```\nCreated FIX-6\n```\n\nUse a key such as `FIX-6` when creating one.'), [], 'code and inline examples are not reports');
   assert.deepEqual(refs('No ticket was created for FIX-2; it already exists.'), [], 'a negated sentence is not a report');
@@ -247,14 +247,28 @@ test('sectioned creation reports retain their ticket lists, bounded ranges and n
   assert.deepEqual(refs('Created FIX-1 through FIX-1000000.'), [], 'range expansion is bounded and fails closed');
 });
 
-test('legacy scan progress replays sectioned reports through bounded history and preserves tombstones', async t => {
+test('creation tables collect only ticket cells under an affirmative creation report', () => {
+  const table = `| Ticket | What | Priority |\n|---|---|---|\n| [FIX-7](${LINK('task-7')}) | Related to FIX-99 | high |\n| [FIX-8](${LINK('task-8')}) | Uploads | medium |\n| FIX-9 | Downloads | high |\n| FIX-10 | Search | medium |`;
+  const keys = (text: string) => creationReports(text).filter(r => r.kind === 'key').map(r => r.value);
+  for (const report of [`I filed 4 tickets for these, each marked factory-ready:\n\n${table}`, `Created tickets:\n${table}`, `Tickets filed.\n\n**Completed**\n\n${table}`]) {
+    assert.deepEqual(keys(report), ['FIX-7', 'FIX-8', 'FIX-9', 'FIX-10']);
+    assert.deepEqual(creationReports(report).filter(r => r.kind === 'task').map(r => r.value), ['task-7', 'task-8']);
+  }
+  for (const report of [table, `I will create tickets:\n\n${table}`, `No tickets were created.\n\n${table}`, `Created tickets.\n\nExisting tickets:\n\n${table}`, `Created tickets.\n\nExample:\n\n${table}`, `Created tickets.\n\nUnrelated discussion.\n\n${table}`, `Created tickets.\n\n${table.split('\n').map(line => '> ' + line).join('\n')}`, `Created tickets.\n\n\x60\x60\x60\n${table}\n\x60\x60\x60`]) assert.deepEqual(keys(report), [], report);
+  assert.deepEqual(keys(`Created tickets:\n\n${table}\n\nRelated tickets:\n\n${table.replaceAll('FIX-', 'OTH-')}`), ['FIX-7', 'FIX-8', 'FIX-9', 'FIX-10']);
+  assert.deepEqual(keys('Created tickets:\n\n| Scope | Ticket |\n|---|---|\n| FIX-99 | FIX-7 |'), ['FIX-7'], 'the ticket column owns references');
+  assert.deepEqual(keys('Created tickets:\n\n| Ticket | Scope |\n| FIX-7 | web |'), [], 'a Markdown table needs its header separator');
+});
+
+for (const reportVersion of [undefined, 2]) test(`legacy scan version ${reportVersion ?? 1} replays creation reports through bounded history and preserves tombstones`, async t => {
   const f = collectorFixture(t);
   f.sessions.push(f.session('s1'));
   f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9));
   const retry = { kind: 'key' as const, value: 'FIX-99', messageId: 'unconfirmed', at: AT.reported, attempts: 3, error: 'Previous failure', retryAfter: '2099-01-01T00:00:00Z' };
-  f.store.saveSessionThread({ id: 's1', projectId: 'FIX', title: 'Session s1', createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 20, pending: [retry], upstreamReview: false });
+  f.store.saveSessionThread({ id: 's1', projectId: 'FIX', title: 'Session s1', createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 20, pending: [retry], upstreamReview: false, reportVersion });
   f.bounded.set('s1', { items: [message('latest', 'assistant_message', 'Nothing new.', 20, AT.reported, 's1')], cursor: 'older', more: true });
-  f.history.set('older', { items: [message('filed', 'assistant_message', 'Three tickets filed.\n\n**Do now**\n\n- FIX-7\n- FIX-8\n- FIX-9', 2, AT.reported, 's1')], cursor: null, more: false });
+  const report = reportVersion === 2 ? 'Three tickets filed.\n\n| Ticket | Scope |\n|---|---|\n| FIX-7 | web |\n| FIX-8 | app |\n| FIX-9 | web |' : 'Three tickets filed.\n\n**Do now**\n\n- FIX-7\n- FIX-8\n- FIX-9';
+  f.history.set('older', { items: [message('filed', 'assistant_message', report, 2, AT.reported, 's1')], cursor: null, more: false });
   for (const [id, number] of [['task-8', 8], ['task-9', 9]] as const) f.store.saveSessionTicket({ taskId: id, projectId: 'FIX', key: `FIX-${number}`, number, title: 'Existing marker', priority: 'high', status: 'todo', labels: [], createdAt: AT.created, firstSeenAt: AT.reported, refreshedAt: AT.reported, sources: [], ...(number === 8 ? { dismissedAt: AT.reported } : { consumed: { jobId: 'launched', at: AT.reported } }) });
   assert.equal(await f.collect({ reads: 1 }), true, 'legacy progress starts a bounded rescan');
   f.store.close(); f.store = new Store(f.c.stateDir);
@@ -274,11 +288,11 @@ test('legacy scan progress replays sectioned reports through bounded history and
   assert.equal(f.store.sessionTicket('task-7')!.sources.length, 1, 'replay is idempotent');
 });
 
-test('paused service recovers a sectioned report from a legacy up-to-date cursor', { timeout: 20000 }, async t => {
+for (const reportVersion of [undefined, 2]) test(`paused service recovers creation reports from a version ${reportVersion ?? 1} up-to-date cursor`, { timeout: 20000 }, async t => {
   const f = serviceFixture(t), store = new Store(f.c.stateDir);
-  store.saveSessionThread({ id: f.thread.id, projectId: 'FIX', title: f.thread.title, createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 2, pending: [], upstreamReview: false });
+  store.saveSessionThread({ id: f.thread.id, projectId: 'FIX', title: f.thread.title, createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 2, pending: [], upstreamReview: false, reportVersion });
   store.close();
-  f.turnItems[1]!.text = 'Ticket filed.\n\n**Completed**\n\n- FIX-7 Uploads.';
+  f.turnItems[1]!.text = reportVersion === 2 ? 'Ticket filed.\n\n| Ticket | Scope |\n|---|---|\n| FIX-7 | Uploads |' : 'Ticket filed.\n\n**Completed**\n\n- FIX-7 Uploads.';
   const service = new FactoryService(f.path);
   try {
     await service.start();
