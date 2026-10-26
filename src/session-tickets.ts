@@ -15,7 +15,7 @@ const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
-export const REPORT_VERSION = 2;
+export const REPORT_VERSION = 3;
 const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
@@ -27,8 +27,9 @@ const recentFirst = (a: Pick<SessionThread, 'updatedAt' | 'createdAt' | 'backfil
   (b.backfill?.updatedAt ?? b.updatedAt ?? b.createdAt).localeCompare(a.backfill?.updatedAt ?? a.updatedAt ?? a.createdAt);
 
 // Creation reports: a block of an assistant message with a clause that says it created, filed or opened something,
-// naming tracker keys or task links. Quoted lines, tables and code are not reports. A negator counts only against
-// the creation verb in its own clause, so "did not find one, so I created X" reports X and "did not create X" does not.
+// naming tracker keys or task links. Tables need an affirmative creation introduction. Quoted lines and code
+// are not reports. A negator counts only against the creation verb in its own clause, so "did not find one,
+// so I created X" reports X and "did not create X" does not.
 const CREATED = /\b(?:creat(?:ed|ing)|filed|filing|opened|opening)\b/i;
 const NEGATED = /\b(?:not|no|never|without|didn't|did not|wasn't|was not|cannot|can't|could not|couldn't)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
 const FUTURE = /\b(?:will|planning to|going to|intend to|please)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
@@ -72,18 +73,27 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
   const refs = new Map<string, Pick<SessionRef, 'kind' | 'value'>>();
   let section = false;
   for (const block of text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').split(/\n\s*\n/)) {
-    const plain = expandReportKeys(block.split('\n').filter(line => !/^\s*(?:>|\|)/.test(line)).join('\n')).trim();
+    const lines = block.split('\n').filter(line => !/^\s*>/.test(line));
+    const plain = expandReportKeys(lines.filter(line => !/^\s*\|/.test(line)).join('\n')).trim();
+    const table = lines.filter(line => /^\s*\|/.test(line)).map(line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(cell => cell.trim()));
+    const ticketColumn = table[0]?.findIndex(cell => /^(?:tickets?|issues?|keys?)$/i.test(cell.replace(/\*|_/g, ''))) ?? -1;
+    const creationTable = ticketColumn >= 0 && table.length >= 3 && table[1]!.length === table[0]!.length && table[1]!.every(cell => /^:?-{3,}:?$/.test(cell));
     const heading = /^(?:#{1,6}\s+[^\n]+|(?:\*\*|__)[^\n]+(?:\*\*|__))$/.test(plain);
     const list = /^\s*(?:[-*+•]|\d+[.)])\s/.test(plain);
     const stop = reportBoundary(plain);
     const clauses = [...affirmedClauses(plain)];
-    const summary = clauses.some(c => /\b(?:created|filed|opened)\b/i.test(c) && /\btickets?\b|\b(?:these|following)\b/i.test(c));
+    const summary = clauses.some(c => /\b(?:created|filed|opened)\b/i.test(c) && /\b(?:tickets?|issues?|these|following)\b/i.test(c));
     const inherited = section && list && !stop;
-    section = !stop && (summary || (section && (heading || list)));
+    section = !stop && (summary || (section && (heading || list || (!plain && creationTable))));
     const listBody = plain.split('\n').filter(line => !reportBoundary(line)).join('\n');
     const reported = inherited
       ? listBody.split(/(?=^\s*(?:[-*+•]|\d+[.)])\s)/m).flatMap(item => [...affirmedClauses(`Created tickets:\n${item}`)])
       : clauses;
+    // Only the table's ticket column is creation evidence; descriptions can mention existing tickets.
+    if (section && creationTable) for (const row of table.slice(2)) {
+      const cell = row[ticketColumn]!;
+      if (row.length === table[0]!.length && !reportBoundary(cell)) reported.push(...affirmedClauses(`Created tickets:\n- ${expandReportKeys(cell)}`));
+    }
     // Batch summaries often state their exact number range in the next sentence of the same paragraph.
     if (summary) for (const range of plain.matchAll(/\bNumbers\s+(?:run|range(?: from)?)\s+([^.!?\n]+)/gi)) reported.push(range[1]!);
     const body = reported.join('\n');

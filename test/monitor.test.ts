@@ -164,6 +164,9 @@ for (const answer of ['structured-input', 'message'] as const) test(`an answered
     assert.equal(needsYou(), 1, 'the answered report never journals needs you again');
     assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason], ['running', 'Waiting for background commands']);
     writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'awaiting-human', reason: 'Approve the migration', prUrls: [] }));
+    // The new report follows the answer even when the filesystem and resume clock share a tick.
+    const rewrittenAt = new Date(Math.max(Date.parse(store.job(job.id)!.resumedAt ?? old), Date.parse(thread.latestUserMessageAt ?? old)) + 1000);
+    utimesSync(job.reportPath, rewrittenAt, rewrittenAt);
     await reconcile(c, store, t3, {} as Kanvil, [thread], false);
     assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason, needsYou()], ['waiting', 'Approve the migration', 2], 'a new awaiting-human report is a human wait');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
