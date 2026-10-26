@@ -23,7 +23,7 @@ function Fixture() {
     ${picker(2, "Outside")}
     <${Dialog} open=${open} onClose=${() => setOpen(false)} title="Add a project"
       actions=${html`<${Button} onClick=${() => setOpen(false)}>Cancel<//>`}>
-      ${picker(0, "T3 project")}${picker(1, "Kaneo project")}
+      ${picker(0, "T3 project")}${picker(1, "Kanvil project")}
     <//>
   </main>`;
 }
@@ -57,7 +57,7 @@ async function run() {
   await reset();
   await openDialog();
   const dialog = root.querySelector("dialog");
-  for (const label of ["T3 project", "Kaneo project"]) {
+  for (const label of ["T3 project", "Kanvil project"]) {
     const before = { height: dialog.scrollHeight, top: dialog.scrollTop };
     const list = await openPicker(label);
     assert(dialog.scrollHeight === before.height, "opening popup must not increase dialog scroll extent");
@@ -139,10 +139,10 @@ async function run() {
 async function projects() {
   render(null, root);
   await pause();
-  applyState({ config: { kaneo: { url: "https://tracker.example", workspaceId: "fixture" }, projects: [{ name: "Existing", t3Id: "taken-t3", kaneoId: "taken-kaneo", readyStatuses: [], doneStatuses: [], priorityLabels: [] }], discovery: {} }, status: { jobs: [] } }, true);
+  applyState({ config: { kanvil: { url: "https://tracker.example", workspaceId: "fixture" }, projects: [{ name: "Existing", t3Id: "taken-t3", kanvilId: "taken-kanvil", readyStatuses: [], doneStatuses: [], priorityLabels: [] }], discovery: {} }, status: { jobs: [] } }, true);
   sources.value = {
     t3: [{ id: "taken-t3", title: "Existing", workspaceRoot: "/example/existing" }, ...choices.map(([id, title]) => ({ id, title, workspaceRoot: `/example/${id}` }))],
-    kaneo: { projects: [{ id: "taken-kaneo", name: "Existing", slug: "OLD" }, ...choices.map(([id, name]) => ({ id: `k-${id}`, name, slug: id.toUpperCase() }))], columns: {}, labels: [] },
+    kanvil: { projects: [{ id: "taken-kanvil", name: "Existing", slug: "OLD" }, ...choices.map(([id, name]) => ({ id: `k-${id}`, name, slug: id.toUpperCase() }))], columns: {}, labels: [] },
   };
   render(html`<${Projects} />`, root);
   await pause();
@@ -153,7 +153,7 @@ async function projects() {
 async function runProjects() {
   await projects();
   const dialog = root.querySelector("dialog");
-  for (const label of ["T3 project", "Kaneo project"]) {
+  for (const label of ["T3 project", "Kanvil project"]) {
     const before = dialog.scrollHeight;
     const button = [...dialog.querySelectorAll(".select > button")].find((b) => b.getAttribute("aria-label").startsWith(`${label}:`));
     button.click();
@@ -171,7 +171,7 @@ async function runProjects() {
   await pause();
   assert(config.value.projects.length === 2, "Add project appends exactly once");
   const added = config.value.projects[1];
-  assert(added.t3Id === "p50" && added.kaneoId === "k-p50" && added.repoPath === "/example/p50", "Add project keeps both selected catalog values");
+  assert(added.t3Id === "p50" && added.kanvilId === "k-p50" && added.repoPath === "/example/p50", "Add project keeps both selected catalog values");
   return { passed: true, viewport: [innerWidth, innerHeight], added };
 }
 

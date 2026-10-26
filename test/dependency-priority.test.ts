@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'jsonc-parser';
 import { configSchema } from '../src/config.ts';
-import { Kaneo, type Task } from '../src/clients.ts';
+import { Kanvil, type Task } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { inventory } from '../src/scheduler.ts';
 import { dispatchFixture, deferred } from './dispatch-fixture.ts';
@@ -19,33 +20,33 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
   const input = parse(readFileSync(new URL('../config.example.jsonc', import.meta.url), 'utf8'));
   input.stateDir = join(dir, 'state'); input.projects[0].repoPath = repo;
   input.projects[0].priorityLabels = ['compatibility', 'security'];
-  input.projects[0].readyStatuses = ['to-do'];
+  input.projects[0].readyStatuses = ['todo'];
   const c = configSchema.parse(input), p = c.projects[0];
-  const other = { ...p, key: 'LIB', name: 'Library', kaneoId: 'library', t3Id: 'library', priorityLabels: ['security'] };
+  const other = { ...p, key: 'LIB', name: 'Library', kanvilId: 'library', t3Id: 'library', priorityLabels: ['security'] };
   c.projects.push(other);
-  const task = (number: number, priority: Task['priority'], names: string[] = []): Task => ({ id: `task-${number}`, projectId: p.kaneoId, number, title: 'Fixture', status: 'to-do', priority, createdAt: '2026-01-01', labels: ['sf', 'med', ...names].map(name => ({ name })) });
+  const task = (number: number, priority: Task['priority'], names: string[] = []): Task => ({ id: `task-${number}`, projectId: p.kanvilId, number, title: 'Fixture', status: 'todo', priority, createdAt: '2026-01-01', labels: ['sf', 'med', ...names].map(name => ({ name })) });
   const tasks = [task(19, 'low'), task(20, 'urgent', ['compatibility']), task(21, 'urgent'), task(22, 'high', ['security']), task(18, 'low')];
   const blocks = (source: number, target: number) => ({ sourceTaskId: `task-${source}`, targetTaskId: `task-${target}`, relationType: 'blocks' });
   let relations = [blocks(19, 20)];
-  const k = new Kaneo(c.kaneo), store = new Store(c.stateDir), reads = new Map<string, number>();
+  const k = new Kanvil(c.kanvil), store = new Store(c.stateDir), reads = new Map<string, number>();
   const listed: Record<string, unknown>[] = [], fetched: string[] = [];
   let unavailableProject = '';
-  t.mock.method(k, 'call', async (name: string, args: Record<string, unknown>) => {
-    if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels!.map(label => ({ ...label, taskId: task.id, workspaceId: c.kaneo.workspaceId })));
-    if (name === 'list_tasks') {
+  mockTracker(t, k, async (name: string, args: Record<string, unknown>) => {
+    if (name === 'labels') return tasks.flatMap(task => task.labels!.map(label => ({ ...label, taskId: task.id, workspaceId: c.kanvil.workspaceId })));
+    if (name === 'tickets') {
       listed.push(args);
       if (args.projectId === unavailableProject) throw new Error('Unrelated project unavailable');
       const matching = tasks.filter(task => task.projectId === args.projectId && (!args.status || task.status === args.status));
       const page = Number(args.page);
-      return { data: { workspaceId: c.kaneo.workspaceId, columns: [{ tasks: matching.slice((page - 1) * 2, page * 2) }] }, pagination: { total: matching.length, totalPages: Math.ceil(matching.length / 2) } };
+      return { data: { workspaceId: c.kanvil.workspaceId, columns: [{ tasks: matching.slice((page - 1) * 2, page * 2) }] }, pagination: { total: matching.length, totalPages: Math.ceil(matching.length / 2) } };
     }
-    if (name === 'get_task') {
+    if (name === 'ticket') {
       fetched.push(String(args.taskId));
       const { labels, ...task } = tasks.find(task => task.id === args.taskId)!;
       return task; // Single-task responses omit labels.
     }
-    if (name === 'list_project_columns') return [{ slug: 'done', isFinal: true }];
-    if (name === 'get_task_relations') { const id = String(args.taskId); reads.set(id, (reads.get(id) ?? 0) + 1); return relations.filter(r => r.sourceTaskId === id || r.targetTaskId === id); }
+    if (name === 'columns') return [{ slug: 'done', isFinal: true }];
+    if (name === 'relations') { const id = String(args.taskId); reads.set(id, (reads.get(id) ?? 0) + 1); return relations.filter(r => r.sourceTaskId === id || r.targetTaskId === id); }
     throw new Error(name);
   });
   const queue = (key?: string) => { reads.clear(); listed.length = 0; fetched.length = 0; return inventory(c, k, [], [], store, key); };
@@ -53,13 +54,13 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     await t.test('named-ticket inventory lists only its project across every page and ignores unrelated listing failures', async () => {
       let q = await queue(`${p.key}-18`);
       assert.equal(q.selected?.key, `${p.key}-18`, 'the requested ticket on the last page is found');
-      assert.deepEqual(listed.map(a => [a.projectId, a.status, a.page]), [[p.kaneoId, undefined, 1], [p.kaneoId, undefined, 2], [p.kaneoId, undefined, 3]], 'named inventory must not list unrelated projects');
-      unavailableProject = other.kaneoId;
+      assert.deepEqual(listed.map(a => [a.projectId, a.status, a.page]), [[p.kanvilId, undefined, 1], [p.kanvilId, undefined, 2], [p.kanvilId, undefined, 3]], 'named inventory must not list unrelated projects');
+      unavailableProject = other.kanvilId;
       try { q = await queue(`${p.key}-18`); assert.equal(q.selected?.key, `${p.key}-18`); }
       finally { unavailableProject = ''; }
       q = await queue();
-      assert.deepEqual([...new Set(listed.map(a => a.projectId))].sort(), [p.kaneoId, other.kaneoId].sort(), 'unnamed inventory still lists every enabled project');
-      assert(listed.every(a => a.status === 'to-do'), 'unnamed inventory reads ready columns only');
+      assert.deepEqual([...new Set(listed.map(a => a.projectId))].sort(), [p.kanvilId, other.kanvilId].sort(), 'unnamed inventory still lists every enabled project');
+      assert(listed.every(a => a.status === 'todo'), 'unnamed inventory reads ready columns only');
       assert.equal(q.selected?.key, `${p.key}-19`, 'full-queue priority ordering is preserved');
     });
     let q = await queue();
@@ -89,7 +90,7 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     assert.equal(q.selected?.priority, 'urgent'); assert.equal(q.selected?.labelRank, 0, 'inheritance cannot demote own priority');
     tasks[0].labels = [{ name: 'sf' }, { name: 'med' }]; tasks[0].priority = 'low';
 
-    tasks[1].status = 'to-do'; tasks[1].projectId = other.kaneoId; tasks[1].labels = [{ name: 'security' }]; tasks[1].priority = 'urgent';
+    tasks[1].status = 'todo'; tasks[1].projectId = other.kanvilId; tasks[1].labels = [{ name: 'security' }]; tasks[1].priority = 'urgent';
     q = await queue();
     assert.equal(q.selected?.key, `${p.key}-19`, 'open dependents can boost a blocker across enabled projects even before readiness/classification');
     assert.equal(q.selected?.labelRank, 0);
@@ -100,12 +101,12 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
         assert.equal(named.selected?.labelRank, 0, 'lazy cross-project reads must retain the associated security label');
         assert.equal(named.selected?.priority, 'urgent');
         assert.deepEqual(fetched, ['task-20']);
-      } finally { tasks[1].status = 'to-do'; }
+      } finally { tasks[1].status = 'todo'; }
     });
     await t.test('named-ticket dependencies still block across projects and unconfigured final statuses', async () => {
       const saved = relations;
       try {
-        for (const projectId of [other.kaneoId, 'external']) {
+        for (const projectId of [other.kanvilId, 'external']) {
           tasks[1].projectId = projectId;
           for (const edges of [
             [blocks(20, 19)],
@@ -121,9 +122,9 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
           }
           relations = [blocks(20, 19)]; tasks[1].status = 'done';
           assert.equal((await queue(`${p.key}-19`)).selected?.key, `${p.key}-19`, 'configured and discovered final statuses release blockers');
-          tasks[1].status = 'to-do';
+          tasks[1].status = 'todo';
         }
-      } finally { relations = saved; tasks[1].projectId = other.kaneoId; tasks[1].status = 'to-do'; }
+      } finally { relations = saved; tasks[1].projectId = other.kanvilId; tasks[1].status = 'todo'; }
     });
     other.enabled = false;
     q = await queue();
@@ -145,16 +146,16 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
 
 test('inventory dependency fan-out and priority traversal share the six-read bound', async t => {
   const f = dispatchFixture(t), release = deferred(), started = deferred();
-  f.tasks.push(f.task('second', 3, 'to-do'), f.task('inherited', 4, 'in-progress'));
+  f.tasks.push(f.task('second', 3, 'todo'), f.task('inherited', 4, 'in-progress'));
   f.relations.splice(0, 1, { sourceTaskId: 'root', targetTaskId: 'inherited', relationType: 'blocks' });
   for (let n = 0; n < 12; n++) { const id = `dep-${n}`; f.tasks.push(f.task(id, n + 10)); f.relations.push({ sourceTaskId: id, targetTaskId: 'second', relationType: 'blocks' }); }
   let active = 0, maximum = 0;
   f.hooks.read = async name => {
-    if (name !== 'get_task') return;
+    if (name !== 'ticket') return;
     active++; maximum = Math.max(maximum, active); started.resolve();
     await release.promise; active--;
   };
-  const pending = inventory(f.c, f.kaneo, [], [], f.store); await started.promise;
+  const pending = inventory(f.c, f.kanvil, [], [], f.store); await started.promise;
   await new Promise(resolve => setImmediate(resolve));
   const simultaneous = active;
   release.resolve(); assert.equal((await pending).ready.length, 2);

@@ -1,6 +1,6 @@
 # Security
 
-T3 Factory can start coding agents with access to local repositories, authenticated providers, Kaneo, and GitHub. Operate it under an account whose permissions match the work you authorize. The `runtimeMode` setting controls the permission mode requested from T3.
+T3 Factory can start coding agents with access to local repositories, authenticated providers, Kanvil, and GitHub. Operate it under an account whose permissions match the work you authorize. The `runtimeMode` setting controls the permission mode requested from T3.
 
 ## Access boundaries
 

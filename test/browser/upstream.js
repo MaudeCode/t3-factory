@@ -7,7 +7,7 @@ const root = document.querySelector('#root');
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const state = {
-  config: { enabled: false, upstream: { enabled: false, checkMinutes: 360, promptFile: '/reviews.md' }, models: [], projects: [{ enabled: true, kaneoId: 'p', name: 'Example', upstreams: [{ name: 'Example upstream', repo: 'example/project', firstBase: 'v1.0' }, { name: 'Current upstream', repo: 'example/current', firstBase: 'v3.0' }] }] },
+  config: { enabled: false, upstream: { enabled: false, checkMinutes: 360, promptFile: '/reviews.md' }, models: [], projects: [{ enabled: true, kanvilId: 'p', name: 'Example', upstreams: [{ name: 'Example upstream', repo: 'example/project', firstBase: 'v1.0' }, { name: 'Current upstream', repo: 'example/current', firstBase: 'v3.0' }] }] },
   status: { jobs: [], upstreams: [{ repo: 'example/project', pending: true, reviewed: 'v1.0', latest: 'v2.0', checkedAt: new Date().toISOString() }, { repo: 'example/current', pending: false, reviewed: 'v3.0', latest: 'v3.0', checkedAt: new Date().toISOString() }] },
 };
 let calls = [], release;

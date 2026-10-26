@@ -136,10 +136,10 @@ export function safeLink(url) {
     return "";
   }
 }
-export const kaneo = (config, ...parts) =>
-  safeLink(`${config.kaneo.url}/dashboard/workspace/${encodeURIComponent(config.kaneo.workspaceId)}/${parts.map(encodeURIComponent).join("/")}`);
-export const ticketLink = (config, job) => (job.taskId ? kaneo(config, "project", job.projectId, "task", job.taskId) : "");
-export const projectLink = (config, kaneoId) => kaneo(config, "project", kaneoId);
+export const kanvil = (config, ...parts) =>
+  safeLink(`${config.kanvil.url}/${parts.map(encodeURIComponent).join("/")}`);
+export const ticketLink = (config, job) => (job.taskId ? kanvil(config, "projects", job.projectId, "tickets", job.taskId) : "");
+export const projectLink = (config, kanvilId) => kanvil(config, "projects", kanvilId);
 export const repoLink = (repo) => safeLink(`https://github.com/${repo}`);
 export const releaseLink = (repo, tag) => (tag ? safeLink(`https://github.com/${repo}/releases/tag/${tag}`) : "");
 export const prLabel = (url) => {
@@ -148,7 +148,7 @@ export const prLabel = (url) => {
 };
 export const threadLink = (job) => (job.threadId ? `/api/threads/${encodeURIComponent(job.threadId)}/open` : "");
 
-export const projectOf = (config, job) => config.projects.find((p) => p.kaneoId === job.projectId);
+export const projectOf = (config, job) => config.projects.find((p) => p.kanvilId === job.projectId);
 export const modelName = (config, job) => {
   const slug = job.modelSelection?.model;
   return slug ? (config.models.find((m) => m.model.model === slug)?.name ?? slug) : "Factory";

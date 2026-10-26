@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ReadContext, ManualDeadline, readPhase } from '../src/read-context.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { callT3Rpc } from '../src/rpc.ts';
 import { readAll } from '../src/scheduler.ts';
 
@@ -15,23 +15,24 @@ const heldRead = (signal?: AbortSignal) => new Promise<never>((_, reject) => {
   signal?.throwIfAborted(); signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
 });
 
-test('HTTP and MCP reads cancel together, and a failed phase drains its started siblings', async t => {
+test('T3 and Kanvil HTTP reads cancel together, and a failed phase drains its started siblings', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-read-context-'));
   const credentialFile = join(dir, 'credential'); writeFileSync(credentialFile, '{"token":"fixture"}');
   const t3 = new T3({ url: 'http://fixture.invalid', credentialFile });
-  const kaneo = new Kaneo({ url: 'https://tracker.invalid', workspaceId: 'fixture', readyLabel: 'sf' });
+  const kanvil = new Kanvil({ url: 'https://tracker.invalid', workspaceId: 'fixture', readyLabel: 'sf' });
   const entered = deferred(), drain = deferred(); let settled = false, reads = 0;
-  t.mock.method(globalThis, 'fetch', async (_url: unknown, options: RequestInit) => { reads++; return heldRead(options.signal ?? undefined); });
-  t.mock.method(kaneo.client, 'callTool', async (_input: unknown, _schema: unknown, options: { signal?: AbortSignal }) => { reads++; entered.resolve(); return heldRead(options.signal); });
+  const oldKey = process.env.KANVIL_API_KEY; process.env.KANVIL_API_KEY = 'fixture';
+  t.after(() => { if (oldKey === undefined) delete process.env.KANVIL_API_KEY; else process.env.KANVIL_API_KEY = oldKey; });
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, options: RequestInit) => { if (++reads === 2) entered.resolve(); return heldRead(options.signal ?? undefined); });
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const context = new ReadContext(Date.now() + 60_000); context.start(() => {});
   try {
     const outcome = context.run(() => readAll([
-      t3.request('/api/orchestration/shell'), kaneo.call('get_task', { taskId: 'fixture' }),
+      t3.request('/api/orchestration/shell'), kanvil.task('fixture'),
       readPhase('fixture.drain', async signal => { try { await heldRead(signal); } finally { await drain.promise; } }),
     ])).then(() => { settled = true; return undefined; }, error => { settled = true; return error; });
     await entered.promise; assert.equal(reads, 2);
-    assert.match(context.stage, /t3.shell/); assert.match(context.stage, /kaneo.get_task/);
+    assert.match(context.stage, /t3.shell/); assert.match(context.stage, /kanvil.read/);
     t.mock.timers.tick(60_001); await turn();
     assert.equal(settled, false, 'deadline cannot orphan an owned sibling continuation');
     drain.resolve(); assert.ok(await outcome instanceof ManualDeadline);
@@ -39,26 +40,6 @@ test('HTTP and MCP reads cancel together, and a failed phase drains its started 
     await new ReadContext(Date.now() + 1000).run(() => readPhase('next', async () => { next = true; }));
     assert.equal(next, true, 'the next accepted request has a fresh cancellation scope');
   } finally { drain.resolve(); context.finish(); rmSync(dir, { recursive: true, force: true }); }
-});
-
-test('Kaneo connection cancellation drains close before releasing request ownership', async t => {
-  const kaneo = new Kaneo({ url: 'https://tracker.invalid', workspaceId: 'fixture', readyLabel: 'sf' });
-  const entered = deferred(), closing = deferred(), drain = deferred(); let settled = false, closes = 0;
-  (kaneo.client as any)._transport = { close: async () => { closes++; closing.resolve(); await drain.promise; } };
-  t.mock.method(kaneo.client, 'connect', async (_transport: unknown, options: { signal?: AbortSignal }) => {
-    entered.resolve();
-    try { await heldRead(options.signal); }
-    catch (error) { void kaneo.client.close(); throw error; } // The SDK's actual handshake failure behavior.
-  });
-  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
-  const context = new ReadContext(Date.now() + 60_000); context.start(() => {});
-  try {
-    const outcome = context.run(() => kaneo.connect()).then(() => undefined, error => error).finally(() => { settled = true; });
-    await entered.promise; assert.equal(context.stage, 'kaneo.connect');
-    t.mock.timers.tick(60_001); await closing.promise; await turn();
-    assert.match(context.stage, /kaneo.close/); assert.equal(settled, false);
-    drain.resolve(); assert.ok(await outcome instanceof ManualDeadline); assert.equal(closes, 1, 'both close callers join the same owned teardown');
-  } finally { drain.resolve(); context.finish(); }
 });
 
 test('a held T3 socket open is cancelled and its transport closes before returning', { timeout: 10000 }, async t => {

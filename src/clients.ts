@@ -1,13 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { z } from 'zod';
-import { threadSchema, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
+import { threadSchema, ticketStatuses, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
 import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
-import { readAll, readPhase, backgroundRead } from './read-context.ts';
+import { ReadContext, readAll, readPhase, backgroundRead } from './read-context.ts';
 
 /** T3 orchestration protocol this client speaks; T3 rejects other versions. */
 export const ORCHESTRATION_PROTOCOL = 2;
@@ -215,80 +213,319 @@ export class T3 {
   }
 }
 
-export class KaneoTaskNotFound extends Error {}
-
-export class Kaneo {
-  client = new Client({ name: 't3-factory', version: '0.1.0' });
-  readonly config: Config['kaneo'];
-  private closing?: Promise<void>;
-  constructor(config: Config['kaneo']) {
-    this.config = config;
-    const close = this.client.close.bind(this.client);
-    // The SDK starts close without awaiting it on handshake failure. Join that same teardown.
-    this.client.close = () => this.closing ??= close();
-  }
-  async connect(signal?: AbortSignal) {
-    return readPhase('kaneo.connect', async scoped => {
-      const abort = AbortSignal.any([AbortSignal.timeout(30_000), ...[signal, scoped].filter((s): s is AbortSignal => !!s)]);
-      const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
-      const entry = fileURLToPath(new URL('../node_modules/@kaneo/mcp/dist/index.js', import.meta.url));
-      try { await this.client.connect(new StdioClientTransport({ command: process.execPath, args: [entry, 'serve'], env: { ...env, KANEO_API_URL: this.config.url }, stderr: 'pipe' }), { signal: abort, timeout: 30_000 }); }
-      catch (error) { await this.close(); throw error; }
-    });
-  }
-  async call(name: string, args: Record<string, unknown>): Promise<unknown> {
-    return readPhase(`kaneo.${name}`, async signal => {
-      const r = await this.client.callTool({ name, arguments: args }, undefined, { timeout: 30_000, signal });
-      const text = z.object({ content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()) }).parse(r).content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n');
-      if (r.isError) {
-        let detail = '';
-        try { detail = z.object({ error: z.string() }).parse(JSON.parse(text)).error; } catch { /* Unclassified failures remain retryable. */ }
-        // The pinned MCP appends the server's error code; plain 404/not-found prose is not proof of absence.
-        if (['get_task', 'get_task_by_ticket_id'].includes(name) && detail.endsWith(' (NOT_FOUND)')) throw new KaneoTaskNotFound(`Kaneo ${name}: task not found`);
-        // Preserve only machine-readable categories, never the server's payload or credential-bearing prose.
-        const category = detail.match(/\(([A-Z_]+)\)$/)?.[1] ?? detail.match(/\bHTTP ([1-5][0-9]{2})\b/)?.[0] ?? 'unclassified';
-        throw new Error(`Kaneo ${name} failed (${category})`);
-      }
-      return JSON.parse(text);
-    });
-  }
-  async close() { await readPhase('kaneo.close', () => this.client.close(), true); }
+export class KanvilTaskNotFound extends Error {}
+class KanvilError extends Error {
+  readonly status: number; readonly code: string;
+  constructor(status: number, code: string) { super(`Kanvil request failed (HTTP ${status}, ${code})`); this.status = status; this.code = code; }
 }
-
+const readinessSchema = z.object({ ready: z.boolean(), reasons: z.array(z.object({ code: z.string(), message: z.string(), ticketId: z.string().optional() })) });
 export const taskSchema = z.object({
-  id: z.string(), projectId: z.string(), title: z.string(), number: z.number(),
-  description: z.string().nullable().optional(), priority: z.enum(['urgent', 'high', 'medium', 'low', 'no-priority']),
+  id: z.string(), projectId: z.string(), title: z.string(), number: z.number(), key: z.string().optional(),
+  description: z.string().nullable().optional(), priority: z.enum(['urgent', 'high', 'medium', 'low', 'none']),
   status: z.string(), createdAt: z.string(), labels: z.array(z.object({ name: z.string() }).passthrough()).optional(),
+  difficulty: z.enum(['low', 'med', 'high']).nullable().optional(), automationReady: z.boolean().optional(),
+  holdReason: z.string().nullable().optional(), archived: z.boolean().optional(), parentId: z.string().nullable().optional(),
+  readiness: readinessSchema.optional(),
 }).passthrough();
 export type Task = z.infer<typeof taskSchema>;
-type TaskLabels = Map<string, { name: string }[]>;
-export async function listTaskLabels(kaneo: Kaneo): Promise<TaskLabels> {
-  const rows = z.array(z.object({ name: z.string().min(1), taskId: z.string().nullable(), workspaceId: z.string(), deletionStartedAt: z.string().nullish() }).passthrough())
-    .parse(await kaneo.call('list_workspace_labels', { workspaceId: kaneo.config.workspaceId }));
-  const labels: TaskLabels = new Map();
-  for (const row of rows) {
-    if (row.workspaceId !== kaneo.config.workspaceId) throw new Error('Kaneo label workspace mismatch');
-    if (!row.taskId || row.deletionStartedAt) continue;
-    if (!labels.has(row.taskId)) labels.set(row.taskId, []);
-    labels.get(row.taskId)!.push({ name: row.name });
+const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
+  status: z.enum(ticketStatuses), key: z.string(), labels: z.array(z.string()), difficulty: z.enum(['low', 'med', 'high']).nullable(),
+  automationReady: z.boolean(), holdReason: z.string().nullable(), archived: z.boolean(), parentId: z.string().nullable(),
+  acceptanceCriteria: z.string(), version: z.number().int().positive(),
+});
+const projectSchema = z.object({ id: z.string(), workspaceId: z.string(), name: z.string(), key: z.string(), description: z.string().optional(), archivedAt: z.string().nullish() }).passthrough();
+const snapshotSchema = z.object({ project: projectSchema, tickets: z.array(nativeTicket), cursor: z.string().regex(/^\d+$/) });
+type Snapshot = z.infer<typeof snapshotSchema>;
+type SnapshotRead = { pending: Promise<Snapshot>; value?: Snapshot };
+const eventSchema = z.object({ id: z.string().regex(/^\d+$/), projectId: z.string(), ticketId: z.string().nullable(), type: z.string() });
+type Change = z.infer<typeof eventSchema>;
+type ProjectStream = { connected: boolean; ready: PromiseWithResolvers<void>; done?: Promise<void> };
+const normalized = (ticket: z.infer<typeof nativeTicket>): Task => ({ ...ticket, labels: ticket.labels.map(name => ({ name })) });
+export const relationsSchema = z.array(z.object({ sourceTaskId: z.string(), targetTaskId: z.string(), relationType: z.enum(['blocks', 'subtask', 'related']) }).passthrough());
+export type TaskRelation = z.infer<typeof relationsSchema>[number];
+
+// HTTP and the durable SSE feed share the same project-scoped bearer credential. No subprocess or device login.
+export class Kanvil {
+  readonly config: Config['kanvil'];
+  private readonly abort = new AbortController();
+  private watching = false;
+  revision = 0;
+  get realtime() { return this.watching; }
+  private connected = false;
+  private subscription?: Promise<void>;
+  private streamSignal?: AbortSignal;
+  private changed?: (event?: Change) => void;
+  private streamError?: (error: unknown) => void;
+  private position?: string;
+  private readonly projectStreams = new Map<string, ProjectStream>();
+  private readonly tasksById = new Map<string, Task>();
+  private readonly relationCache = new Map<string, Promise<TaskRelation[]>>();
+  private readonly snapshots = new Map<string, SnapshotRead>();
+  constructor(config: Config['kanvil']) { this.config = config; }
+  async connect(signal?: AbortSignal) { signal?.throwIfAborted(); this.headers(); }
+  private headers() {
+    const token = process.env.KANVIL_API_KEY?.trim();
+    if (!token) throw new Error('Set KANVIL_API_KEY for the scheduler account');
+    return { Authorization: `Bearer ${token}` };
   }
-  return labels;
-}
-// `statuses` limits the read to those columns; the scheduler only needs ready tickets, not a project's whole history.
-// `labels: null` keeps the list's own label preview, enough to notice a change but not to decide on one.
-export async function listTasks(kaneo: Kaneo, projectId: string, labels?: TaskLabels | null, statuses?: string[]): Promise<Task[]> {
-  // Task-list labels are only a capped display preview. Use complete task associations.
-  const taskLabels = labels === null ? null : labels ?? await listTaskLabels(kaneo);
-  const tasks = new Map<string, Task>();
-  for (const status of statuses ?? [undefined]) for (let page = 1; ; page++) {
-    const r = z.object({ data: z.object({ workspaceId: z.string(), columns: z.array(z.object({ tasks: z.array(taskSchema) })) }), pagination: z.object({ totalPages: z.number(), total: z.number() }) }).parse(await backgroundRead(() => kaneo.call('list_tasks', { projectId, page, limit: 100, ...(status ? { status } : {}) })));
-    if (r.data.workspaceId !== kaneo.config.workspaceId) throw new Error('Kaneo workspace mismatch');
-    for (const col of r.data.columns) for (const task of col.tasks) {
-      if (task.projectId !== projectId) throw new Error('Kaneo project mismatch');
-      tasks.set(task.id, { ...task, labels: taskLabels ? taskLabels.get(task.id) ?? [] : task.labels ?? [] });
+  private async response(path: string, signal?: AbortSignal, streaming = false) {
+    try {
+      return await fetch(new URL(`/api/v1${path}`, this.config.url), { headers: this.headers(), redirect: 'error',
+        signal: AbortSignal.any([this.abort.signal, ...signal ? [signal] : [], ...streaming ? [] : [AbortSignal.timeout(30_000)]]) });
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      // fetch errors can contain URLs or proxy credentials.
+      throw new Error(this.abort.signal.aborted ? 'Kanvil client closed' : 'Kanvil connection failed');
     }
-    if (page >= r.pagination.totalPages) break;
-    if (page > 100) throw new Error('Kaneo pagination exceeded 100 pages');
   }
-  return [...tasks.values()];
+  async request(path: string): Promise<unknown> {
+    return readPhase('kanvil.read', async signal => {
+      const response = await this.response(path, signal);
+      if (!response.ok) await this.failure(response);
+      try { return await response.json(); } catch { throw new Error('Kanvil returned invalid JSON'); }
+    });
+  }
+  private async failure(response: Response): Promise<never> {
+    const error = z.object({ error: z.object({ code: z.string().regex(/^[a-z_]+$/) }) }).safeParse(await response.json().catch(() => null));
+    const code = error.success ? error.data.error.code : 'unclassified';
+    if (response.status === 404 && code === 'not_found') throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible');
+    throw new KanvilError(response.status, code);
+  }
+  async projects() {
+    const projects = z.array(projectSchema).parse(await this.request(`/projects?workspaceId=${encodeURIComponent(this.config.workspaceId)}`));
+    if (projects.some(p => p.workspaceId !== this.config.workspaceId)) throw new Error('Kanvil project workspace mismatch');
+    return projects.filter(p => !p.archivedAt).map(p => ({ ...p, slug: p.key }));
+  }
+  async columns(projectId: string) {
+    const states = z.array(z.object({ category: z.enum(ticketStatuses), name: z.string(), position: z.number() })).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/workflow`));
+    // Factory selects native categories, including every custom state in the category.
+    return [...new Map(states.map(s => [s.category, { slug: s.category, name: s.category.replaceAll('_', ' '), isFinal: ['done', 'cancelled'].includes(s.category), position: s.position }])).values()];
+  }
+  async labels() {
+    const rows = await readAll((await this.projects()).map(p => this.request(`/projects/${encodeURIComponent(p.id)}/labels/catalog`)));
+    return [...new Set(rows.flatMap(r => z.array(z.object({ name: z.string() })).parse(r).map(l => l.name)))].sort();
+  }
+  private async snapshot(projectId: string) {
+    const read = async () => {
+      const revision = this.revision;
+      const snapshot = snapshotSchema.parse(await this.request(`/snapshot?projectId=${encodeURIComponent(projectId)}`));
+      if (snapshot.project.id !== projectId || snapshot.project.workspaceId !== this.config.workspaceId || snapshot.tickets.some(t => t.projectId !== projectId)) throw new Error('Kanvil snapshot ownership mismatch');
+      if (revision === this.revision) for (const ticket of snapshot.tickets) this.tasksById.set(ticket.id, normalized(ticket));
+      return snapshot;
+    };
+    if (!this.watching) return read();
+    if (!this.connected) throw new Error('Kanvil event stream is not synchronized');
+    await this.ensureProjectStream(projectId);
+    if (!this.snapshots.has(projectId)) {
+      const entry: SnapshotRead = { pending: read() };
+      entry.pending = entry.pending.then(value => { entry.value = value; return value; }).catch(error => { if (this.snapshots.get(projectId) === entry) this.snapshots.delete(projectId); throw error; });
+      this.snapshots.set(projectId, entry);
+    }
+    return this.snapshots.get(projectId)!.pending;
+  }
+  async tasks(projectId: string, statuses?: string[]): Promise<Task[]> {
+    return (await this.snapshot(projectId)).tickets.filter(t => !t.archived && (!statuses || statuses.includes(t.status))).map(ticket => {
+      const cached = this.tasksById.get(ticket.id);
+      return cached?.version === ticket.version && cached.readiness ? { ...normalized(ticket), readiness: cached.readiness } : normalized(ticket);
+    });
+  }
+  async task(id: string, projectId?: string, cached = false): Promise<Task> {
+    if (cached && this.watching && this.tasksById.has(id)) {
+      const task = this.tasksById.get(id)!; await this.ensureProjectStream(task.projectId); return task;
+    }
+    if (cached && this.watching && this.connected) for (const entry of this.snapshots.values()) {
+      const found = entry.value?.tickets.find(t => t.id === id);
+      if (found) { await this.ensureProjectStream(found.projectId); return normalized(found); }
+    }
+    const revision = this.revision;
+    projectId ??= this.tasksById.get(id)?.projectId;
+    if (!projectId || /^[A-Z0-9]+-\d+$/.test(id)) {
+      const resolved = z.object({ ticket: nativeTicket }).parse(await this.request(`/tickets/resolve?ticketId=${encodeURIComponent(id)}`));
+      if (projectId && resolved.ticket.projectId !== projectId) throw new Error('Kanvil ticket moved to another project');
+      projectId = resolved.ticket.projectId; id = resolved.ticket.id;
+    }
+    const result = z.object({ ticket: nativeTicket, readiness: readinessSchema }).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(id)}`));
+    if (result.ticket.projectId !== projectId || (result.ticket.id !== id && result.ticket.key !== id)) throw new Error('Kanvil ticket identity mismatch');
+    const task = { ...normalized(result.ticket), readiness: result.readiness };
+    if (this.watching) await this.ensureProjectStream(task.projectId);
+    if (this.watching && this.connected && revision === this.revision) this.tasksById.set(task.id, task);
+    return task;
+  }
+  async eligibleTask(task: Task): Promise<Task> {
+    if (this.watching) await this.ensureProjectStream(task.projectId);
+    const cached = this.tasksById.get(task.id);
+    if (this.watching && this.connected && cached?.readiness && cached.version === task.version) return cached;
+    return this.task(task.id, task.projectId);
+  }
+  async relations(id: string, fresh = true): Promise<TaskRelation[]> {
+    if (fresh || !this.watching || !this.connected) return this.readRelations(id, fresh);
+    if (!this.relationCache.has(id)) {
+      const pending = this.readRelations(id, false).catch(error => { if (this.relationCache.get(id) === pending) this.relationCache.delete(id); throw error; });
+      this.relationCache.set(id, pending);
+    }
+    return this.relationCache.get(id)!;
+  }
+  private async readRelations(id: string, fresh: boolean): Promise<TaskRelation[]> {
+    const task = await this.task(id, undefined, !fresh), projectId = task.projectId;
+    const path = `/projects/${encodeURIComponent(projectId)}/tickets`;
+    const rows = z.array(z.object({ sourceId: z.string(), targetId: z.string(), type: z.string() })).parse(await this.request(`${path}/${encodeURIComponent(id)}/relations`));
+    const relations: TaskRelation[] = rows.filter(r => r.type === 'blocks').map(r => ({ sourceTaskId: r.sourceId, targetTaskId: r.targetId, relationType: 'blocks' }));
+    if (task.parentId) relations.push({ sourceTaskId: task.parentId, targetTaskId: task.id, relationType: 'subtask' });
+    let offset = 0, total: number | undefined;
+    const children = new Set<string>();
+    do {
+      const page = z.object({ items: z.array(nativeTicket), total: z.number().int().nonnegative() }).parse(await this.request(`${path}?parentId=${encodeURIComponent(id)}&archived=include&sort=number&order=asc&limit=100&offset=${offset}`));
+      if ((total !== undefined && total !== page.total) || (!page.items.length && offset < page.total)) throw new Error('Kanvil children changed during pagination');
+      total = page.total;
+      for (const child of page.items) {
+        if (children.has(child.id) || child.parentId !== task.id || child.projectId !== projectId) throw new Error('Kanvil child ownership mismatch');
+        children.add(child.id);
+        relations.push({ sourceTaskId: id, targetTaskId: child.id, relationType: 'subtask' });
+      }
+      offset += page.items.length;
+      if (offset > total) throw new Error('Kanvil child count mismatch');
+    } while (offset < total);
+    return relations;
+  }
+  projectSynchronized(projectId: string) { return this.connected && this.projectStreams.get(projectId)?.connected === true; }
+  // Unscoped feeds cannot report membership revocation after the caller loses visibility.
+  // A scoped stream revalidates that project's access, without polling its inventory.
+  private async ensureProjectStream(projectId: string) {
+    if (!this.watching) return;
+    if (!this.connected) throw new Error('Kanvil event stream is not synchronized');
+    let entry = this.projectStreams.get(projectId);
+    if (!entry) {
+      entry = { connected: false, ready: Promise.withResolvers<void>() };
+      this.projectStreams.set(projectId, entry);
+      const pending = entry;
+      const timer = setTimeout(() => pending.ready.reject(new Error('Kanvil project stream unavailable')), 30_000);
+      void entry.ready.promise.then(() => clearTimeout(timer), () => clearTimeout(timer));
+      entry.done = new ReadContext().run(() => this.follow(this.changed!, this.streamSignal!, this.streamError, projectId));
+    }
+    const pending = entry;
+    if (!pending.connected) await readPhase('kanvil.project-stream', signal => new Promise<void>((resolve, reject) => {
+      const abort = () => { signal?.removeEventListener('abort', abort); reject(signal?.reason); };
+      signal?.addEventListener('abort', abort, { once: true });
+      void pending.ready.promise.then(() => { signal?.removeEventListener('abort', abort); resolve(); }, error => { signal?.removeEventListener('abort', abort); reject(error); });
+      if (signal?.aborted) abort();
+    }));
+    if (!this.projectSynchronized(projectId)) throw new Error('Kanvil project stream is not synchronized');
+  }
+  private invalidateProject(projectId: string) {
+    this.snapshots.delete(projectId);
+    for (const [id, task] of this.tasksById) if (task.projectId === projectId) this.tasksById.delete(id);
+    this.relationCache.clear();
+  }
+  private async applyChange(change: Change) {
+    this.tasksById.clear(); this.relationCache.clear();
+    const snapshot = this.snapshots.get(change.projectId)?.value;
+    if (!snapshot || !change.ticketId || /^(project|workspace|workflow)\./.test(change.type)) {
+      this.snapshots.delete(change.projectId); return;
+    }
+    if (BigInt(change.id) <= BigInt(snapshot.cursor)) return;
+    if (change.ticketId) {
+      let ticket: z.infer<typeof nativeTicket> | undefined;
+      if (!['ticket.deleted', 'ticket.moved_away'].includes(change.type)) {
+        try {
+          const task = await this.task(change.ticketId, change.projectId);
+          ticket = nativeTicket.parse({ ...task, labels: task.labels?.map(l => l.name) });
+        } catch (error) {
+          if (!(error instanceof KanvilTaskNotFound)) { this.snapshots.delete(change.projectId); throw error; }
+          // A later delete or move may already have committed. Its event will replay after this one.
+        }
+      }
+      snapshot.tickets = snapshot.tickets.filter(t => t.id !== change.ticketId);
+      if (ticket) snapshot.tickets.push(ticket);
+    }
+    snapshot.cursor = change.id;
+  }
+  // In-memory projection and cursor share a lifetime. Restart always starts with fresh snapshots, never a cursor alone.
+  subscribe(onChange: (event?: Change) => void, signal: AbortSignal, onError?: (error: unknown) => void) {
+    if (this.subscription) throw new Error('Kanvil subscription already active');
+    this.watching = true;
+    const abort = AbortSignal.any([signal, this.abort.signal]);
+    this.streamSignal = abort; this.changed = onChange; this.streamError = onError;
+    return this.subscription = new ReadContext().run(() => this.follow(onChange, abort, onError));
+  }
+  private async follow(onChange: (event?: Change) => void, signal: AbortSignal, onError?: (error: unknown) => void, projectId?: string) {
+    let cursor: string | undefined = projectId ? this.position : undefined, backoff = 1000;
+    while (!signal.aborted) {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      const cancel = () => { void reader?.cancel().catch(() => {}); };
+      signal.addEventListener('abort', cancel, { once: true });
+      try {
+        if (!cursor) cursor = z.object({ cursor: z.string().regex(/^\d+$/) }).parse(await this.request('/checkpoint')).cursor;
+        const response = await this.response(`/events?cursor=${cursor}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''}`, signal, true);
+        if (response.status === 410) { await response.body?.cancel(); cursor = undefined; if (projectId) this.invalidateProject(projectId); else this.snapshots.clear(); continue; }
+        if (!response.ok) await this.failure(response);
+        if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) throw new Error('Kanvil returned an invalid event stream');
+        reader = response.body.getReader();
+        const messages: EventSourceMessage[] = [];
+        const parser = createParser({ maxBufferSize: 1_000_000, onEvent: event => messages.push(event), onError: () => { throw new Error('Kanvil returned invalid SSE'); } });
+        const decoder = new TextDecoder();
+        while (!signal.aborted) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error('Kanvil event stream ended');
+          parser.feed(decoder.decode(chunk.value, { stream: true }));
+          for (const message of messages.splice(0)) {
+            if (message.event === 'error') {
+              const error = z.object({ status: z.number(), code: z.string().regex(/^[a-z_]+$/) }).parse(JSON.parse(message.data));
+              throw new KanvilError(error.status, error.code);
+            }
+            if (message.event !== 'change' && message.event !== 'checkpoint') continue;
+            const id = z.string().regex(/^\d+$/).parse(message.id);
+            if (message.event === 'checkpoint' && z.object({ cursor: z.string() }).parse(JSON.parse(message.data)).cursor !== id) throw new Error('Kanvil checkpoint cursor mismatch');
+            if (!projectId && message.event === 'change' && BigInt(id) > BigInt(cursor)) {
+              const change = eventSchema.parse(JSON.parse(message.data));
+              if (change.id !== id) throw new Error('Kanvil event cursor mismatch');
+              if (!/^(comment|evidence)\./.test(change.type)) {
+                this.revision++;
+                await this.applyChange(change);
+                onChange(change);
+              } // Invalidation and notification precede cursor advancement.
+            }
+            if (projectId) {
+              const entry = this.projectStreams.get(projectId)!;
+              if (!entry.connected) { entry.connected = true; entry.ready.resolve(); this.revision++; onChange({ id, projectId, ticketId: null, type: 'stream.connected' }); }
+            } else if (!this.connected) { this.connected = true; this.revision++; onChange(); }
+            if (BigInt(id) > BigInt(cursor)) cursor = id;
+            if (!projectId) this.position = cursor;
+            backoff = 1000;
+          }
+        }
+      } catch (error) {
+        if (signal.aborted) break;
+        if (error instanceof KanvilError && error.status === 410) cursor = undefined;
+        if (projectId) this.projectStreams.get(projectId)?.ready.reject(new Error('Kanvil project stream is not synchronized'));
+        onError?.(error);
+      } finally {
+        signal.removeEventListener('abort', cancel);
+        if (projectId) {
+          const entry = this.projectStreams.get(projectId)!;
+          const wasConnected = entry.connected;
+          entry.connected = false; entry.ready.reject(new Error('Kanvil project stream is not synchronized'));
+          this.revision++; this.invalidateProject(projectId);
+          await reader?.cancel().catch(() => {});
+          if (wasConnected && !signal.aborted) onChange({ id: cursor ?? '0', projectId, ticketId: null, type: 'stream.disconnected' });
+        } else {
+          const wasConnected = this.connected;
+          this.connected = false; this.revision++;
+          this.tasksById.clear(); this.relationCache.clear();
+          this.snapshots.clear(); // Revoked access and disconnected streams cannot keep a trusted inventory.
+          await reader?.cancel().catch(() => {});
+          if (wasConnected && !signal.aborted) onChange();
+        }
+      }
+      if (signal.aborted) break;
+      await new Promise<void>(resolve => {
+        const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+        const timer = setTimeout(finish, backoff); signal.addEventListener('abort', finish, { once: true });
+        if (signal.aborted) finish();
+      });
+      backoff = Math.min(backoff * 2, 30_000);
+    }
+  }
+  async close() { this.abort.abort(); await this.subscription; await Promise.allSettled([...this.projectStreams.values()].map(p => p.done)); this.projectStreams.clear(); this.snapshots.clear(); this.tasksById.clear(); this.relationCache.clear(); }
 }
+
+export const listTasks = (kanvil: Kanvil, projectId: string, statuses?: string[]) => backgroundRead(() => kanvil.tasks(projectId, statuses));

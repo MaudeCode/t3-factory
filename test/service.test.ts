@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -46,7 +47,7 @@ test('commands reach the running scheduler over its socket and fall back without
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { configSchema } from '../src/config.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
@@ -58,7 +59,7 @@ const deferred = () => { let resolve!: () => void; const promise = new Promise<v
 
 for (const model of ['sol', 'auto']) for (const afterOwnership of [false, true]) test(`manual expiry at the durable launch boundary: model=${model}, ownership=${afterOwnership}`, async t => {
   const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
-  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kanvil: Promise.resolve(f.kanvil), t3Settings: JSON.stringify(f.c.t3), kanvilSettings: JSON.stringify(f.c.kanvil) });
   for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
   const entered = deferred(), release = deferred();
   if (!afterOwnership) f.hooks.quota = async refresh => { if (refresh) { entered.resolve(); await release.promise; } };
@@ -161,9 +162,9 @@ async function maintenanceFixture(t: import('node:test').TestContext) {
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'gpt-6.1-sol' } }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   const path = join(dir, 'config.jsonc'); writeFileSync(path, JSON.stringify(c));
   const thread = v2Thread({ id: 'completed', projectId: 'FIX', status: 'completed', activeRunId: null, updatedAt: '2026-01-01T00:00:00Z', latestUserMessageAt: '2026-01-01T00:00:00Z', latestRunCompletedAt: '2026-01-01T00:00:00Z', worktreePath: null });
@@ -172,10 +173,10 @@ async function maintenanceFixture(t: import('node:test').TestContext) {
   t.mock.method(T3.prototype, 'subscribe', async (_: unknown, signal: AbortSignal) => new Promise<void>(resolve => signal.addEventListener('abort', () => resolve())));
   t.mock.method(T3.prototype, 'shell', shell);
   t.mock.method(T3.prototype, 'providers', async () => []);
-  t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
-  t.mock.method(Kaneo.prototype, 'call', async (name: string) => {
-    if (name === 'list_workspace_labels' || name === 'get_task_relations') return [];
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: [] }] }, pagination: { total: 0, totalPages: 1 } };
+  t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
+  mockTracker(t, Kanvil.prototype, async (name: string) => {
+    if (name === 'labels' || name === 'relations') return [];
+    if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: [] }] }, pagination: { total: 0, totalPages: 1 } };
     throw new Error(name);
   });
   return { dir, c, path, thread, job, shell };
@@ -196,7 +197,7 @@ test('manual dispatch passes pending background work without interrupting an ind
   t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
     await service.start(); await entered.promise;
-    service.wake('config'); service.wake('kaneo');
+    service.wake('config'); service.wake('kanvil');
     t.mock.timers.tick(150_000); // The display refresh is now pending behind the active pass.
     internal.scheduleCleanup(); t.mock.timers.tick(0);
     const dispatch = internal.handle({ type: 'dispatch', options: { ticket: 'FIX-1' } });
@@ -280,12 +281,12 @@ test('wake bursts coalesce and changes during an active background pass get a fr
   t.mock.timers.enable({ apis: ['setTimeout'] });
   try {
     await service.start(); await entered.promise;
-    service.wake('config'); service.wake('kaneo'); service.wake('timer');
+    service.wake('config'); service.wake('kanvil'); service.wake('timer');
     release.resolve(); await next.promise;
     internal.onShellItem({ type: 'thread.meta-updated' });
     internal.onShellItem({ type: 'thread.created' });
     t.mock.timers.tick(750);
-    service.wake('kaneo');
+    service.wake('kanvil');
     releaseNext.resolve(); await internal.queue;
     assert.deepEqual(events, ['start', 'config', 't3']);
   } finally { release.resolve(); releaseNext.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
@@ -300,7 +301,7 @@ test('stop drains accepted foreground commands and failures before closing resou
     if (++reads === 1) { entered.resolve(); await release.promise; }
     return f.shell();
   });
-  t.mock.method(Kaneo.prototype, 'close', async () => { events.push('close-client'); });
+  t.mock.method(Kanvil.prototype, 'close', async () => { events.push('close-client'); });
   const close = Store.prototype.close;
   t.mock.method(Store.prototype, 'close', function(this: Store) { events.push('close-store'); close.call(this); });
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -348,30 +349,28 @@ test('pass diagnostics separate queue wait from active duration', { timeout: 100
   } finally { release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-for (const siblingFails of [false, true]) test(`shutdown drains ready-column polls before closing the shared client: sibling failure=${siblingFails}`, { timeout: 10000 }, async t => {
+test('shutdown aborts and drains the shared Kanvil subscription before closing the store', { timeout: 10000 }, async t => {
   const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
   const entered = deferred(), release = deferred(), events: string[] = [];
-  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
-  if (siblingFails) writeFileSync(f.path, JSON.stringify({ ...f.c, projects: [...f.c.projects, { ...f.c.projects[0], key: 'OTHER', kaneoId: 'OTHER', t3Id: 'OTHER', githubRepo: 'fixture/OTHER' }] }));
-  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-    assert.equal(name, 'list_tasks');
-    if (args.projectId === 'OTHER') throw new Error('Synthetic poll failure');
-    entered.resolve(); await release.promise;
-    events.push('poll-finished');
-    return { data: { workspaceId: 'workspace', columns: [{ tasks: [] }] }, pagination: { total: 0, totalPages: 1 } };
+  let subscription: Promise<void> | undefined;
+  t.mock.method(Kanvil.prototype, 'subscribe', async (_onChange: unknown, signal: AbortSignal) => {
+    entered.resolve();
+    subscription = (async () => {
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+      events.push('stream-aborted'); await release.promise; events.push('stream-drained');
+    })();
+    await subscription;
   });
-  t.mock.method(Kaneo.prototype, 'close', async () => { events.push('close-client'); });
-  let stopping: Promise<void> | undefined;
+  t.mock.method(Kanvil.prototype, 'close', async () => { await subscription; events.push('close-client'); });
+  let stopped = false;
   try {
-    await service.start();
-    const poll = internal.checkKaneo(); await entered.promise;
-    stopping = service.stop().then(() => { events.push('stopped'); });
-    await internal.queue;
+    await service.start(); await entered.promise; await internal.queue;
+    const stopping = service.stop().then(() => { events.push('stopped'); });
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(events, [], 'the client must remain open while the poll is using it');
-    release.resolve(); await poll; await stopping;
-    assert.deepEqual(events, ['poll-finished', 'close-client', 'stopped']);
-  } finally { release.resolve(); await (stopping ?? service.stop()); rmSync(f.dir, { recursive: true, force: true }); }
+    assert.deepEqual(events, ['stream-aborted']);
+    release.resolve(); await stopping; stopped = true;
+    assert.deepEqual(events, ['stream-aborted', 'stream-drained', 'close-client', 'stopped']);
+  } finally { release.resolve(); if (!stopped) await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
 test('service dispatch returns before blocked cleanup and queued commands run between maintenance items', { timeout: 10000 }, async t => {
@@ -504,7 +503,7 @@ for (const options of [{ manual: true }, { manual: true, model: 'sol' }, { dryRu
       store.save(f.job);
       store.save({ ...f.job, id: 'reporting', threadId: f.thread.id, state: 'running', completedAt: null });
       writeFileSync(f.job.reportPath, JSON.stringify({ jobId: 'reporting', status: 'awaiting-human', reason: 'Needs a verdict', prUrls: [] }));
-      await cycle(f.c, store, options, { t3: new T3(f.c.t3), kaneo: new Kaneo(f.c.kaneo) });
+      await cycle(f.c, store, options, { t3: new T3(f.c.t3), kanvil: new Kanvil(f.c.kanvil) });
       assert.equal(!!store.job(f.job.id)?.workspaceCleanedAt, Object.keys(options).length === 0, 'only ordinary once performs cleanup inline');
       assert.equal(store.job('reporting')?.state, 'waiting', 'report and capacity reconciliation still runs');
     } finally { store.close(); rmSync(f.dir, { recursive: true, force: true }); }
@@ -525,12 +524,12 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     models: [{ id: 'opus', name: 'Opus', model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, automatic: false, maxDifficulty: 'high' }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
-  const tasks = [1, 2].map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Work', number, status: 'to-do', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }));
+  const tasks = [1, 2].map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Work', number, status: 'todo', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }));
   const providers = [{ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'claude-opus-5' }] }];
   let shellReads = 0, release: () => void = () => {}, listed: Record<string, unknown>[] = [];
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -543,15 +542,15 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
   const launches: Record<string, any>[] = [];
   t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => { launches.push(command); return { ok: true }; });
   let connects = 0;
-  t.mock.method(Kaneo.prototype, 'connect', async () => { connects++; }); t.mock.method(Kaneo.prototype, 'close', async () => {});
-  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-    if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') { listed.push(args); return { data: { workspaceId: 'workspace', columns: [{ tasks }] }, pagination: { total: tasks.length, totalPages: 1 } }; }
-    if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
-    if (name === 'get_task_relations') return [];
+  t.mock.method(Kanvil.prototype, 'connect', async () => { connects++; }); t.mock.method(Kanvil.prototype, 'close', async () => {});
+  mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {
+    if (name === 'labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
+    if (name === 'tickets') { listed.push(args); return { data: { workspaceId: 'workspace', columns: [{ tasks }] }, pagination: { total: tasks.length, totalPages: 1 } }; }
+    if (name === 'ticket') return tasks.find(task => task.id === args.taskId);
+    if (name === 'relations') return [];
     throw new Error(name);
   });
-  const service = new FactoryService(process.env.T3_FACTORY_CONFIG, { kaneoPollMs: 60 });
+  const service = new FactoryService(process.env.T3_FACTORY_CONFIG);
   const internal = service as any, backgroundDone = deferred(), queueUpdated = deferred(), passReasons: string[] = [];
   const pass = internal.pass.bind(internal);
   t.mock.method(internal, 'pass', async (options: unknown, reason: string, queueWaitMs: number) => {
@@ -562,6 +561,8 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     if (status.upNext?.tickets.some((ticket: any) => ticket.key === 'FIX-3')) queueUpdated.resolve();
     return result;
   });
+  let emitKanvil!: (event: any) => void;
+  t.mock.method(Kanvil.prototype, 'subscribe', async (onChange: (event: any) => void, signal: AbortSignal) => { emitKanvil = onChange; await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })); });
   try {
     await service.start(); // The start pass is now blocked inside its first shell read.
     const dispatch = callControl(c.stateDir, { type: 'dispatch', options: { manual: true, model: 'opus', ticket: 'FIX-2', overrideLimits: true } });
@@ -583,15 +584,15 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     const status = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
     assert.equal(status.jobs.length, 1);
     assert.deepEqual(passReasons, ['start', 'dispatch', 'once', 'test'], 'suspension retries reads without duplicating passes or wake bursts');
-    assert.equal(connects, 1, 'one Kaneo client serves every pass');
-    assert.ok(listed.some(a => a.status === 'to-do'), 'automatic passes read ready columns only');
+    assert.equal(connects, 1, 'one Kanvil client serves every pass');
+    assert.ok(listed.some(a => a.status === 'todo'), 'automatic passes read ready columns only');
     assert.ok(listed.some(a => a.status === undefined), 'a named ticket is read from every column');
     assert.ok(existsSync(join(c.stateDir, 'control.sock')));
     assert.deepEqual(status.upNext.tickets.map((t: any) => [t.key, t.model]), [['FIX-1', null]], 'up next lists the remaining ready ticket; no automatic model takes it');
     assert.ok(status.streams.every((s: any) => s.quota || s.quotaError), 'every provider shows an allowance or why not');
-    // A ticket appearing in Kaneo is noticed by the poll and reaches the queue without a timer or a T3 event.
-    await internal.checkKaneo();
-    tasks.push({ id: 'task-3', projectId: 'FIX', title: 'New work', number: 3, status: 'to-do', priority: 'urgent', createdAt: '2026-01-02T00:00:00Z', labels: [{ name: 'sf' }, { name: 'low' }] });
+    // A Kanvil event reaches the queue without a timer or a T3 event.
+    tasks.push({ id: 'task-3', projectId: 'FIX', title: 'New work', number: 3, status: 'todo', priority: 'urgent', createdAt: '2026-01-02T00:00:00Z', labels: [{ name: 'sf' }, { name: 'low' }] });
+    emitKanvil({ id: '1', projectId: 'FIX', ticketId: 'task-3', type: 'ticket.created' });
     await queueUpdated.promise;
     const later = JSON.parse(readFileSync(join(c.stateDir, 'status.json'), 'utf8'));
     assert.deepEqual(later.upNext.tickets.map((t: any) => t.key), ['FIX-3', 'FIX-1']);
@@ -780,10 +781,9 @@ test('active cycle yields its drained read batch to manual dispatch and Stop bef
     if (first) { first = false; entered.resolve(); await release.promise; events.push('batch-drained'); }
     return f.shell();
   });
-  const call = Kaneo.prototype.call;
-  t.mock.method(Kaneo.prototype, 'call', async function(this: Kaneo, name: string, args: any) {
-    if (name === 'list_tasks') events.push('inventory');
-    return call.call(this, name, args);
+  const tasks = Kanvil.prototype.tasks;
+  t.mock.method(Kanvil.prototype, 'tasks', async function(this: Kanvil, id: string, statuses?: string[]) {
+    events.push('inventory'); return tasks.call(this, id, statuses);
   });
   const pass = internal.pass.bind(internal);
   t.mock.method(internal, 'pass', async (options: any, reason: string, wait: number) => {
@@ -858,13 +858,13 @@ for (const kind of ['cleanup-inventory', 'session-tickets', 'quota-refresh']) te
 
 test('large active inventory retains finished ticket batches when a command interrupts a later batch', { timeout: 10000 }, async t => {
   const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
-  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kanvil: Promise.resolve(f.kanvil), t3Settings: JSON.stringify(f.c.t3), kanvilSettings: JSON.stringify(f.c.kanvil) });
   f.c.enabled = false; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
-  f.tasks.splice(0, f.tasks.length, ...Array.from({ length: 120 }, (_, i) => f.task(`task-${i}`, i + 1, 'to-do'))); f.relations.length = 0;
+  f.tasks.splice(0, f.tasks.length, ...Array.from({ length: 120 }, (_, i) => f.task(`task-${i}`, i + 1, 'todo'))); f.relations.length = 0;
   for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
   const entered = deferred(), release = deferred(), events: string[] = [];
   f.hooks.read = async (name, id) => {
-    if (name !== 'get_task_relations') return;
+    if (name !== 'relations') return;
     events.push(id);
     if (id === 'task-12' && !events.includes('manual')) { entered.resolve(); await release.promise; }
   };
@@ -923,7 +923,7 @@ test('large cleanup projection yields, retains Git discovery, and publishes curr
 
 test('an owned background launch keeps the writer through an uncertain response', { timeout: 10000 }, async t => {
   const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
-  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kanvil: Promise.resolve(f.kanvil), t3Settings: JSON.stringify(f.c.t3), kanvilSettings: JSON.stringify(f.c.kanvil) });
   for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
   const entered = deferred(), release = deferred(), events: string[] = [];
   t.mock.method(f.t3, 'launch', (command: unknown) => readPhase('fixture.launch', async signal => {
@@ -1003,7 +1003,7 @@ for (const command of ['cancel', 'shutdown']) test(`protected final retry yields
     const target = { ...f.tasks[0], key: 'FIX-1', difficulty: 'med' as const, readyLabel: true, runnable: true, blockedBy: [], done: false };
     internal.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
     const { runPlans } = await import('../src/scheduler.ts');
-    const background = internal.enqueue(() => runPlans(f.c, internal.store, f.t3, f.kaneo, new Map([['codex', 'codex']]), []), false, { reason: 'chain-continuation' }).then((value: any) => ({ value, error: null }), (error: Error) => ({ value: null, error }));
+    const background = internal.enqueue(() => runPlans(f.c, internal.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), []), false, { reason: 'chain-continuation' }).then((value: any) => ({ value, error: null }), (error: Error) => ({ value: null, error }));
     await initial.promise;
     const first = internal.handle({ type: 'once', options: { doctor: true } });
     releaseInitial.resolve(); await first; await retry.promise;
@@ -1022,12 +1022,12 @@ for (const stage of ['relation', 'completion', 'columns']) test(`cancelled ${sta
   const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
   f.c.enabled = false; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   if (stage === 'columns') f.tasks[1].projectId = 'EXTERNAL';
-  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kaneo: Promise.resolve(f.kaneo), t3Settings: JSON.stringify(f.c.t3), kaneoSettings: JSON.stringify(f.c.kaneo) });
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kanvil: Promise.resolve(f.kanvil), t3Settings: JSON.stringify(f.c.t3), kanvilSettings: JSON.stringify(f.c.kanvil) });
   for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
   const entered = deferred(), release = deferred(); let first = true;
   f.hooks.read = async (name, id) => {
-    const target = stage === 'relation' ? name === 'get_task_relations' && id === 'root'
-      : stage === 'completion' ? name === 'get_task' && id === 'blocker' : name === 'list_project_columns';
+    const target = stage === 'relation' ? name === 'relations' && id === 'root'
+      : stage === 'completion' ? name === 'ticket' && id === 'blocker' : name === 'columns';
     if (!target || !first) return;
     first = false;
     await readPhase('fixture.dependency', async signal => {

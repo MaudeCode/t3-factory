@@ -14,7 +14,7 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
   c.factorySkill = join(dir, 'SKILL.md');
   c.discovery.promptFile = join(dir, 'discovery.md');
   const project = c.projects[0];
-  const job: Job = { id: 'job', kind: 'ticket', projectId: project.kaneoId, taskId: 'task', ticketKey: 'APP-1', threadId: 'thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', state: 'dispatching', reason: '', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), command: null, prUrls: [], completedAt: null };
+  const job: Job = { id: 'job', kind: 'ticket', projectId: project.kanvilId, taskId: 'task', ticketKey: 'APP-1', threadId: 'thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', state: 'dispatching', reason: '', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), command: null, prUrls: [], completedAt: null };
   const skill = '# Software factory\n\nMerge without asking after local review, Codex review, and green CI.\nInvoke $ios-phone-validation and wait for the user device verdict.\nPreserve human validation and Hold.\nMonitor CI with gh pr checks --watch.\n';
   try {
     writeFileSync(c.factorySkill, skill);

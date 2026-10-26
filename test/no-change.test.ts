@@ -7,10 +7,10 @@ import { tmpdir } from 'node:os';
 import { reconcile } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
-import type { T3, Kaneo } from '../src/clients.ts';
+import type { T3, Kanvil } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
 
-const accepted = { 'done': 'done', 'unlabeled': 'to-do', 'complete-empty': 'done', 'missing-worktree': 'done' } as const;
+const accepted = { 'done': 'done', 'unlabeled': 'todo', 'complete-empty': 'done', 'missing-worktree': 'done' } as const;
 const rejected = {
   'still-ready': 'Ticket is still ready; record why no change is needed and remove it from the ready queue',
   'dirty': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
@@ -32,18 +32,14 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
     const branch = 'chore/FIX-1-factory';
     git(repo, 'update-ref', 'refs/remotes/origin/main', git(repo, 'rev-parse', 'HEAD')); git(repo, 'worktree', 'add', '-qb', branch, tree);
     const store = new Store(join(dir, 'state'));
-    const project = { kaneoId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] };
-    const c = { monitoringTimeoutMinutes: 30, kaneo: { workspaceId: 'workspace', readyLabel: 'sf' }, projects: [project] } as unknown as Config;
+    const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] };
+    const c = { monitoringTimeoutMinutes: 30, kanvil: { workspaceId: 'workspace', readyLabel: 'sf' }, projects: [project] } as unknown as Config;
     const job: Job = { id: 'job', kind: 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: null, state: 'waiting', reason: 'Ticket cannot finish as no-work', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, status: 'completed' });
     const report = { jobId: job.id, status: scenario === 'complete-empty' ? 'complete' : 'no-work', reason: 'Already delivered on main; evidence recorded on the ticket', prUrls: scenario === 'no-work-with-pr' ? ['https://github.com/fixture/repo/pull/1'] : [], createdTaskIds: [] };
     writeFileSync(job.reportPath, JSON.stringify(report));
-    const status = scenario in accepted ? accepted[scenario as keyof typeof accepted] : scenario === 'still-ready' ? 'to-do' : 'done';
-    const kaneo = { config: c.kaneo, call: async (name: string) => {
-      if (name === 'get_task') return { id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status };
-      if (name === 'list_workspace_labels') return [{ name: 'med', taskId: 'task', workspaceId: 'workspace' }, ...(scenario === 'unlabeled' ? [] : [{ name: 'sf', taskId: 'task', workspaceId: 'workspace' }])];
-      throw new Error(name);
-    } } as unknown as Kaneo;
+    const status = scenario in accepted ? accepted[scenario as keyof typeof accepted] : scenario === 'still-ready' ? 'todo' : 'done';
+    const kanvil = { config: c.kanvil, task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status, automationReady: true, labels: [{ name: 'med' }, ...(scenario === 'unlabeled' ? [] : [{ name: 'sf' }])] }) } as unknown as Kanvil;
     const threads = [thread];
     const t3 = { shell: async () => ({ threads }), request: async () => ({ projection: v2Projection(thread) }), terminals: async () => [],
       dispatch: async (command: any) => { thread.worktreePath = null; thread.branch = null; assert.equal(command.type, 'thread.metadata.update'); },
@@ -59,13 +55,13 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
       }
       if (scenario === 'missing-worktree-and-branch') git(repo, 'branch', '-D', branch);
       store.save(job);
-      await reconcile(c, store, t3, kaneo, threads);
+      await reconcile(c, store, t3, kanvil, threads);
       const saved = store.jobs()[0];
       if (scenario in accepted) {
         assert.deepEqual([saved.state, saved.reason, saved.prUrls], ['complete', report.reason, []], 'a verified no-change outcome finishes the job');
         assert.ok(saved.completedAt);
         // The existing cleanup cycle then removes the clean, released workspace.
-        for (let i = 0; i < 3; i++) await reconcile(c, store, t3, kaneo, threads);
+        for (let i = 0; i < 3; i++) await reconcile(c, store, t3, kanvil, threads);
         assert.equal(store.jobs()[0].workspaceCleanupError, undefined);
         assert.ok(store.jobs()[0].workspaceCleanedAt);
         assert.equal(existsSync(tree), false);

@@ -42,7 +42,7 @@ test('capacity counts active, resumed and uncertain runs but releases waiting an
 
 test('full label blocks retain waiting resource reservations independently of provider capacity', () => {
   const c = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
-  const projectId = c.projects[0].kaneoId;
+  const projectId = c.projects[0].kanvilId;
   // Structured limits are the new opt-in; numbers retain running-only behavior.
   c.projects[0].labelLimits = { app: { limit: 2, mode: 'full' }, web: 2 };
   const jobs = ['one', 'two'].map(id => ({ id, threadId: id, projectId, state: 'waiting', labels: ['app', 'web'], providerDriver: 'codex' }) as Job);
@@ -97,5 +97,19 @@ test('unfinished command waits retain capacity before and after automatic resump
     assert.equal(blocked(), false, `${driver}: verified completion frees capacity`);
     jobs[0].state = 'running'; jobs[1].state = 'waiting';
     assert.equal(blocked(), false, `${driver}: a job parked for human input frees capacity`);
+  }
+});
+
+test('remote Kanvil origins require TLS before bearer credentials can be used', () => {
+  const base = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
+  for (const url of ['http://kanvil.example.test', 'http://192.0.2.10:8080', 'http://localhost.example.test']) {
+    assert.equal(configSchema.safeParse({ ...base, kanvil: { ...base.kanvil, url } }).success, false, `plaintext remote origin must be rejected: ${url}`);
+  }
+});
+
+test('Kanvil permits HTTPS and loopback-only HTTP development origins', () => {
+  const base = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
+  for (const url of ['https://kanvil.example.test', 'http://localhost:3774', 'http://127.0.0.1:3774', 'http://[::1]:3774']) {
+    assert.equal(configSchema.safeParse({ ...base, kanvil: { ...base.kanvil, url } }).success, true, `supported secure or local origin: ${url}`);
   }
 });

@@ -3,18 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { executing, providerExecuting } from '../src/policy.ts';
 import { publicStopCommand, v2Shell, v2Thread } from './v2-fixture.ts';
-
-test('tracker failures retain safe categories and status without exposing server payloads', async t => {
-  const kaneo = new Kaneo({ url: 'https://tracker.invalid', workspaceId: 'fixture', readyLabel: 'sf' });
-  let detail = 'Backend at https://private.invalid/?token=secret returned HTTP 503';
-  t.mock.method(kaneo.client, 'callTool', async () => ({ isError: true, content: [{ type: 'text', text: JSON.stringify({ error: detail }) }] }));
-  await assert.rejects(kaneo.call('list_tasks', {}), error => { assert.equal((error as Error).message, 'Kaneo list_tasks failed (HTTP 503)'); return true; });
-  detail = 'Secret-bearing backend prose (TIMEOUT)';
-  await assert.rejects(kaneo.call('list_tasks', {}), error => { assert.equal((error as Error).message, 'Kaneo list_tasks failed (TIMEOUT)'); return true; });
-});
 
 function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestInit) => Response>) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-protocol-'));

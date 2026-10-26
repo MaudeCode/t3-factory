@@ -18,7 +18,7 @@ struct FactorySettingsView: View {
         ("activity", "Activity", "clock", "What the factory decided and what each run did. A check is recorded when its outcome changes."),
         ("models", "Models", "cpu", "Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket."),
         ("capacity", "Capacity", "gauge.with.dots.needle.33percent", "How many runs each provider may have open, how much allowance it must keep, and when it may start. Running work always finishes."),
-        ("projects", "Projects", "folder", "Repositories the factory may work in. A project pairs a T3 project with a Kaneo project."),
+        ("projects", "Projects", "folder", "Repositories the factory may work in. A project pairs a T3 project with a Kanvil project."),
         ("upstream", "Upstream", "arrow.down.to.line", "Each new release of a watched repository gets a review run that files tickets for anything worth adopting."),
         ("advanced", "Advanced", "curlybraces", "Edit the complete configuration or open the factory log."),
     ]
@@ -310,7 +310,7 @@ struct FactorySettingsView: View {
         return HStack(spacing: 6) {
             Button("−") { model.update(["maxWaitingPRs"], value == nil ? 20 : max(1, value!.intValue - 1)) }.buttonStyle(QuietButton()).disabled(value != nil && value!.intValue <= 1)
             Text(value.map { "\($0)" } ?? "No limit").font(.system(size: 13, weight: .semibold)).frame(width: 70)
-            Button("+") { model.update(["maxWaitingPRs"], value == nil ? NSNull() : (value!.intValue >= 20 ? NSNull() : value!.intValue + 1)) }.buttonStyle(QuietButton()).disabled(value == nil)
+            Button("+") { model.update(["maxWaitingPRs"], value == nil ? NSNull() : (value!.intValue >= 20 ? NSNull() : NSNumber(value: value!.intValue + 1))) }.buttonStyle(QuietButton()).disabled(value == nil)
         }
     }
     private func allowance(_ title: String, driver: String, provider: String, windows: [(String, String)]) -> some View {
@@ -342,7 +342,7 @@ struct FactorySettingsView: View {
             VStack(spacing: 6) {
                 ForEach(entries.indices, id: \.self) { j in
                     let x = entries[j]
-                    let active = model.jobs.filter { $0["projectId"] as? String == x["kaneoId"] as? String && ["running", "dispatching"].contains($0["state"] as? String ?? "") }.count
+                    let active = model.jobs.filter { $0["projectId"] as? String == x["kanvilId"] as? String && ["running", "dispatching"].contains($0["state"] as? String ?? "") }.count
                     Button { selectedProject = j } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -356,24 +356,24 @@ struct FactorySettingsView: View {
                     }.buttonStyle(.plain)
                 }
                 if let error = model.sourcesError { Text("Catalogs unavailable: \(error)").font(.system(size: 11)).foregroundStyle(Theme.attention).padding(.top, 6) }
-                else if model.sources == nil { HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Reading the T3 and Kaneo catalogs").font(.system(size: 11)).foregroundStyle(Theme.muted) }.padding(.top, 6) }
+                else if model.sources == nil { HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Reading the T3 and Kanvil catalogs").font(.system(size: 11)).foregroundStyle(Theme.muted) }.padding(.top, 6) }
             }.frame(width: 280).padding(.leading, 24).padding(.bottom, 24)
             ScrollView { if entries.indices.contains(i) { projectEditor(i, entries: entries) } }.padding(.trailing, 24).padding(.bottom, 24)
         }
     }
     private func projectEditor(_ i: Int, entries: [[String: Any]]) -> some View {
-        let p = ["projects", String(i)], current = entries[i], kaneoId = current["kaneoId"] as? String ?? ""
-        let inUse = model.jobs.contains { $0["projectId"] as? String == kaneoId && !["complete", "dismissed"].contains($0["state"] as? String ?? "") }
+        let p = ["projects", String(i)], current = entries[i], kanvilId = current["kanvilId"] as? String ?? ""
+        let inUse = model.jobs.contains { $0["projectId"] as? String == kanvilId && !["complete", "dismissed"].contains($0["state"] as? String ?? "") }
         let t3 = model.t3Projects.first { $0["id"] as? String == current["t3Id"] as? String }
         let mismatch = (t3?["workspaceRoot"] as? String).map { $0 != current["repoPath"] as? String } ?? false
-        let cols = model.columns(kaneoId).map { ($0["slug"] as? String ?? "", $0["name"] as? String ?? "") }
+        let cols = model.columns(kanvilId).map { ($0["slug"] as? String ?? "", $0["name"] as? String ?? "") }
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(current["name"] as? String ?? "").font(.system(size: 17, weight: .semibold))
                     HStack(spacing: 12) {
                         if let repo = current["githubRepo"] as? String, !repo.isEmpty { Button("GitHub") { model.openURL("https://github.com/\(repo)") }.buttonStyle(.link) }
-                        if !kaneoId.isEmpty { Button("Kaneo") { model.openTicket(kaneoId, taskId: nil) }.buttonStyle(.link) }
+                        if !kanvilId.isEmpty { Button("Kanvil") { model.openTicket(kanvilId, taskId: nil) }.buttonStyle(.link) }
                     }
                 }
                 Spacer()
@@ -398,7 +398,7 @@ struct FactorySettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionTitle("Tickets")
                 HStack(spacing: 12) {
-                    Field(label: "Kaneo project") { catalogPicker(current: kaneoId, options: model.kaneoProjects.map { ($0["id"] as? String ?? "", "\($0["name"] as? String ?? "") (\($0["slug"] as? String ?? ""))") }) { model.linkKaneo(i, id: $0) } }
+                    Field(label: "Kanvil project") { catalogPicker(current: kanvilId, options: model.kanvilProjects.map { ($0["id"] as? String ?? "", "\($0["name"] as? String ?? "") (\($0["slug"] as? String ?? ""))") }) { model.linkKanvil(i, id: $0) } }
                     Field(label: "Ticket prefix") { DarkTextField(placeholder: "APP", text: model.string(p + ["key"]), mono: true) }
                 }
                 Field(label: "Ready when in", help: "Tickets in these columns may be picked up.") { chips(path: p + ["readyStatuses"], options: cols) }
@@ -512,29 +512,29 @@ struct CustomChip: View {
     }
 }
 
-// New projects start from the T3 and Kaneo catalogs so nothing has to be typed.
+// New projects start from the T3 and Kanvil catalogs so nothing has to be typed.
 struct AddProjectSheet: View {
     @ObservedObject var model: FactoryModel
     let onAdd: (Int) -> Void
     let onCancel: () -> Void
     @State private var t3 = ""
-    @State private var kaneo = ""
+    @State private var kanvil = ""
     var body: some View {
-        let taken = Set((model.draft["projects"] as? [[String: Any]] ?? []).flatMap { [$0["t3Id"] as? String ?? "", $0["kaneoId"] as? String ?? ""] })
-        let t3Project = model.t3Projects.first { $0["id"] as? String == t3 }, kaneoProject = model.kaneoProjects.first { $0["id"] as? String == kaneo }
+        let taken = Set((model.draft["projects"] as? [[String: Any]] ?? []).flatMap { [$0["t3Id"] as? String ?? "", $0["kanvilId"] as? String ?? ""] })
+        let t3Project = model.t3Projects.first { $0["id"] as? String == t3 }, kanvilProject = model.kanvilProjects.first { $0["id"] as? String == kanvil }
         VStack(alignment: .leading, spacing: 14) {
             Text("Add a project").font(.system(size: 17, weight: .semibold))
-            if model.sources == nil && model.sourcesError == nil { HStack { ProgressView().controlSize(.small); Text("Loading the T3 and Kaneo catalogs").font(.system(size: 12)).foregroundStyle(Theme.muted) } }
+            if model.sources == nil && model.sourcesError == nil { HStack { ProgressView().controlSize(.small); Text("Loading the T3 and Kanvil catalogs").font(.system(size: 12)).foregroundStyle(Theme.muted) } }
             if let error = model.sourcesError { Text(error).font(.system(size: 12)).foregroundStyle(Theme.danger) }
             Field(label: "T3 project", help: "Sets the repository path T3 works in.") {
                 Picker("", selection: $t3) { Text("Choose").tag(""); ForEach(model.t3Projects.filter { !taken.contains($0["id"] as? String ?? "") }, id: \.rowId) { Text($0["title"] as? String ?? "").tag($0["id"] as? String ?? "") } }.labelsHidden()
             }
-            Field(label: "Kaneo project", help: "Sets the ticket prefix and which columns mean ready and done.") {
-                Picker("", selection: $kaneo) { Text("Choose").tag(""); ForEach(model.kaneoProjects.filter { !taken.contains($0["id"] as? String ?? "") }, id: \.rowId) { Text("\($0["name"] as? String ?? "") (\($0["slug"] as? String ?? ""))").tag($0["id"] as? String ?? "") } }.labelsHidden()
+            Field(label: "Kanvil project", help: "Sets the ticket prefix and which columns mean ready and done.") {
+                Picker("", selection: $kanvil) { Text("Choose").tag(""); ForEach(model.kanvilProjects.filter { !taken.contains($0["id"] as? String ?? "") }, id: \.rowId) { Text("\($0["name"] as? String ?? "") (\($0["slug"] as? String ?? ""))").tag($0["id"] as? String ?? "") } }.labelsHidden()
             }
             if let t3Project { Text("Path: \(t3Project["workspaceRoot"] as? String ?? "")").font(Theme.mono(11, weight: .regular)).foregroundStyle(Theme.muted) }
-            if let kaneoProject { Text("Tickets: \(kaneoProject["slug"] as? String ?? "")-…").font(.system(size: 11)).foregroundStyle(Theme.muted) }
-            HStack { Spacer(); Button("Cancel", action: onCancel).buttonStyle(QuietButton()); Button("Add project") { onAdd(model.addProject(t3: t3Project, kaneo: kaneoProject)) }.buttonStyle(PrimaryButton()).disabled(t3Project == nil && kaneoProject == nil) }
+            if let kanvilProject { Text("Tickets: \(kanvilProject["slug"] as? String ?? "")-…").font(.system(size: 11)).foregroundStyle(Theme.muted) }
+            HStack { Spacer(); Button("Cancel", action: onCancel).buttonStyle(QuietButton()); Button("Add project") { onAdd(model.addProject(t3: t3Project, kanvil: kanvilProject)) }.buttonStyle(PrimaryButton()).disabled(t3Project == nil && kanvilProject == nil) }
         }.padding(22).frame(width: 440).background(Theme.bg).themed().task { await model.refreshSources() }
     }
 }

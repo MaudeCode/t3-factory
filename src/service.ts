@@ -1,5 +1,5 @@
 import { manageCleanup, cleanupRequestSchema, readCleanupCatalog, refreshCleanupCatalog } from './cleanup.ts';
-// The long-lived scheduler. One process holds the store claim, a T3 client, and a connected Kaneo
+// The long-lived scheduler. One process holds the store claim, a T3 client, and a connected Kanvil
 // client, and runs passes in series from one queue. Passes start from what changes: a T3 thread
 // event, a config edit, a command over the control socket, or the fallback timer.
 import { watch, type FSWatcher } from 'node:fs';
@@ -7,7 +7,7 @@ import { basename, dirname } from 'node:path';
 import type { Server } from 'node:http';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
-import { T3, Kaneo, listTasks } from './clients.ts';
+import { T3, Kanvil } from './clients.ts';
 import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, readAll, type CycleOptions } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
@@ -17,23 +17,20 @@ import { ReadContext, readPhase, backgroundRead } from './read-context.ts';
 
 const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
-export interface ServiceTiming { kaneoPollMs: number }
-const DEFAULT_TIMING: ServiceTiming = { kaneoPollMs: 15_000 };
 
 export class FactoryService {
   private store!: Store;
   private t3!: T3;
   private t3Settings = '';
-  private kaneoSettings = '';
+  private configSnapshot?: string;
+  private kanvilSettings = '';
   private stream?: AbortController;
-  private kaneo?: Promise<Kaneo>; // resolves once connected, so no caller sees a client mid-handshake
-  private polling?: Promise<void>;
+  private kanvil?: Promise<Kanvil>; // one service-owned client and subscription shared by every caller
   private control?: Server;
   private watcher?: FSWatcher;
   private timer?: NodeJS.Timeout;
   private settle?: NodeJS.Timeout;
   private quotaTimer?: NodeJS.Timeout;
-  private kaneoTimer?: NodeJS.Timeout;
   private cleanupTimer?: NodeJS.Timeout;
   private cleanupQueued = false;
   private inventoryTimer?: NodeJS.Timeout;
@@ -43,24 +40,23 @@ export class FactoryService {
   private collectionQueued = false;
   private readonly inspections = new Map<string, AbortController>();
   private readonly cleanupVisited = new Set<string>();
-  private readyFingerprint?: string;
-  private readonly timing: ServiceTiming;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly pending: { foreground: boolean; run: () => Promise<void>; reason: string; context: ReadContext; id?: string; queuedAt: string }[] = [];
   private active?: { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string };
   private readonly requests = new Map<string, Promise<ControlResult>>();
   private readonly uncertainRequests = new Set<string>();
-  private kaneoAbort?: AbortController;
+  private kanvilAbort?: AbortController;
   private running = false;
   private wanted = false;
   private stopped = false;
   private readonly abort = new AbortController();
   private stateDir = '';
   private readonly configPath: string;
-  constructor(configPath: string, timing: Partial<ServiceTiming> = {}) { this.configPath = configPath; this.timing = { ...DEFAULT_TIMING, ...timing }; }
+  constructor(configPath: string) { this.configPath = configPath; }
 
   async start() {
     const c = loadConfig(this.configPath);
+    this.configSnapshot = JSON.stringify(c);
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
     if (!this.store.claim()) throw new Error('Another scheduler owns this state directory');
@@ -74,11 +70,20 @@ export class FactoryService {
     };
     this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
-    this.watcher = watch(dirname(this.configPath), (_, name) => { if (name === basename(this.configPath)) this.wake('config'); });
+    this.watcher = watch(dirname(this.configPath), (_, name) => this.onConfigChange(name));
     this.wake('start');
     this.scheduleQuota(c);
-    this.kaneoTimer = setInterval(() => void this.checkKaneo(), this.timing.kaneoPollMs);
     log('service-started', { pid: process.pid, stateDir: c.stateDir });
+  }
+
+  // macOS may deliver duplicate or delayed startup events. Only changed settings need a pass.
+  private onConfigChange(name: string | null) {
+    if (this.stopped || name !== basename(this.configPath)) return;
+    let snapshot: string | undefined;
+    try { snapshot = JSON.stringify(loadConfig(this.configPath)); } catch { /* A broken configuration still needs its diagnostic pass. */ }
+    if (snapshot !== undefined && snapshot === this.configSnapshot) return;
+    this.configSnapshot = snapshot;
+    this.wake('config');
   }
 
   // A new T3 client and shell stream whenever the connection settings change, so an edit applies without a restart.
@@ -95,12 +100,11 @@ export class FactoryService {
     for (const controller of this.inspections.values()) controller.abort();
     this.abort.abort();
     for (const item of [this.active, ...this.pending]) if (item && !item.foreground) item.context.stopBackground();
-    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearInterval(this.kaneoTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
+    clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
     await this.queue.catch(() => {});
-    await this.polling;
-    await this.kaneo?.then(k => k.close()).catch(() => {});
+    await this.kanvil?.then(k => k.close()).catch(() => {});
     this.store.close();
   }
 
@@ -196,8 +200,8 @@ export class FactoryService {
       let more = false;
       try {
         if (this.stopped) return;
-        const c = this.configure(), kaneo = await this.ensureKaneo(c);
-        more = await cleanupNextWorkspace(c, this.store, this.t3, kaneo, this.cleanupVisited);
+        const c = this.configure(), kanvil = await this.ensureKanvil(c);
+        more = await cleanupNextWorkspace(c, this.store, this.t3, kanvil, this.cleanupVisited);
         writeStatus(c, this.store);
       } catch (error) { log('workspace-maintenance-failed', { message: safeError(error) }); }
       finally {
@@ -241,8 +245,8 @@ export class FactoryService {
       let more = false;
       try {
         if (this.stopped) return;
-        const c = this.configure(), kaneo = await this.ensureKaneo(c);
-        more = await collectSessionTickets(c, this.store, this.t3, kaneo);
+        const c = this.configure(), kanvil = await this.ensureKanvil(c);
+        more = await collectSessionTickets(c, this.store, this.t3, kanvil);
         writeStatus(c, this.store);
       } catch (error) {
         // A batch that could not even start (bad config, no tracker client) is a failure the page must show too.
@@ -290,7 +294,7 @@ export class FactoryService {
           controller.signal.throwIfAborted();
           const c = this.configure();
           // Inspection also verifies tracker evidence when present. Lazy connection keeps inventory available during tracker outages.
-          const lazy = { call: async (tool: string, args: any) => (await this.ensureKaneo(c)).call(tool, args) } as Kaneo;
+          const lazy = { task: async (id: string) => (await this.ensureKanvil(c)).task(id) } as Kanvil;
           const r = await manageCleanup(c, this.store, this.t3, lazy, input, command.operator ?? 'local operator', { signal: controller.signal });
           if (!['inventory', 'inspect', 'review'].includes(input.type)) writeStatus(c, this.store);
           return r;
@@ -319,36 +323,32 @@ export class FactoryService {
     }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
   }
 
-  // Kaneo has no push, so the ready columns are fingerprinted cheaply; any change starts a pass.
-  private checkKaneo() {
-    if (this.stopped || this.polling) return this.polling;
-    this.polling = (async () => {
-      try {
-        const c = loadConfig(this.configPath), kaneo = await this.ensureKaneo(c);
-        const tasks = await readAll(c.projects.filter(p => p.enabled).map(p => listTasks(kaneo, p.kaneoId, null, p.readyStatuses)));
-        const fingerprint = JSON.stringify(tasks.flat().map(t => [t.id, t.status, t.priority, (t.labels ?? []).map(l => l.name).sort()]).sort());
-        if (this.readyFingerprint !== undefined && fingerprint !== this.readyFingerprint) this.wake('kaneo');
-        this.readyFingerprint = fingerprint;
-      } catch (error) { log('kaneo-poll-failed', { message: safeError(error) }); }
-      finally { this.polling = undefined; }
-    })();
-    return this.polling;
-  }
-
-  private ensureKaneo(c: Config): Promise<Kaneo> {
-    return readPhase('kaneo.connect', async signal => {
-      this.kaneo ??= (async () => { const client = new Kaneo(c.kaneo); this.kaneoAbort = new AbortController(); await client.connect(this.kaneoAbort.signal); return client; })();
-      const pending = this.kaneo, controller = this.kaneoAbort;
+  private ensureKanvil(c: Config): Promise<Kanvil> {
+    return readPhase('kanvil.connect', async signal => {
+      this.kanvil ??= (async () => {
+        const client = new Kanvil(c.kanvil); this.kanvilAbort = new AbortController();
+        await client.connect(this.kanvilAbort.signal);
+        void client.subscribe(event => {
+          if (this.stopped) return;
+          if (!event || /^(project|workspace|workflow)\./.test(event.type)) this.store.set('sessionCatalog', 'null');
+          // Refresh a collected row as soon as its native ticket changes.
+          const rows = !event ? this.store.sessionTickets() : event.ticketId ? [this.store.sessionTicket(event.ticketId)].filter(row => !!row) : this.store.sessionTickets().filter(row => row.projectId === event.projectId);
+          for (const row of rows) { row.refreshAfter = new Date(0).toISOString(); this.store.saveSessionTicket(row); }
+          this.wake('kanvil');
+        }, this.abort.signal, error => log('kanvil-stream-error', { message: safeError(error) }));
+        return client;
+      })();
+      const pending = this.kanvil, controller = this.kanvilAbort;
       const abort = () => controller?.abort(signal?.reason);
       signal?.addEventListener('abort', abort, { once: true });
       try { return await pending; }
-      catch (error) { if (this.kaneo === pending) this.kaneo = undefined; throw error; }
+      catch (error) { if (this.kanvil === pending) this.kanvil = undefined; throw error; }
       finally { signal?.removeEventListener('abort', abort); }
     });
   }
-  // A broken MCP transport cannot be reused; the next pass spawns a fresh client.
-  private async dropKaneo() {
-    const dead = this.kaneo; this.kaneo = undefined;
+  // Closing aborts the HTTP stream before settings are replaced.
+  private async dropKanvil() {
+    const dead = this.kanvil; this.kanvil = undefined;
     await dead?.then(k => k.close()).catch(() => {});
   }
 
@@ -356,7 +356,7 @@ export class FactoryService {
     const c = loadConfig(this.configPath);
     if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
     if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
-    if (JSON.stringify(c.kaneo) !== this.kaneoSettings) { if (this.kaneoSettings) log('kaneo-settings-changed'); this.dropKaneo(); this.kaneoSettings = JSON.stringify(c.kaneo); }
+    if (JSON.stringify(c.kanvil) !== this.kanvilSettings) { if (this.kanvilSettings) log('kanvil-settings-changed'); this.dropKanvil(); this.kanvilSettings = JSON.stringify(c.kanvil); }
     return c;
   }
 
@@ -366,8 +366,8 @@ export class FactoryService {
     let c: Config | undefined;
     try {
       c = this.configure();
-      const kaneo = await backgroundRead(() => this.ensureKaneo(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kaneo, deferCleanup: true });
+      const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true });
       if (this.active?.context.needsRefresh && !this.active.foreground) this.wake('resume');
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
@@ -382,7 +382,6 @@ export class FactoryService {
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
       this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
       try { writeStatus(c ?? loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
-      await this.dropKaneo();
       throw error;
     } finally {
       if (!options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }

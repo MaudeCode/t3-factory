@@ -28,10 +28,10 @@ export function SessionTickets() {
   const picked = rows.filter(t => selected.includes(t.taskId));
   const held = picked.map(t => startHold({ ...t, id: t.taskId }) ?? t.unavailable).find(Boolean);
   const narrowed = query.trim() || Object.values(filters).some(value => Array.isArray(value) && value.length);
-  const project = (id) => c.projects.find((p) => p.kaneoId === id);
+  const project = (id) => c.projects.find((p) => p.kanvilId === id);
   const dismiss = (tickets) => {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
-    confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kaneo tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
+    confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
   return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${s?.error && html`<p class="alert" role="alert">Collection failed ${ago(s.error.at, now)}: ${s.error.message}. Showing the last known list.</p>`}

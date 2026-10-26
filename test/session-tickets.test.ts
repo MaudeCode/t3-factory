@@ -1,22 +1,20 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configSchema } from '../src/config.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil, KanvilTaskNotFound } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { createMcpServer } from '@kaneo/mcp';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { KaneoClient as TrackerClient } from '../node_modules/@kaneo/mcp/dist/kaneo/client.js';
 
-// Synthetic T3 conversation and Kaneo fixtures. No live sessions, tickets, or dispatches.
+// Synthetic T3 conversation and Kanvil fixtures. No live sessions, tickets, or dispatches.
 const AT = { threadStart: '2026-03-01T10:00:00.000Z', created: '2026-03-01T10:05:00.000Z', reported: '2026-03-01T10:06:00.000Z', threadEnd: '2026-03-01T10:10:00.000Z' };
 const message = (id: string, type: 'assistant_message' | 'user_message', text: string, ordinal: number, startedAt = AT.reported, threadId = 'session-1') =>
   ({ id: `item-${id}`, threadId, type, messageId: `message-${id}`, text, ordinal, startedAt, updatedAt: startedAt, status: 'completed' });
 const task = (id: string, number: number, projectId = 'FIX', extra: Record<string, unknown> = {}) =>
-  ({ id, number, projectId, workspaceId: 'workspace', title: `Ticket ${number}`, priority: 'high', status: 'to-do', createdAt: AT.created, description: 'Problem\n\nFix it.', ...extra });
+  ({ id, number, projectId, workspaceId: 'workspace', title: `Ticket ${number}`, priority: 'high', status: 'todo', createdAt: AT.created, description: 'Problem\n\nFix it.', ...extra });
 
 function serviceFixture(t: test.TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-session-tickets-'));
@@ -25,9 +23,9 @@ function serviceFixture(t: test.TestContext) {
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'fixture-sol' } }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+    projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   const path = join(dir, 'config.jsonc'); writeFileSync(path, JSON.stringify(c));
   const thread = v2Thread({ id: 'session-1', projectId: 'FIX', title: 'Plan the uploads fix', createdAt: AT.threadStart, updatedAt: AT.threadEnd, latestUserMessageAt: AT.threadStart });
@@ -40,16 +38,16 @@ function serviceFixture(t: test.TestContext) {
     if (route === `/api/orchestration/threads/${thread.id}/bounded`) return { snapshotSequence: 1, historyCursor: null, hasMoreHistory: false, projection: { thread, messages: [], runtimeRequests: [], runs: [], providerSessions: [], turnItems } };
     throw new Error(`Unexpected T3 route ${route}`);
   });
-  t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
-  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-    if (name === 'list_workspace_labels') return tasks.map(x => ({ name: 'feat', taskId: x.id, workspaceId: 'workspace' }));
-    if (name === 'get_task_relations') return [];
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: [] }] }, pagination: { total: 0, totalPages: 1 } };
-    if (name === 'list_projects') return [{ id: 'FIX', name: 'Fixture', slug: 'FIX', workspaceId: 'workspace' }];
-    if (name === 'list_project_columns') return [{ slug: 'to-do', name: 'To Do', isFinal: false, position: 0 }, { slug: 'done', name: 'Done', isFinal: true, position: 1 }];
-    if (name === 'get_task_by_ticket_id') { const found = tasks.find(x => `${x.projectId}-${x.number}` === args.ticketId); if (!found) throw new Error('Kaneo get_task_by_ticket_id failed'); return structuredClone(found); }
-    if (name === 'get_task') { const found = tasks.find(x => x.id === args.taskId); if (!found) throw new Error('Kaneo get_task failed'); return structuredClone(found); }
-    throw new Error(`Unexpected Kaneo tool ${name}`);
+  t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
+  mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {
+    if (name === 'labels') return tasks.map(x => ({ name: 'feat', taskId: x.id, workspaceId: 'workspace' }));
+    if (name === 'relations') return [];
+    if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: [] }] }, pagination: { total: 0, totalPages: 1 } };
+    if (name === 'projects') return [{ id: 'FIX', name: 'Fixture', slug: 'FIX', workspaceId: 'workspace' }];
+    if (name === 'columns') return [{ slug: 'todo', name: 'To Do', isFinal: false, position: 0 }, { slug: 'done', name: 'Done', isFinal: true, position: 1 }];
+    if (name === 'ticketByKey') { const found = tasks.find(x => `${x.projectId}-${x.number}` === args.ticketId); if (!found) throw new Error('Kanvil ticketByKey failed'); return structuredClone(found); }
+    if (name === 'ticket') { const found = tasks.find(x => x.id === args.taskId); if (!found) throw new Error('Kanvil ticket failed'); return structuredClone(found); }
+    throw new Error(`Unexpected Kanvil tool ${name}`);
   });
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const statusFile = join(c.stateDir, 'status.json');
@@ -61,7 +59,7 @@ function serviceFixture(t: test.TestContext) {
 // Regression proof for the ticket's first acceptance criterion: paused automation, no browser, no skill run.
 test('the scheduler collects a session-created ticket into status on its own and keeps it across a restart', { timeout: 20000 }, async t => {
   const f = serviceFixture(t);
-  let service = new FactoryService(f.path, { kaneoPollMs: 600_000 });
+  let service = new FactoryService(f.path);
   try {
     await service.start();
     const published = await f.until(s => s.sessionTickets?.rows?.length > 0);
@@ -71,7 +69,7 @@ test('the scheduler collects a session-created ticket into status on its own and
     assert.deepEqual(row.sources.map((s: any) => [s.threadId, s.messageId]), [['session-1', 'message-a1']], 'the row keeps its source session and message');
     assert.deepEqual(row.labels, ['feat']);
   } finally { await service.stop(); }
-  service = new FactoryService(f.path, { kaneoPollMs: 600_000 });
+  service = new FactoryService(f.path);
   try {
     await service.start();
     const restarted = await f.until(s => s.sessionTickets?.rows?.length > 0);
@@ -82,8 +80,8 @@ test('the scheduler collects a session-created ticket into status on its own and
 // Direct collector coverage: synthetic sessions, history pages and tracker answers, with every read scriptable.
 const { collectSessionTickets, creationReports, dismissSessionTicket, sessionTicketStatus } = await import('../src/session-tickets.ts');
 const { Store } = await import('../src/store.ts');
-const { T3: T3Client, Kaneo: KaneoClient } = await import('../src/clients.ts');
-const LINK = (taskId: string, workspace = 'workspace') => `https://kaneo.example.test/dashboard/workspace/${workspace}/project/FIX/task/${taskId}`;
+const { T3: T3Client, Kanvil: KanvilClient } = await import('../src/clients.ts');
+const LINK = (taskId: string, project = 'FIX') => `https://kanvil.example.test/projects/${project}/tickets/${taskId}`;
 
 test('session sources are unique by thread and retain the latest creation report', async t => {
   const f = collectorFixture(t);
@@ -120,8 +118,8 @@ test('Factory discovery threads are excluded from old rows, fresh scans, retries
   f.calls.length = 0;
   await f.drain();
   assert.equal(f.calls.some(c => /\/threads\/(legacy|owned|fresh)\//.test(c)), false, 'discovery history is not scanned');
-  assert.equal(f.calls.filter(c => c === 'get_task_by_ticket_id').length, 0, 'discovery references are not confirmed');
-  assert.equal(f.calls.filter(c => c === 'get_task').length, 1, 'only the mixed ticket with an ordinary source is refreshed');
+  assert.equal(f.calls.filter(c => c === 'ticketByKey').length, 0, 'discovery references are not confirmed');
+  assert.equal(f.calls.filter(c => c === 'ticket').length, 1, 'only the mixed ticket with an ordinary source is refreshed');
   assert.equal(f.calls.some(c => c.includes('/threads/discussion/')), true, 'only the requested title prefix matches');
   assert.equal(f.status().error, null, 'old discovery failures do not keep the collection error alive');
 });
@@ -151,8 +149,8 @@ test('upstream release-review sources are excluded from collection and existing 
   assert.equal(await f.collect(), false, 'excluded upstream work cannot keep background collection queued');
   assert.equal(f.calls.some(c => /\/threads\/(review|fresh-review)\//.test(c)), false, 'new and previously collected upstream review history is not read');
   assert.equal(f.store.sessionThread('fresh-review'), undefined, 'an excluded review is never added to the scan ledger');
-  assert.equal(f.calls.includes('get_task_by_ticket_id'), false, 'upstream pending references are not confirmed');
-  assert.equal(f.calls.includes('get_task'), false, 'upstream-only rows are not refreshed');
+  assert.equal(f.calls.includes('ticketByKey'), false, 'upstream pending references are not confirmed');
+  assert.equal(f.calls.includes('ticket'), false, 'upstream-only rows are not refreshed');
   assert.equal(f.status().error, null, 'excluded source failures do not keep the collection notice alive');
 });
 
@@ -169,7 +167,7 @@ test('legacy review kickoff requests classify upstream sources without job recor
     assert.deepEqual(f.keys(), ['FIX-8'], 'explicit review kickoff sources are excluded without relying on titles or labels');
     assert.equal(f.store.sessionThread('review')!.upstreamReview, true);
     assert.equal(f.store.sessionThread('ordinary')!.upstreamReview, false);
-    assert.equal(f.calls.filter(c => c === 'get_task_by_ticket_id').length, 1, 'excluded review candidates are not confirmed');
+    assert.equal(f.calls.filter(c => c === 'ticketByKey').length, 1, 'excluded review candidates are not confirmed');
   });
 });
 
@@ -211,14 +209,14 @@ test('new ticket confirmations wait until an older origin is classified', async 
   f.history.set('origin', { items: [message('u1', 'user_message', reviewKickoff, 1, AT.threadStart, 'review')], cursor: null, more: false });
   assert.equal(await f.collect({ reads: 1 }), true);
   assert.deepEqual(f.keys(), [], 'an unclassified review cannot briefly publish new tickets');
-  assert.equal(f.calls.includes('get_task_by_ticket_id'), false);
+  assert.equal(f.calls.includes('ticketByKey'), false);
   await f.drain();
   assert.deepEqual(f.keys(), []);
   assert.equal(f.status().error, null);
 });
 
 test('creation reports name keys and task links, not mentions, prompts, examples, quotes, tables, code or negations', () => {
-  const refs = (text: string) => creationReports(text, 'workspace').map(r => `${r.kind}:${r.value}`);
+  const refs = (text: string) => creationReports(text).map(r => `${r.kind}:${r.value}`);
   assert.deepEqual(refs('Created FIX-7: Fix uploads.'), ['key:FIX-7']);
   assert.deepEqual(refs(`Filed two tickets:\n- [FIX-8](${LINK('task-8')}) uploads\n- FIX-9 downloads`), ['task:task-8', 'key:FIX-8', 'key:FIX-9']);
   assert.deepEqual(refs('Opened OTH-3 in the other project.'), ['key:OTH-3']);
@@ -235,12 +233,12 @@ test('creation reports name keys and task links, not mentions, prompts, examples
   assert.deepEqual(refs('FIX-3 was already there. Created FIX-7.'), ['key:FIX-7'], 'a key before any creation clause is a mention');
   assert.deepEqual(refs('Created FIX-1. FIX-2 is related.'), ['key:FIX-1'], 'a new sentence starts neutral');
   assert.deepEqual(refs('Created these:\n1. FIX-1\n2. FIX-2\n\nFIX-3 is related.'), ['key:FIX-1', 'key:FIX-2'], 'a numbered list continues its header');
-  assert.deepEqual(refs(`Created [FIX-8](${LINK('task-8', 'elsewhere')}).`), ['key:FIX-8'], 'a link into another workspace is ignored');
+  assert.deepEqual(refs(`Created [FIX-8](${LINK('task-8', 'elsewhere')}).`), ['task:task-8', 'key:FIX-8'], 'links are confirmed against the workspace-scoped project catalog before collection');
   assert.deepEqual(refs('Created FIX-7.\n\nCreated FIX-7 again.'), ['key:FIX-7'], 'one reference per message');
 });
 
 test('sectioned creation reports retain their ticket lists, bounded ranges and numeric shorthand', () => {
-  const refs = (text: string) => creationReports(text, 'workspace').filter(r => r.kind === 'key').map(r => r.value);
+  const refs = (text: string) => creationReports(text).filter(r => r.kind === 'key').map(r => r.value);
   assert.deepEqual(refs('Ten tickets filed.\n\n**Do now**\n\n1. FIX-7 Handle reuse. Today every reader opens the DB.\n2. FIX-8 One pass.\n\n**Later**\n\n- FIX-9 Cache reads.\n\nExisting FIX-1 was linked instead.'), ['FIX-7', 'FIX-8', 'FIX-9']);
   assert.deepEqual(refs('All five tickets are filed and verified. Numbers run FIX-10 through FIX-14.\n\n**By component**\n\n- Web: FIX-10, 11, 12.\n- App: FIX-13, 14.'), ['FIX-10', 'FIX-11', 'FIX-12', 'FIX-13', 'FIX-14']);
   assert.deepEqual(refs('Three tickets filed.\n\n**By component**\n\n- Web: FIX-10, 11, 12.\n- Existing FIX-13 is related.'), ['FIX-10', 'FIX-11', 'FIX-12']);
@@ -257,7 +255,7 @@ test('legacy scan progress replays sectioned reports through bounded history and
   f.store.saveSessionThread({ id: 's1', projectId: 'FIX', title: 'Session s1', createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 20, pending: [retry], upstreamReview: false });
   f.bounded.set('s1', { items: [message('latest', 'assistant_message', 'Nothing new.', 20, AT.reported, 's1')], cursor: 'older', more: true });
   f.history.set('older', { items: [message('filed', 'assistant_message', 'Three tickets filed.\n\n**Do now**\n\n- FIX-7\n- FIX-8\n- FIX-9', 2, AT.reported, 's1')], cursor: null, more: false });
-  for (const [id, number] of [['task-8', 8], ['task-9', 9]] as const) f.store.saveSessionTicket({ taskId: id, projectId: 'FIX', key: `FIX-${number}`, number, title: 'Existing marker', priority: 'high', status: 'to-do', labels: [], createdAt: AT.created, firstSeenAt: AT.reported, refreshedAt: AT.reported, sources: [], ...(number === 8 ? { dismissedAt: AT.reported } : { consumed: { jobId: 'launched', at: AT.reported } }) });
+  for (const [id, number] of [['task-8', 8], ['task-9', 9]] as const) f.store.saveSessionTicket({ taskId: id, projectId: 'FIX', key: `FIX-${number}`, number, title: 'Existing marker', priority: 'high', status: 'todo', labels: [], createdAt: AT.created, firstSeenAt: AT.reported, refreshedAt: AT.reported, sources: [], ...(number === 8 ? { dismissedAt: AT.reported } : { consumed: { jobId: 'launched', at: AT.reported } }) });
   assert.equal(await f.collect({ reads: 1 }), true, 'legacy progress starts a bounded rescan');
   f.store.close(); f.store = new Store(f.c.stateDir);
   f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=conversation');
@@ -281,7 +279,7 @@ test('paused service recovers a sectioned report from a legacy up-to-date cursor
   store.saveSessionThread({ id: f.thread.id, projectId: 'FIX', title: f.thread.title, createdAt: AT.threadStart, updatedAt: AT.threadEnd, lastOrdinal: 2, pending: [], upstreamReview: false });
   store.close();
   f.turnItems[1]!.text = 'Ticket filed.\n\n**Completed**\n\n- FIX-7 Uploads.';
-  const service = new FactoryService(f.path, { kaneoPollMs: 600_000 });
+  const service = new FactoryService(f.path);
   try {
     await service.start();
     const s = await f.until(s => s.sessionTickets?.rows?.length > 0);
@@ -322,19 +320,19 @@ function collectorFixture(t: test.TestContext) {
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'fixture-sol' } }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
-    projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] }],
+    projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   const session = (id: string, extra: Record<string, unknown> = {}) => ({ id, projectId: 'FIX', title: `Session ${id}`, createdAt: AT.threadStart, updatedAt: AT.threadEnd, lineage: { parentThreadId: null, relationshipToParent: null }, ...extra });
   type Page = { items: unknown[]; cursor: string | null; more: boolean };
   const f = {
-    dir, c, store: new Store(c.stateDir), t3: new T3Client(c.t3), kaneo: new KaneoClient(c.kaneo),
+    dir, c, store: new Store(c.stateDir), t3: new T3Client(c.t3), kanvil: new KanvilClient(c.kanvil),
     sessions: [] as Record<string, unknown>[], bounded: new Map<string, Page>(), history: new Map<string, Page>(),
     tasks: [] as Record<string, unknown>[], labels: new Map<string, string[]>(), failing: new Set<string>(), down: new Set<string>(), calls: [] as string[],
     projects: [{ id: 'FIX', name: 'Fixture', slug: 'FIX' }, { id: 'OTH', name: 'Other', slug: 'OTH' }] as Record<string, unknown>[],
     session, task, message, LINK,
-    collect: (budget?: { reads?: number; lookups?: number; refreshes?: number }) => collectSessionTickets(c, f.store, f.t3, f.kaneo, budget),
+    collect: (budget?: { reads?: number; lookups?: number; refreshes?: number }) => collectSessionTickets(c, f.store, f.t3, f.kanvil, budget),
     status: () => sessionTicketStatus(c, f.store),
     keys: () => sessionTicketStatus(c, f.store).rows.map(r => r.key),
     // Collect until no work remains, as the service does batch after batch.
@@ -350,54 +348,45 @@ function collectorFixture(t: test.TestContext) {
     if (history) { const page = f.history.get(decodeURIComponent(history[2])); if (!page) throw new Error('T3 history page returned HTTP 404'); return { items: page.items.map((item: any) => ({ sourceThreadId: item.sourceThreadId ?? history[1], item })), nextCursor: page.cursor, hasMoreHistory: page.more }; }
     throw new Error(`Unexpected T3 route ${route}`);
   });
-  t.mock.method(f.kaneo, 'call', async (name: string, args: Record<string, unknown>) => {
+  mockTracker(t, f.kanvil, async (name: string, args: Record<string, unknown>) => {
     f.calls.push(name);
-    if (f.failing.has(name)) { f.failing.delete(name); throw new Error(`Kaneo ${name} failed; check its authenticated connection`); }
-    if (name === 'list_workspace_labels') return [...f.labels].flatMap(([taskId, names]) => names.map(n => ({ name: n, taskId, workspaceId: 'workspace' })));
-    if (name === 'list_projects') return structuredClone(f.projects);
-    if (name === 'list_project_columns') return [{ slug: 'ready', name: 'Ready', isFinal: false, position: 0 }, { slug: 'done', name: 'Done', isFinal: true, position: 1 }];
-    if (name === 'get_task_by_ticket_id') { const found = f.tasks.find(x => `${x.projectId}-${x.number}` === args.ticketId && x.projectId === args.projectId); if (!found) throw new Error('Kaneo get_task_by_ticket_id failed; check its authenticated connection'); return structuredClone(found); }
-    if (name === 'get_task') { const found = f.tasks.find(x => x.id === args.taskId); if (!found) throw new Error('Kaneo get_task failed; check its authenticated connection'); return structuredClone(found); }
-    throw new Error(`Unexpected Kaneo tool ${name}`);
+    if (f.failing.has(name)) { f.failing.delete(name); throw new Error(`Kanvil ${name} failed; check its authenticated connection`); }
+    if (name === 'labels') return [...f.labels].flatMap(([taskId, names]) => names.map(n => ({ name: n, taskId, workspaceId: 'workspace' })));
+    if (name === 'projects') return structuredClone(f.projects);
+    if (name === 'columns') return [{ slug: 'backlog', name: 'Backlog', isFinal: false, position: 0 }, { slug: 'todo', name: 'To do', isFinal: false, position: 0 }, { slug: 'done', name: 'Done', isFinal: true, position: 1 }];
+    if (name === 'ticketByKey') { const found = f.tasks.find(x => `${x.projectId}-${x.number}` === args.ticketId && x.projectId === args.projectId); if (!found) throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible'); return structuredClone(found); }
+    if (name === 'ticket') { const found = f.tasks.find(x => x.id === args.taskId); if (!found) throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible'); return structuredClone(found); }
+    throw new Error(`Unexpected Kanvil tool ${name}`);
   });
   t.after(() => { f.store.close(); rmSync(dir, { recursive: true, force: true }); });
   return f;
 }
 
-async function packagedTracker(t: test.TestContext, f: ReturnType<typeof collectorFixture>, readTask: (url: URL) => unknown) {
-  t.mock.method(TrackerClient.prototype, 'json', async (path: string) => {
-    const url = new URL(path, 'https://tracker.example');
-    if (url.pathname === '/api/project') return f.projects;
-    if (url.pathname.startsWith('/api/column/')) return [{ slug: 'ready', isFinal: false, position: 0 }];
-    if (url.pathname === '/api/label/workspace/workspace') return [];
-    return readTask(url);
+async function httpTracker(t: test.TestContext, f: ReturnType<typeof collectorFixture>, readTask: (url: URL) => unknown) {
+  t.mock.method(f.kanvil, 'task', async (id: string, projectId?: string) => {
+    const url = new URL(`/api/v1/projects/${projectId ?? 'FIX'}/tickets/${id}`, 'https://tracker.example');
+    const row = await readTask(url);
+    return row as any;
   });
-  const server = createMcpServer();
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await Promise.all([server.connect(serverTransport), f.kaneo.client.connect(clientTransport)]);
-  t.after(async () => { await f.kaneo.close(); await server.close(); });
-  t.mock.method(f.kaneo, 'call', KaneoClient.prototype.call);
 }
 
-test('session ticket keys resolve through the pinned MCP tool registry', async t => {
+test('session ticket keys resolve with their native project context', async t => {
   const f = collectorFixture(t);
   f.tasks.push(task('task-7', 7));
   f.sessions.push(f.session('s1'));
   f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
   const paths: string[] = [];
-  await packagedTracker(t, f, url => {
+  await httpTracker(t, f, url => {
     paths.push(url.pathname);
-    if (url.pathname === '/api/task/by-ticket-id/FIX-7') {
-      assert.equal(url.searchParams.get('workspaceId'), 'workspace');
-      assert.equal(url.searchParams.get('projectId'), 'FIX');
+    if (url.pathname === '/api/v1/projects/FIX/tickets/FIX-7') {
       return f.tasks[0];
     }
     throw new Error(`Unexpected tracker path ${url.pathname}`);
   });
   await f.collect();
-  assert.deepEqual(f.keys(), ['FIX-7'], 'reported ticket is confirmed using tools available in the pinned MCP');
+  assert.deepEqual(f.keys(), ['FIX-7'], 'reported ticket is confirmed with the native project and key');
   assert.equal(f.status().error, null);
-  assert.ok(paths.includes('/api/task/by-ticket-id/FIX-7'), 'key lookup uses the tracker endpoint directly');
+  assert.ok(paths.includes('/api/v1/projects/FIX/tickets/FIX-7'), 'key lookup uses the tracker endpoint directly');
 });
 
 test('missing session ticket references stop retrying without losing the known list', async t => {
@@ -410,7 +399,7 @@ test('missing session ticket references stop retrying without losing the known l
   // Persisted failures from before the client could distinguish absence from an outage.
   rec.pending = [{ kind: 'key', value: 'FIX-404' }, { kind: 'task', value: 'missing-task' }].map(ref => ({ ...ref, kind: ref.kind as 'key' | 'task', messageId: 'missing', at: AT.reported, attempts: 4, error: 'Old generic connection error', retryAfter: '2000-01-01T00:00:00Z' }));
   f.store.saveSessionThread(rec);
-  await packagedTracker(t, f, url => { throw new Error(`${url.pathname}: Task not found (NOT_FOUND)`); });
+  await httpTracker(t, f, url => { throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible'); });
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'existing rows survive absent creation references');
   assert.equal(f.store.sessionThread('s1')!.pending.length, 0, 'explicitly missing task and key references are retired');
@@ -420,7 +409,7 @@ test('missing session ticket references stop retrying without losing the known l
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'absence on refresh preserves an already listed row');
   assert.equal(f.store.sessionTicket('task-7')!.refreshedAt, row.refreshedAt);
-  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7: Kaneo get_task: task not found/);
+  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7: Kanvil ticket not found/);
 });
 
 test('task lookup errors without explicit absence remain retryable', async t => {
@@ -428,7 +417,7 @@ test('task lookup errors without explicit absence remain retryable', async t => 
     const f = collectorFixture(t);
     f.sessions.push(f.session('s1'));
     f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
-    await packagedTracker(t, f, () => { throw new Error(detail); });
+    await httpTracker(t, f, () => { throw new Error(detail); });
     await f.collect();
     const pending = f.store.sessionThread('s1')!.pending;
     assert.equal(pending.length, 1, 'the candidate remains available for retry');
@@ -440,7 +429,7 @@ test('task lookup errors without explicit absence remain retryable', async t => 
 
 test('reports across projects become one row per confirmed task, in priority order, with their provenance', async t => {
   const f = collectorFixture(t);
-  f.tasks.push(task('task-7', 7), task('task-3', 3, 'OTH', { status: 'ready', priority: 'urgent' }), task('task-9', 9, 'FIX', { priority: 'low' }), task('task-2', 2, 'FIX', { createdAt: '2026-02-01T00:00:00.000Z' }));
+  f.tasks.push(task('task-7', 7), task('task-3', 3, 'OTH', { status: 'todo', priority: 'urgent' }), task('task-9', 9, 'FIX', { priority: 'low' }), task('task-2', 2, 'FIX', { createdAt: '2026-02-01T00:00:00.000Z' }));
   f.labels.set('task-7', ['feat', 'web']);
   f.sessions.push(f.session('s1'), f.session('s2', { title: 'Second session' }), f.session('child', { lineage: { parentThreadId: 's1', relationshipToParent: 'subagent' } }), f.session('gone', { deletedAt: AT.threadEnd }));
   f.bounded.set('s1', { items: [
@@ -496,7 +485,7 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   f.sessions.push(f.session('s1'));
   f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 10, AT.reported, 's1')], cursor: 'older-1', more: true });
   f.history.set('older-1', { items: [message('a0', 'assistant_message', 'Created FIX-8.', 1, AT.reported, 's1')], cursor: null, more: false });
-  f.failing.add('get_task_by_ticket_id');
+  f.failing.add('ticketByKey');
   await f.collect();
   assert.deepEqual(f.keys(), [], 'a failed confirmation lists nothing');
   assert.match(f.status().error?.message ?? '', /Confirming FIX-7/);
@@ -540,7 +529,7 @@ test('dismissal is a tombstone that rescans, other sessions and a reopened store
   assert.equal(f.store.sessionTicket('task-7')?.sources.length, 2, 'provenance still accrues on the tombstone');
   const reopened = new Store(f.c.stateDir);
   try { assert.deepEqual(sessionTicketStatus(f.c, reopened).rows, []); } finally { reopened.close(); }
-  assert.deepEqual(f.calls.filter(x => !x.startsWith('/') && !/^(list_|get_)/.test(x)), [], 'collection and dismissal only read the tracker');
+  assert.deepEqual(f.calls.filter(x => !x.startsWith('/') && !['projects', 'columns', 'ticket', 'ticketByKey', 'labels'].includes(x)), [], 'collection and dismissal only read the tracker');
   assert.equal(f.store.events(5)[0].text, 'FIX-7 was removed from Session tickets');
 });
 
@@ -561,17 +550,17 @@ test('only a confirmed Factory start consumes an entry, including starts made el
   await f.drain();
   assert.equal(f.store.sessionTicket('task-7')?.consumed?.jobId, 'job-task-7', 'the collector records the consumption');
   f.store.save({ ...job('complete', 'Done'), completedAt: AT.threadEnd });
-  f.tasks[0] = task('task-7', 7, 'FIX', { status: 'to-do' });
+  f.tasks[0] = task('task-7', 7, 'FIX', { status: 'todo' });
   for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' });
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-8'], 'a consumed entry stays consumed after its run finishes and the ticket returns to ready');
   // Tracker status drives membership for the remaining entry; a failed refresh keeps the old reading and says so.
   const refresh = async (status: string) => { f.tasks[1] = task('task-8', 8, 'FIX', { status }); f.store.saveSessionTicket({ ...f.store.sessionTicket('task-8')!, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' }); await f.drain(); };
   await refresh('in-progress'); assert.deepEqual(f.keys(), [], 'in-progress tickets are hidden');
-  await refresh('to-do'); assert.deepEqual(f.keys(), ['FIX-8'], 'a ticket back in the ready column returns');
-  f.failing.add('get_task'); await refresh('done');
+  await refresh('todo'); assert.deepEqual(f.keys(), ['FIX-8'], 'a ticket back in the ready column returns');
+  f.failing.add('ticket'); await refresh('done');
   const stale = f.status().rows[0];
-  assert.equal(stale.key, 'FIX-8'); assert.match(stale.refreshError ?? '', /get_task failed/); assert.equal(stale.refreshedAt, '2000-01-01T00:00:00.000Z', 'a failed read is not presented as fresh');
+  assert.equal(stale.key, 'FIX-8'); assert.match(stale.refreshError ?? '', /ticket failed/); assert.equal(stale.refreshedAt, '2000-01-01T00:00:00.000Z', 'a failed read is not presented as fresh');
   await refresh('done'); assert.deepEqual(f.keys(), [], 'completed tickets leave the list');
 });
 
@@ -584,10 +573,10 @@ test('failed refreshes back off instead of looping, and rows behind them still g
   await f.drain();
   assert.equal(f.keys().length, 12);
   for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' });
-  const failing = () => { f.failing.add('get_task'); };
-  t.mock.method(f.kaneo, 'call', async (name: string, args: Record<string, unknown>) => { f.calls.push(name); if (name === 'get_task') throw new Error('Kaneo get_task failed; check its authenticated connection'); if (name === 'list_workspace_labels') return []; throw new Error(name); });
+  const failing = () => { f.failing.add('ticket'); };
+  mockTracker(t, f.kanvil, async (name: string, args: Record<string, unknown>) => { f.calls.push(name); if (name === 'ticket') throw new Error('Kanvil ticket failed; check its authenticated connection'); if (name === 'labels') return []; throw new Error(name); });
   failing();
-  const reads = () => f.calls.filter(x => x === 'get_task').length;
+  const reads = () => f.calls.filter(x => x === 'ticket').length;
   assert.equal(await f.collect(), true, 'two rows remain due after the first ten failures');
   assert.equal(reads(), 10);
   assert.equal(await f.collect(), false, 'the remaining rows are tried once and nothing else is due');
@@ -599,12 +588,12 @@ test('failed refreshes back off instead of looping, and rows behind them still g
 
 test('a collection batch that cannot start still records the failure for the page', { timeout: 20000 }, async t => {
   const f = serviceFixture(t);
-  t.mock.method(Kaneo.prototype, 'connect', async () => { throw new Error('Kaneo MCP process exited'); });
-  const service = new FactoryService(f.path, { kaneoPollMs: 600_000 });
+  t.mock.method(Kanvil.prototype, 'connect', async () => { throw new Error('Kanvil MCP process exited'); });
+  const service = new FactoryService(f.path);
   try {
     await service.start();
     const published = await f.until(s => s.sessionTickets?.error);
-    assert.match(published.sessionTickets?.error?.message ?? '', /Kaneo MCP process exited/, 'a setup failure reaches status.sessionTickets.error');
+    assert.match(published.sessionTickets?.error?.message ?? '', /Kanvil MCP process exited/, 'a setup failure reaches status.sessionTickets.error');
   } finally { await service.stop(); }
 });
 
@@ -617,10 +606,10 @@ test('a reference to a project the cached catalog does not know forces one fresh
   assert.deepEqual(f.keys(), ['FIX-7']);
   // A project created after the catalog was cached, and a ticket in it reported by a new session.
   f.projects.push({ id: 'NEW', name: 'Newcomer', slug: 'NEW' });
-  f.tasks.push(task('task-n1', 1, 'NEW', { status: 'ready' }), task('task-n2', 2, 'NEW', { status: 'ready', priority: 'low' }));
+  f.tasks.push(task('task-n1', 1, 'NEW', { status: 'todo' }), task('task-n2', 2, 'NEW', { status: 'todo', priority: 'low' }));
   f.sessions.push(f.session('s2'));
   f.bounded.set('s2', { items: [message('b1', 'assistant_message', `Created NEW-1 and [NEW-2](${LINK('task-n2')}); the SHA-256 digest is unchanged.`, 1, AT.reported, 's2')], cursor: null, more: false });
-  const catalogReads = () => f.calls.filter(x => x === 'list_projects').length;
+  const catalogReads = () => f.calls.filter(x => x === 'projects').length;
   const before = catalogReads();
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-7', 'NEW-1', 'NEW-2'], 'tickets in a newly listed project are kept');
@@ -643,4 +632,72 @@ test('failed session reads back off before the batch continues, so an outage nei
   f.sessions.length = 0;
   await f.collect();
   assert.equal(f.status().error, null, 'failures of sessions T3 no longer lists do not keep the notice up');
+});
+
+test('a realtime session-ticket projection refreshes from events rather than the age of its last read', async t => {
+  const f = collectorFixture(t);
+  Object.defineProperty(f.kanvil, 'realtime', { value: true, configurable: true });
+  f.tasks.push(task('task-7', 7)); f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  const row = f.store.sessionTicket('task-7')!;
+  f.store.saveSessionTicket({ ...row, refreshAfter: '2000-01-01T00:00:00Z' });
+  f.tasks[0].title = 'Changed'; f.calls.length = 0;
+  await f.collect();
+  assert.ok(!f.calls.includes('ticket'), 'an elapsed fallback timer must not poll Kanvil');
+  f.store.saveSessionTicket({ ...f.store.sessionTicket('task-7')!, refreshAfter: new Date(0).toISOString() });
+  await f.collect();
+  assert.equal(f.store.sessionTicket('task-7')!.title, 'Changed', 'an event invalidation refreshes the saved row');
+});
+
+test('session tickets in an unconfigured Kanvil project use the native To do category', async t => {
+  const f = collectorFixture(t);
+  t.mock.method(f.kanvil, 'columns', async () => [
+    { slug: 'backlog', name: 'Backlog', isFinal: false, position: 0 },
+    { slug: 'todo', name: 'To do', isFinal: false, position: 0 },
+    { slug: 'done', name: 'Done', isFinal: true, position: 0 },
+    { slug: 'cancelled', name: 'Cancelled', isFinal: true, position: 0 },
+  ]);
+  f.tasks.push(task('other-ticket', 3, 'OTH'));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created OTH-3.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  assert.deepEqual(f.keys(), ['OTH-3'], 'the native Backlog category must not hide To do tickets');
+  assert.equal(f.status().rows[0].unavailable, 'Project not configured in Factory');
+});
+
+test('an event during initial confirmation cannot strand stale session-ticket metadata', async t => {
+  const f = collectorFixture(t);
+  Object.defineProperty(f.kanvil, 'realtime', { value: true, configurable: true });
+  f.tasks.push(task('task-7', 7)); f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  const original = f.kanvil.task.bind(f.kanvil), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  let first = true;
+  t.mock.method(f.kanvil, 'task', async (id: string, projectId?: string) => {
+    const result = await original(id, projectId);
+    if (first) { first = false; entered.resolve(); await release.promise; }
+    return result;
+  });
+  const collecting = f.collect(); await entered.promise;
+  f.tasks[0].title = 'Changed while confirming'; f.kanvil.revision++;
+  release.resolve(); await collecting; await f.drain();
+  assert.equal(f.store.sessionTicket('task-7')!.title, 'Changed while confirming', 'a new row must retain an invalidation that arrived before it existed');
+});
+
+test('a moved session ticket refreshes current identity and preserves provenance', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7)); f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  const saved = f.store.sessionTicket('task-7')!, original = f.kanvil.task.bind(f.kanvil);
+  f.tasks[0] = task('task-7', 11, 'OTH', { key: 'OTH-11', title: 'Moved ticket' });
+  t.mock.method(f.kanvil, 'task', async (id: string, projectId?: string) => {
+    if (projectId === 'FIX') throw new KanvilTaskNotFound('Ticket moved from the source project');
+    return original(id, projectId);
+  });
+  f.store.saveSessionTicket({ ...saved, refreshAfter: new Date(0).toISOString() });
+  await f.collect();
+  const moved = f.store.sessionTicket('task-7')!;
+  assert.deepEqual([moved.projectId, moved.key, moved.number, moved.title], ['OTH', 'OTH-11', 11, 'Moved ticket']);
+  assert.deepEqual(moved.sources, saved.sources);
 });

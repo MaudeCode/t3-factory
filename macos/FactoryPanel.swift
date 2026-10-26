@@ -259,7 +259,7 @@ struct RunRow: View {
         .contextMenu {
             Button("Open in T3") { model.openThread(job) }
             if (job["prUrls"] as? [String])?.isEmpty == false { Button("Open pull request") { model.openPullRequest(job) } }
-            if job["taskId"] is String { Button("Open ticket in Kaneo") { model.openTicket(job["projectId"] as? String, taskId: job["taskId"] as? String) } }
+            if job["taskId"] is String { Button("Open ticket in Kanvil") { model.openTicket(job["projectId"] as? String, taskId: job["taskId"] as? String) } }
             if !finished { Divider(); Button("Stop run", role: .destructive) { Task { await model.stop(job) } } }
         }
     }

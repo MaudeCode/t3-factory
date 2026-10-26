@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -31,10 +32,10 @@ function fixture(t: { after: (fn: () => void) => void }, upstreams: Record<strin
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'),
     t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     upstream: { enabled: true, promptFile: join(dir, 'upstream.md'), checkMinutes: 60 },
-    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kaneoId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/app', baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'], upstreams }],
+    projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/app', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], upstreams }],
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
   const store = new Store(c.stateDir);
@@ -128,7 +129,7 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paus
   if (scenario === 'reviews-paused') c.upstream!.enabled = false;
   if (['owner-busy', 'activity-unreadable'].includes(scenario)) c.concurrency.claude = 2; // a free slot, so only the idle gate can hold the ticket back
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
-  const tasks = scenario === 'tickets-paused-empty' ? [] : [{ id: 'task-1', projectId: 'FIX', title: 'Ready work', number: 1, status: 'to-do', priority: 'urgent', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }];
+  const tasks = scenario === 'tickets-paused-empty' ? [] : [{ id: 'task-1', projectId: 'FIX', title: 'Ready work', number: 1, status: 'todo', priority: 'urgent', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'high' }] }];
   const providers = [{ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'claude-opus-5' }] },
     { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'gpt-6-astra' }] }];
   t.mock.method(T3.prototype, 'providers', async () => providers);
@@ -139,13 +140,13 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paus
   const window = (id: string, minutes: number) => ({ id, usedPercent: 0, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
   t.mock.method(T3.prototype, 'provider', async (instanceId: string) => ({ ...providers.find(p => p.instanceId === instanceId)!, usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(),
     windows: instanceId === 'codex' ? [window('primary', 10080)] : [window('five_hour', 300), window('seven_day', 10080)] } }));
-  t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
-  t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
+  t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
+  mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {
     if (scenario.startsWith('tickets-paused')) throw new Error(`ticket read ${name} must not block a review`);
-    if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId) }] }, pagination: { total: tasks.length, totalPages: 1 } };
-    if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
-    if (name === 'get_task_relations') return [];
+    if (name === 'labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
+    if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId) }] }, pagination: { total: tasks.length, totalPages: 1 } };
+    if (name === 'ticket') return tasks.find(task => task.id === args.taskId);
+    if (name === 'relations') return [];
     throw new Error(name);
   });
   const launched: Record<string, any>[] = [];
@@ -200,12 +201,12 @@ for (const status of ['complete', 'no-work', 'awaiting-human', 'complete-empty',
     const review = job({ id: 'review', threadId: 'review-thread', reportPath: join(dir, 'report.json'), upstream: { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' } });
     store.save(review);
     writeFileSync(review.reportPath, JSON.stringify({ jobId: review.id, status: status.startsWith('complete') ? 'complete' : status, reason: 'Reviewed', prUrls: [], createdTaskIds: ['complete', 'complete-old'].includes(status) ? ['filed'] : [] }));
-    const kaneo = { call: async (name: string, args: Record<string, unknown>) => {
-      if (name === 'get_task') return { id: args.taskId, projectId: 'FIX', number: 2, title: 'Filed', createdAt: status === 'complete-old' ? '2026-02-01T00:00:00Z' : review.createdAt, priority: 'low', status: 'to-do' };
+    const kanvil = { task: async (id: string) => { const name = 'ticket', args = { taskId: id };
+      if (name === 'ticket') return { id: args.taskId, projectId: 'FIX', number: 2, title: 'Filed', createdAt: status === 'complete-old' ? '2026-02-01T00:00:00Z' : review.createdAt, priority: 'low', status: 'todo' };
       throw new Error(name);
-    } } as unknown as Kaneo;
+    } } as unknown as Kanvil;
     const threads = [v2Thread({ id: review.threadId, projectId: 'FIX', status: 'completed' })];
-    await reconcile(c, store, { shell: async () => ({ threads }) } as unknown as T3, kaneo, threads, false);
+    await reconcile(c, store, { shell: async () => ({ threads }) } as unknown as T3, kanvil, threads, false);
     const [saved] = store.jobs();
     assert.equal(saved.state, holds ? 'waiting' : 'complete');
     if (status === 'complete-empty') assert.match(saved.reason, /without created tickets/);
@@ -219,9 +220,9 @@ test('upstream config: watched repositories need a prompt and a single owner', (
   const base = JSON.parse(readFileSync(new URL('../config.example.jsonc', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, ''));
   const project = { ...base.projects[0], upstreams: [{ name: 'Up', repo: 'up/stable', firstBase: 'v1' }] };
   assert.throws(() => configSchema.parse({ ...base, upstream: undefined, projects: [project] }), /upstream\.promptFile/);
-  assert.throws(() => configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project, { ...project, key: 'TWO', kaneoId: 'two', t3Id: 'two' }] }), /only one project/);
+  assert.throws(() => configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project, { ...project, key: 'TWO', kanvilId: 'two', t3Id: 'two' }] }), /only one project/);
   assert.equal(configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project] }).upstream?.checkMinutes, 360);
-  const aliased = { ...project, key: 'TWO', kaneoId: 'two', t3Id: 'two', upstreams: [{ name: 'Up', repo: 'Up/Stable', firstBase: 'v1' }] };
+  const aliased = { ...project, key: 'TWO', kanvilId: 'two', t3Id: 'two', upstreams: [{ name: 'Up', repo: 'Up/Stable', firstBase: 'v1' }] };
   assert.throws(() => configSchema.parse({ ...base, upstream: { promptFile: '/p.md' }, projects: [project, aliased] }), /only one project/, 'repository names compare case-insensitively');
 });
 
@@ -233,13 +234,13 @@ for (const model of ['auto', 'sol']) test(`manual upstream dispatch: ${model} st
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
   store.set('upstreamLatest:up/stable', 'v2'); store.set('upstreamLatest:up/other', 'v3');
   const options = { manual: true, model, upstream: 'UP/Stable', overrideLimits: true };
-  const result = await cycle(configSchema.parse(c), store, options, { t3: f.t3, kaneo: f.kaneo });
+  const result = await cycle(configSchema.parse(c), store, options, { t3: f.t3, kanvil: f.kanvil });
   assert.equal(result.reason, 'dispatched', 'Review now dispatches while both automation switches are paused');
   assert.equal(f.launches.length, 1);
   assert.deepEqual(store.jobs().map(j => [j.kind, j.projectId, j.taskId, j.upstream]), [['upstream', 'FIX', null, { name: 'Stable', repo: 'up/stable', base: 'v1', candidate: 'v2' }]]);
-  assert.ok(!f.calls.some(call => call.startsWith('list_tasks:')), 'review dispatch does not depend on ticket inventory');
+  assert.ok(!f.calls.some(call => call.startsWith('tickets:')), 'review dispatch does not depend on ticket inventory');
   assert.match((f.launches[0] as any).initialMessage.text, /Do not implement any ticket/);
-  const again = await cycle(configSchema.parse(c), store, options, { t3: f.t3, kaneo: f.kaneo });
+  const again = await cycle(configSchema.parse(c), store, options, { t3: f.t3, kanvil: f.kanvil });
   assert.equal(again.reason, 'upstream-not-due', 'a pending review cannot be started again');
   assert.equal(f.launches.length, 1);
 });
@@ -260,7 +261,7 @@ for (const scenario of ['unknown', 'current', 'disabled', 'candidate-owned', 'fr
     f.threads.push(v2Thread({ id: 'waiting-thread', projectId: 'FIX', status: 'waiting', pendingRuntimeRequest: { kind: 'approval' } }));
   }
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
-  const result = await cycle(configSchema.parse(c), store, { manual: true, model: 'sol', upstream: scenario === 'unknown' ? 'up/unknown' : 'up/stable', overrideLimits: true }, { t3: f.t3, kaneo: f.kaneo });
+  const result = await cycle(configSchema.parse(c), store, { manual: true, model: 'sol', upstream: scenario === 'unknown' ? 'up/unknown' : 'up/stable', overrideLimits: true }, { t3: f.t3, kanvil: f.kanvil });
   assert.equal(result.reason, scenario === 'fresh-change' ? 'upstream-changed-before-dispatch' : scenario === 'exhausted' ? 'codex-quota-exhausted' : scenario === 'waiting-cap' ? 'waiting-cap' : 'upstream-not-due');
   assert.equal(f.launches.length, 0, 'a refused review never falls back to ticket or discovery');
 });

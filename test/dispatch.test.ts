@@ -1,3 +1,4 @@
+import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
@@ -5,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema, type Config } from '../src/config.ts';
-import { T3, Kaneo } from '../src/clients.ts';
+import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
@@ -23,13 +24,13 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
     writeFileSync(join(dir, 'discovery.md'), 'Discover and validate useful work.');
     const budget = { reservePercent: 0, minRemainingPercent: 0 };
     const preset = (id: string, provider: string, model: string) => ({ id, name: id, model: { instanceId: provider, model }, automatic: true, maxDifficulty: 'high' });
-    const project = (id: string) => ({ name: id, key: id, enabled: true, kaneoId: id, t3Id: id, repoPath: repo, githubRepo: `fixture/${id}`, baseBranch: 'main', readyStatuses: ['to-do'], doneStatuses: ['done'] });
+    const project = (id: string) => ({ name: id, key: id, enabled: true, kanvilId: id, t3Id: id, repoPath: repo, githubRepo: `fixture/${id}`, baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] });
     const c = configSchema.parse({ enabled: true, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,
       models: [preset('astra', 'codex', 'gpt-6-astra'), preset('fable', 'claudeAgent', 'claude-fable-5-1'), preset('sol', 'codex', 'gpt-5.6-sol'), preset('opus', 'claudeAgent', 'claude-opus-5')],
       quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
       runtimeMode: 'full-access', stateDir: join(dir, 'state'),
       t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-      kaneo: { url: 'https://kaneo.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+      kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
       discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'), projects: [project('FIX'), project('NEXT')],
     });
     writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
@@ -43,7 +44,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
     if (scenario.startsWith('label-')) c.projects[0].priorityLabels = ['compatibility', 'security'];
     if (scenario.startsWith('parallel-label')) c.projects[0].labelLimits = { app: 2 };
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
-    const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'to-do', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
+    const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'todo', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));
     if (scenario.startsWith('parallel-label')) tasks.slice(0, 4).forEach(task => task.labels.push({ name: 'app' }));
     if (scenario === 'truncated-labels') tasks.forEach(task => { task.labels = ['app', 'web', 'contracts', 'sec', 'med', 'sf'].map(name => ({ name })); });
     if (scenario === 'missing-sf-confirmation') tasks.forEach(task => { task.labels = [{ name: 'high' }]; });
@@ -70,12 +71,12 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
       const window = (id: string, minutes: number, usedPercent = 0) => ({ id, usedPercent, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
       return { ...p, status: instanceId === 'codex' && scenario === 'codex-offline' ? 'error' : 'ready', usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [window('primary', 10080, scenario === 'codex-exhausted' || (refresh && scenario === 'refresh-exhausted') || (scenario === 'parallel-quota' && attempts.some(a => a.modelSelection.instanceId === 'codex')) ? 100 : 0)] : [window('five_hour', 300, scenario === 'manual-five-hour-empty' ? 100 : 0), window('seven_day', 10080), window('seven_day_fable', 10080, scenario === 'manual-fable-empty' || (scenario === 'manual-fable-refresh-empty' && refresh) ? 100 : scenario === 'manual-fable-reserve' ? 99 : 0)] } };
     });
-    t.mock.method(Kaneo.prototype, 'connect', async () => {}); t.mock.method(Kaneo.prototype, 'close', async () => {});
-    t.mock.method(Kaneo.prototype, 'call', async (name: string, args: Record<string, unknown>) => {
-      if (name === 'list_workspace_labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
-    if (name === 'list_tasks') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId).map(task => scenario === 'truncated-labels' ? { ...task, labels: task.labels.slice(0, 3) } : task) }] }, pagination: { total: tasks.length, totalPages: 1 } };
-      if (name === 'get_task') return tasks.find(task => task.id === args.taskId);
-      if (name === 'get_task_relations') return (scenario === 'missing-sf-confirmation' && args.taskId === 'task-2' || scenario === 'label-blocked' && ['task-1', 'task-2'].includes(String(args.taskId))) ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
+    t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
+    mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {
+      if (name === 'labels') return tasks.flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
+    if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: tasks.filter(task => task.projectId === args.projectId).map(task => scenario === 'truncated-labels' ? { ...task, labels: task.labels.slice(0, 3) } : task) }] }, pagination: { total: tasks.length, totalPages: 1 } };
+      if (name === 'ticket') return tasks.find(task => task.id === args.taskId);
+      if (name === 'relations') return (scenario === 'missing-sf-confirmation' && args.taskId === 'task-2' || scenario === 'label-blocked' && ['task-1', 'task-2'].includes(String(args.taskId))) ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
       throw new Error(name);
     });
     t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
@@ -262,16 +263,16 @@ test('dispatch read phases overlap independent reads and deduplicate fresh snaps
   await finalStarted.promise;
   // Flush only work already scheduled by this phase, without a timing threshold.
   await new Promise(resolve => setImmediate(resolve));
-  const labelsOverlapped = f.calls.includes('list_workspace_labels::true'), dependenciesOverlapped = f.calls.includes('get_task_relations:root:true');
+  const labelsOverlapped = f.calls.includes('ticket:root:true'), dependenciesOverlapped = f.calls.includes('relations:root:true');
   finalShell.resolve();
   assert.equal((await pending).reason, 'dispatched');
   assert(providersOverlapped, 'provider read must start before the initial shell resolves');
   assert(labelsOverlapped, 'final labels must start before the final shell resolves');
   assert(dependenciesOverlapped, 'final dependencies must start before the final shell resolves');
   assert(f.calls.includes('quota:true'), 'the selected provider still receives a forced refresh');
-  assert.equal(f.calls.filter(x => x.startsWith('list_workspace_labels:')).length, 2, 'one complete label snapshot per phase');
-  for (const phase of ['false', 'true']) assert.equal(f.calls.filter(x => x === `get_task_relations:root:${phase}`).length, 1, 'blockers and children share a relation read');
-  assert.equal(f.calls.filter(x => x === 'get_task:blocker:true').length, 1);
+  assert.equal(f.calls.filter(x => x === 'ticket:root:true').length, 1, 'one authoritative ticket read per final phase');
+  for (const phase of ['false', 'true']) assert.equal(f.calls.filter(x => x === `relations:root:${phase}`).length, 1, 'blockers and children share a relation read');
+  assert.equal(f.calls.filter(x => x === 'ticket:blocker:true').length, 1);
 });
 
 for (const change of ['blocker', 'child', 'sf', 'difficulty', 'status', 'open-pr', 'thread', 'config', 'read-failure', 'mapping'] as const) {
@@ -280,7 +281,7 @@ for (const change of ['blocker', 'child', 'sf', 'difficulty', 'status', 'open-pr
     f.hooks.shell = async final => {
       if (!final) return;
       if (change === 'blocker') f.tasks[1].status = 'in-progress';
-      if (change === 'child') { f.tasks[1].status = 'to-do'; f.relations.splice(0, 1, { sourceTaskId: 'root', targetTaskId: 'blocker', relationType: 'subtask' }); }
+      if (change === 'child') { f.tasks[1].status = 'todo'; f.relations.splice(0, 1, { sourceTaskId: 'root', targetTaskId: 'blocker', relationType: 'subtask' }); }
       if (change === 'sf') f.tasks[0].labels = [{ name: 'med' }];
       if (change === 'difficulty') f.tasks[0].labels = [{ name: 'sf' }, { name: 'low' }];
       if (change === 'status') f.tasks[0].status = 'done';
@@ -288,7 +289,7 @@ for (const change of ['blocker', 'child', 'sf', 'difficulty', 'status', 'open-pr
       if (change === 'thread') f.threads.push(v2Thread({ id: 'new', projectId: 'FIX', title: 'FIX-1', status: 'running', activeRunId: 'run' }));
       if (change === 'config') writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, idleMinutes: 2 }));
     };
-    f.hooks.read = async (name, _id, final) => { if (change === 'read-failure' && final && name === 'get_task_relations') throw new Error('Required relation read failed'); };
+    f.hooks.read = async (name, _id, final) => { if (change === 'read-failure' && final && name === 'relations') throw new Error('Required relation read failed'); };
     if (change === 'mapping') t.mock.method(f.t3, 'provider', async (_id: string, refresh: boolean) => {
       const p = f.provider();
       if (refresh) {
@@ -309,7 +310,7 @@ for (const change of ['blocker', 'child', 'sf', 'difficulty', 'status', 'open-pr
 test('a failed final read drains other reads before closing the dispatch phase', async t => {
   const f = dispatchFixture(t), release = deferred(), started = deferred(), failure = deferred();
   f.hooks.quota = async refresh => { if (refresh) { started.resolve(); await release.promise; } };
-  f.hooks.read = async (name, _id, final) => { if (name === 'get_task' && _id === 'root') { failure.resolve(); throw new Error('Task unavailable'); } };
+  f.hooks.read = async (name, _id, final) => { if (name === 'ticket' && _id === 'root') { failure.resolve(); throw new Error('Task unavailable'); } };
   let ended = false;
   const pending = f.run().then(() => { ended = true; }, e => { ended = true; throw e; });
   const rejected = assert.rejects(pending, /Task unavailable/);
@@ -344,12 +345,12 @@ for (const failed of ['shell', 'task', 'labels', 'relations', 'columns', 'pull-r
   };
   if (failed === 'columns') f.tasks[1].projectId = 'external';
   f.hooks.read = async (name, _id, final) => {
-    if (final && name === ({ task: 'get_task', labels: 'list_workspace_labels', relations: 'get_task_relations', columns: 'list_project_columns' } as Record<string, string>)[failed]) throw new Error('Read unavailable');
+    if (final && name === ({ task: 'ticket', labels: 'labels', relations: 'relations', columns: 'columns' } as Record<string, string>)[failed]) throw new Error('Read unavailable');
   };
   // Inventory also needs external final statuses, so allow that first read.
   if (failed === 'columns') {
     let reads = 0;
-    f.hooks.read = async name => { if (name === 'list_project_columns' && ++reads > 1) throw new Error('Read unavailable'); };
+    f.hooks.read = async name => { if (name === 'columns' && ++reads > 1) throw new Error('Read unavailable'); };
   }
   await assert.rejects(f.run(), failed === 'pull-requests' ? /Unexpected token|JSON/ : /Read unavailable/);
   assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
@@ -359,7 +360,7 @@ test('automatic dispatch keeps ownership and launches serial while reads overlap
   const f = dispatchFixture(t), release = deferred(), started = deferred();
   f.c.concurrency.codex = 2;
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
-  f.tasks.push(f.task('next', 3, 'to-do'));
+  f.tasks.push(f.task('next', 3, 'todo'));
   t.mock.method(f.t3, 'launch', async (command: unknown) => {
     assert(f.store.jobs().every(j => ['dispatching', 'running'].includes(j.state)));
     f.launches.push(command);
@@ -381,7 +382,7 @@ for (const change of ['labels', 'blockers', 'quota', 'activity', 'config', 'fore
   const context = new ReadContext();
   if (change === 'waiting-cap') { f.c.maxWaitingPRs = 1; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c)); }
   let finalSeen = false, changed = false;
-  f.hooks.read = async (name, _id, final) => { if (final && name === 'list_workspace_labels') finalSeen = true; };
+  f.hooks.read = async (name, _id, final) => { if (final && name === 'labels') finalSeen = true; };
   const provider = f.provider;
   t.mock.method(f.t3, 'detail', async () => ({ messages: [], responses: [] }));
   t.mock.method(f.t3, 'provider', async () => {
@@ -391,7 +392,7 @@ for (const change of ['labels', 'blockers', 'quota', 'activity', 'config', 'fore
     if (!finalSeen || changed) return;
     changed = true; context.suspended = true; context.revision++;
     if (change === 'labels') f.tasks[0].labels = [{ name: 'med' }];
-    if (change === 'blockers') f.tasks[1].status = 'to-do';
+    if (change === 'blockers') f.tasks[1].status = 'todo';
     if (change === 'activity') f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', status: 'running', activeRunId: 'active', providerInstanceId: 'codex', updatedAt: new Date().toISOString() }));
     if (change === 'config') writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, enabled: false }));
     if (change === 'waiting-cap') f.store.save({ id: 'parked', kind: 'ticket', projectId: 'FIX', taskId: 'parked-task', ticketKey: 'FIX-99', threadId: 'parked-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'waiting', reason: 'Foreground run needs input', lastPersonalActivity: null, reportPath: join(f.dir, 'parked-report'), command: {}, prUrls: [], completedAt: null, modelSelection: { instanceId: 'claudeAgent', model: 'fixture-other', options: [] }, providerDriver: 'claudeAgent' });
@@ -419,4 +420,46 @@ test('resumed discovery rejects a foreground discovery owned on another provider
   assert.equal(f.launches.length, 0, 'project discovery ownership applies across provider slots');
   assert.equal(f.store.jobs().filter(j => j.kind === 'discovery').length, 1);
   assert.ok((result.dispatches as any[]).some(d => d.reason === 'discovery-changed-before-dispatch'));
+});
+
+for (const change of ['unchanged', 'disabled', 'hold', 'claim', 'dependency', 'difficulty'] as const) test(`native Kanvil readiness is authoritative at final dispatch: ${change}`, async t => {
+  const f = dispatchFixture(t), tracker = new Kanvil(f.c.kanvil);
+  let final = false;
+  f.hooks.shell = async isFinal => { final ||= isFinal; };
+  const row = (id = 'root') => ({ id, projectId: 'FIX', key: id === 'root' ? 'FIX-1' : 'FIX-2', title: 'Fixture', number: id === 'root' ? 1 : 2,
+    description: 'Problem', acceptanceCriteria: 'Works', status: id === 'root' ? 'todo' : 'done', priority: 'high', createdAt: '2026-01-01', version: 1,
+    labels: ['sf', 'med'], scopes: [], kind: 'bug', parentId: null, archived: false, automationReady: !(final && change === 'disabled'),
+    difficulty: final && change === 'difficulty' ? 'high' : 'med', holdReason: final && change === 'hold' ? 'Decision needed' : null });
+  t.mock.method(tracker, 'request', async (path: string) => {
+    if (path.startsWith('/snapshot')) return { project: { id: 'FIX', workspaceId: 'workspace', key: 'FIX', name: 'Fixture' }, tickets: [row()], cursor: '1' };
+    if (path.startsWith('/tickets/resolve')) return { ticket: row('blocker') };
+    if (path.endsWith('/relations')) return [];
+    if (path.includes('?parentId=')) return { items: [], total: 0 };
+    const reasons = final && ['claim', 'dependency'].includes(change) ? [{ code: change === 'claim' ? 'claimed' : 'dependency', message: 'Not eligible' }] : [];
+    return { ticket: row(), readiness: { ready: reasons.length === 0, reasons } };
+  });
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: 'FIX-1', allowMissingReadyLabel: true }, { t3: f.t3, kanvil: tracker });
+  assert.equal(result.reason, change === 'unchanged' ? 'dispatched' : 'ticket-changed-before-dispatch');
+  assert.equal(f.launches.length, change === 'unchanged' ? 1 : 0, 'a missing-label waiver cannot waive a native Kanvil gate');
+});
+
+for (const change of ['disconnect', 'revision'] as const) test(`a Kanvil ${change} during final reads prevents dispatch`, async t => {
+  const f = dispatchFixture(t);
+  Object.assign(f.kanvil, { watching: true, connected: true });
+  f.hooks.quota = async refresh => {
+    if (refresh) {
+      if (change === 'disconnect') Object.assign(f.kanvil, { connected: false });
+      else f.kanvil.revision++;
+    }
+  };
+  const result = await f.run();
+  assert.equal(result.reason, 'ticket-changed-before-dispatch', 'the final phase must retain a synchronized Kanvil snapshot');
+  assert.equal(f.launches.length, 0);
+});
+
+for (const fields of [{ automationReady: false }, { holdReason: 'Decision pending' }, { archived: true }, { difficulty: 'high' }, { parentId: 'parent' }] as const) test(`tracker fixture preserves native fields: ${JSON.stringify(fields)}`, async t => {
+  const f = dispatchFixture(t);
+  Object.assign(f.tasks[0], fields);
+  const row = await f.kanvil.task('root');
+  for (const [name, value] of Object.entries(fields)) assert.equal(row[name], value);
 });

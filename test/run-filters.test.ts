@@ -5,12 +5,12 @@ import { dispatchFixture } from './dispatch-fixture.ts';
 
 test('queue projections retain actual labels and metadata for ready, dependency-projected and held tickets', async t => {
   const f = dispatchFixture(t);
-  f.tasks[1].status = 'to-do';
+  f.tasks[1].status = 'todo';
   f.tasks[1].priority = 'low';
   f.tasks[1].labels!.push({ name: 'blocker-only' });
   f.tasks[0].labels!.push({ name: 'root-only' });
-  f.tasks.push({ ...f.task('held', 3, 'to-do'), labels: [{ name: 'sf' }, { name: 'bug' }] });
-  const queue = await inventory(f.c, f.kaneo, [], [], f.store);
+  f.tasks.push({ ...f.task('held', 3, 'todo'), labels: [{ name: 'sf' }, { name: 'bug' }] });
+  const queue = await inventory(f.c, f.kanvil, [], [], f.store);
   const result = upNext(f.c, f.store, queue);
   const root = result.tickets.find(t => t.id === 'root')!;
   const blocker = result.tickets.find(t => t.id === 'blocker')!;
@@ -23,7 +23,7 @@ test('queue projections retain actual labels and metadata for ready, dependency-
 test('run snapshots retain freshly validated ticket labels and priority across storage', async t => {
   const f = dispatchFixture(t);
   f.hooks.read = async (name, _id, final) => {
-    if (final && name === 'list_workspace_labels') {
+    if (final && name === 'ticket' && _id === 'root') {
       f.tasks[0].priority = 'urgent';
       f.tasks[0].labels!.push({ name: 'fresh' });
     }

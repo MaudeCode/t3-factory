@@ -1,6 +1,6 @@
 # T3 Factory
 
-T3 Factory turns a ready Kaneo ticket into a coding run in T3 Code. It selects work by priority, matches it to an available model, and creates a separate task and Git worktree for each ticket.
+T3 Factory turns a ready Kanvil ticket into a coding run in T3 Code. Kanvil changes arrive through its durable event stream; ticket inventories are cached between changes. It selects work by priority, matches it to an available model, and creates a separate task and Git worktree for each ticket.
 
 Control the queue from the command line, a macOS menu-bar app, or a web page. Automatic runs wait for provider activity and quota checks; manual runs let you choose a ticket and model directly.
 
@@ -18,7 +18,7 @@ Ticket delivery follows a configured software-factory skill. Merging requires ve
 
 ## Requirements
 
-The supported deployment is macOS 14 or later with Node.js 24.13 or later, Git, and the GitHub CLI. You also need a compatible T3 Code server running locally, authenticated model providers, a Kaneo workspace, and local Git repositories registered in both applications.
+The supported deployment is macOS 14 or later with Node.js 24.13 or later, Git, and the GitHub CLI. You also need a compatible T3 Code server running locally, authenticated model providers, a Kanvil workspace, and local Git repositories registered in both applications.
 
 This is an early integration with T3's application APIs. Compatibility depends on the HTTP and RPC contracts in [the integration guide](docs/development.md#t3-compatibility), including orchestration protocol v2, provider usage reporting, and worktree launch. T3 builds from before orchestration protocol negotiation are not supported. It is not a standalone model runner or an official T3 Code product.
 
