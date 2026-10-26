@@ -249,7 +249,12 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         }
         return importedTickets(tickets);
       };
-      imported = { catalog, revision: kanvil.revision, records: records() };
+      const entry = { catalog, revision: kanvil.revision, records: records() };
+      imported = entry;
+      entry.records = entry.records.catch(error => {
+        if (imported === entry) imported = undefined;
+        throw error;
+      });
     }
     return imported.records;
   };
