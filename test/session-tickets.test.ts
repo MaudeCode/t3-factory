@@ -250,7 +250,7 @@ test('sectioned creation reports retain their ticket lists, bounded ranges and n
 test('creation tables collect only ticket cells under an affirmative creation report', () => {
   const table = `| Ticket | What | Priority |\n|---|---|---|\n| [FIX-7](${LINK('task-7')}) | Related to FIX-99 | high |\n| [FIX-8](${LINK('task-8')}) | Uploads | medium |\n| FIX-9 | Downloads | high |\n| FIX-10 | Search | medium |`;
   const keys = (text: string) => creationReports(text).filter(r => r.kind === 'key').map(r => r.value);
-  for (const report of [`I filed 4 tickets for these, each marked factory-ready:\n\n${table}`, `Created tickets:\n${table}`, `Tickets filed.\n\n**Completed**\n\n${table}`]) {
+  for (const report of [`I filed 4 tickets for these, each marked factory-ready:\n\n${table}`, `Created tickets:\n${table}`, `Tickets filed.\n\n**Completed**\n\n${table}`, `Created issues:\n\n${table.replace('Ticket', 'Issue')}`, `Opened four issues:\n\n${table.replace('Ticket', 'Issue')}`]) {
     assert.deepEqual(keys(report), ['FIX-7', 'FIX-8', 'FIX-9', 'FIX-10']);
     assert.deepEqual(creationReports(report).filter(r => r.kind === 'task').map(r => r.value), ['task-7', 'task-8']);
   }

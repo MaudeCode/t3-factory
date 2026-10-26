@@ -82,7 +82,7 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
     const list = /^\s*(?:[-*+•]|\d+[.)])\s/.test(plain);
     const stop = reportBoundary(plain);
     const clauses = [...affirmedClauses(plain)];
-    const summary = clauses.some(c => /\b(?:created|filed|opened)\b/i.test(c) && /\btickets?\b|\b(?:these|following)\b/i.test(c));
+    const summary = clauses.some(c => /\b(?:created|filed|opened)\b/i.test(c) && /\b(?:tickets?|issues?|these|following)\b/i.test(c));
     const inherited = section && list && !stop;
     section = !stop && (summary || (section && (heading || list || (!plain && creationTable))));
     const listBody = plain.split('\n').filter(line => !reportBoundary(line)).join('\n');
