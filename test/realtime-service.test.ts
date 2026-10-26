@@ -1,4 +1,6 @@
 import test from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,5 +27,38 @@ test('idle scheduler does not schedule tracker inventory polling', async t => {
   try {
     await service.start(); await internal.queue;
     assert.deepEqual(intervals, [], 'ticket changes must use the event feed instead of a periodic inventory poll');
+  } finally { await service.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('duplicate config notifications do not enqueue unchanged scheduler work', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-config-notification-'));
+  const config = loadConfig(new URL('../config.example.jsonc', import.meta.url).pathname);
+  config.stateDir = join(dir, 'state');
+  const path = join(dir, 'config.jsonc'); writeFileSync(path, JSON.stringify(config));
+  let notify!: (event: string, name: string) => void;
+  const original = fs.watch;
+  t.mock.method(fs, 'watch', ((_directory: unknown, listener: typeof notify) => {
+    notify = listener; return { close() {} };
+  }) as unknown as typeof fs.watch);
+  syncBuiltinESMExports();
+  t.after(() => { fs.watch = original; syncBuiltinESMExports(); });
+  t.mock.method(T3.prototype, 'subscribe', async (_onItem: unknown, signal: AbortSignal) => {
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+  });
+  const service = new FactoryService(path), internal = service as any, passes: string[] = [];
+  t.mock.method(internal, 'pass', async (_options: unknown, reason: string) => { passes.push(reason); return { reason: 'disabled' }; });
+  try {
+    await service.start(); await internal.queue;
+    notify('change', 'config.jsonc'); await internal.queue;
+    assert.deepEqual(passes, ['start'], 'an unchanged filesystem notification must not become another scheduler pass');
+    writeFileSync(path, JSON.stringify({ ...config, enabled: !config.enabled }));
+    notify('change', 'config.jsonc'); notify('change', 'config.jsonc'); await internal.queue;
+    assert.deepEqual(passes, ['start', 'config'], 'a real configuration edit still wakes exactly one pass');
+    writeFileSync(path, '{'); notify('change', 'config.jsonc'); await internal.queue;
+    assert.deepEqual(passes, ['start', 'config', 'config'], 'invalid configuration must still reach the diagnostic pass');
+    writeFileSync(path, JSON.stringify({ ...config, enabled: !config.enabled }));
+    notify('change', 'config.jsonc'); await internal.queue;
+    assert.deepEqual(passes, ['start', 'config', 'config', 'config'], 'restoring the previous valid configuration must wake again after an error');
   } finally { await service.stop(); rmSync(dir, { recursive: true, force: true }); }
 });

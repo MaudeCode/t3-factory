@@ -17,7 +17,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |
 | `t3` | Local server origin and private session credential file. |
-| `kanvil` | HTTP(S) origin, workspace ID, and readiness label. The API credential is `KANVIL_API_KEY` in the environment. |
+| `kanvil` | HTTPS origin, workspace ID, and readiness label. HTTP is allowed only for loopback. The API credential is `KANVIL_API_KEY` in the environment. |
 
 Changes to the JSONC file are read on later cycles. Running jobs retain their original prompts and models. Invalid settings block dispatch. Move state only as a deliberate migration with the services stopped; changing `stateDir` is not a safe way to reset job ownership.
 

@@ -22,6 +22,7 @@ export class FactoryService {
   private store!: Store;
   private t3!: T3;
   private t3Settings = '';
+  private configSnapshot?: string;
   private kanvilSettings = '';
   private stream?: AbortController;
   private kanvil?: Promise<Kanvil>; // one service-owned client and subscription shared by every caller
@@ -55,6 +56,7 @@ export class FactoryService {
 
   async start() {
     const c = loadConfig(this.configPath);
+    this.configSnapshot = JSON.stringify(c);
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
     if (!this.store.claim()) throw new Error('Another scheduler owns this state directory');
@@ -68,10 +70,20 @@ export class FactoryService {
     };
     this.connectT3(c);
     this.control = serveControl(c.stateDir, command => this.handle(command));
-    this.watcher = watch(dirname(this.configPath), (_, name) => { if (name === basename(this.configPath)) this.wake('config'); });
+    this.watcher = watch(dirname(this.configPath), (_, name) => this.onConfigChange(name));
     this.wake('start');
     this.scheduleQuota(c);
     log('service-started', { pid: process.pid, stateDir: c.stateDir });
+  }
+
+  // macOS may deliver duplicate or delayed startup events. Only changed settings need a pass.
+  private onConfigChange(name: string | null) {
+    if (this.stopped || name !== basename(this.configPath)) return;
+    let snapshot: string | undefined;
+    try { snapshot = JSON.stringify(loadConfig(this.configPath)); } catch { /* A broken configuration still needs its diagnostic pass. */ }
+    if (snapshot !== undefined && snapshot === this.configSnapshot) return;
+    this.configSnapshot = snapshot;
+    this.wake('config');
   }
 
   // A new T3 client and shell stream whenever the connection settings change, so an edit applies without a restart.

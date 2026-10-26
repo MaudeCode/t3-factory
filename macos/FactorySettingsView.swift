@@ -310,7 +310,7 @@ struct FactorySettingsView: View {
         return HStack(spacing: 6) {
             Button("−") { model.update(["maxWaitingPRs"], value == nil ? 20 : max(1, value!.intValue - 1)) }.buttonStyle(QuietButton()).disabled(value != nil && value!.intValue <= 1)
             Text(value.map { "\($0)" } ?? "No limit").font(.system(size: 13, weight: .semibold)).frame(width: 70)
-            Button("+") { model.update(["maxWaitingPRs"], value == nil ? NSNull() : (value!.intValue >= 20 ? NSNull() : value!.intValue + 1)) }.buttonStyle(QuietButton()).disabled(value == nil)
+            Button("+") { model.update(["maxWaitingPRs"], value == nil ? NSNull() : (value!.intValue >= 20 ? NSNull() : NSNumber(value: value!.intValue + 1))) }.buttonStyle(QuietButton()).disabled(value == nil)
         }
     }
     private func allowance(_ title: String, driver: String, provider: String, windows: [(String, String)]) -> some View {

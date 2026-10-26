@@ -99,3 +99,17 @@ test('unfinished command waits retain capacity before and after automatic resump
     assert.equal(blocked(), false, `${driver}: a job parked for human input frees capacity`);
   }
 });
+
+test('remote Kanvil origins require TLS before bearer credentials can be used', () => {
+  const base = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
+  for (const url of ['http://kanvil.example.test', 'http://192.0.2.10:8080', 'http://localhost.example.test']) {
+    assert.equal(configSchema.safeParse({ ...base, kanvil: { ...base.kanvil, url } }).success, false, `plaintext remote origin must be rejected: ${url}`);
+  }
+});
+
+test('Kanvil permits HTTPS and loopback-only HTTP development origins', () => {
+  const base = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
+  for (const url of ['https://kanvil.example.test', 'http://localhost:3774', 'http://127.0.0.1:3774', 'http://[::1]:3774']) {
+    assert.equal(configSchema.safeParse({ ...base, kanvil: { ...base.kanvil, url } }).success, true, `supported secure or local origin: ${url}`);
+  }
+});

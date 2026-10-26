@@ -7,6 +7,7 @@ import { DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketStatuses } from './policy.ts'
 
 const positive = z.number().positive();
 const absolute = z.string().startsWith('/');
+const loopback = (url: URL) => ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
 const model = z.object({
   instanceId: z.string().min(1), model: z.string().min(1),
   options: z.array(z.object({ id: z.string(), value: z.union([z.string(), z.number(), z.boolean()]) }).strict()).default([]),
@@ -63,7 +64,7 @@ export const configSchema = z.preprocess(input => {
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
   stateDir: absolute,
   t3: z.object({ url: z.url(), credentialFile: absolute, autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
-  kanvil: z.object({ url: z.url().refine(value => { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, 'Use a Kanvil HTTP(S) origin without credentials or a path'), workspaceId: z.string().min(1), readyLabel: z.string().min(1) }).strict(),
+  kanvil: z.object({ url: z.url().refine(value => { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && loopback(u))) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, 'Use a Kanvil HTTPS origin, or loopback-only HTTP, without credentials or a path'), workspaceId: z.string().min(1), readyLabel: z.string().min(1) }).strict(),
   quota: z.object({
     maxAgeSeconds: positive,
     claude: z.object({ fiveHour: budget, weekly: budget, fable: budget }).strict(),
@@ -105,7 +106,7 @@ export const configSchema = z.preprocess(input => {
   if (new Set(upstreams).size !== upstreams.length) ctx.addIssue({ code: 'custom', message: 'Each upstream repository can be watched by only one project' });
   if (upstreams.length && !c.upstream) ctx.addIssue({ code: 'custom', path: ['upstream'], message: 'Watched upstreams need upstream.promptFile' });
   const u = new URL(c.t3.url);
-  if (!['http:', 'https:'].includes(u.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) {
+  if (!['http:', 'https:'].includes(u.protocol) || !loopback(u)) {
     ctx.addIssue({ code: 'custom', message: 'T3 must be a loopback HTTP(S) endpoint on this Mac' });
   }
 }));
