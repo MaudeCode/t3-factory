@@ -390,7 +390,7 @@ export function sessionTicketStatus(c: Config, store: Store) {
     let difficulty: ReturnType<typeof ticketDifficulty>;
     try { difficulty = 'difficulty' in r ? r.difficulty ?? undefined : ticketDifficulty(r.labels.map(name => ({ name }))); } catch { difficulty = undefined; }
     const name = project?.name ?? known?.name ?? r.projectId;
-    return [{ taskId: r.taskId, projectId: r.projectId, project: name, key: r.key, number: r.number, title: r.title, priority: r.priority, status: r.status, labels: r.labels, difficulty, createdAt: r.createdAt, refreshedAt: r.refreshedAt, refreshError: r.refreshError ?? null,
+    return [{ taskId: r.taskId, projectId: r.projectId, project: name, key: r.key, number: r.number, title: r.title, priority: r.priority, status: r.status, labels: r.labels, difficulty, automationReady: r.automationReady, createdAt: r.createdAt, refreshedAt: r.refreshedAt, refreshError: r.refreshError ?? null,
       sources: sources.map(s => ({ threadId: s.threadId, messageId: s.messageId, title: s.title, at: s.at })),
       unavailable: !project ? 'Project not configured in Factory' : !project.enabled ? 'Project disabled in Factory settings' : null }];
   }).toSorted((a, b) => (PRIORITIES.indexOf(a.priority) - PRIORITIES.indexOf(b.priority)) || a.key.replace(/-\d+$/, '').localeCompare(b.key.replace(/-\d+$/, '')) || a.number - b.number);

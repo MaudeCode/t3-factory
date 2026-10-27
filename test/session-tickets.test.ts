@@ -913,3 +913,15 @@ test('a moved session ticket refreshes current identity and preserves provenance
   assert.deepEqual([moved.projectId, moved.key, moved.number, moved.title], ['OTH', 'OTH-11', 11, 'Moved ticket']);
   assert.deepEqual(moved.sources, saved.sources);
 });
+
+test('session status preserves native automation readiness from collection through the browser snapshot', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7, 'FIX', { automationReady: true, labels: [] }), task('task-8', 8, 'FIX', { automationReady: false, labels: [{ name: 'sf' }] }));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.\nCreated FIX-8.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  const rows = f.status().rows;
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find(r => r.key === 'FIX-7')?.automationReady, true, 'native ready flag reaches the Session tickets browser snapshot');
+  assert.equal(rows.find(r => r.key === 'FIX-8')?.automationReady, false, 'sf label cannot replace native false readiness');
+});
