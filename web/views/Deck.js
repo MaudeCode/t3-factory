@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showReadinessConfirmation, showBlockedChoice, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showBlockedChoice, loadHistory } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -99,7 +99,6 @@ function Operation({ op }) {
   return html`<div class=${`operation ${op.state}`} role="status">
     ${running && html`<i class="spinner"></i>`}
     <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
-    ${!op.choiceHandled && d?.reason === "ready-label-confirmation-required" && html`<${Button} size="sm" onClick=${() => showReadinessConfirmation(op.id)}>Review and run anyway<//>`}
     ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
     ${!running && op.state !== "queued" && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.upstream || op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}

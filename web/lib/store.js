@@ -23,7 +23,6 @@ export const live = signal({ enabled: false, upstream: false, concurrency: { cla
 export const busy = signal(false);
 export const operations = signal([]);
 export const launchOperations = computed(() => operations.value.filter(op => op.kind !== "cleanup"));
-export const readiness = signal(null);
 export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
 export const selectedModel = signal(0);
@@ -197,7 +196,6 @@ export const actions = {
     const op = operations.value.find((op) => op.id === id);
     if (!op || ["queued", "running"].includes(op.state)) return;
     operations.value = operations.value.filter((op) => op.id !== id);
-    if (readiness.value?.id === id) readiness.value = null;
     if (blocked.value?.id === id) blocked.value = null;
     saveOperations();
   },
@@ -351,7 +349,6 @@ async function drainOperations() {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
-      showReadinessConfirmation(op.id);
       showBlockedChoice(op.id);
       void load().catch(() => {});
     }
@@ -397,14 +394,9 @@ export function retryRequest(id) {
   saveOperations();
   void drainOperations();
 }
-export function showReadinessConfirmation(id) {
-  const op = request(id);
-  if (readiness.value || blocked.value || op?.choiceHandled || op?.result?.data?.reason !== "ready-label-confirmation-required" || !op.input?.ticket || op.input.allowMissingReadyLabel) return;
-  readiness.value = { id: op.id, input: clone(op.input), label: op.result.data.requiredLabel };
-}
 export function showBlockedChoice(id) {
   const op = request(id), d = op?.result?.data;
-  if (readiness.value || blocked.value || op?.choiceHandled || d?.reason !== "blocked-ticket-plan-required" || !op.input?.ticket || op.input.chain) return;
+  if (blocked.value || op?.choiceHandled || d?.reason !== "blocked-ticket-plan-required" || !op.input?.ticket || op.input.chain) return;
   blocked.value = { id: op.id, input: clone(op.input), ticket: d.ticket, tree: d.tree, message: d.message };
 }
 function answerRequest(choice, reason, extra) {
@@ -419,12 +411,6 @@ export function runChain(mode) {
   if (!["first", "all"].includes(mode)) return;
   return answerRequest(choice, "blocked-ticket-plan-required", { chain: mode });
 }
-export function runWithoutReadyLabel() {
-  const choice = readiness.value;
-  readiness.value = null;
-  return answerRequest(choice, "ready-label-confirmation-required", { allowMissingReadyLabel: true });
-}
-
 // Session ---------------------------------------------------------------
 export async function connect(code) {
   const match = code.match(/[#&]pair=([^&]+)/);

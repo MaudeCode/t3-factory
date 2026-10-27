@@ -219,6 +219,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO] [--model auto|MODEL_ID] [--override-limits | --override idle,reserve,labels] [--allow-missing-ready-label] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO] [--model auto|MODEL_ID] [--override-limits | --override idle,reserve,labels] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

@@ -130,8 +130,9 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     q = await queue();
     assert.equal(q.ready.find(t => t.id === 'task-19')?.labelRank, 1, 'disabled projects do not contribute priority');
     other.enabled = true;
-    tasks[0].labels = [{ name: 'med' }];
-    q = await queue(); assert(!q.ready.some(t => t.id === 'task-19'), 'inheritance cannot grant readiness');
+    tasks[0].automationReady = false;
+    q = await queue(); assert(!q.ready.some(t => t.id === 'task-19'), 'inheritance cannot grant native readiness');
+    tasks[0].automationReady = true;
     tasks[0].labels = [{ name: 'sf' }];
     q = await queue(); assert(!q.ready.some(t => t.id === 'task-19'), 'inheritance cannot grant classification');
     tasks[0].labels = [{ name: 'sf' }, { name: 'med' }];

@@ -32,7 +32,7 @@ function fixture(t: { after: (fn: () => void) => void }, upstreams: Record<strin
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'),
     t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     upstream: { enabled: true, promptFile: join(dir, 'upstream.md'), checkMinutes: 60 },
     projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/app', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], upstreams }],

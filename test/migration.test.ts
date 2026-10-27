@@ -56,7 +56,7 @@ test('restored session projections refresh through one SSE snapshot instead of a
     if (url.pathname.endsWith('/workflow')) return Response.json([{ category: 'todo', name: 'To do', position: 0 }]);
     ticketReads++; return Response.json({ error: { code: 'unauthorized' } }, { status: 401 });
   });
-  const client = new Kanvil({ url: 'https://tracker.example.test', workspaceId: 'workspace', readyLabel: 'sf' });
+  const client = new Kanvil({ url: 'https://tracker.example.test', workspaceId: 'workspace' });
   const ready = Promise.withResolvers<void>();
   const stream = client.subscribe(() => ready.resolve(), new AbortController().signal);
   try {

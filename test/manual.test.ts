@@ -25,7 +25,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     fable: { enabled: true, model: { instanceId: 'claudeAgent', model: 'claude-fable-5-1' } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'),
     t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'token') },
-    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     quota: { maxAgeSeconds: 300, fiveHourReservePercent: 40, weeklyReservePercent: 70 },
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'Fixture', enabled: true, key: 'FIX', kanvilId: 'kp', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
@@ -95,8 +95,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
           assert.match(JSON.stringify(closed.skipped), /Ticket is done/);
           tasks[0].status = 'todo';
           tasks[0].labels = [{ name: 'high' }];
-          assert.equal((await cycle(c, store, options)).reason, 'ready-label-confirmation-required');
-          assert.equal((await cycle(c, store, { ...options, allowMissingReadyLabel: true })).reason, 'would-dispatch');
+          assert.equal((await cycle(c, store, options)).reason, 'would-dispatch', 'native-ready tickets need no sf label');
           tasks[0].labels = [{ name: 'sf' }];
           assert.equal((await cycle(c, store, options)).reason, 'no-eligible-ticket', 'difficulty remains mandatory');
           tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];

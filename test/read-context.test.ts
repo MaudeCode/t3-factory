@@ -19,7 +19,7 @@ test('T3 and Kanvil HTTP reads cancel together, and a failed phase drains its st
   const dir = mkdtempSync(join(tmpdir(), 'factory-read-context-'));
   const credentialFile = join(dir, 'credential'); writeFileSync(credentialFile, '{"token":"fixture"}');
   const t3 = new T3({ url: 'http://fixture.invalid', credentialFile });
-  const kanvil = new Kanvil({ url: 'https://tracker.invalid', workspaceId: 'fixture', readyLabel: 'sf' });
+  const kanvil = new Kanvil({ url: 'https://tracker.invalid', workspaceId: 'fixture' });
   const entered = deferred(), drain = deferred(); let settled = false, reads = 0;
   const oldKey = process.env.KANVIL_API_KEY; process.env.KANVIL_API_KEY = 'fixture';
   t.after(() => { if (oldKey === undefined) delete process.env.KANVIL_API_KEY; else process.env.KANVIL_API_KEY = oldKey; });

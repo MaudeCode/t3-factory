@@ -18,8 +18,7 @@
   },
   "kanvil": {
     "url": "https://kanvil.example.com",
-    "workspaceId": "YOUR_WORKSPACE_ID",
-    "readyLabel": "sf"
+    "workspaceId": "YOUR_WORKSPACE_ID"
   },
   "models": [
     {

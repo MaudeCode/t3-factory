@@ -29,7 +29,8 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.deepEqual(commandFor(['session-dismiss', 'task-1']), { type: 'session-dismiss', taskId: 'task-1' });
     assert.deepEqual(commandFor(['dispatch', '--upstream', 'UP/Stable']), { type: 'dispatch', options: { manual: true, upstream: 'up/stable' } });
     assert.throws(() => commandFor(['dispatch', '--upstream', 'no-slash']), /requires owner\/repo/);
-    for (const args of [['--ticket', 'APP-1'], ['--chain', 'all'], ['--allow-missing-ready-label']]) assert.throws(() => commandFor(['dispatch', '--upstream', 'up/stable', ...args]), /cannot be combined/);
+    for (const args of [['--ticket', 'APP-1'], ['--chain', 'all']]) assert.throws(() => commandFor(['dispatch', '--upstream', 'up/stable', ...args]), /cannot be combined/);
+    assert.throws(() => commandFor(['dispatch', '--allow-missing-ready-label']), /Unknown dispatch argument/);
     assert.throws(() => commandFor(['dispatch', '--bogus']), /Unknown dispatch argument/);
     await new Promise<void>(resolve => server.close(() => resolve()));
     globalAgent.destroy(); // The replacement server must receive the next request, not a pooled socket from the old server.
@@ -162,7 +163,7 @@ async function maintenanceFixture(t: import('node:test').TestContext) {
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'gpt-6.1-sol' } }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
@@ -524,7 +525,7 @@ test('the service answers dispatches during a pass and folds wake-ups into one q
     models: [{ id: 'opus', name: 'Opus', model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, automatic: false, maxDifficulty: 'high' }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
@@ -1000,7 +1001,7 @@ for (const command of ['cancel', 'shutdown']) test(`protected final retry yields
   };
   try {
     await service.start(); await internal.queue;
-    const target = { ...f.tasks[0], key: 'FIX-1', difficulty: 'med' as const, readyLabel: true, runnable: true, blockedBy: [], done: false };
+    const target = { ...f.tasks[0], key: 'FIX-1', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };
     internal.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
     const { runPlans } = await import('../src/scheduler.ts');
     const background = internal.enqueue(() => runPlans(f.c, internal.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), []), false, { reason: 'chain-continuation' }).then((value: any) => ({ value, error: null }), (error: Error) => ({ value: null, error }));
