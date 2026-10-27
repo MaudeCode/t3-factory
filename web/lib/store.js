@@ -9,7 +9,7 @@ import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState }
 export const auth = signal({ mode: "pairing", loginUrl: "" });
 export const authenticated = signal(null); // null while unknown
 export const loginError = signal("");
-export const connection = signal("connecting"); // connecting | live | polling | offline
+export const connection = signal("connecting"); // connecting | live | retrying | polling | offline
 export const config = signal(null);
 export const base = signal(null);
 export const status = signal({});
@@ -76,7 +76,7 @@ export function applyState(data, reset = false) {
       concurrency: data.config.concurrency,
     };
     authenticated.value = true;
-    if (connection.value !== "live") connection.value = "polling";
+    if (!["live", "retrying"].includes(connection.value)) connection.value = "polling";
   });
   if (history.value) loadHistory().catch(() => {});
 }
@@ -91,14 +91,16 @@ function diff(a, b) {
   for (const k of keys) n += diff(a[k], b[k]);
   return n;
 }
-export async function load(reset = false) {
+export async function load(reset = false, { quiet = false, signal } = {}) {
   try {
-    const data = await api("/api/state");
+    const data = await api("/api/state", { signal });
+    if (signal?.aborted) return;
     applyState(data, reset);
     return data;
   } catch (error) {
-    if (error.status !== 401) connection.value = "offline";
-    if (authenticated.value) message(error.message, true);
+    if (signal?.aborted) throw error;
+    if (error.status !== 401) connection.value = quiet ? "retrying" : "offline";
+    if (!quiet && authenticated.value) message(error.message, true);
     throw error;
   }
 }
@@ -440,42 +442,85 @@ export async function initialize() {
   }
 }
 
-// Live updates: the server pushes full state over an event stream whenever the factory
-// writes it. If the stream is unavailable, a slow poll keeps the page honest.
+// Own stream retries so a proxy response that permanently closes EventSource also recovers.
+// Background reads share one abortable request and never create action notifications.
 export function subscribe() {
-  let source = null;
+  let source = null, pending = null, stopped = false;
+  let nextStream = 0, nextRead = Date.now() + 15000;
+  let streamDelay = 1000, readDelay = 1000;
+  const close = () => {
+    source?.close();
+    source = null;
+  };
+  const refresh = async () => {
+    if (pending) return;
+    const controller = new AbortController();
+    pending = controller;
+    try {
+      await load(false, { quiet: true, signal: controller.signal });
+      readDelay = 1000;
+      nextRead = Date.now() + 15000;
+      if (typeof EventSource === "undefined" && !controller.signal.aborted) connection.value = "polling";
+    } catch {
+      nextRead = Date.now() + readDelay;
+      readDelay = Math.min(readDelay * 2, 30000);
+      if (!authenticated.value) close();
+    } finally {
+      if (pending === controller) pending = null;
+    }
+  };
   const open = () => {
-    if (source || !authenticated.value || typeof EventSource === "undefined") return;
-    source = new EventSource("/api/events");
-    source.addEventListener("state", (e) => {
+    if (source || typeof EventSource === "undefined" || Date.now() < nextStream) return;
+    const current = source = new EventSource("/api/events");
+    current.addEventListener("state", (e) => {
+      if (stopped || source !== current || !authenticated.value) return;
+      const data = JSON.parse(e.data);
+      pending?.abort();
       connection.value = "live";
-      applyState(JSON.parse(e.data));
+      applyState(data);
+      streamDelay = readDelay = 1000;
+      nextRead = Date.now() + 15000;
     });
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
-        connection.value = "offline";
-        source = null;
-        load().catch(() => {}); // a closed stream after sign-out surfaces the 401 here
-      } else connection.value = "polling";
+    current.onerror = () => {
+      if (stopped || source !== current) return;
+      const wasLive = connection.value === "live";
+      close();
+      connection.value = "retrying";
+      nextStream = Date.now() + streamDelay;
+      streamDelay = Math.min(streamDelay * 2, 30000);
+      // Check for an expired session promptly, without overlapping reads or bypassing backoff.
+      if (wasLive || readDelay === 1000) nextRead = Math.min(nextRead, Date.now());
     };
   };
   const tick = () => {
+    if (stopped) return;
     clock.value = Date.now();
     if (!authenticated.value) {
-      source?.close();
-      source = null;
+      close();
+      pending?.abort();
       return;
     }
     if (document.hidden) return;
     open();
-    if (connection.value !== "live" && Math.floor(clock.value / 1000) % 15 === 0) load().catch(() => {});
+    if (connection.value !== "live" && Date.now() >= nextRead) void refresh();
+  };
+  const resume = () => {
+    if (document.hidden || stopped) return;
+    nextStream = nextRead = 0;
+    if (authenticated.value) connection.value = "retrying";
+    close();
+    tick();
   };
   const timer = setInterval(tick, 1000);
-  document.addEventListener("visibilitychange", tick);
+  document.addEventListener("visibilitychange", resume);
+  window.addEventListener("online", resume);
   return () => {
+    stopped = true;
     clearInterval(timer);
-    source?.close();
-    document.removeEventListener("visibilitychange", tick);
+    close();
+    pending?.abort();
+    document.removeEventListener("visibilitychange", resume);
+    window.removeEventListener("online", resume);
   };
 }
 
