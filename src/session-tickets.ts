@@ -238,7 +238,7 @@ export function refreshTicket(row: SessionTicket, task: Task, project: Pick<Cata
 // ones. Returns true when work remains for another batch. Failures are recorded and never empty the list.
 export async function collectSessionTickets(c: Config, store: Store, t3: T3, kanvil: Kanvil, budget: Budget = {}): Promise<boolean> {
   const limits = { reads: 8, lookups: 10, refreshes: 10, ...budget };
-  const now = Date.now(), at = new Date(now).toISOString(), errors: string[] = [];
+  const now = Date.now(), at = new Date(now).toISOString(), errors: SessionTicketsFailure[] = [];
   let includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
   let more = false;
   let listed: Set<string> | undefined;
@@ -261,12 +261,12 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       try { delete rec.retryAfter; delete rec.error; await scanSession(t3, store, rec, session); }
       catch (error) {
         // Progress is untouched; the session waits before its next read so an outage cannot loop on the same sessions.
-        rec.error = `Reading session ${session.title}: ${safeError(error)}`; rec.retryAfter = new Date(now + RETRY_MS).toISOString();
-        store.saveSessionThread(rec); errors.push(rec.error);
+        rec.error = safeError(error); rec.retryAfter = new Date(now + RETRY_MS).toISOString();
+        store.saveSessionThread(rec); errors.push({ step: 'session', subject: session.title, cause: rec.error });
       }
       if (store.sessionThread(session.id)?.backfill) more = true;
     }
-  } catch (error) { errors.push(`Listing sessions: ${safeError(error)}`); }
+  } catch (error) { errors.push({ step: 'list', cause: safeError(error) }); }
   includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
   let cat: Catalog | undefined;
   let imported: { catalog: Catalog; revision: number; records: Promise<Map<string, Task>> } | undefined;
@@ -291,7 +291,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   };
   const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now)).toSorted(recentFirst);
   if (due.length) {
-    try { cat = await catalog(c, store, kanvil); } catch (error) { errors.push(`Reading tracker projects: ${safeError(error)}`); }
+    try { cat = await catalog(c, store, kanvil); } catch (error) { errors.push({ step: 'catalog', cause: safeError(error) }); }
   }
   let lookups = 0, refreshedCatalog = false;
   for (const rec of cat ? due : []) {
@@ -322,7 +322,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         // An unfinished call is not a failure; it is read again after the usual wait.
         if (error instanceof ToolCallUnfinished) { ref.retryAfter = new Date(now + RETRY_MS).toISOString(); store.saveSessionThread(rec); continue; }
         ref.attempts++; ref.error = safeError(error); ref.retryAfter = new Date(now + Math.min(ref.attempts, 12) * RETRY_MS).toISOString();
-        errors.push(`Confirming ${ref.value}: ${ref.error}`);
+        errors.push(confirmFailure(ref));
       }
       store.saveSessionThread(rec);
     }
@@ -333,12 +333,12 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   if (kanvil.realtime) for (const projectId of new Set(retained().map(r => r.projectId))) {
     await backgroundCheckpoint();
     try { await backgroundRead(() => kanvil.ensureProjectStream(projectId)); }
-    catch (error) { errors.push(`Watching session tickets: ${safeError(error)}`); }
+    catch (error) { errors.push({ step: 'watch', cause: safeError(error) }); }
   }
   const stale = retained().filter(r => (!kanvil.realtime || r.missing || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
   if (kanvil.realtime) for (const projectId of new Set(stale.slice(0, limits.refreshes).map(r => r.projectId))) {
     try { await backgroundRead(() => kanvil.tasks(projectId)); }
-    catch (error) { errors.push(`Reading session snapshot: ${safeError(error)}`); }
+    catch (error) { errors.push({ step: 'snapshot', cause: safeError(error) }); }
   }
   if (stale.length > limits.refreshes) more = true;
   for (const cached of stale.slice(0, limits.refreshes)) {
@@ -365,7 +365,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (row.dismissedAt || row.consumed) continue;
       refreshTicket(row, task, project, { at, now, changed: revision !== kanvil.revision });
       if (revision !== kanvil.revision) more = true;
-    } catch (error) { row.refreshError = safeError(error); row.refreshAfter = new Date(now + RETRY_MS).toISOString(); errors.push(`Refreshing ${row.key}: ${row.refreshError}`); }
+    } catch (error) { row.refreshError = safeError(error); row.refreshAfter = new Date(now + RETRY_MS).toISOString(); errors.push({ step: 'refresh', subject: row.key, cause: row.refreshError }); }
     store.saveSessionTicket(row);
   }
   const jobs = store.jobs();
@@ -373,24 +373,54 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     const job = jobs.find(j => j.taskId === row.taskId && launched(j));
     if (job) { row.consumed = { jobId: job.id, at }; store.saveSessionTicket(row); }
   }
-  if (errors.length) recordSessionTicketsFailure(store, errors.slice(0, 3).join('; '));
+  if (errors.length) recordSessionTicketsFailure(store, errors);
   else {
     store.set('sessionTickets:at', at);
     // A reference whose last lookup failed is still unresolved; the notice stays until a retry succeeds or the read is dropped.
     // A session T3 no longer lists is never read again, so its old read failure is not a current one.
     const lingering = [
-      ...store.sessionThreads().filter(rec => includeSource(rec.id)).flatMap(rec => [...rec.pending.filter(ref => ref.error).map(ref => `Confirming ${ref.value}: ${ref.error}`), ...(rec.error && listed?.has(rec.id) ? [rec.error] : [])]),
-      ...retained().filter(row => row.refreshError).map(row => `Refreshing ${row.key}: ${row.refreshError}`),
+      ...store.sessionThreads().filter(rec => includeSource(rec.id)).flatMap(rec => [...rec.pending.filter(ref => ref.error).map(confirmFailure), ...(rec.error && listed?.has(rec.id) ? [{ step: 'session' as const, subject: rec.title, cause: rec.error }] : [])]),
+      ...retained().filter(row => row.refreshError).map(row => ({ step: 'refresh' as const, subject: row.key, cause: row.refreshError! })),
     ];
-    store.set('sessionTickets:error', lingering.length ? JSON.stringify({ at: JSON.parse(store.get('sessionTickets:error') || 'null')?.at ?? at, message: lingering.slice(0, 3).join('; ') }) : '');
+    store.set('sessionTickets:error', lingering.length ? JSON.stringify(sessionTicketsError(JSON.parse(store.get('sessionTickets:error') || 'null')?.at ?? at, lingering)) : '');
   }
   return more;
 }
 
+// One failed step of a batch. The notice collapses steps with the same kind and cause into one problem, so an
+// outage reads as one plain line rather than a list of IDs; the affected tickets or sessions and the tracker's own
+// wording stay with the problem for its details.
+export interface SessionTicketsFailure { step: keyof typeof STEPS; subject?: string; cause: string }
+export interface SessionTicketsProblem { title: string; cause: string; raw: string[]; subjects: string[] }
+export interface SessionTicketsError { at: string; message: string; problems?: SessionTicketsProblem[] }
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const STEPS = {
+  start: () => "Couldn't start reading sessions",
+  list: () => "Couldn't list T3 sessions",
+  session: (n: number) => `Couldn't read ${plural(n, 'T3 session')}`,
+  catalog: () => "Couldn't read Kanvil projects",
+  confirm: (n: number) => `Couldn't confirm ${plural(n, 'reported ticket')}`,
+  watch: () => "Couldn't watch Kanvil for ticket changes",
+  snapshot: () => "Couldn't read a Kanvil project's tickets",
+  refresh: (n: number) => `Couldn't refresh ${plural(n, 'listed ticket')}`,
+};
+// A stream that is reconnecting is not something the operator can fix; say what it is.
+const plainCause = (cause: string) => /^Kanvil (?:project |event )?stream (?:is not synchronized|unavailable)$/.test(cause) ? 'Kanvil live updates are reconnecting' : cause;
+const confirmFailure = (ref: SessionRef): SessionTicketsFailure => ({ step: 'confirm', subject: ref.value, cause: ref.error! });
+
+export function sessionTicketsError(at: string, failures: SessionTicketsFailure[]): SessionTicketsError {
+  const problems = [...Map.groupBy(failures, f => `${f.step} ${plainCause(f.cause)}`).values()].map(g => {
+    const subjects = [...new Set(g.flatMap(f => f.subject ?? []))], cause = plainCause(g[0].cause);
+    return { title: STEPS[g[0].step](subjects.length), cause, raw: [...new Set(g.map(f => f.cause))].filter(r => r !== cause), subjects: subjects.slice(0, 20) };
+  });
+  return { at, message: problems.map(p => `${p.title}: ${p.cause}`).join('. '), problems };
+}
+
 // A failure the page must show: from a batch, or from the service when a batch could not start at all.
-export function recordSessionTicketsFailure(store: Store, message: string) {
-  store.set('sessionTickets:error', JSON.stringify({ at: new Date().toISOString(), message }));
-  log('session-tickets-failed', { message });
+export function recordSessionTicketsFailure(store: Store, failures: SessionTicketsFailure[]) {
+  const error = sessionTicketsError(new Date().toISOString(), failures);
+  store.set('sessionTickets:error', JSON.stringify(error));
+  log('session-tickets-failed', { message: error.message, failures });
 }
 
 // Remove an entry from the list, and keep it out. The ticket, its runs and automatic scheduling are untouched.
@@ -427,5 +457,5 @@ export function sessionTicketStatus(c: Config, store: Store) {
       sources: sources.map(s => ({ threadId: s.threadId, messageId: s.messageId, title: s.title, at: s.at })),
       unavailable: !project ? 'Project not configured in Factory' : !project.enabled ? 'Project disabled in Factory settings' : null }];
   }).toSorted((a, b) => (PRIORITIES.indexOf(a.priority) - PRIORITIES.indexOf(b.priority)) || a.key.replace(/-\d+$/, '').localeCompare(b.key.replace(/-\d+$/, '')) || a.number - b.number);
-  return { at: store.get('sessionTickets:at') || null, error: JSON.parse(store.get('sessionTickets:error') || 'null') as { at: string; message: string } | null, rows };
+  return { at: store.get('sessionTickets:at') || null, error: JSON.parse(store.get('sessionTickets:error') || 'null') as SessionTicketsError | null, rows };
 }

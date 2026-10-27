@@ -120,8 +120,21 @@ async function run() {
   assert(keys().join() === "WEB-9,APP-2,APP-5", "clearing restores the list");
   update({ sessionTickets: { ...state.status.sessionTickets, rows: [row("t7", "APP-7", "urgent"), ...state.status.sessionTickets.rows] } }); await pause();
   assert(keys().join() === "APP-7,WEB-9,APP-2,APP-5", "live updates replace the list in place");
+  update({ sessionTickets: { ...state.status.sessionTickets, error: { at, message: "Couldn't confirm 2 reported tickets: Kanvil live updates are reconnecting", problems: [{ title: "Couldn't confirm 2 reported tickets", cause: "Kanvil live updates are reconnecting", raw: ["Kanvil project stream is not synchronized"], subjects: ["mo00pnjvld201d3etqq5ywzm", "APP-9"] }] } } }); await pause();
+  const indicator = root.querySelector("button.conn");
+  const tray = () => document.querySelector('.popover[aria-label="Issues"]');
+  assert(indicator?.querySelector(".badge")?.textContent === "1" && !root.querySelector('[role="alert"]') && keys().length === 4, "a collection failure adds a count to the top bar, without a page alert or erasing the list");
+  assert(!tray(), "issues never open on their own");
+  root.querySelector(".stale-list button").click(); await pause();
+  assert(tray()?.querySelector(".issue-title")?.textContent === "Couldn't confirm 2 reported tickets", "the page opens the issue list, problem first in plain words");
+  assert(tray().querySelector("details:not([open]) .issue-subjects")?.textContent.includes("APP-9"), "affected tickets sit behind a closed disclosure");
+  indicator.click(); await pause();
+  assert(!tray(), "the indicator closes the list");
   update({ sessionTickets: { ...state.status.sessionTickets, error: { at, message: "T3 /api/orchestration/shell returned HTTP 503" } } }); await pause();
-  assert(root.querySelector('[role="alert"]')?.textContent.includes("Showing the last known list") && keys().length === 4, "a collection failure is shown without erasing the list");
+  root.querySelector("button.conn").click(); await pause();
+  assert(tray()?.querySelector(".issue-title")?.textContent === "T3 /api/orchestration/shell returned HTTP 503", "a saved error without problems still shows its message");
+  update({ sessionTickets: { ...state.status.sessionTickets, error: null } }); await pause();
+  assert(!tray() && !root.querySelector("button.conn") && root.querySelector('.conn[role="status"]') && !root.querySelector(".stale-list"), "clearing the last issue closes the list and restores the plain indicator");
   for (const el of [root.querySelector(".next"), root.querySelector('[aria-label="Find a ticket"]')]) { const b = el.getBoundingClientRect(); assert(b.left >= 0 && b.right <= innerWidth, "content fits the viewport"); }
   assert(document.documentElement.scrollWidth <= innerWidth, "no horizontal overflow");
   await show({ sessionTickets: { at, error: null, rows: [] } });
@@ -179,7 +192,13 @@ async function controls() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'sorting and filtering controls fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-async function showError() { await show({ sessionTickets: { at, error: { at, message: "T3 /api/orchestration/shell returned HTTP 503" }, rows } }); }
+async function showError() {
+  const stream = "Kanvil project stream is not synchronized";
+  await show({ sessionTickets: { at, error: { at, message: "Couldn't confirm 3 reported tickets: Kanvil live updates are reconnecting", problems: [
+    { title: "Couldn't confirm 3 reported tickets", cause: "Kanvil live updates are reconnecting", raw: [stream], subjects: ["mo00pnjvld201d3etqq5ywzm", "cfj9ytgktl52dj5s3ndnrpoe", "aflah8jsfawxrzr3t1al9ah3"] },
+    { title: "Couldn't refresh 1 listed ticket", cause: "Kanvil returned HTTP 503", raw: [], subjects: ["APP-2"] },
+  ] }, rows } });
+}
 async function showEmpty() { await show({ sessionTickets: { at, error: null, rows: [] } }); }
 async function bulk() {
   calls = [];

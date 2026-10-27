@@ -25,12 +25,14 @@ export function Popover({ open, onClose, anchor, label, width = 300, children, c
     position();
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", escape);
+    panel.addEventListener("toggle", position, true); // an opened <details> grows the panel
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => {
       panel.hidePopover();
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", escape);
+      panel.removeEventListener("toggle", position, true);
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
     };

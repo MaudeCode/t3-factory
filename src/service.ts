@@ -250,7 +250,7 @@ export class FactoryService {
         writeStatus(c, this.store);
       } catch (error) {
         // A batch that could not even start (bad config, no tracker client) is a failure the page must show too.
-        recordSessionTicketsFailure(this.store, safeError(error));
+        recordSessionTicketsFailure(this.store, [{ step: 'start', cause: safeError(error) }]);
         try { writeStatus(loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
       }
       finally {
