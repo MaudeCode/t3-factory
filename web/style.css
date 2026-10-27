@@ -1031,6 +1031,7 @@ dialog::backdrop {
   background: var(--ok);
   box-shadow: 0 0 0 3px rgba(158, 226, 184, 0.18);
 }
+.conn.retrying i,
 .conn.polling i {
   background: var(--attention);
 }

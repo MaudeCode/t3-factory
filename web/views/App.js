@@ -16,7 +16,7 @@ import { Projects } from "./Projects.js";
 import { Upstream } from "./Upstream.js";
 
 const pages = { "/": Deck, "/start": Deck, "/runs": Runs, "/runs/:id": RunDetail, "/session-tickets": SessionTickets, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream };
-const CONNECTION = { connecting: "Connecting", live: "Live", polling: "Polling", offline: "Offline" };
+const CONNECTION = { connecting: "Connecting", live: "Live", retrying: "Retrying", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.
 function ThemePicker({ open, onClose }) {
@@ -102,7 +102,7 @@ function Shell() {
       )}
     </nav>
     <span class="right">
-      <span class=${`conn ${connection.value}`} title=${`Updates: ${CONNECTION[connection.value]}`}><i></i>${CONNECTION[connection.value]}</span>
+      <span role="status" class=${`conn ${connection.value}`} title=${`Updates: ${CONNECTION[connection.value]}`}><i></i>${CONNECTION[connection.value]}</span>
       <${Button} variant="ghost" size="sm" icon="paintbrush" label="Theme" onClick=${() => setPicking(true)} />
       <${Button} variant="ghost" size="sm" icon="signOut" label=${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"} onClick=${() => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout()} />
     </span>
