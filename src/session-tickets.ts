@@ -16,7 +16,7 @@ const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
-export const REPORT_VERSION = 4;
+export const REPORT_VERSION = 5;
 const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
@@ -35,6 +35,7 @@ const CREATED = /\b(?:creat(?:ed|ing)|filed|filing|opened|opening)\b/i;
 const NEGATED = /\b(?:not|no|never|without|didn't|did not|wasn't|was not|cannot|can't|could not|couldn't)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
 const FUTURE = /\b(?:will|planning to|going to|intend to|please)\b[^.\n]{0,40}\b(?:creat|fil|open)/i;
 const CLAUSE = /[,;:]|\s(?:so|but|and|then|yet)\s/i;
+const SENTENCE = /(?<=[.!?])\s+|\n+/;
 const KEY = /\b([A-Z][A-Z0-9]*-\d+)\b/g;
 const LINK = /\/projects\/([^/\s)]+)\/tickets\/([\w-]+)/g;
 const LEGACY_LINK = /\/dashboard\/workspace\/[^/\s)]+\/project\/[^/\s)]+\/task\/([\w-]+)/g;
@@ -47,7 +48,7 @@ const UPSTREAM_REVIEW_REQUEST = /^(?:[$/](?:skills[:/])?upstream-release-review\
 // yield references.
 function* affirmedClauses(block: string) {
   let polarity: 'yes' | 'no' | null = null, header = false;
-  for (const sentence of block.split(/(?<=[.!?])\s+|\n+/)) {
+  for (const sentence of block.split(SENTENCE)) {
     const marker = /^\s*(?:[-*+•]|\d+[.)])(?:\s|$)/.test(sentence);
     if (!header && !marker) polarity = null;
     // A header, or a bare list number the sentence split left on its own, carries its polarity into the next fragment.
@@ -86,7 +87,11 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
     const list = /^\s*(?:[-*+•]|\d+[.)])\s/.test(plain);
     const stop = reportBoundary(plain);
     const clauses = [...affirmedClauses(plain)];
-    const summary = clauses.some(c => /\b(?:created|filed|opened)\b/i.test(c) && /\b(?:tickets?|issues?|these|following)\b/i.test(c));
+    // A compound verb ("Created and verified six tickets") splits the verb and its noun into separate affirmed clauses.
+    const summary = plain.split(SENTENCE).some(sentence => {
+      const affirmed = [...affirmedClauses(sentence)].join(' ');
+      return /\b(?:created|filed|opened)\b/i.test(affirmed) && /\b(?:tickets?|issues?|these|following)\b/i.test(affirmed);
+    });
     const inherited = section && list && !stop;
     section = !stop && (summary || (section && (heading || list || (!plain && creationTable))));
     const listBody = plain.split('\n').filter(line => !reportBoundary(line)).join('\n');
