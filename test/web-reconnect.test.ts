@@ -116,3 +116,22 @@ test('returning to a visible page reconnects a stale live stream and cancels sta
   assert.equal(store.connection.value, 'live', 'late background failure cannot undo a fresh stream state');
   assert.equal(store.notice.value, null);
 });
+
+test('browser offline closes a stale live stream immediately and online resumes it', async t => {
+  const h = setup(t);
+  let reads = 0;
+  t.mock.method(globalThis, 'fetch', async () => { reads++; return Response.json(state()); });
+  await h.advance();
+  h.streams[0].state();
+  h.window.dispatchEvent(new Event('offline'));
+  assert.equal(store.connection.value, 'retrying', 'offline browser must stop reporting a stale stream as Live');
+  assert.equal(h.streams[0].closed, true);
+  await h.advance(60000);
+  assert.equal(h.streams.length, 1, 'offline browsers do not recreate streams');
+  assert.equal(reads, 0, 'offline browsers do not send fallback reads');
+  h.window.dispatchEvent(new Event('online'));
+  assert.equal(h.streams.length, 2);
+  h.streams[1].state();
+  assert.equal(store.connection.value, 'live');
+  assert.equal(store.notice.value, null);
+});
