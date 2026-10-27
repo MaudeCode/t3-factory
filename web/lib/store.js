@@ -446,6 +446,7 @@ export async function initialize() {
 // Background reads share one abortable request and never create action notifications.
 export function subscribe() {
   let source = null, pending = null, stopped = false;
+  let offline = globalThis.navigator?.onLine === false;
   let nextStream = 0, nextRead = Date.now() + 15000;
   let streamDelay = 1000, readDelay = 1000;
   const close = () => {
@@ -500,12 +501,21 @@ export function subscribe() {
       pending?.abort();
       return;
     }
+    if (offline) { connection.value = "retrying"; return; }
     if (document.hidden) return;
     open();
     if (connection.value !== "live" && Date.now() >= nextRead) void refresh();
   };
-  const resume = () => {
-    if (document.hidden || stopped) return;
+  const disconnect = () => {
+    if (stopped) return;
+    offline = true;
+    close();
+    pending?.abort();
+    if (authenticated.value) connection.value = "retrying";
+  };
+  const resume = (event) => {
+    if (event.type === "online") offline = false;
+    if (document.hidden || offline || stopped) return;
     nextStream = nextRead = 0;
     if (authenticated.value) connection.value = "retrying";
     close();
@@ -514,6 +524,7 @@ export function subscribe() {
   const timer = setInterval(tick, 1000);
   document.addEventListener("visibilitychange", resume);
   window.addEventListener("online", resume);
+  window.addEventListener("offline", disconnect);
   return () => {
     stopped = true;
     clearInterval(timer);
@@ -521,6 +532,7 @@ export function subscribe() {
     pending?.abort();
     document.removeEventListener("visibilitychange", resume);
     window.removeEventListener("online", resume);
+    window.removeEventListener("offline", disconnect);
   };
 }
 
