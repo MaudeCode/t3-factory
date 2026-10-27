@@ -55,7 +55,7 @@ export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
 // A chain: the unfinished tickets that must finish before a target ticket, run in priority order as they unblock.
 export interface PlanTicket {
   id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
-  difficulty?: Difficulty; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
+  difficulty?: Difficulty; automationReady?: boolean; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
 }
 export interface Plan { requestId?: string; id: string; createdAt: string; target: PlanTicket; tickets: PlanTicket[]; model: string; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }

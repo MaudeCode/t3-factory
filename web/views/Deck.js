@@ -160,8 +160,9 @@ export function Chains() {
       aside=${html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: "Cancel chain" }, () => actions.cancelPlan(p.id))}>Cancel chain<//>`}>
       ${all.map((t) => {
         const [label, tone, note] = state(t), job = jobByTask.get(t.id);
+        const detail = note || (job ? modelName(config.value, job) : "");
         return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
-          <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${note || (job ? modelName(config.value, job) : "")}<//>
+          <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${(detail || t.automationReady === true) && html`<${Meta} automationReady=${t.automationReady}>${detail}<//>`}<//>
         <//>`;
       })}
     <//>`;
@@ -185,7 +186,7 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
     ${selection}
     <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
       <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-        <${Meta} project=${project?.name ?? t.project ?? t.projectId} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
+        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
       <//>
     </a>
     ${actions && html`<div class="next-actions">${actions}
@@ -221,7 +222,7 @@ export function UpNext({ limit = 5, children, filters, query = "" }) {
             ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
           <//>`)
         : html`<${Empty}>${query.trim() || ["projects", "tags", "difficulties", "priorities"].some(key => filters?.[key]?.length) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
-    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /></div>`)}`}
+    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
   <//>`;
 }

@@ -47,9 +47,10 @@ export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;
 // Facets of a ticket or run on one line. Priority and difficulty carry a one-letter field prefix (P, D) so
 // "low" is never ambiguous; `labels` are the tracker's tags, those in `highlight` (priority labels) are lit.
 // `difficulty: false` marks a ticket that still needs classifying.
-export const Meta = ({ project, kind, model, priority, difficulty, labels = [], highlight = [], class: extra, children }) => html`<span class=${`meta ${extra ?? ""}`}>
+export const Meta = ({ project, kind, model, priority, difficulty, automationReady, labels = [], highlight = [], class: extra, children }) => html`<span class=${`meta ${extra ?? ""}`}>
   ${children}
   ${project && html`<span class="meta-project" title="Project">${project}</span>`}
+  ${automationReady === true && html`<${Tag} tone="ok" title="Automation ready"><${Icon} name="zap" label="Automation ready" /><//>`}
   ${model}
   ${kind && html`<${Tag} title="Kind of run">${kind}<//>`}
   ${priority && priority !== "none" && html`<${Tag} title=${`Priority: ${priority}`}><small>P</small>${priority}<//>`}

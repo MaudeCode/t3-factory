@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inventory, upNext } from '../src/scheduler.ts';
+import { inventory, upNext, blockerTree } from '../src/scheduler.ts';
 import { dispatchFixture } from './dispatch-fixture.ts';
 
 test('queue projections retain actual labels and metadata for ready, dependency-projected and held tickets', async t => {
@@ -32,4 +32,22 @@ test('run snapshots retain freshly validated ticket labels and priority across s
   const job = f.store.jobs()[0];
   assert.equal(job.priority, 'urgent', 'snapshot uses final tracker read rather than stale inventory priority');
   assert.deepEqual(job.labels, ['sf', 'med', 'fresh'], 'snapshot uses complete associated labels from final validation');
+});
+
+
+test('ticket projections preserve native automation readiness independently of labels', async t => {
+  const f = dispatchFixture(t);
+  f.tasks[0].automationReady = true;
+  f.tasks[1].status = 'todo';
+  f.tasks[1].automationReady = true;
+  f.tasks.push({ ...f.task('held', 3, 'todo'), automationReady: true, labels: [{ name: 'sf' }] });
+  const result = upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store));
+  assert.equal(result.tickets.find(t => t.id === 'root')?.automationReady, true, 'projected dependency ticket retains native readiness');
+  assert.equal(result.tickets.find(t => t.id === 'blocker')?.automationReady, true, 'ready queue ticket retains native readiness');
+  assert.equal(result.held.find(t => t.key === 'FIX-3')?.automationReady, true, 'held tickets retain native content readiness independently of eligibility');
+  const notReady = upNext(f.c, f.store, { ready: [], skipped: [{ key: 'FIX-4', reason: 'held', ticket: { id: 'not-ready', key: 'FIX-4', projectId: 'FIX', priority: 'high', createdAt: '2026-01-01', labels: [{ name: 'sf' }], automationReady: false } }] });
+  assert.equal(notReady.held[0].automationReady, false, 'sf label cannot make a native false ticket automation ready');
+  const tree = await blockerTree(f.c, f.kanvil, 'root');
+  assert.equal(tree.target.automationReady, true);
+  assert.equal(tree.tickets[0].automationReady, true, 'dependency details retain native readiness');
 });
