@@ -276,5 +276,17 @@ async function overflowEdges() {
   scrollTo(0, 0);
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.sessionTests = { run, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
+window.sessionTests = { readiness, run, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
 await show();
+
+
+async function readiness() {
+  const readyRows = [row('ready', 'APP-1', 'high', { automationReady: true, labels: [] }), row('held', 'APP-2', 'medium', { automationReady: false, labels: ['sf'] }), row('unknown', 'APP-3', 'low', { labels: ['sf'] })];
+  await show({ sessionTickets: { at, error: null, rows: readyRows } });
+  const icons = () => root.querySelectorAll('.next [role="img"][aria-label="Automation ready"]');
+  assert(icons().length === 1 && icons()[0].closest('.next').querySelector('.key').textContent === 'APP-1', 'session tickets show native readiness only');
+  update({ sessionTickets: { at, error: null, rows: readyRows.map(t => ({ ...t, automationReady: t.taskId === 'held' })) } }); await pause();
+  assert(icons().length === 1 && icons()[0].closest('.next').querySelector('.key').textContent === 'APP-2', 'live session readiness moves the same shared symbol');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'session readiness symbols fit the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}

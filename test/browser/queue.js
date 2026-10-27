@@ -266,5 +266,26 @@ async function progress() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'request states fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.queueTests = { run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress };
+window.queueTests = { readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress };
 await show();
+
+
+async function readiness() {
+  await show(Infinity);
+  const tickets = [
+    { ...ticket(1), automationReady: true, labels: [] },
+    { ...ticket(2), automationReady: false, labels: ['sf'] },
+    { ...ticket(3), labels: ['sf'] },
+  ];
+  const update = rows => { status.value = { ...state.status, upNext: { ...state.status.upNext, tickets: rows } }; };
+  update(tickets); await pause();
+  const rows = () => [...root.querySelectorAll('.next')];
+  const icon = row => row.querySelector('[role="img"][aria-label="Automation ready"]');
+  assert(icon(rows()[0])?.closest('[title="Automation ready"]'), 'native ready ticket has one named icon and tooltip');
+  assert(!icon(rows()[1]) && !icon(rows()[2]), 'false or missing native readiness is not inferred from labels');
+  update(tickets.map(t => ({ ...t, automationReady: t.id !== 't1' }))); await pause();
+  assert(!icon(rows()[0]) && icon(rows()[1]) && icon(rows()[2]), 'live native updates replace readiness symbols');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'readiness symbols fit the viewport');
+  update(tickets); await pause();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}

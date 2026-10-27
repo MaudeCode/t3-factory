@@ -709,8 +709,9 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
     if (blockers === 'cycle' || blockers.length) reason = 'Ticket or ancestor has an unfinished blocker or relation cycle';
     const children = await openChildren(t.id);
     if (children.length) { reason = 'Umbrella has unfinished children; select leaves instead'; blockedBy.push(...children); }
+    const candidate = async (): Promise<Candidate> => ({ id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labels: t.labels ?? [], ...await inheritedPriority(t, p) });
     // A blocked ticket keeps what the queue needs to place it behind its blockers.
-    if (reason && blockedBy.length) return { key, id: t.id, reason, blockedBy, ticket: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, ...await inheritedPriority(t, p) } };
+    if (reason && blockedBy.length) return { key, id: t.id, reason, blockedBy, ticket: await candidate() };
     let artifacts = { branches: new Map<string, string>(), inactiveThreads: new Set<string>(), openPR: false };
     if (!reason) {
       try { artifacts = await ticketArtifacts(p, key, t.id, threads, jobs, store, Promise.resolve(prs.get(p.kanvilId)!)); }
@@ -726,7 +727,7 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
       if (artifacts.openPR) reason = 'Existing open PR references this ticket';
     }
     if (reason) return { key, id: t.id, reason };
-    return { candidate: { id: t.id, projectId: t.projectId, key, title: t.title, createdAt: t.createdAt, difficulty, labels: t.labels ?? [], ...await inheritedPriority(t, p) } };
+    return { candidate: await candidate() };
   };
   const verdicts: Verdict[] = new Array(potential.length);
   for (let start = 0; start < potential.length; start += READ_CONCURRENCY) {
@@ -740,7 +741,7 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
       const task = all.get(v.id!)!;
       let difficulty: Candidate['difficulty'];
       try { difficulty = taskDifficulty(task); } catch { /* Keep the classification refusal. */ }
-      skipped.push({ ...v, ticket: { id: task.id, key: v.key, projectId: task.projectId, title: task.title, createdAt: task.createdAt, priority: task.priority, difficulty, ...v.ticket, labels: task.labels ?? [] } });
+      skipped.push({ ...v, ticket: { id: task.id, key: v.key, projectId: task.projectId, title: task.title, createdAt: task.createdAt, priority: task.priority, difficulty, automationReady: task.automationReady, ...v.ticket, labels: task.labels ?? [] } });
     }
   }
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kanvilId)) };
@@ -1146,7 +1147,7 @@ function taskReader(c: Config, kanvil: Kanvil) {
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t) };
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t) };
   };
   return { task, done, node };
 }
@@ -1267,9 +1268,9 @@ export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'sk
     at: new Date().toISOString(),
     tickets: order.map(t => {
       const preset = c.models.find(m => m.automatic && acceptsDifficulty(m, t));
-      return { id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, priority: t.priority, labels: (t.labels ?? []).map(l => l.name), labelRank: t.labelRank, after: t.after ?? [], model: preset?.name ?? null, modelId: preset?.id ?? null };
+      return { id: t.id, key: t.key, title: t.title ?? '', projectId: t.projectId, difficulty: t.difficulty, automationReady: t.automationReady, priority: t.priority, labels: (t.labels ?? []).map(l => l.name), labelRank: t.labelRank, after: t.after ?? [], model: preset?.name ?? null, modelId: preset?.id ?? null };
     }),
-    held: queue.skipped.filter(s => !s.id || !projected.has(s.id)).map(s => ({ key: s.key, reason: s.reason, ...(s.ticket ? { projectId: s.ticket.projectId, title: s.ticket.title, priority: s.ticket.priority, difficulty: s.ticket.difficulty, labels: (s.ticket.labels ?? []).map(l => l.name) } : {}) })),
+    held: queue.skipped.filter(s => !s.id || !projected.has(s.id)).map(s => ({ key: s.key, reason: s.reason, ...(s.ticket ? { projectId: s.ticket.projectId, title: s.ticket.title, priority: s.ticket.priority, difficulty: s.ticket.difficulty, automationReady: s.ticket.automationReady, labels: (s.ticket.labels ?? []).map(l => l.name) } : {}) })),
   };
 }
 

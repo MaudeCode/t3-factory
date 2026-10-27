@@ -134,7 +134,7 @@ function Blocked() {
             return html`<div class="chain-row" key=${t.id}>
               <${Tag} tone=${ahead.length ? "" : t.runnable ? "ok" : "attention"}>${ahead.length ? "waits" : t.runnable ? "can start" : "not included"}<//>
               <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-                <${Meta} priority=${t.priority} difficulty=${t.difficulty || false}>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}<//>
+                <${Meta} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false}>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}<//>
               <//>
             </div>`;
           },

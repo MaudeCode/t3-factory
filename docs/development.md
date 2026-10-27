@@ -37,6 +37,8 @@ The optional LAN DNS updater lives in `scripts/update-dns.ts`, separate from sch
 
 ### Web interface
 
+Ticket metadata uses the existing `Meta`, green `Tag` and `zap` icon for native `automationReady: true`. The compact symbol is named and titled "Automation ready". False or missing readiness shows no symbol; labels and queue eligibility do not imply readiness. Queue, session-ticket and dependency rows share this renderer. `test/run-filters.test.ts` covers queue/dependency projections; `queueTests.readiness()` and `sessionTests.readiness()` in the existing browser fixtures check live updates at desktop and mobile widths.
+
 The browser app is plain ES modules served by `src/web.ts`; there is no bundler or build step. Preact, signals, and htm live in `web/vendor/` with their imports rewritten to relative paths, so the page needs no import map. The same script writes `web/vendor/icons.js` with the provider glyphs from `@lobehub/icons-static-svg` and the pull request and action glyphs from `@primer/octicons` as path data. Buttons are icon-only wherever the action is routine: `Button` takes an `icon` name and a `label` that becomes the accessible name and tooltip, and `More` is the arrow link from a section to its full page. Add a glyph to `scripts/vendor-web.ts` rather than inlining an SVG. After changing those versions in `package.json`, run `npm run vendor:web` and commit the result. The font is bundled in `web/fonts/` so the installed app works offline. Colours are CSS variables set by `web/lib/theme.js`; `web/lib/themes.js` is generated from a T3 Code checkout by `npm run vendor:themes -- <path>` and holds T3 Code's palettes, so the Theme picker offers the same themes as T3 Code in light and dark.
 
 | Directory | Responsibility |
