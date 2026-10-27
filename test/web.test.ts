@@ -221,12 +221,12 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     );
     assert.equal((await request("/api/dispatch", {
       method: "POST", headers: { Cookie: cookie, "Idempotency-Key": id },
-      body: JSON.stringify({ ...input, allowMissingReadyLabel: true }),
-    })).status, 409, "confirmation is a new request, not an idempotency replay");
+      body: JSON.stringify({ ...input, chain: "all" }),
+    })).status, 409, "a chain choice is a new request, not an idempotency replay");
     assert.equal((await request("/api/dispatch", {
       method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() },
       body: JSON.stringify({ model: "astra", allowMissingReadyLabel: true }),
-    })).status, 400, "confirmation requires a ticket");
+    })).status, 400, "obsolete label-waiver input is rejected");
     const finishFirst = finish, secondId = randomUUID();
     const secondInput = { ticket: "APP-9", model: "auto", overrideLimits: ["labels"] };
     const second = () => request("/api/dispatch", {
@@ -254,13 +254,6 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal((await request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() }, body: JSON.stringify({ ...reviewInput, ticket: "APP-1" }) })).status, 400, "review cannot include a ticket");
     assert.equal((await review({ ...reviewInput, upstream: "up/other" })).status, 409, "one ID cannot change review target");
     finish({ code: 1, data: { reason: "upstream-not-due" } });
-    const confirmedId = randomUUID();
-    assert.equal((await request("/api/dispatch", {
-      method: "POST", headers: { Cookie: cookie, "Idempotency-Key": confirmedId },
-      body: JSON.stringify({ ...input, allowMissingReadyLabel: true }),
-    })).status, 202);
-    assert.ok(calls.at(-1)!.args.includes("--allow-missing-ready-label"));
-    finish({ code: 0, data: { reason: "dispatched", ticket: "APP-8" } });
     assert.equal(
       (
         await request("/api/operations/not-a-uuid", {

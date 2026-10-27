@@ -97,9 +97,8 @@ enum Words {
 // What the user must answer before a manual run can go ahead.
 enum RunPrompt: Identifiable {
     case blocked(id: String, ticket: String, tree: [String: Any])
-    case readiness(id: String, ticket: String, label: String)
     var id: String {
-        switch self { case .blocked(let id, _, _), .readiness(let id, _, _): return id }
+        switch self { case .blocked(let id, _, _): return id }
     }
 }
 
@@ -318,9 +317,6 @@ struct RunRequest: Identifiable, Codable {
         case "blocked-ticket-plan-required":
             state = "done"; message = "Choose how to run this chain."
             prompt = .blocked(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, tree: object["tree"] as? [String: Any] ?? [:])
-        case "ready-label-confirmation-required":
-            state = "done"; message = "Readiness confirmation required."
-            prompt = .readiness(id: request.id, ticket: object["ticket"] as? String ?? request.ticket, label: object["requiredLabel"] as? String ?? "ready")
         default:
             state = uncertain ? "uncertain" : "error"
             message = object["message"] as? String ?? object["reason"] as? String ?? "Check factory status before retrying."

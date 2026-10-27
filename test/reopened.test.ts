@@ -79,7 +79,7 @@ for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true
   const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
   const c = configSchema.parse({ enabled: false, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,
     model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, runtimeMode: 'full-access', stateDir: join(dir, 'state'),
-    t3: { url: 'http://127.0.0.1', credentialFile: join(dir, 'token') }, kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    t3: { url: 'http://127.0.0.1', credentialFile: join(dir, 'token') }, kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     quota: { maxAgeSeconds: 300, fiveHourReservePercent: 40, weeklyReservePercent: 70 }, discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kanvilId: 'p', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
@@ -153,7 +153,7 @@ test('a ticket closed without delivery can be dispatched again once ready', asyn
   const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
   const c = configSchema.parse({ enabled: false, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,
     model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, runtimeMode: 'full-access', stateDir: join(dir, 'state'),
-    t3: { url: 'http://127.0.0.1', credentialFile: join(dir, 'token') }, kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    t3: { url: 'http://127.0.0.1', credentialFile: join(dir, 'token') }, kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     quota: { maxAgeSeconds: 300, fiveHourReservePercent: 40, weeklyReservePercent: 70 }, discovery: { promptFile: join(dir, 'prompt'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kanvilId: 'p', t3Id: 'tp', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });

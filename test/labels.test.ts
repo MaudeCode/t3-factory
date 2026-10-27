@@ -28,7 +28,7 @@ function fixture(t: test.TestContext, read: (url: URL, init?: RequestInit) => Re
     } }), { headers: { 'content-type': 'text/event-stream' } });
     return read(url, init);
   });
-  const client = new Kanvil({ url: 'https://tracker.example.test', workspaceId: 'workspace', readyLabel: 'sf' });
+  const client = new Kanvil({ url: 'https://tracker.example.test', workspaceId: 'workspace' });
   t.after(() => client.close());
   return { client, calls };
 }

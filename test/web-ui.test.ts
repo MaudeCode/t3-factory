@@ -153,11 +153,11 @@ test('named requests capture the ticket-key revision and recovery never relabels
     await store.restoreOperation();
     assert.equal(writes.length, 2);
     assert.equal(writes[1].ticketKeyRevision, undefined, 'recovered requests retain their original identity context');
-    store.operations.value = [{ id: 'old-readiness', input: { ticket: 'APP-3', model: 'auto', overrideLimits: true }, state: 'done', result: { data: { reason: 'ready-label-confirmation-required' } } }];
-    store.showReadinessConfirmation('old-readiness');
-    store.runWithoutReadyLabel();
+    store.operations.value = [{ id: 'old-chain', input: { ticket: 'APP-3', model: 'auto', overrideLimits: true }, state: 'done', result: { data: { reason: 'blocked-ticket-plan-required' } } }];
+    store.showBlockedChoice('old-chain');
+    store.runChain('all');
     await untilChecked(() => writes.length === 3 && store.operations.value.every((op: any) => op.state === 'done'));
-    assert.equal(writes[2].ticketKeyRevision, undefined, 'answering an old readiness prompt cannot adopt the new mapping');
+    assert.equal(writes[2].ticketKeyRevision, undefined, 'answering an old chain prompt cannot adopt the new mapping');
   } finally {
     globalThis.fetch = originalFetch;
     store.operations.value = []; saved.clear();
@@ -245,7 +245,7 @@ test('API recovers a transient empty proxy response on reads without resending w
   await assert.rejects(api('/api/state'), /empty or invalid response/);
 });
 
-test('missing-label confirmation cancels safely and binds Run anyway to the original ticket', async () => {
+test('chain confirmation cancels safely and binds the answer to the original ticket', async () => {
   const started: unknown[] = [];
   globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
     if (String(url) === '/api/dispatch') {
@@ -255,22 +255,22 @@ test('missing-label confirmation cancels safely and binds Run anyway to the orig
     return Response.json(fixture());
   };
   store.applyState(fixture(), true);
-  store.operations.value = [{ id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'ready-label-confirmation-required', requiredLabel: 'sf' } } }];
-  store.showReadinessConfirmation('original');
-  assert.equal(store.readiness.value?.label, 'sf');
-  store.readiness.value = null; // Cancel
-  await store.runWithoutReadyLabel();
+  store.operations.value = [{ id: 'original', state: 'done', input: { ticket: 'APP-1', model: 'opus', overrideLimits: true }, result: { data: { reason: 'blocked-ticket-plan-required', tree: { tickets: [] } } } }];
+  store.showBlockedChoice('original');
+  assert.equal(store.blocked.value?.id, 'original');
+  store.blocked.value = null; // Cancel
+  await store.runChain('all');
   assert.equal(started.length, 0, 'Cancel cannot dispatch');
-  store.showReadinessConfirmation('original');
+  store.showBlockedChoice('original');
   store.operations.value = [{ ...store.operations.value[0], id: 'different' }];
-  await store.runWithoutReadyLabel();
+  await store.runChain('all');
   assert.equal(started.length, 0, 'stale confirmation cannot dispatch');
   store.operations.value = [{ ...store.operations.value[0], id: 'original' }];
-  store.showReadinessConfirmation('original');
-  await store.runWithoutReadyLabel();
+  store.showBlockedChoice('original');
+  await store.runChain('all');
   await untilChecked(() => started.length === 1 && store.operations.value.length === 0);
-  assert.deepEqual(started, [{ ticket: 'APP-1', model: 'opus', overrideLimits: true, allowMissingReadyLabel: true }]);
-  assert.equal(store.readiness.value, null);
+  assert.deepEqual(started, [{ ticket: 'APP-1', model: 'opus', overrideLimits: true, chain: 'all' }]);
+  assert.equal(store.blocked.value, null);
   store.operations.value = [];
 });
 
@@ -373,36 +373,36 @@ test('a project added from the catalogs starts with its path, prefix, and column
   assert.deepEqual(store.config.value.projects[0].upstreams, []);
 });
 
-test('readiness and chain answers remain bound to older rows after later checks finish', async () => {
-  store.operations.value = []; store.readiness.value = null; store.blocked.value = null;
+test('chain answers remain bound to older rows after later checks finish', async () => {
+  store.operations.value = []; store.blocked.value = null;
   store.applyState(fixture(), true);
   const calls: any[] = [];
   globalThis.fetch = async (url: any, init?: RequestInit) => {
     if (url !== '/api/dispatch') return Response.json(fixture());
     const input = JSON.parse(init!.body as string), id = (init!.headers as any)['Idempotency-Key'];
     calls.push(input);
-    const reason = input.allowMissingReadyLabel || input.chain ? 'dispatched' : input.ticket === 'APP-1' ? 'ready-label-confirmation-required' : input.ticket === 'APP-2' ? 'blocked-ticket-plan-required' : 'quota-exhausted';
-    return Response.json({ id, input, state: 'done', result: { data: { reason, ticket: input.ticket, requiredLabel: 'sf', tree: { tickets: [] } } } });
+    const reason = input.chain ? 'dispatched' : input.ticket === 'APP-1' ? 'blocked-ticket-plan-required' : input.ticket === 'APP-2' ? 'blocked-ticket-plan-required' : 'quota-exhausted';
+    return Response.json({ id, input, state: 'done', result: { data: { reason, ticket: input.ticket, tree: { tickets: [] } } } });
   };
   const a = store.startRun({ ticket: 'APP-1', model: 'sol', overrideLimits: false });
   const b = store.startRun({ ticket: 'APP-2', model: 'opus', overrideLimits: true });
   store.startRun({ ticket: 'APP-3', model: 'auto', overrideLimits: true });
   await untilChecked(() => calls.length === 3 && store.operations.value.at(-1).state === 'done');
-  assert.equal(store.readiness.value.id, a);
-  store.readiness.value = null; // Cancel leaves the row available to review later.
+  assert.equal(store.blocked.value.id, a);
+  store.blocked.value = null; // Cancel leaves the row available to review later.
   store.showBlockedChoice(b);
   assert.equal(store.blocked.value.id, b);
   store.runChain('all'); store.runChain('first');
-  store.showReadinessConfirmation(a);
-  store.runWithoutReadyLabel(); store.runWithoutReadyLabel();
+  store.showBlockedChoice(a);
+  store.runChain('all'); store.runChain('all');
   await untilChecked(() => calls.length === 5 && store.operations.value.at(-1).state === 'done');
   assert.deepEqual(calls.slice(3), [
     { ticket: 'APP-2', model: 'opus', overrideLimits: true, chain: 'all' },
-    { ticket: 'APP-1', model: 'sol', overrideLimits: false, allowMissingReadyLabel: true },
+    { ticket: 'APP-1', model: 'sol', overrideLimits: false, chain: 'all' },
   ]);
   assert.deepEqual(store.operations.value.map((op: any) => op.input.ticket), ['APP-3'], 'answered prompts are replaced by their check, which leaves on success');
-  store.showReadinessConfirmation(a);
-  assert.equal(store.readiness.value, null, 'an answered row cannot be submitted twice');
+  store.showBlockedChoice(a);
+  assert.equal(store.blocked.value, null, 'an answered row cannot be submitted twice');
   store.operations.value = [];
 });
 
@@ -447,7 +447,7 @@ test('recovery migrates one saved operation and restores queued order without re
 });
 
 test('lost POST responses are reconciled by ID and a missing request retries only explicitly with that ID', async () => {
-  store.operations.value = []; store.readiness.value = null; store.blocked.value = null;
+  store.operations.value = []; store.blocked.value = null;
   store.applyState(fixture(), true);
   const posts: any[] = [];
   let first = true;
@@ -519,8 +519,8 @@ test('confirmed launches leave the manual queue and saved successes are retired 
   assert.notEqual(a, b);
 
   const row = (id: string, state: string, reason: string) => ({ id, input, state, result: { data: { reason } } });
-  const retained = [row('refused', 'done', 'quota-exhausted'), row('error', 'error', 'dispatched'), row('uncertain', 'uncertain', 'dispatched'), row('ready', 'done', 'ready-label-confirmation-required'), row('blocked', 'done', 'blocked-ticket-plan-required')];
-  saved.set('factoryOperations', JSON.stringify([row('started', 'done', 'dispatched'), ...retained, { ...row('answered', 'done', 'ready-label-confirmation-required'), choiceHandled: true }, row('plan', 'done', 'plan-started')]));
+  const retained = [row('refused', 'done', 'quota-exhausted'), row('error', 'error', 'dispatched'), row('uncertain', 'uncertain', 'dispatched'), row('ready', 'done', 'blocked-ticket-plan-required'), row('blocked', 'done', 'blocked-ticket-plan-required')];
+  saved.set('factoryOperations', JSON.stringify([row('started', 'done', 'dispatched'), ...retained, { ...row('answered', 'done', 'blocked-ticket-plan-required'), choiceHandled: true }, row('plan', 'done', 'plan-started')]));
   await store.restoreOperation();
   assert.deepEqual(store.operations.value, retained, 'recovery retires only confirmed successes');
   assert.deepEqual(JSON.parse(saved.get('factoryOperations')!), retained);

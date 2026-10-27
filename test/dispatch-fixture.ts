@@ -27,7 +27,7 @@ export function dispatchFixture(t: TestContext) {
     models: [{ id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'fixture-sol' }, automatic: true, maxDifficulty: 'high' }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     stateDir: join(dir, 'state'), t3: { url: 'http://localhost', credentialFile: join(dir, 'unused') },
-    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' }, factorySkill: join(dir, 'skill'),
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));

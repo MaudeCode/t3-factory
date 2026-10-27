@@ -134,8 +134,8 @@ async function untouchedHead(project: Project, branch: string, worktreePath?: st
   return history.every(head => head === created) && await released(project, created) ? created : '';
 }
 // A ticket closed without delivery must have left the ready queue and abandon no work.
-async function verifyClosedWithoutDelivery(c: Config, project: Project, kanvil: Kanvil, task: Task, job: Job, thread: Thread) {
-  if (!project.doneStatuses.includes(task.status) && project.readyStatuses.includes(task.status) && task.automationReady && !task.holdReason && task.labels?.some(l => l.name === c.kanvil.readyLabel)) {
+async function verifyClosedWithoutDelivery(project: Project, task: Task, job: Job, thread: Thread) {
+  if (!project.doneStatuses.includes(task.status) && project.readyStatuses.includes(task.status) && task.automationReady && !task.holdReason && !task.archived) {
     throw new Error('Ticket is still ready; record why no change is needed and remove it from the ready queue');
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
@@ -162,7 +162,7 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
   if (job.kind === 'ticket') {
     if (report.status !== 'complete' && report.prUrls.length) throw new Error('Ticket cannot finish as no-work');
     const task = await kanvil.task(job.taskId!, project.kanvilId);
-    if (!report.prUrls.length) await verifyClosedWithoutDelivery(c, project, kanvil, task, job, t);
+    if (!report.prUrls.length) await verifyClosedWithoutDelivery(project, task, job, t);
     else {
       if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket not yet verified Done in Kanvil');
       await verifyMerged(project, report.prUrls);
@@ -629,7 +629,7 @@ function cachedRead<T>(cache: Map<string, Promise<T>>, id: string, read: () => P
   return cache.get(id)!;
 }
 
-export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, allowMissingReadyLabel = false) {
+export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string) {
   const projects = c.projects.filter(p => p.enabled);
   const all = new Map<string, Task>();
   const listedProjects = ticketKey ? projects.filter(p => ticketKey.startsWith(`${p.key}-`)) : projects;
@@ -641,11 +641,10 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
     const p = projects.find(p => p.kanvilId === t.projectId)!;
     const key = `${p.key}-${t.number}`;
     if (ticketKey && key !== ticketKey) return false;
-    const missingReadyLabel = !t.labels?.some(l => l.name === c.kanvil.readyLabel) && !(ticketKey === key && allowMissingReadyLabel);
     const reason = !p.readyStatuses.includes(t.status) ? `Ticket is ${t.status}; it must be in ${p.readyStatuses.join(' or ')}`
       : owned.has(t.id) ? `Ticket already has a ${owned.get(t.id)!.state} factory run`
-      : taskHold(t) || (missingReadyLabel ? `Ticket is missing the ${c.kanvil.readyLabel} label` : '');
-    if (reason && ticketKey) skipped.push({ key, reason, id: t.id, ...(missingReadyLabel && p.readyStatuses.includes(t.status) && !owned.has(t.id) ? { missingReadyLabel: true } : {}) });
+      : taskHold(t);
+    if (reason && ticketKey) skipped.push({ key, reason, id: t.id });
     return !reason;
   });
   if (ticketKey && ![...all.values()].some(t => `${projects.find(p => p.kanvilId === t.projectId)!.key}-${t.number}` === ticketKey)) skipped.push({ key: ticketKey, reason: 'Ticket was not found in the enabled project' });
@@ -747,8 +746,8 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
   return { ready, skipped, selected: selectTicket(ready, store.get('lastProject'), projects.map(p => p.kanvilId)) };
 }
 
-export interface Skipped { key: string; reason: string; id?: string; missingReadyLabel?: boolean; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; allowMissingReadyLabel?: boolean; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
+export interface Skipped { key: string; reason: string; id?: string; blockedBy?: string[]; ticket?: Candidate }
+export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
 // The thresholds this start skips; automatic work skips none.
 const skips = (options: CycleOptions) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
@@ -810,8 +809,7 @@ export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'pro
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
-  if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain || options.allowMissingReadyLabel)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
-  if (options.allowMissingReadyLabel && (!options.manual || !options.ticket?.trim())) throw new Error('The readiness-label override requires a specific manual ticket');
+  if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
   if (options.manual && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
   if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
@@ -881,9 +879,8 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     if (readContext()?.suspended) shell = await backgroundRead(() => t3.shell());
     const queueRevision = readContext()?.revision;
     let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true;
-    try { if (!options.upstream) queue = await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase(), !!options.manual && !!options.allowMissingReadyLabel); }
+    try { if (!options.upstream) queue = await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase()); }
     catch (error) { if (ticketsOn) throw error; queueRead = false; log('queue-read-failed', { message: safeError(error) }); }
-    if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: options.ticket?.trim().toUpperCase(), requiredLabel: c.kanvil.readyLabel, message: `Ticket is missing the ${c.kanvil.readyLabel} label. Confirm this run to continue without it.` });
     if (options.manual && options.ticket && !queue.ready.length) {
       const chained = await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision);
       if (chained) return chained;
@@ -997,8 +994,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
     if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     // A review needs no ticket queue, so ticket-only reads cannot block it.
-    const queue = plan?.queue ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey, !!options.manual && !!options.allowMissingReadyLabel));
-    if (options.manual && queue.skipped.some(s => s.missingReadyLabel)) return decision('ready-label-confirmation-required', { ticket: ticketKey, requiredLabel: c.kanvil.readyLabel, message: `Ticket is missing the ${c.kanvil.readyLabel} label. Confirm this run to continue without it.` });
+    const queue = plan?.queue ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey));
     const discovery = !ticketKey && !options.manual && !review;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
@@ -1067,11 +1063,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const currentJobs = store.jobs();
     if (queue.selected) {
       if (!checked || checked.task.projectId !== project.kanvilId || !project.readyStatuses.includes(checked.task.status) || taskHold(checked.task) || checked.task.readiness?.ready !== true) return decision('ticket-changed-before-dispatch');
-      const { task, labels, blockers, children } = checked, key = queue.selected.key;
+      const { task, blockers, children } = checked, key = queue.selected.key;
       let difficulty: Candidate['difficulty'];
       try { difficulty = taskDifficulty(task); } catch { difficulty = undefined; }
       if (difficulty !== queue.selected.difficulty || !acceptsDifficulty(preset, { ...queue.selected, difficulty })) return decision('ticket-changed-before-dispatch', { message: 'The ticket\'s difficulty changed.' });
-      if (!options.allowMissingReadyLabel && !labels.some(l => l.name === c.kanvil.readyLabel)) return decision('ticket-changed-before-dispatch', { message: `The ticket lost its ${c.kanvil.readyLabel} label.` });
       if (blockers === 'cycle' || blockers.length || children.length) return decision('ticket-changed-before-dispatch', { message: 'The ticket gained a blocker or an unfinished child.' });
       if (!artifacts || artifacts.openPR || currentJobs.some(j => j.taskId === task.id && !['complete', 'dismissed'].includes(j.state)) || fresh.threads.some(t => !artifacts.inactiveThreads.has(t.id) && threadReferencesTicket(t, project.t3Id, key))) return decision('ticket-order-or-eligibility-changed');
     }
@@ -1095,7 +1090,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const selectedModel = currentQuota.factoryRouting.model;
     // Manual Codex runs never wait for idle time or reserve, so only a label override is news for them.
     const waived = [...skip].filter(l => l === 'labels' || !currentManualCodex).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit' })[l]);
-    const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason + (options.allowMissingReadyLabel ? ` The user explicitly confirmed this run without the ${c.kanvil.readyLabel} readiness label. Waive only that label check; do not add the label or skip other readiness, dependency, validation, or merge gates.` : '');
+    const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason;
     const now = new Date().toISOString(), id = randomUUID();
     const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: review ? 'upstream' : queue.selected ? 'ticket' : 'discovery', ...(review ? { upstream: review.upstream } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
     if (checked) {
@@ -1151,7 +1146,7 @@ function taskReader(c: Config, kanvil: Kanvil) {
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, readyLabel: t.automationReady === true && !t.holdReason && labels.some(l => l.name === c.kanvil.readyLabel), runnable: !!p?.enabled, blockedBy: [], done: await done(t) };
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t) };
   };
   return { task, done, node };
 }
@@ -1201,7 +1196,7 @@ async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, in
   if (options.chain === 'first') {
     const pick = chainReady(tree, store.jobs()).find(t => t.runnable && t.id !== tree.target.id);
     if (!pick) return decision('chain-nothing-runnable', { ticket: ticketKey, tree, message: `Nothing in the chain to ${ticketKey} can start right now.` });
-    const result = await run({ ...options, chain: undefined, ticket: pick.key, allowMissingReadyLabel: !pick.readyLabel });
+    const result = await run({ ...options, chain: undefined, ticket: pick.key });
     return { ...result, chain: { target: ticketKey, picked: pick.key } };
   }
   const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', overrideLimits: [...skip], state: 'active' };
@@ -1238,7 +1233,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       const driver = instances.get(preset.model.instanceId) ?? 'claudeAgent';
       if (busyProviders(store.jobs(), threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(driver)) { t.note = `Waiting for a free ${driver === 'codex' ? 'Codex' : 'Claude'} slot`; continue; }
       try {
-        const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, overrideLimits: plan.overrideLimits, allowMissingReadyLabel: !t.readyLabel }, undefined, { t3, kanvil }, plan.id);
+        const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil }, plan.id);
         results.push(result);
         t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
       } catch (error) { t.note = safeError(error); results.push({ reason: 'error', at: new Date().toISOString(), ticket: t.key, message: t.note }); }

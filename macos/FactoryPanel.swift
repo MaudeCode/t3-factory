@@ -113,7 +113,6 @@ struct FactoryPanel: View {
     private var promptTitle: String {
         switch model.prompt {
         case .blocked(_, let ticket, let tree): return "\(ticket) waits on \((tree["tickets"] as? [[String: Any]])?.count ?? 0) tickets"
-        case .readiness(_, let ticket, let label): return "Run \(ticket) without \(label)?"
         case nil: return ""
         }
     }
@@ -125,9 +124,6 @@ struct FactoryPanel: View {
             Button("Run the first blocker") { Task { await model.answer(prompt, with: ["--chain", "first"]) } }.disabled(!now)
             Button("Run the whole chain") { Task { await model.answer(prompt, with: ["--chain", "all"]) } }
             Button("Cancel", role: .cancel) { model.prompt = nil }
-        case .readiness:
-            Button("Run anyway") { Task { await model.answer(prompt, with: ["--allow-missing-ready-label"]) } }
-            Button("Cancel", role: .cancel) { model.prompt = nil }
         }
     }
     private func promptMessage(_ prompt: RunPrompt) -> some View {
@@ -138,11 +134,9 @@ struct FactoryPanel: View {
             let lines = tickets.map { t -> String in
                 let after = (t["blockedBy"] as? [String] ?? []).compactMap { byId[$0] }
                 let state = after.isEmpty ? (t["runnable"] as? Bool == true ? "can start" : "project not included") : "after " + after.joined(separator: ", ")
-                return "\(t["key"] as? String ?? "") \(t["title"] as? String ?? "") — \(state)\(t["readyLabel"] as? Bool == false ? ", no ready label" : "")"
+                return "\(t["key"] as? String ?? "") \(t["title"] as? String ?? "") — \(state)"
             }
-            return Text("The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs \(ticket) last. Tickets without the ready label run anyway.\n\n" + lines.joined(separator: "\n"))
-        case .readiness(_, _, let label):
-            return Text("This ticket is not marked \(label). Running it skips only that label check; dependency, difficulty, quota, and duplicate checks still apply.")
+            return Text("The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs \(ticket) last.\n\n" + lines.joined(separator: "\n"))
         }
     }
 

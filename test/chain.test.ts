@@ -27,7 +27,7 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     models: [{ id: 'opus', name: 'Opus', model: { instanceId: 'claudeAgent', model: 'claude-opus-5' }, automatic: true, maxDifficulty: 'high' }, { id: 'sol', name: 'Sol', model: { instanceId: 'codex', model: 'gpt-5.6-sol' }, automatic: false, maxDifficulty: 'high' }],
     quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
     runtimeMode: 'full-access', stateDir: join(dir, 'state'), t3: { url: 'http://127.0.0.1:3773', credentialFile: join(dir, 'unused') },
-    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace', readyLabel: 'sf' },
+    kanvil: { url: 'https://kanvil.example.test', workspaceId: 'workspace' },
     discovery: { promptFile: join(dir, 'discovery.md'), emptyCooldownHours: 24 }, factorySkill: join(dir, 'skill'),
     projects: [{ name: 'FIX', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: repo, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], priorityLabels: ['security'] }],
   });
@@ -62,11 +62,11 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
   const store = new Store(c.stateDir);
   const finish = (key: string) => { tasks.find(x => `FIX-${x.number}` === key)!.status = 'done'; const job = store.jobs().find(j => j.ticketKey === key)!; job.state = 'complete'; store.save(job); threads.splice(threads.findIndex(x => x.id === job.threadId), 1); };
   try {
-    // Paused, the queue still projects: FIX-13 and FIX-49 are ready, FIX-48 follows FIX-13, FIX-50 stays held because FIX-47 lacks the ready label.
+    // Paused, the queue still projects: FIX-13, FIX-47 and FIX-49 are ready, FIX-48 follows FIX-13, and FIX-50 follows its direct blockers.
     assert.equal((await cycle(c, store)).reason, 'disabled');
     const projected = JSON.parse(store.get('upNext')!);
-    assert.deepEqual(projected.tickets.map((x: any) => [x.key, x.after]), [['FIX-13', []], ['FIX-49', []], ['FIX-48', ['FIX-13']]]);
-    assert.deepEqual(projected.held.map((x: any) => x.key), ['FIX-50']);
+    assert.deepEqual(projected.tickets.map((x: any) => [x.key, x.after]), [['FIX-13', []], ['FIX-47', []], ['FIX-49', []], ['FIX-48', ['FIX-13']], ['FIX-50', ['FIX-49', 'FIX-48', 'FIX-47']]]);
+    assert.deepEqual(projected.held, []);
     const ask = await cycle(c, store, { manual: true, ticket: 'FIX-50', model: 'auto', overrideLimits: true });
     assert.equal(ask.reason, 'blocked-ticket-plan-required');
     const tree = ask.tree as any;
@@ -87,7 +87,7 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     assert.equal(started.reason, 'plan-started', JSON.stringify(started));
     const planId = started.planId as string;
     assert.deepEqual(launches.slice(1).map(l => l.title), ['Factory: FIX-48', 'Factory: FIX-47'], 'two Claude slots: the two highest-priority unblocked blockers; FIX-47 runs despite lacking the ready label');
-    assert.match(launches[2].initialMessage.text, /explicitly confirmed this run without the sf readiness label/);
+    assert.doesNotMatch(launches[2].initialMessage.text, /readiness label/);
     assert.match(launches[2].workspaceStrategy.branch, /^fix\/FIX-47-factory-[0-9a-f]{8}$/, 'a bug ticket gets a fix branch');
     assert.match(launches[1].workspaceStrategy.branch, /^chore\/FIX-48-factory-/, 'no kind label falls back to chore');
     assert.equal(store.plan(planId)!.tickets.find(x => x.key === 'FIX-49')!.note, 'Waiting for a free Claude slot');
@@ -152,7 +152,7 @@ test('independent final dependency reads fan out with a bound of six', async t =
 
 test('cancelling a chain during suspended final validation cannot launch or restore the plan', async t => {
   const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
-  const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, readyLabel: true, runnable: true, blockedBy: [], done: false };
+  const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };
   f.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
   let finalSeen = false, cancelled = false;
   f.hooks.read = async (name, _id, final) => { if (final && name === 'labels') finalSeen = true; };

@@ -64,7 +64,8 @@ export const configSchema = z.preprocess(input => {
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
   stateDir: absolute,
   t3: z.object({ url: z.url(), credentialFile: absolute, autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
-  kanvil: z.object({ url: z.url().refine(value => { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && loopback(u))) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, 'Use a Kanvil HTTPS origin, or loopback-only HTTP, without credentials or a path'), workspaceId: z.string().min(1), readyLabel: z.string().min(1) }).strict(),
+  // Accept and discard the retired readiness-label setting in existing installations.
+  kanvil: z.object({ url: z.url().refine(value => { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && loopback(u))) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, 'Use a Kanvil HTTPS origin, or loopback-only HTTP, without credentials or a path'), workspaceId: z.string().min(1), readyLabel: z.string().optional() }).strict().transform(({ readyLabel, ...config }) => config),
   quota: z.object({
     maxAgeSeconds: positive,
     claude: z.object({ fiveHour: budget, weekly: budget, fable: budget }).strict(),

@@ -1,5 +1,5 @@
 import { html, useState, useEffect, useRef } from "../lib/h.js";
-import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, readiness, blocked, actions, runWithoutReadyLabel, runChain, message } from "../lib/store.js";
+import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message } from "../lib/store.js";
 import { route, PAGES, follow } from "../lib/router.js";
 import { Button, Dialog, Confirmation, Toast, Segmented, Tag, Meta, RowBody } from "../ui/index.js";
 import { confirmAction } from "../lib/confirmation.js";
@@ -112,19 +112,6 @@ function Shell() {
   <main key=${page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>`;
 }
 
-function Readiness() {
-  const r = readiness.value;
-  return html`<${Dialog}
-    open=${!!r}
-    onClose=${() => (readiness.value = null)}
-    title=${r ? `Run ${r.input.ticket.toUpperCase()} without ${r.label}?` : "Readiness"}
-    actions=${html`<${Button} variant="ghost" onClick=${() => (readiness.value = null)}>Cancel<//>
-      <${Button} variant="primary" onClick=${runWithoutReadyLabel}>Run anyway<//>`}
-  >
-    ${r && html`<p>This ticket is not marked ${r.label}. Run it anyway? This skips only the readiness-label requirement for this run. Dependency, difficulty, quota, and duplicate-run checks still apply.</p>`}
-  <//>`;
-}
-
 // A ticket that waits on other tickets: run the first one that can start, or the whole chain and then the ticket.
 function Blocked() {
   const b = blocked.value;
@@ -139,7 +126,7 @@ function Blocked() {
       <${Button} disabled=${!now} onClick=${() => runChain("first")}>Run the first blocker<//>
       <${Button} variant="primary" onClick=${() => runChain("all")}>Run the whole chain<//>`}
   >
-    ${b && html`<p class="muted">The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs ${b.ticket} last. Tickets without the ready label run anyway.</p>
+    ${b && html`<p class="muted">The whole chain starts every ticket that can start now, within the run limits, continues as tickets finish, and runs ${b.ticket} last.</p>
       <div class="chain">
         ${tickets.map(
           (t) => {
@@ -147,7 +134,7 @@ function Blocked() {
             return html`<div class="chain-row" key=${t.id}>
               <${Tag} tone=${ahead.length ? "" : t.runnable ? "ok" : "attention"}>${ahead.length ? "waits" : t.runnable ? "can start" : "not included"}<//>
               <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-                <${Meta} priority=${t.priority} difficulty=${t.difficulty || false}>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}${!t.readyLabel && html`<${Tag} tone="attention" title="Runs with a waiver for the missing ready label">no ready label<//>`}<//>
+                <${Meta} priority=${t.priority} difficulty=${t.difficulty || false}>${ahead.length ? `after ${ahead.join(", ")}` : "nothing ahead of it"}<//>
               <//>
             </div>`;
           },
@@ -189,7 +176,6 @@ export function App() {
   if (!authenticated.value) return html`<${Login} />`;
   return html`
     ${config.value && html`<${Shell} />`}
-    <${Readiness} />
     <${Blocked} />
     <${Confirmation} />
     ${dirty.value && html`<${SaveBar} />`}

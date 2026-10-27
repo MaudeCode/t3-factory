@@ -23,7 +23,7 @@ async function pairSession(url: string, secret: string) {
 
 test('web restart preserves scheduler-owned queued, checking, expired and uncertain operations without replay', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-operation-reload-')), secret = 'f'.repeat(64), port = await freePort(), url = `http://127.0.0.1:${port}`;
-  const input = { ticket: 'APP-1', model: 'auto', overrideLimits: true, allowMissingReadyLabel: false };
+  const input = { ticket: 'APP-1', model: 'auto', overrideLimits: true };
   const operations: Operation[] = ['queued', 'checking', 'expired', 'uncertain'].map(phase => ({ id: randomUUID(), input, command: { manual: true, ticket: 'APP-1' }, createdAt: new Date().toISOString(),
     state: phase === 'expired' ? 'done' : phase === 'uncertain' ? 'uncertain' : 'running',
     progress: { phase: phase === 'queued' ? 'queued' : phase === 'checking' ? 'checking' : 'launching', stage: 'kanvil.ticket', acceptedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString() },

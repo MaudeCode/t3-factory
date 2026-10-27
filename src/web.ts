@@ -64,14 +64,12 @@ const dispatchSchema = z
       .regex(/^[a-z][a-z0-9-]*$/)
       .default("auto"),
     overrideLimits: overrideLimitsSchema.default(true),
-    allowMissingReadyLabel: z.boolean().default(false),
     chain: z.enum(["first", "all"]).optional(),
     ticketKeyRevision: z.string().min(1).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
   })
   .strict()
-  .refine(input => !input.upstream || (!input.ticket && !input.chain && !input.allowMissingReadyLabel), "An upstream review cannot include ticket options")
-  .refine(input => !input.allowMissingReadyLabel || !!input.ticket, "The readiness-label override requires a specific ticket");
+  .refine(input => !input.upstream || (!input.ticket && !input.chain), "An upstream review cannot include ticket options");
 const requestId = z.string().uuid();
 // Toggle endpoints and the CLI commands for [off, on].
 const toggles: Record<string, [string, string]> = {
@@ -491,7 +489,6 @@ export function createFactoryWeb(options: {
             ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
             ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
             ...(dispatch.overrideLimits === true ? ["--override-limits"] : dispatch.overrideLimits && dispatch.overrideLimits.length ? ["--override", dispatch.overrideLimits.join(",")] : []),
-            ...(dispatch.allowMissingReadyLabel ? ["--allow-missing-ready-label"] : []),
             ...(dispatch.chain ? ["--chain", dispatch.chain] : []),
           ];
           const finish = (result: Result) => {
