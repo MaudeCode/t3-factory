@@ -118,11 +118,19 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
 // Tool calls are the authoritative creation evidence: a completed Kanvil create or duplicate call, whatever the
 // session later says about it. T3 omits tool output from history, so confirmation reads the full item.
 const KANVIL_CREATION = /(?:^|\.|__)(?:create|duplicate)_ticket$/;
+// A call still running when its page is scanned is never revisited by ordinal, so it waits in pending instead.
+const UNFINISHED = new Set(['idle', 'pending', 'running', 'waiting']);
+class ToolCallUnfinished extends Error {}
 const toolCall = z.object({ status: z.string().nullish(), toolName: z.string().nullish(), toolSource: z.object({ key: z.string() }).passthrough().nullish() }).passthrough();
 const kanvilCreation = (item: unknown) => {
   const call = toolCall.safeParse(item);
-  return call.success && call.data.status === 'completed' && call.data.toolSource?.key === 'mcp:kanvil' && KANVIL_CREATION.test(call.data.toolName ?? '');
+  return call.success && (call.data.status === 'completed' || UNFINISHED.has(call.data.status ?? '')) && call.data.toolSource?.key === 'mcp:kanvil' && KANVIL_CREATION.test(call.data.toolName ?? '');
 };
+async function toolTicketId(t3: T3, threadId: string, itemId: string) {
+  const item = await t3.turnItem(threadId, itemId), status = toolCall.safeParse(item).data?.status ?? '';
+  if (UNFINISHED.has(status)) throw new ToolCallUnfinished('Kanvil tool call has not finished');
+  return status === 'completed' ? createdTicketId(item) : null;
+}
 // Codex returns the result object; Claude returns it as JSON text in `content`.
 export function createdTicketId(item: unknown): string | null {
   let output = z.object({ output: z.unknown() }).passthrough().safeParse(item).data?.output;
@@ -204,7 +212,7 @@ async function readTicket(kanvil: Kanvil, id: string, cached = false) {
 }
 // The tracker's own record for a reference, or null when the reference cannot be a ticket in this workspace.
 async function lookup(c: Config, t3: T3, kanvil: Kanvil, cat: Catalog, threadId: string, ref: SessionRef, imports: (cat: Catalog) => Promise<Map<string, Task>>) {
-  const created = ref.kind === 'tool' ? createdTicketId(await t3.turnItem(threadId, ref.value)) : ref.value;
+  const created = ref.kind === 'tool' ? await toolTicketId(t3, threadId, ref.value) : ref.value;
   let task: z.infer<typeof trackerTask> | null = ref.kind === 'legacy-task'
     ? (await imports(cat)).get(ref.value) ?? null : created ? await readTicket(kanvil, created) : null;
   // Old keys may now name another ticket. Search explicit source keys before applying creation-time evidence.
@@ -311,6 +319,8 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         }
         rec.pending.splice(rec.pending.indexOf(ref), 1);
       } catch (error) {
+        // An unfinished call is not a failure; it is read again after the usual wait.
+        if (error instanceof ToolCallUnfinished) { ref.retryAfter = new Date(now + RETRY_MS).toISOString(); store.saveSessionThread(rec); continue; }
         ref.attempts++; ref.error = safeError(error); ref.retryAfter = new Date(now + Math.min(ref.attempts, 12) * RETRY_MS).toISOString();
         errors.push(`Confirming ${ref.value}: ${ref.error}`);
       }

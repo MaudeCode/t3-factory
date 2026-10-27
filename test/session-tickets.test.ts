@@ -500,6 +500,26 @@ test('tickets created through Kanvil tool calls are collected whatever the repor
   assert.deepEqual(f.store.sessionTicket('task-7')!.sources.map(s => s.messageId), ['item-codex']);
 });
 
+test('a Kanvil creation still running at scan time is confirmed once it completes', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  f.tasks.push(task('task-7', 7), task('task-8', 8));
+  const running = toolCall('running', 'kanvil.create_ticket', 2, undefined, { status: 'running' });
+  const cancelled = toolCall('cancelled', 'kanvil.create_ticket', 3, codexOutput('task-8'), { status: 'cancelled' });
+  f.details.set(running.item.id, running.detail);
+  f.details.set(cancelled.item.id, cancelled.detail);
+  f.bounded.set('s1', { items: [running.item, cancelled.item], cursor: null, more: false });
+  await f.drain();
+  const ref = f.store.sessionThread('s1')!.pending[0]!;
+  assert.deepEqual([ref.value, ref.attempts, ref.error], ['item-running', 0, undefined], 'waiting is not a failure');
+  assert.equal(f.status().error, null);
+  f.details.set(running.item.id, { ...running.detail, status: 'completed', output: codexOutput('task-7') });
+  const rec = f.store.sessionThread('s1')!; delete rec.pending[0]!.retryAfter; f.store.saveSessionThread(rec);
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'the finished call is confirmed; a cancelled one never is');
+  assert.deepEqual(f.store.sessionThread('s1')!.pending, []);
+});
+
 test('tool-call references retry a failed T3 read and are found on older activity pages', async t => {
   const f = collectorFixture(t);
   f.sessions.push(f.session('s1'));
