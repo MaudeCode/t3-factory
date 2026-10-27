@@ -397,6 +397,9 @@ test('creation tables collect only ticket cells under an affirmative creation re
   }
   for (const report of [table, `I will create tickets:\n\n${table}`, `No tickets were created.\n\n${table}`, `Created tickets.\n\nExisting tickets:\n\n${table}`, `Created tickets.\n\nExample:\n\n${table}`, `Created tickets.\n\nUnrelated discussion.\n\n${table}`, `Created tickets.\n\n${table.split('\n').map(line => '> ' + line).join('\n')}`, `Created tickets.\n\n\x60\x60\x60\n${table}\n\x60\x60\x60`]) assert.deepEqual(keys(report), [], report);
   assert.deepEqual(keys(`Created tickets:\n\n${table}\n\nRelated tickets:\n\n${table.replaceAll('FIX-', 'OTH-')}`), ['FIX-7', 'FIX-8', 'FIX-9', 'FIX-10']);
+  assert.deepEqual(keys(`Created and verified four tickets:\n\n${table}`), ['FIX-7', 'FIX-8', 'FIX-9', 'FIX-10'], 'a compound verb still introduces the table');
+  assert.deepEqual(keys('Filed, labeled, and verified two tickets:\n\n- FIX-7 Uploads\n- FIX-8 Downloads'), ['FIX-7', 'FIX-8'], 'a compound verb still introduces the list');
+  assert.deepEqual(keys(`Did not create or file any tickets.\n\n${table}`), [], 'a negated compound summary does not');
   assert.deepEqual(keys('Created tickets:\n\n| Scope | Ticket |\n|---|---|\n| FIX-99 | FIX-7 |'), ['FIX-7'], 'the ticket column owns references');
   assert.deepEqual(keys('Created tickets:\n\n| Ticket | Scope |\n| FIX-7 | web |'), [], 'a Markdown table needs its header separator');
 });
