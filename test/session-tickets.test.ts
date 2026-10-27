@@ -79,7 +79,9 @@ test('the scheduler collects a session-created ticket into status on its own and
 });
 
 // Direct collector coverage: synthetic sessions, history pages and tracker answers, with every read scriptable.
-const { collectSessionTickets, creationReports, dismissSessionTicket, sessionTicketStatus } = await import('../src/session-tickets.ts');
+const { collectSessionTickets, creationReports, dismissSessionTicket, sessionTicketStatus, sessionTicketsError } = await import('../src/session-tickets.ts');
+// The notice's headline and each problem's affected tickets or sessions and raw causes, as one searchable text.
+const errorText = (error?: { message: string; problems?: { subjects: string[]; raw: string[] }[] } | null) => [error?.message, ...(error?.problems ?? []).flatMap(p => [...p.subjects, ...p.raw])].join('\n');
 const { Store } = await import('../src/store.ts');
 const { T3: T3Client, Kanvil: KanvilClient } = await import('../src/clients.ts');
 const LINK = (taskId: string, project = 'FIX', legacy = false) => legacy
@@ -322,7 +324,7 @@ test('cached legacy origins backfill past known history and retain rows across r
   delete rec.upstreamReview; f.store.saveSessionThread(rec); // old persisted scan without origin classification
   f.bounded.set('legacy', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 50, AT.reported, 'legacy')], cursor: null, more: true });
   await f.collect();
-  assert.match(f.status().error?.message ?? '', /no cursor for origin classification/);
+  assert.match(errorText(f.status().error), /no cursor for origin classification/);
   assert.equal(f.store.sessionThread('legacy')!.upstreamReview, undefined, 'incomplete history is not an ordinary-origin verdict');
   f.store.saveSessionThread({ ...f.store.sessionThread('legacy')!, retryAfter: undefined });
   f.bounded.set('legacy', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 50, AT.reported, 'legacy')], cursor: 'origin', more: true });
@@ -332,7 +334,7 @@ test('cached legacy origins backfill past known history and retain rows across r
   f.failing.add('/api/orchestration/threads/legacy/history?cursor=origin&view=activity');
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'a failed origin read does not erase the last known row');
-  assert.match(f.status().error?.message ?? '', /Reading session/);
+  assert.match(errorText(f.status().error), /Couldn't read 1 T3 session/);
   const { retryAfter, ...ready } = f.store.sessionThread('legacy')!;
   assert.ok(retryAfter); f.store.saveSessionThread(ready);
   await f.drain();
@@ -699,9 +701,9 @@ test('saved-ticket outages keep the last list and the collection error throughou
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7']);
   assert.equal(f.store.sessionTicket('task-7')!.missing, undefined);
-  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7:.*HTTP 503/);
+  assert.match(errorText(f.status().error), /Couldn't refresh 1 listed ticket: .*HTTP 503[\s\S]*FIX-7/);
   await f.collect();
-  assert.match(f.status().error?.message ?? '', /Refreshing FIX-7:.*HTTP 503/, 'backoff does not clear an unresolved outage');
+  assert.match(errorText(f.status().error), /Couldn't refresh 1 listed ticket: .*HTTP 503[\s\S]*FIX-7/, 'backoff does not clear an unresolved outage');
 });
 
 test('task lookup errors without explicit absence remain retryable', async t => {
@@ -715,7 +717,7 @@ test('task lookup errors without explicit absence remain retryable', async t => 
     assert.equal(pending.length, 1, 'the candidate remains available for retry');
     assert.equal(pending[0].attempts, 1);
     assert.ok(pending[0].retryAfter);
-    assert.match(f.status().error?.message ?? '', /Confirming FIX-7/);
+    assert.match(errorText(f.status().error), /Couldn't confirm 1 reported ticket[\s\S]*FIX-7/);
   });
 });
 
@@ -780,16 +782,16 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   f.failing.add('ticketByKey');
   await f.collect();
   assert.deepEqual(f.keys(), [], 'a failed confirmation lists nothing');
-  assert.match(f.status().error?.message ?? '', /Confirming FIX-7/);
+  assert.match(errorText(f.status().error), /Couldn't confirm 1 reported ticket[\s\S]*FIX-7/);
   const pending = f.store.sessionThread('s1')!.pending;
   assert.equal(pending.length, 1); assert.equal(pending[0].attempts, 1); assert.ok(pending[0].retryAfter);
   await f.collect({ reads: 0 });
-  assert.match(f.status().error?.message ?? '', /Confirming FIX-7/, 'an unresolved lookup failure stays visible before its retry is due');
+  assert.match(errorText(f.status().error), /Couldn't confirm 1 reported ticket[\s\S]*FIX-7/, 'an unresolved lookup failure stays visible before its retry is due');
   pending[0].retryAfter = '2000-01-01T00:00:00.000Z'; f.store.saveSessionThread({ ...f.store.sessionThread('s1')!, pending });
   f.failing.add('/api/orchestration/threads/s1/history?cursor=older-1&view=activity');
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'the retried lookup succeeds while the page read fails');
-  assert.match(f.status().error?.message ?? '', /Reading session/);
+  assert.match(errorText(f.status().error), /Couldn't read 1 T3 session/);
   assert.deepEqual(f.store.sessionThread('s1')!.backfill?.cursor, 'older-1', 'an interrupted page is read again from the same cursor');
   await f.collect();
   assert.equal(f.calls.filter(x => x.endsWith('cursor=older-1&view=activity')).length, 1, 'the failed page waits for its retry deadline');
@@ -801,7 +803,7 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   f.failing.add('/api/orchestration/shell');
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'a failed session listing keeps the known list');
-  assert.match(f.status().error?.message ?? '', /Listing sessions/);
+  assert.match(errorText(f.status().error), /Couldn't list T3 sessions/);
 });
 
 test('dismissal is a tombstone that rescans, other sessions and a reopened store respect, and the tracker is untouched', async t => {
@@ -885,7 +887,7 @@ test('a collection batch that cannot start still records the failure for the pag
   try {
     await service.start();
     const published = await f.until(s => s.sessionTickets?.error);
-    assert.match(published.sessionTickets?.error?.message ?? '', /Kanvil MCP process exited/, 'a setup failure reaches status.sessionTickets.error');
+    assert.match(errorText(published.sessionTickets?.error), /Kanvil MCP process exited/, 'a setup failure reaches status.sessionTickets.error');
   } finally { await service.stop(); }
 });
 
@@ -919,7 +921,7 @@ test('failed session reads back off before the batch continues, so an outage nei
   assert.equal(reads(), 9);
   assert.equal(await f.collect(), false);
   assert.equal(reads(), 9, 'a T3 outage does not loop on the same sessions');
-  assert.match(f.status().error?.message ?? '', /Reading session/);
+  assert.match(errorText(f.status().error), /Couldn't read 1 T3 session/);
   assert.ok(f.store.sessionThreads().every(r => r.retryAfter && r.updatedAt === undefined), 'failed sessions keep no progress and carry a retry deadline');
   f.sessions.length = 0;
   await f.collect();
@@ -1004,4 +1006,20 @@ test('session status preserves native automation readiness from collection throu
   assert.equal(rows.length, 2);
   assert.equal(rows.find(r => r.key === 'FIX-7')?.automationReady, true, 'native ready flag reaches the Session tickets browser snapshot');
   assert.equal(rows.find(r => r.key === 'FIX-8')?.automationReady, false, 'sf label cannot replace native false readiness');
+});
+
+test('the collection notice names each problem once, in plain words, with its affected tickets and raw cause', () => {
+  const stream = 'Kanvil project stream is not synchronized';
+  const error = sessionTicketsError(AT.reported, [
+    { step: 'confirm', subject: 'mo00', cause: stream },
+    { step: 'confirm', subject: 'cfj9', cause: stream },
+    { step: 'confirm', subject: 'FIX-7', cause: 'Kanvil project stream unavailable' },
+    { step: 'refresh', subject: 'FIX-8', cause: 'HTTP 503' },
+    { step: 'refresh', subject: 'FIX-8', cause: 'HTTP 503' },
+  ]);
+  assert.equal(error.message, "Couldn't confirm 3 reported tickets: Kanvil live updates are reconnecting. Couldn't refresh 1 listed ticket: HTTP 503");
+  assert.deepEqual(error.problems, [
+    { title: "Couldn't confirm 3 reported tickets", cause: 'Kanvil live updates are reconnecting', raw: [stream, 'Kanvil project stream unavailable'], subjects: ['mo00', 'cfj9', 'FIX-7'] },
+    { title: "Couldn't refresh 1 listed ticket", cause: 'HTTP 503', raw: [], subjects: ['FIX-8'] },
+  ]);
 });

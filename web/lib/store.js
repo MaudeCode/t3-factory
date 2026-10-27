@@ -25,6 +25,9 @@ export const operations = signal([]);
 export const launchOperations = computed(() => operations.value.filter(op => op.kind !== "cleanup"));
 export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
+// Background problems listed by the top bar's notification area, each with the page it affects.
+export const issues = computed(() => [{ source: "Session tickets", href: "/session-tickets", error: status.value.sessionTickets?.error }].filter((i) => i.error));
+export const issuesOpen = signal(false);
 export const selectedModel = signal(0);
 export const selectedProject = signal(0);
 export const clock = signal(Date.now()); // ticks every second so relative times stay honest
