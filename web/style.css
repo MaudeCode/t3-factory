@@ -2303,10 +2303,24 @@ h1 .crumb::after {
     padding-top: var(--space-1);
     padding-bottom: var(--space-1);
   }
+  /* The title takes the whole row; the actions sit beside the facet lines below it, so the row stays as tall. */
+  .next {
+    --next-run-size: 32px;
+    --next-actions-width: var(--next-run-size);
+    position: relative;
+  }
+  .next:has(.next-more) {
+    --next-actions-width: calc(2 * var(--next-run-size) + var(--space-1));
+  }
   .next-actions {
-    flex-direction: row;
+    position: absolute;
+    right: 0;
+    bottom: var(--space-1);
     gap: var(--space-1);
-    padding: var(--space-1) 0;
+  }
+  .next:has(.next-actions) .row-body > small {
+    min-height: var(--next-run-size);
+    padding-right: calc(var(--next-actions-width) + var(--space-2));
   }
   :root {
     --gutter: var(--space-4);
@@ -2435,6 +2449,9 @@ h1 .crumb::after {
   .next-actions .next-run {
     min-height: 44px;
     min-width: 44px;
+  }
+  .next {
+    --next-run-size: 44px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

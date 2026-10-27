@@ -273,6 +273,9 @@ async function rowHeight() {
   assert(button('Run APP-2 now'), 'Start stays visible before opening the mobile menu');
   assert(innerWidth > 900 || height <= entry.querySelector('.next-ticket').getBoundingClientRect().height + 1.5, `mobile row height follows its content with visible Start, got ${height}px`);
   if (innerWidth <= 900) {
+    const title = entry.querySelector('.row-body > span').getBoundingClientRect(), actions = entry.querySelector('.next-actions').getBoundingClientRect(), facets = entry.querySelector('.row-body > small').getBoundingClientRect();
+    assert(title.right > actions.left && title.bottom <= actions.top + 0.5, 'the title uses the full row width above the actions');
+    assert(facets.bottom >= actions.bottom - 0.5, 'the actions sit beside the facet lines without adding height');
     await more('APP-2');
     const panel = document.querySelector('.popover[aria-label="More actions for APP-2"]');
     assert(panel && ['Open session', 'Remove'].every(label => panel.textContent.includes(label)) && !panel.querySelector('[aria-label="Run APP-2 now"]'), 'menu contains only secondary actions');
