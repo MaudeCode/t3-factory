@@ -72,8 +72,8 @@ export interface SessionTicket {
   // Tombstones: a dismissed or consumed entry never returns to the list, whatever a rescan or refresh finds.
   dismissedAt?: string; consumed?: { jobId: string; at: string };
 }
-// A ticket reference extracted from a session message, waiting for the tracker to confirm it.
-export interface SessionRef { kind: 'key' | 'task' | 'legacy-task'; value: string; messageId: string; at: string; attempts: number; error?: string; retryAfter?: string }
+// A ticket reference from a session message or Kanvil tool call, waiting for the tracker to confirm it.
+export interface SessionRef { kind: 'key' | 'task' | 'legacy-task' | 'tool'; value: string; messageId: string; at: string; attempts: number; error?: string; retryAfter?: string }
 // Scan progress through one session's conversation. `lastOrdinal` is the newest turn item fully processed;
 // `backfill` is an unfinished walk back through older history pages toward that mark.
 export interface SessionThread {

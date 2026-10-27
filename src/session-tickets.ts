@@ -16,7 +16,7 @@ const CATALOG_MS = 10 * 60_000; // tracker projects and columns rarely change
 const REFRESH_MS = 5 * 60_000; // a listed ticket's status, priority, title and labels are re-read at most this often
 const CLOCK_SKEW_MS = 5 * 60_000; // T3 and the tracker keep separate clocks
 const RETRY_MS = 5 * 60_000; // failed tracker lookups wait this long per attempt, up to an hour
-export const REPORT_VERSION = 5;
+export const REPORT_VERSION = 6;
 const MAX_REPORT_KEYS = 200;
 
 interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
@@ -115,6 +115,30 @@ export function creationReports(text: string): Pick<SessionRef, 'kind' | 'value'
   return [...refs.values()];
 }
 
+// Tool calls are the authoritative creation evidence: a completed Kanvil create or duplicate call, whatever the
+// session later says about it. T3 omits tool output from history, so confirmation reads the full item.
+const KANVIL_CREATION = /(?:^|\.|__)(?:create|duplicate)_ticket$/;
+// A call still running when its page is scanned is never revisited by ordinal, so it waits in pending instead.
+const UNFINISHED = new Set(['idle', 'pending', 'running', 'waiting']);
+class ToolCallUnfinished extends Error {}
+const toolCall = z.object({ status: z.string().nullish(), toolName: z.string().nullish(), toolSource: z.object({ key: z.string() }).passthrough().nullish() }).passthrough();
+const kanvilCreation = (item: unknown) => {
+  const call = toolCall.safeParse(item);
+  return call.success && (call.data.status === 'completed' || UNFINISHED.has(call.data.status ?? '')) && call.data.toolSource?.key === 'mcp:kanvil' && KANVIL_CREATION.test(call.data.toolName ?? '');
+};
+async function toolTicketId(t3: T3, threadId: string, itemId: string) {
+  const item = await t3.turnItem(threadId, itemId), status = toolCall.safeParse(item).data?.status ?? '';
+  if (UNFINISHED.has(status)) throw new ToolCallUnfinished('Kanvil tool call has not finished');
+  return status === 'completed' ? createdTicketId(item) : null;
+}
+// Codex returns the result object; Claude returns it as JSON text in `content`.
+export function createdTicketId(item: unknown): string | null {
+  let output = z.object({ output: z.unknown() }).passthrough().safeParse(item).data?.output;
+  const text = z.object({ content: z.string() }).passthrough().safeParse(output);
+  if (text.success) { try { output = JSON.parse(text.data.content); } catch { return null; } }
+  return z.object({ result: z.object({ id: z.string() }).passthrough() }).passthrough().safeParse(output).data?.result.id ?? null;
+}
+
 // A Factory start counts once T3 has the thread; a dispatch that was only prepared, or whose outcome is unknown, does not.
 export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
 
@@ -156,8 +180,9 @@ async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Se
   if (!page.more) rec.upstreamReview = false;
   const unseen = page.items.filter(i => rec.lastOrdinal === undefined || i.ordinal > rec.lastOrdinal);
   for (const item of unseen) {
-    if (item.type !== 'assistant_message' || !item.text) continue;
-    for (const ref of creationReports(item.text)) {
+    const refs: Pick<SessionRef, 'kind' | 'value'>[] = item.type === 'dynamic_tool' ? (kanvilCreation(item) ? [{ kind: 'tool', value: item.id }] : [])
+      : item.type === 'assistant_message' && item.text ? creationReports(item.text) : [];
+    for (const ref of refs) {
       const messageId = item.messageId ?? item.id;
       if (!rec.pending.some(p => p.messageId === messageId && p.kind === ref.kind && p.value === ref.value)) rec.pending.push({ ...ref, messageId, at: item.updatedAt ?? item.startedAt, attempts: 0 });
     }
@@ -186,9 +211,10 @@ async function readTicket(kanvil: Kanvil, id: string, cached = false) {
   }
 }
 // The tracker's own record for a reference, or null when the reference cannot be a ticket in this workspace.
-async function lookup(c: Config, kanvil: Kanvil, cat: Catalog, ref: SessionRef, imports: (cat: Catalog) => Promise<Map<string, Task>>) {
+async function lookup(c: Config, t3: T3, kanvil: Kanvil, cat: Catalog, threadId: string, ref: SessionRef, imports: (cat: Catalog) => Promise<Map<string, Task>>) {
+  const created = ref.kind === 'tool' ? await toolTicketId(t3, threadId, ref.value) : ref.value;
   let task: z.infer<typeof trackerTask> | null = ref.kind === 'legacy-task'
-    ? (await imports(cat)).get(ref.value) ?? null : await readTicket(kanvil, ref.value);
+    ? (await imports(cat)).get(ref.value) ?? null : created ? await readTicket(kanvil, created) : null;
   // Old keys may now name another ticket. Search explicit source keys before applying creation-time evidence.
   if (ref.kind === 'key' && (!task || Date.parse(task.createdAt) > Date.parse(ref.at) + CLOCK_SKEW_MS)) {
     const matches = [...(await imports(cat)).values()].filter(ticket => importedTicketSource(ticket)?.key === ref.value);
@@ -275,9 +301,9 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (lookups++ >= limits.lookups) { more = true; break; }
       try {
         const revision = kanvil.revision;
-        let task = await backgroundRead(() => lookup(c, kanvil, cat!, ref, imports));
+        let task = await backgroundRead(() => lookup(c, t3, kanvil, cat!, rec.id, ref, imports));
         // A project created since the catalog was cached is read once, fresh, before its reference is discarded.
-        if (!task && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); task = await lookup(c, kanvil, cat, ref, imports); }
+        if (!task && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); task = await lookup(c, t3, kanvil, cat, rec.id, ref, imports); }
         const created = task ? Date.parse(task.createdAt) : NaN;
         // Creation evidence: the ticket came into being during this session, no later than the report.
         if (task && created >= Date.parse(rec.createdAt) - CLOCK_SKEW_MS && created <= Date.parse(ref.at) + CLOCK_SKEW_MS) {
@@ -293,6 +319,8 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         }
         rec.pending.splice(rec.pending.indexOf(ref), 1);
       } catch (error) {
+        // An unfinished call is not a failure; it is read again after the usual wait.
+        if (error instanceof ToolCallUnfinished) { ref.retryAfter = new Date(now + RETRY_MS).toISOString(); store.saveSessionThread(rec); continue; }
         ref.attempts++; ref.error = safeError(error); ref.retryAfter = new Date(now + Math.min(ref.attempts, 12) * RETRY_MS).toISOString();
         errors.push(`Confirming ${ref.value}: ${ref.error}`);
       }

@@ -131,7 +131,7 @@ test('version-3 histories recover all imported creations by stable legacy IDs af
   f.history.set('older', { items: [message('filed', 'assistant_message', sectionedBatch(true), 2, AT.reported, 's1')], cursor: null, more: false });
   assert.equal(await f.collect({ reads: 1 }), true, 'the current old parser version starts bounded recovery');
   f.store.close(); f.store = new Store(f.c.stateDir);
-  f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=conversation');
+  f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=activity');
   await f.collect({ reads: 1 });
   const rec = f.store.sessionThread('s1')!;
   assert.equal(rec.backfill?.cursor, 'older');
@@ -329,7 +329,7 @@ test('cached legacy origins backfill past known history and retain rows across r
   f.history.set('origin', { items: [message('u1', 'user_message', reviewKickoff, 1, AT.threadStart, 'legacy')], cursor: null, more: false });
   assert.equal(await f.collect({ reads: 1 }), true, 'an unchanged legacy scan still classifies its older origin');
   assert.deepEqual(f.keys(), ['FIX-7'], 'unknown origin preserves the last known list');
-  f.failing.add('/api/orchestration/threads/legacy/history?cursor=origin&view=conversation');
+  f.failing.add('/api/orchestration/threads/legacy/history?cursor=origin&view=activity');
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'a failed origin read does not erase the last known row');
   assert.match(f.status().error?.message ?? '', /Reading session/);
@@ -416,7 +416,7 @@ for (const reportVersion of [undefined, 2]) test(`legacy scan version ${reportVe
   for (const [id, number] of [['task-8', 8], ['task-9', 9]] as const) f.store.saveSessionTicket({ taskId: id, projectId: 'FIX', key: `FIX-${number}`, number, title: 'Existing marker', priority: 'high', status: 'todo', labels: [], createdAt: AT.created, firstSeenAt: AT.reported, refreshedAt: AT.reported, sources: [], ...(number === 8 ? { dismissedAt: AT.reported } : { consumed: { jobId: 'launched', at: AT.reported } }) });
   assert.equal(await f.collect({ reads: 1 }), true, 'legacy progress starts a bounded rescan');
   f.store.close(); f.store = new Store(f.c.stateDir);
-  f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=conversation');
+  f.failing.add('/api/orchestration/threads/s1/history?cursor=older&view=activity');
   await f.collect({ reads: 1 });
   const pending = f.store.sessionThread('s1')!;
   assert.equal(pending.backfill?.cursor, 'older', 'a failed page retains its durable cursor');
@@ -471,6 +471,76 @@ test('recent pending confirmations are collected before old replay candidates', 
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8']);
 });
 
+// A Kanvil MCP call as T3 records it: the snapshot omits output; `output` is what getTurnItem returns.
+const toolCall = (id: string, toolName: string, ordinal: number, output: unknown, extra: Record<string, unknown> = {}) => {
+  const item = { id: `item-${id}`, threadId: 's1', type: 'dynamic_tool', toolSource: { key: 'mcp:kanvil', name: 'kanvil', kind: 'integration' }, toolName, input: { projectId: 'FIX' }, status: 'completed', ordinal, startedAt: AT.created, updatedAt: AT.created, ...extra };
+  return { item: { ...item, outputOmitted: true }, detail: { ...item, output } };
+};
+const codexOutput = (taskId: string) => ({ result: { id: taskId, key: 'FIX-0' } });
+const claudeOutput = (taskId: string) => ({ content: JSON.stringify({ result: { id: taskId, key: 'FIX-0' } }) });
+
+test('tickets created through Kanvil tool calls are collected whatever the report says', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9), task('task-10', 10), task('task-11', 11), task('task-12', 12, 'FIX', { createdAt: '2026-02-01T00:00:00Z' }));
+  const calls = [
+    toolCall('codex', 'kanvil.create_ticket', 2, codexOutput('task-7')),
+    toolCall('claude', 'mcp__kanvil__create_ticket', 3, claudeOutput('task-8')),
+    toolCall('failed', 'kanvil.create_ticket', 4, codexOutput('task-9'), { status: 'failed' }),
+    toolCall('read', 'kanvil.get_ticket', 5, codexOutput('task-10')),
+    toolCall('other', 'other.create_ticket', 6, codexOutput('task-11'), { toolSource: { key: 'mcp:other', name: 'other', kind: 'integration' } }),
+    toolCall('existing', 'kanvil.create_ticket', 7, codexOutput('task-12')),
+    toolCall('garbled', 'kanvil.create_ticket', 8, { content: 'not json' }),
+  ];
+  for (const call of calls) f.details.set(call.item.id, call.detail);
+  f.bounded.set('s1', { items: [...calls.map(call => call.item), message('done', 'assistant_message', 'Done. The audit is complete.', 9, AT.reported, 's1')], cursor: null, more: false });
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'only completed Kanvil creations inside the session window');
+  assert.deepEqual(f.store.sessionThread('s1')!.pending, [], 'an unparsable output is dropped, not retried');
+  assert.deepEqual(f.store.sessionTicket('task-7')!.sources.map(s => s.messageId), ['item-codex']);
+});
+
+test('a Kanvil creation still running at scan time is confirmed once it completes', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  f.tasks.push(task('task-7', 7), task('task-8', 8));
+  const running = toolCall('running', 'kanvil.create_ticket', 2, undefined, { status: 'running' });
+  const cancelled = toolCall('cancelled', 'kanvil.create_ticket', 3, codexOutput('task-8'), { status: 'cancelled' });
+  f.details.set(running.item.id, running.detail);
+  f.details.set(cancelled.item.id, cancelled.detail);
+  f.bounded.set('s1', { items: [running.item, cancelled.item], cursor: null, more: false });
+  await f.drain();
+  const ref = f.store.sessionThread('s1')!.pending[0]!;
+  assert.deepEqual([ref.value, ref.attempts, ref.error], ['item-running', 0, undefined], 'waiting is not a failure');
+  assert.equal(f.status().error, null);
+  f.details.set(running.item.id, { ...running.detail, status: 'completed', output: codexOutput('task-7') });
+  const rec = f.store.sessionThread('s1')!; delete rec.pending[0]!.retryAfter; f.store.saveSessionThread(rec);
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'the finished call is confirmed; a cancelled one never is');
+  assert.deepEqual(f.store.sessionThread('s1')!.pending, []);
+});
+
+test('tool-call references retry a failed T3 read and are found on older activity pages', async t => {
+  const f = collectorFixture(t);
+  f.sessions.push(f.session('s1'));
+  f.tasks.push(task('task-7', 7));
+  const call = toolCall('codex', 'kanvil.create_ticket', 2, codexOutput('task-7'));
+  const inherited = toolCall('fork', 'kanvil.create_ticket', 1, codexOutput('task-7'), { threadId: 'parent' });
+  f.details.set(call.item.id, call.detail);
+  f.bounded.set('s1', { items: [message('latest', 'assistant_message', 'Nothing new.', 20, AT.reported, 's1')], cursor: 'older', more: true });
+  f.history.set('older', { items: [{ ...inherited.item, sourceThreadId: 'parent' }, call.item], cursor: null, more: false });
+  f.failing.add('turnItem:s1:item-codex');
+  await f.drain();
+  assert.deepEqual(f.keys(), [], 'a failed read leaves the reference pending');
+  const ref = f.store.sessionThread('s1')!.pending[0]!;
+  assert.equal(ref.attempts, 1);
+  assert.match(f.status().error?.message ?? '', /getTurnItem failed/);
+  const rec = f.store.sessionThread('s1')!; rec.pending[0]!.retryAfter = undefined; f.store.saveSessionThread(rec);
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7']);
+  assert.equal(f.calls.filter(c => c.startsWith('turnItem:') && !c.includes(':item-codex')).length, 0, 'inherited items are not read');
+});
+
 function collectorFixture(t: test.TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-collector-'));
   const budget = { reservePercent: 0, minRemainingPercent: 0 };
@@ -487,7 +557,7 @@ function collectorFixture(t: test.TestContext) {
   const f = {
     dir, c, store: new Store(c.stateDir), t3: new T3Client(c.t3), kanvil: new KanvilClient(c.kanvil),
     sessions: [] as Record<string, unknown>[], bounded: new Map<string, Page>(), history: new Map<string, Page>(),
-    tasks: [] as Record<string, unknown>[], labels: new Map<string, string[]>(), failing: new Set<string>(), down: new Set<string>(), calls: [] as string[],
+    details: new Map<string, unknown>(), tasks: [] as Record<string, unknown>[], labels: new Map<string, string[]>(), failing: new Set<string>(), down: new Set<string>(), calls: [] as string[],
     projects: [{ id: 'FIX', name: 'Fixture', slug: 'FIX' }, { id: 'OTH', name: 'Other', slug: 'OTH' }] as Record<string, unknown>[],
     session, task, message, LINK,
     collect: (budget?: { reads?: number; lookups?: number; refreshes?: number }) => collectSessionTickets(c, f.store, f.t3, f.kanvil, budget),
@@ -502,10 +572,17 @@ function collectorFixture(t: test.TestContext) {
     if (route === '/api/orchestration/shell') return { threads: f.sessions, archivedThreads: [], projects: [] };
     const bounded = route.match(/^\/api\/orchestration\/threads\/([^/]+)\/bounded$/);
     if (bounded) { const page = f.bounded.get(bounded[1]) ?? { items: [], cursor: null, more: false }; return { historyCursor: page.cursor, hasMoreHistory: page.more, projection: { turnItems: page.items } }; }
-    const history = route.match(/^\/api\/orchestration\/threads\/([^/]+)\/history\?cursor=([^&]+)&view=conversation$/);
+    const history = route.match(/^\/api\/orchestration\/threads\/([^/]+)\/history\?cursor=([^&]+)&view=activity$/);
     if (history) { const page = f.history.get(decodeURIComponent(history[2])); if (!page) throw new Error('T3 history page returned HTTP 404'); return { items: page.items.map((item: any) => ({ sourceThreadId: item.sourceThreadId ?? history[1], item })), nextCursor: page.cursor, hasMoreHistory: page.more }; }
     throw new Error(`Unexpected T3 route ${route}`);
   });
+  // The bounded snapshot omits tool output; the full item comes from T3's getTurnItem RPC.
+  (f.t3 as any).turnItem = async (threadId: string, itemId: string) => {
+    const route = `turnItem:${threadId}:${itemId}`;
+    f.calls.push(route);
+    if (f.failing.has(route)) { f.failing.delete(route); throw new Error('T3 getTurnItem failed'); }
+    return f.details.get(itemId) ?? null;
+  };
   mockTracker(t, f.kanvil, async (name: string, args: Record<string, unknown>) => {
     f.calls.push(name);
     if (f.failing.has(name)) { f.failing.delete(name); throw new Error(`Kanvil ${name} failed; check its authenticated connection`); }
@@ -689,8 +766,8 @@ test('backfill follows history past the bounded window and catch-up covers downt
   f.history.set('catch-2', { items: [...chatter(10, 3), ...chatter(13, 7)], cursor: 'older-1', more: true });
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'catch-up walks back to the last seen turn and stops there');
-  assert.equal(f.calls.includes('/api/orchestration/threads/s1/history?cursor=older-1&view=conversation'), true);
-  assert.equal(f.calls.filter(x => x.endsWith('cursor=older-1&view=conversation')).length, 1, 'already seen pages are not read again');
+  assert.equal(f.calls.includes('/api/orchestration/threads/s1/history?cursor=older-1&view=activity'), true);
+  assert.equal(f.calls.filter(x => x.endsWith('cursor=older-1&view=activity')).length, 1, 'already seen pages are not read again');
 });
 
 test('a failed read or lookup is retried without losing candidates, duplicating rows or hiding the last list', async t => {
@@ -709,13 +786,13 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   await f.collect({ reads: 0 });
   assert.match(f.status().error?.message ?? '', /Confirming FIX-7/, 'an unresolved lookup failure stays visible before its retry is due');
   pending[0].retryAfter = '2000-01-01T00:00:00.000Z'; f.store.saveSessionThread({ ...f.store.sessionThread('s1')!, pending });
-  f.failing.add('/api/orchestration/threads/s1/history?cursor=older-1&view=conversation');
+  f.failing.add('/api/orchestration/threads/s1/history?cursor=older-1&view=activity');
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'the retried lookup succeeds while the page read fails');
   assert.match(f.status().error?.message ?? '', /Reading session/);
   assert.deepEqual(f.store.sessionThread('s1')!.backfill?.cursor, 'older-1', 'an interrupted page is read again from the same cursor');
   await f.collect();
-  assert.equal(f.calls.filter(x => x.endsWith('cursor=older-1&view=conversation')).length, 1, 'the failed page waits for its retry deadline');
+  assert.equal(f.calls.filter(x => x.endsWith('cursor=older-1&view=activity')).length, 1, 'the failed page waits for its retry deadline');
   const { retryAfter, ...rested } = f.store.sessionThread('s1')!; assert.ok(retryAfter); f.store.saveSessionThread(rested); // the deadline passes
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8']);

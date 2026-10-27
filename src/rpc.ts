@@ -19,6 +19,7 @@ const group = RpcGroup.make(
   Rpc.make('vcs.removeWorktree', { payload: Schema.Struct({ cwd: Schema.String, path: Schema.String, force: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('subscribeTerminalMetadata', { payload: Schema.Struct({}), success: Schema.Unknown, error: Schema.Unknown, stream: true }),
   Rpc.make('terminal.close', { payload: Schema.Struct({ threadId: Schema.String, terminalId: Schema.String, deleteHistory: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
+  Rpc.make('orchestration.getTurnItem', { payload: Schema.Struct({ threadId: Schema.String, itemId: Schema.String }), success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('orchestration.subscribeShell', { payload: Schema.Struct({}), success: Schema.Unknown, error: Schema.Unknown, stream: true }),
 );
 const transport = (socketUrl: string) => RpcClient.layerProtocolSocket({ retryTransientErrors: false }).pipe(
@@ -45,13 +46,14 @@ export async function subscribeT3Shell(socketUrl: () => Promise<string>, onItem:
     });
   }
 }
-export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string; force?: boolean } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string }): Promise<unknown> {
+export async function callT3Rpc(socketUrl: string, action: { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string; force?: boolean } | { type: 'turn-item'; threadId: string; itemId: string } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string }): Promise<unknown> {
   return readPhase(`t3.rpc.${action.type}`, async signal => {
     const protocol = transport(socketUrl);
     return Effect.runPromise(Effect.gen(function* () {
       const client = yield* RpcClient.make(group);
       if (action.type === 'dispatch') return yield* client['orchestration.dispatchCommand'](action.command);
       if (action.type === 'launch') return yield* client['orchestration.launchThread'](action.input);
+      if (action.type === 'turn-item') return yield* client['orchestration.getTurnItem']({ threadId: action.threadId, itemId: action.itemId });
       if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: action.force ?? false });
       // The metadata stream opens with a snapshot of every terminal.
       if (action.type === 'terminals') return Option.getOrNull(yield* Stream.runHead(client['subscribeTerminalMetadata']({})));
