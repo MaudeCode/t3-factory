@@ -1,7 +1,7 @@
 // Synthetic session tickets, the actual page, store and dispatch path. No live sessions, tickets or dispatches.
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status, notice, serverNow } from "../../web/lib/store.js";
+import { applyState, operations, status, notice, blocked, serverNow } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { route, match } from "../../web/lib/router.js";
 
@@ -50,6 +50,7 @@ async function more(key) {
 async function show(patch = {}) {
   operations.value = [];
   notice.value = null;
+  blocked.value = null;
   state = structuredClone(base);
   Object.assign(state.status, patch);
   render(null, root);
@@ -77,20 +78,32 @@ async function run() {
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
   assert(many.querySelectorAll('a[href^="/api/threads/"]').length === 1 && many.querySelector('a[href^="/api/threads/"]').title.includes("2 more"), "several sources collapse into one session action");
   assert(many.getBoundingClientRect().right <= innerWidth && many.textContent.includes("Third look"), "all sources are named without widening the row");
+  const tray = () => document.querySelector('.popover[aria-label="Issues"]');
   button("Run APP-2 now").click();
   await pause();
   assert(button("Run APP-2 now").disabled, "a pending request disables its row");
+  assert(!root.querySelector(".operation"), "starting a ticket adds no request row to the page");
+  assert(keys().join() === "APP-2,WEB-9,APP-5,APP-1", "the ticket being started moves to the top and the others keep their order");
+  assert(root.querySelector(".next .spinner") && /Queued|Waiting for scheduler progress|Checking/.test(root.querySelector(".next").textContent), "the started row shows its request progress inline");
   button("Run APP-2 now").click();
   await pause();
   assert(calls.filter((c) => c.url === "/api/dispatch").length === 1, "rapid clicks produce one request");
   release();
   for (let n = 0; n < 100 && operations.value.some((op) => op.state !== "done"); n++) await pause();
   assert(JSON.stringify(calls[0].input) === JSON.stringify({ ticket: "APP-2", model: "auto", overrideLimits: true }), "Run passes the captured key with automatic model selection");
-  assert(root.querySelector(".operation")?.textContent.includes("quota-exhausted"), "a refused start keeps its outcome visible");
+  assert(!root.querySelector(".operation") && keys().join() === "WEB-9,APP-2,APP-5,APP-1" && !root.querySelector(".next .spinner"), "a refused start returns the row to its place without a request row");
+  assert(root.querySelector("button.conn .badge")?.textContent === "1" && !tray(), "a refused start adds a notification without opening the list");
+  root.querySelector("button.conn").click(); await pause();
+  assert(tray()?.querySelector(".issue-title")?.textContent === "Couldn't start APP-2" && tray().textContent.includes("quota-exhausted"), "the notification names the ticket and the refusal");
   assert(!button("Run APP-2 now").disabled, "a refused start can be tried again");
+  tray().querySelector('[aria-label="Dismiss APP-2"]').click(); await pause();
+  assert(!operations.value.length && !root.querySelector("button.conn") && !tray(), "dismissing the notification clears the request");
   update({ jobs: [{ id: "j", taskId: "t2", state: "running" }] });
   await pause();
   assert(button("Run APP-2 now").disabled && button("Run APP-2 now").title.includes("open run"), "an open run disables the row until the list consumes it");
+  assert(keys()[0] === "APP-2", "a started ticket stays on top until the list consumes it");
+  update({ jobs: [] });
+  await pause();
   await more('APP-1');
   button("Remove APP-1 from Session tickets").click();
   await pause();
@@ -122,7 +135,6 @@ async function run() {
   assert(keys().join() === "APP-7,WEB-9,APP-2,APP-5", "live updates replace the list in place");
   update({ sessionTickets: { ...state.status.sessionTickets, error: { at, message: "Couldn't confirm 2 reported tickets: Kanvil live updates are reconnecting", problems: [{ title: "Couldn't confirm 2 reported tickets", cause: "Kanvil live updates are reconnecting", raw: ["Kanvil project stream is not synchronized"], subjects: ["mo00pnjvld201d3etqq5ywzm", "APP-9"] }] } } }); await pause();
   const indicator = root.querySelector("button.conn");
-  const tray = () => document.querySelector('.popover[aria-label="Issues"]');
   assert(indicator?.querySelector(".badge")?.textContent === "1" && !root.querySelector('[role="alert"]') && keys().length === 4, "a collection failure adds a count to the top bar, without a page alert or erasing the list");
   assert(!tray(), "issues never open on their own");
   root.querySelector(".stale-list button").click(); await pause();
@@ -142,7 +154,34 @@ async function run() {
   await show({ sessionTickets: undefined });
   assert(root.querySelector(".empty")?.textContent.includes("not been read yet"), "an unread state is not an empty list");
   await controls();
+  await startNotices();
   await show();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+// Unfinished outcomes of starts from this page live in the notification area with their actions; requests from other pages keep their rows.
+async function startNotices() {
+  await show();
+  const input = (ticket) => ({ ticket, model: "auto", overrideLimits: true });
+  operations.value = [
+    { id: "b", kind: "dispatch", origin: "session-tickets", state: "done", input: input("APP-5"), result: { data: { reason: "blocked-ticket-plan-required", message: "APP-5 waits on APP-1.", ticket: "APP-5", tree: { tickets: [] } } } },
+    { id: "u", kind: "dispatch", origin: "session-tickets", state: "uncertain", notReceived: true, input: input("APP-2"), result: { data: { message: "The server has no record of this request." } } },
+    { id: "d", kind: "dispatch", state: "done", input: input("APP-1"), result: { data: { reason: "quota-exhausted" } } },
+  ];
+  await pause();
+  const tray = () => document.querySelector('.popover[aria-label="Issues"]');
+  assert(root.querySelectorAll(".operation").length === 1 && root.querySelector(".operation").textContent.includes("APP-1"), "a request started elsewhere keeps its row");
+  assert(keys().join() === "WEB-9,APP-2,APP-5,APP-1" && button("Run APP-2 now").disabled, "unfinished starts leave rows in place and keep an uncertain request held");
+  assert(root.querySelector("button.conn .badge")?.textContent === "2" && !tray(), "each unfinished start from this page adds one notification");
+  root.querySelector("button.conn").click(); await pause();
+  const titles = [...tray().querySelectorAll(".issue-title")].map((e) => e.textContent);
+  assert(titles.join() === "APP-5 waits on other tickets,Couldn't confirm APP-2 started", "notifications name each ticket and outcome");
+  assert(tray().textContent.includes("Session ticket starts") && tray().textContent.includes("Not started"), "start problems have their own source heading");
+  const actionsOf = (key) => [...tray().querySelectorAll(".issue")].find((e) => e.textContent.includes(key)).querySelector(".issue-actions").textContent;
+  assert(actionsOf("APP-2").includes("Retry saved request") && actionsOf("APP-5").includes("Choose how to run it"), "notifications offer retry and chain choice");
+  const b = tray().getBoundingClientRect();
+  assert(b.left >= 0 && b.right <= innerWidth, "the notification list fits the viewport");
+  [...tray().querySelectorAll("button")].find((el) => el.textContent.trim() === "Choose how to run it").click(); await pause();
+  assert(document.querySelector("dialog[open]")?.textContent.includes("APP-5 waits on") && !tray(), "the chain choice opens from the notification and replaces the list");
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 async function showControls() {
@@ -218,9 +257,11 @@ async function bulk() {
   pick('APP-2').click(); pick('APP-5').click(); await pause();
   button('Run selected tickets').click(); await pause();
   assert(operations.value.length === 2 && operations.value.every(op => ['APP-2', 'APP-5'].includes(op.input.ticket)), 'bulk Run queues only selected keys through ordinary operations');
+  assert(!root.querySelector('.operation') && keys().slice(0, 2).join() === 'APP-2,APP-5', 'bulk Run moves the started tickets to the top without request rows');
   button('Run selected tickets').click(); release();
   for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
   assert(calls.filter(c => c.url === '/api/dispatch').length === 2, 'bulk Run does not duplicate requests');
+  assert(root.querySelector('button.conn .badge')?.textContent === '2' && keys().join() === 'WEB-9,APP-2,APP-5,APP-1', 'each refused bulk start returns to the list and adds its own notification');
   assert(calls.filter(c => c.url === '/api/dispatch').every(c => c.input.model === 'auto' && c.input.overrideLimits === true), 'bulk Run uses the single-row dispatch contract');
   await show();
   await enter();
@@ -298,7 +339,7 @@ async function overflowEdges() {
   scrollTo(0, 0);
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.sessionTests = { readiness, run, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
+window.sessionTests = { readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
 await show();
 
 

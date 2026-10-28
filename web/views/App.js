@@ -6,7 +6,7 @@ import { ago } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { Login } from "./Login.js";
-import { Deck } from "./Deck.js";
+import { Deck, OperationActions } from "./Deck.js";
 import { Runs, RunDetail } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { Cleanup } from "./Cleanup.js";
@@ -36,13 +36,16 @@ function ThemePicker({ open, onClose }) {
   <//>`;
 }
 
-// The connection indicator doubles as the notification area. Background problems add a count; their list opens
-// from here or from an affected page. Problems never pop up on their own: a reconnecting stream would flicker.
+// The connection indicator doubles as the notification area. Background problems and requests that ended without
+// starting add a count; their list opens from here or from an affected page. Problems never pop up on their own:
+// a reconnecting stream would flicker.
 function Updates() {
   const anchor = useRef(), list = issues.value, now = serverNow(), state = CONNECTION[connection.value];
   const problems = (error) => error.problems ?? [{ title: error.message, raw: [], subjects: [] }];
   const count = list.reduce((n, i) => n + problems(i.error).length, 0);
   useEffect(() => { if (!count) issuesOpen.value = false; }, [count]);
+  // A chain choice opened from the list replaces it.
+  useEffect(() => { if (blocked.value) issuesOpen.value = false; }, [blocked.value]);
   if (!count) return html`<span role="status" class=${`conn ${connection.value}`} title=${`Updates: ${state}`}><i></i>${state}</span>`;
   const close = () => (issuesOpen.value = false);
   return html`<span ref=${anchor}>
@@ -51,10 +54,11 @@ function Updates() {
     </button>
     <${Popover} class="issues" open=${issuesOpen.value} onClose=${close} anchor=${anchor} label="Issues" width=${400}>
       ${list.map((i) => html`<section key=${i.source} class="issue-source">
-        <header><a href=${i.href} onClick=${(e) => { close(); follow(e); }}>${i.source}</a><span>Retrying · first failed ${ago(i.error.at, now)}</span></header>
+        <header><a href=${i.href} onClick=${(e) => { close(); follow(e); }}>${i.source}</a><span>${i.note ?? `Retrying · first failed ${ago(i.error.at, now)}`}</span></header>
         ${problems(i.error).map((p) => html`<div class="issue">
           <p class="issue-title">${p.title}</p>
           ${p.cause && html`<p>${p.cause}</p>`}
+          ${p.op && html`<div class="issue-actions"><${OperationActions} op=${p.op} /></div>`}
           ${(p.subjects.length > 0 || p.raw.length > 0) && html`<details>
             <summary>Details</summary>
             ${p.subjects.length > 0 && html`<ul class="issue-subjects">${p.subjects.map((id) => html`<li><${Tag}><code>${id}</code><//></li>`)}</ul>`}
