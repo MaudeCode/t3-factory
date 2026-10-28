@@ -44,6 +44,7 @@ export class FactoryService {
   private statusTimer?: NodeJS.Timeout;
   private readonly eventLoop = monitorEventLoopDelay({ resolution: 20 });
   private readonly retiredClients = new Set<T3>();
+  private readonly threadWork = new Map<string, string>();
   private readonly requests = new Map<string, Promise<ControlResult>>();
   private readonly uncertainRequests = new Set<string>();
   private stopped = false;
@@ -81,7 +82,7 @@ export class FactoryService {
   private onConfigChange(name: string | null) {
     if (this.stopped || name !== basename(this.configPath)) return;
     let snapshot: string | undefined;
-    try { snapshot = JSON.stringify(loadConfig(this.configPath)); } catch { /* A broken configuration still needs its diagnostic pass. */ }
+    try { const c = loadConfig(this.configPath); this.pollSeconds = c.pollSeconds; snapshot = JSON.stringify(c); } catch { /* A broken configuration still needs its diagnostic pass. */ }
     if (snapshot !== undefined && snapshot === this.configSnapshot) return;
     this.configSnapshot = snapshot;
     this.wake('config');
@@ -90,6 +91,7 @@ export class FactoryService {
   // A new T3 client and shell stream whenever the connection settings change, so an edit applies without a restart.
   private connectT3(c: Config) {
     this.stream?.abort();
+    this.threadWork.clear();
     const previous = this.t3;
     if (previous) {
       this.retiredClients.add(previous);
@@ -119,18 +121,33 @@ export class FactoryService {
     this.store.close();
   }
 
-  // Anything but the opening snapshot and its completion marker means a project or thread changed.
+  // Invalidate reads on every change; wake background domains only for semantic thread changes.
   private onShellItem(item: unknown) {
     if (this.stopped) return;
     const kind = item && typeof item === 'object' && 'kind' in item ? String((item as { kind: unknown }).kind) : '';
     if (KINDS_WITHOUT_WORK.has(kind)) return;
     this.t3.invalidateShell();
+    if (kind === 'thread.updated' && item && typeof item === 'object' && 'thread' in item) {
+      const thread = item.thread;
+      if (thread && typeof thread === 'object' && 'id' in thread && typeof thread.id === 'string') {
+        // Streaming/visit counters change continually but do not alter admission or run state.
+        // Cleanup retains its stronger identity, including updatedAt, for destructive checks.
+        const { updatedAt, itemCount, visibleItemCount, latestVisibleMessage, lastVisitedAt, opens, ...work } = thread as Record<string, unknown>;
+        const identity = JSON.stringify(work), previous = this.threadWork.get(thread.id);
+        this.threadWork.set(thread.id, identity);
+        if (previous === identity) return;
+      }
+    }
     if (!this.settle) this.settle = setTimeout(() => { this.settle = undefined; this.wake('t3'); }, EVENT_SETTLE_MS);
   }
 
   // Each domain coalesces only its own wake bursts. No domain owns another domain's worker.
   wake(reason: string) {
     if (this.stopped) return;
+    if (reason === 'config') { clearTimeout(this.timer); this.timer = undefined; }
+    // Maintenance cadence belongs to the service, even when no admission can run.
+    // Ordinary events cannot postpone this fallback indefinitely.
+    this.timer ??= setTimeout(() => { this.timer = undefined; this.wake('timer'); }, this.pollSeconds * 1000);
     this.runLane('reconcile', async () => {
       const c = this.configure(), kanvil = await this.ensureKanvil(c);
       await reconcile(c, this.store, this.t3, kanvil, (await this.t3.shell()).threads, true, false);
@@ -157,8 +174,17 @@ export class FactoryService {
 
   private scheduleAdmissions(reason: string, workKind: NonNullable<Clients['workKind']>) {
     for (const driver of ['codex', 'claudeAgent']) this.runLane(`${workKind}:${driver}`, async () => {
-      if (workKind === 'upstream' && !this.configure().upstream?.enabled) return;
-      if (workKind === 'chains' && !this.store.plans().some(plan => plan.state === 'active')) return;
+      const c = this.configure();
+      const matches = (model: Config['models'][number]) => model.model.instanceId === driver || !['codex', 'claudeAgent'].includes(model.model.instanceId);
+      if (workKind === 'chains') {
+        if (!this.store.plans().some(plan => plan.state === 'active')) return;
+        // One lane still observes completion when all capacities are zero; runPlans cannot launch.
+        if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 && (driver === 'claudeAgent' || c.concurrency.claude > 0)) return;
+      } else {
+        if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0) return;
+        if (workKind === 'tickets' ? !c.enabled : !c.upstream?.enabled) return;
+        if (!c.models.some(model => model.automatic && matches(model))) return;
+      }
       await this.pass({}, reason, 0, workKind, driver);
     });
   }
@@ -378,7 +404,6 @@ export class FactoryService {
   }
 
   private async pass(options: CycleOptions, reason: string, queueWaitMs: number, workKind?: Clients['workKind'], providerDriver?: string) {
-    clearTimeout(this.timer);
     const started = performance.now();
     let c: Config | undefined;
     try {
@@ -401,8 +426,6 @@ export class FactoryService {
       throw error;
     } finally {
       if ((options.manual || reason === 'once') && !options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
-      clearTimeout(this.timer);
-      if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
-    }
+      }
   }
 }

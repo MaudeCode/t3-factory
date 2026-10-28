@@ -49,7 +49,9 @@ test('duplicate config notifications do not enqueue unchanged scheduler work', a
     if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
   });
   const service = new FactoryService(path), internal = service as any, passes: string[] = [];
-  t.mock.method(internal, 'pass', async (_options: unknown, reason: string) => { passes.push(reason); return { reason: 'disabled' }; });
+  const wake = internal.wake.bind(internal);
+  t.mock.method(internal, 'wake', (reason: string) => { passes.push(reason); wake(reason); });
+  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
   const runLane = internal.runLane.bind(internal);
   t.mock.method(internal, 'runLane', (name: string, work: () => Promise<void>) => { if (name === 'tickets:codex') runLane(name, work); });
   try {
