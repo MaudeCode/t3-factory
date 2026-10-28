@@ -136,9 +136,11 @@ async function run() {
   update({ sessionTickets: { ...state.status.sessionTickets, error: { at, message: "Couldn't confirm 2 reported tickets: Kanvil live updates are reconnecting", problems: [{ title: "Couldn't confirm 2 reported tickets", cause: "Kanvil live updates are reconnecting", raw: ["Kanvil project stream is not synchronized"], subjects: ["mo00pnjvld201d3etqq5ywzm", "APP-9"] }] } } }); await pause();
   const indicator = root.querySelector("button.conn");
   assert(indicator?.querySelector(".badge")?.textContent === "1" && !root.querySelector('[role="alert"]') && keys().length === 4, "a collection failure adds a count to the top bar, without a page alert or erasing the list");
+  assert(root.querySelector(".stale-list").textContent.includes("Couldn't confirm 2 reported tickets: Kanvil live updates are reconnecting"), "the page identifies the failed operation instead of claiming the whole list is stale");
   assert(!tray(), "issues never open on their own");
   root.querySelector(".stale-list button").click(); await pause();
   assert(tray()?.querySelector(".issue-title")?.textContent === "Couldn't confirm 2 reported tickets", "the page opens the issue list, problem first in plain words");
+  assert(tray().textContent.includes("Last failure") && !tray().textContent.includes("first failed"), "the timestamp describes the recorded failure without claiming it was the first");
   assert(tray().querySelector("details:not([open]) .issue-subjects")?.textContent.includes("APP-9"), "affected tickets sit behind a closed disclosure");
   indicator.click(); await pause();
   assert(!tray(), "the indicator closes the list");

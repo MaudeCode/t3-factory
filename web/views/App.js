@@ -54,7 +54,7 @@ function Updates() {
     </button>
     <${Popover} class="issues" open=${issuesOpen.value} onClose=${close} anchor=${anchor} label="Issues" width=${400}>
       ${list.map((i) => html`<section key=${i.source} class="issue-source">
-        <header><a href=${i.href} onClick=${(e) => { close(); follow(e); }}>${i.source}</a><span>${i.note ?? `Retrying · first failed ${ago(i.error.at, now)}`}</span></header>
+        <header><a href=${i.href} onClick=${(e) => { close(); follow(e); }}>${i.source}</a><span>${i.note ?? `Last failure ${ago(i.error.at, now)}`}</span></header>
         ${problems(i.error).map((p) => html`<div class="issue">
           <p class="issue-title">${p.title}</p>
           ${p.cause && html`<p>${p.cause}</p>`}

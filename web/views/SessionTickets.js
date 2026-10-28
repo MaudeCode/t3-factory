@@ -38,7 +38,7 @@ export function SessionTickets() {
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
   return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
-    ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />This list may be out of date. <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
+    ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN)} />
     <${Section} title="Reported by sessions" count=${s ? rows.length : null}>
       ${selecting && !!rows.length && html`<div class="selection-bar">
