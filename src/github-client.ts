@@ -21,7 +21,11 @@ export class GitHub {
   }, request: typeof fetch = (...args) => fetch(...args), endpoint = 'https://api.github.com/graphql') { this.token = token; this.request = request; this.endpoint = endpoint; }
   private connect() {
     this.abort.signal.throwIfAborted();
-    this.credential ??= this.token(this.abort.signal).then(value => { if (!value.trim()) throw new Error('GitHub authentication returned no credential'); return value.trim(); }).catch(error => { this.credential = undefined; throw error; });
+    if (!this.credential) {
+      const pending = this.token(this.abort.signal).then(value => { if (!value.trim()) throw new Error('GitHub authentication returned no credential'); return value.trim(); });
+      this.credential = pending;
+      void pending.catch(() => { if (this.credential === pending) this.credential = undefined; });
+    }
     return this.credential;
   }
   close() { this.abort.abort(new Error('GitHub client closed')); this.credential = undefined; }
@@ -34,10 +38,11 @@ export class GitHub {
     for (;;) {
       let response: Response | undefined;
       for (let attempt = 0; ; attempt++) {
-        const token = await waitFor(this.connect(), stop);
+        const credential = this.connect(), token = await waitFor(credential, stop);
         response = await this.request(this.endpoint, { method: 'POST', redirect: 'error', signal: stop, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 't3-factory' }, body: JSON.stringify({ query, variables: { owner, repo, cursor } }) });
         if (response.status !== 401 || attempt) break;
-        await response.body?.cancel(); this.credential = undefined; // Read-only query; no command can be replayed.
+        await response.body?.cancel();
+        if (this.credential === credential) this.credential = undefined; // A sibling may already be refreshing it.
       }
       if (!response.ok) { await response.body?.cancel(); throw new Error(`GitHub pull request read returned HTTP ${response.status}`); }
       const payload = pageSchema.parse(await response.json());

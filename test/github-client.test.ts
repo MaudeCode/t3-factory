@@ -49,6 +49,19 @@ test('an unauthorized read refreshes its credential once and never loops', async
   await client.pullRequests('fixture/repo'); assert.deepEqual(headers, ['Bearer fixture-1', 'Bearer fixture-2']);
 });
 
+test('concurrent unauthorized readers share the replacement credential lookup', async t => {
+  let auth = 0, oldRequests = 0;
+  const refreshing = Promise.withResolvers<void>(), replacement = Promise.withResolvers<string>();
+  const f = await fixture(t, async (_body, authorization) => {
+    if (authorization === 'Bearer old') { if (++oldRequests === 2) await refreshing.promise; return { status: 401, body: {} }; }
+    return { body: page() };
+  });
+  const client = new GitHub(async () => { if (++auth === 1) return 'old'; refreshing.resolve(); return replacement.promise; }, undefined, f.endpoint); t.after(() => client.close());
+  const reads = [client.pullRequests('fixture/repo'), client.pullRequests('fixture/repo')];
+  await refreshing.promise; replacement.resolve('new'); await Promise.all(reads);
+  assert.equal(auth, 2, 'a late 401 must not clear a sibling replacement lookup');
+});
+
 for (const fault of ['forbidden', 'unauthorized', 'graphql', 'partial', 'cursor', 'overflow'] as const) test(`GitHub ${fault} fails closed`, async t => {
   const f = await fixture(t, () => {
     if (fault === 'forbidden' || fault === 'unauthorized') return { status: fault === 'forbidden' ? 403 : 401, body: {} };
