@@ -393,9 +393,10 @@ test('final ancestry checks do not enumerate the selected ticket siblings', asyn
   const f = dispatchFixture(t); f.tasks.push(f.task('parent', 3));
   f.relations.push({ sourceTaskId: 'parent', targetTaskId: 'root', relationType: 'subtask' });
   const relations = f.kanvil.relations.bind(f.kanvil); let checked = false;
-  t.mock.method(f.kanvil, 'relations', async (id, fresh, children, known) => {
+  t.mock.method(f.kanvil, 'relations', async (...args: Parameters<typeof relations>) => {
+    const [id, fresh, children] = args;
     if (id === 'parent' && fresh) { checked = true; assert.equal(children, false, 'ancestor blocker checks must not paginate unrelated children'); }
-    return relations(id, fresh, children, known);
+    return relations(...args);
   });
   assert.equal((await f.run()).reason, 'dispatched'); assert.equal(checked, true);
 });
