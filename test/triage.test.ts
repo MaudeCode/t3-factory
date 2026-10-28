@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
 import { admitTriage, inboxes, needsTriage, quoteSummary, triageCanary, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil } from '../src/triage.ts';
-import { triageRows } from '../src/scheduler.ts';
+import { log, triageRows } from '../src/scheduler.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'f', GIT_AUTHOR_EMAIL: 'f@example.test', GIT_COMMITTER_NAME: 'f', GIT_COMMITTER_EMAIL: 'f@example.test' } }).toString().trim();
 const budget = { reservePercent: 0, minRemainingPercent: 0 };
@@ -409,4 +409,11 @@ test('the Kanvil client exposes no projection while not synchronized and writes 
     { url: 'https://kanvil.example.test/api/v1/projects/P/tickets/T/relations', method: 'POST', body: { targetId: 'X', type: 'duplicate', requestId: 'r3' } },
   ]);
   await kanvil.close();
+});
+
+test('doctor output keeps the triage sandbox result', t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(line); });
+  log('decision', { reason: 'doctor', at: 'now', streams: [], skipped: [], triageSandbox: { ok: false, readRefused: false, shellRefused: true, message: 'The CLI read a file outside the snapshot' } });
+  assert.deepEqual(JSON.parse(lines[0]).triageSandbox, { ok: false, readRefused: false, shellRefused: true, message: 'The CLI read a file outside the snapshot' });
 });

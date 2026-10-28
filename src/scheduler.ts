@@ -39,7 +39,7 @@ export function log(event: string, fields: Record<string, unknown> = {}) {
     const streams = fields.streams as { driver: string; reason: string }[] | undefined, skipped = fields.skipped as { key: string; reason: string }[] | undefined;
     fields = { reason: fields.reason, at: fields.at, ticket: fields.ticket, jobId: fields.jobId, threadId: fields.threadId, message: fields.message,
       eligible: fields.eligible, streams: streams?.map(({ driver, reason }) => ({ driver, reason })), skippedCount: skipped?.length,
-      skipped: skipped?.slice(0, 5).map(({ key, reason }) => ({ key, reason })) };
+      skipped: skipped?.slice(0, 5).map(({ key, reason }) => ({ key, reason })), triageSandbox: fields.triageSandbox };
   }
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
 }
