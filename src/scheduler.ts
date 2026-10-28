@@ -39,7 +39,7 @@ export function log(event: string, fields: Record<string, unknown> = {}) {
     const streams = fields.streams as { driver: string; reason: string }[] | undefined, skipped = fields.skipped as { key: string; reason: string }[] | undefined;
     fields = { reason: fields.reason, at: fields.at, ticket: fields.ticket, jobId: fields.jobId, threadId: fields.threadId, message: fields.message,
       eligible: fields.eligible, streams: streams?.map(({ driver, reason }) => ({ driver, reason })), skippedCount: skipped?.length,
-      skipped: skipped?.slice(0, 5).map(({ key, reason }) => ({ key, reason })) };
+      skipped: skipped?.slice(0, 5).map(({ key, reason }) => ({ key, reason })), triageSandbox: fields.triageSandbox };
   }
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
 }
@@ -1537,7 +1537,7 @@ export function writeStatus(c: Config, store: Store) {
   const result = {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
-    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'),
+    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: store.events(30, undefined, 'triage'),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),

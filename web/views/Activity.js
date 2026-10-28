@@ -8,6 +8,7 @@ const KINDS = [
   ["runs", "Runs"],
   ["decision", "Checks"],
   ["cleanup", "Cleanup"],
+  ["triage", "Triage"],
 ];
 
 export function Activity() {

@@ -30,7 +30,11 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
   resume: { path: ['enabled'], value: true, message: 'New dispatches enabled; quota and idle gates still apply.' },
   'upstream-pause': { path: ['upstream', 'enabled'], value: false, message: 'New upstream reviews paused. Running reviews continue.' },
   'upstream-resume': { path: ['upstream', 'enabled'], value: true, message: 'Upstream reviews enabled; quota and run limits still apply.' },
+  'triage-pause': { path: ['triage', 'enabled'], value: false, message: 'Inbox triage paused. A running report finishes.' },
+  'triage-resume': { path: ['triage', 'enabled'], value: true, message: 'Inbox triage enabled; the Claude quota reserve still applies.' },
 };
+// A section switch needs its section; the message names what is missing.
+const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', triage: 'No inbox triage is configured' };
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
@@ -166,8 +170,8 @@ if (command === 'web') {
 } else if (Object.hasOwn(switches, command)) {
   const { path, value, message } = switches[command];
   const text = readFileSync(configPath, 'utf8');
-  if (path[0] === 'upstream' && !parse(text, [], { allowTrailingComma: true })?.upstream) {
-    console.error('No upstream reviews are configured'); process.exitCode = 1;
+  if (path.length > 1 && !parse(text, [], { allowTrailingComma: true })?.[path[0]]) {
+    console.error(sections[path[0]]); process.exitCode = 1;
   } else {
     const next = applyEdits(text, modify(text, path, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
     writeFileSync(`${configPath}.tmp`, next, { mode: 0o600 }); renameSync(`${configPath}.tmp`, configPath);
@@ -220,6 +224,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO] [--model auto|MODEL_ID] [--override-limits | --override idle,reserve,labels] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO] [--model auto|MODEL_ID] [--override-limits | --override idle,reserve,labels] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }
