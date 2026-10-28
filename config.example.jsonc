@@ -49,6 +49,13 @@
     "promptFile": "/absolute/path/to/discovery.md",
     "emptyCooldownHours": 24
   },
+  // Optional: triage untrusted Inbox reports. The source project must not appear in projects.
+  "triage": {
+    "enabled": false,
+    "sourceProjectId": "YOUR_INBOX_KANVIL_PROJECT_ID",
+    "targetProjectId": "YOUR_PRODUCT_KANVIL_PROJECT_ID",
+    "repoPath": "/absolute/path/to/product-checkout"
+  },
   // Optional: required once any project lists upstreams.
   "upstream": {
     "enabled": false,

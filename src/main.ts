@@ -204,6 +204,7 @@ if (command === 'web') {
     const result = options.manual
       ? (await runManualRequest(c, store, options, async (work, _foreground, meta) => { await meta.context.run(() => work(0)); }, opts => cycle(c, store!, opts))).data
       : await cycle(c, store, options);
+    if (options.doctor && (result as { triageSandbox?: { ok: boolean } }).triageSandbox?.ok === false) process.exitCode = 1;
     if (options.manual) {
       log('decision', result as Record<string, unknown>);
       if (!['dispatched', 'would-dispatch', 'plan-started'].includes((result as { reason: string }).reason)) process.exitCode = 1;

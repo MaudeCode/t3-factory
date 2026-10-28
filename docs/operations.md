@@ -7,7 +7,7 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | Command | Effect |
 | --- | --- |
 | `status` | Reads the local ledger and writes a current status snapshot. |
-| `doctor` | Checks live integrations and reports a possible decision without dispatching. |
+| `doctor` | Checks live integrations and reports a possible decision without dispatching. With `triage` configured, it also runs the triage sandbox canary and exits non-zero unless the CLI refuses both probes. |
 | `once --dry-run` | Previews a cycle using the current enabled state and policy. |
 | `pause` / `resume` | Disables or enables new automatic ticket and discovery work. |
 | `upstream-pause` / `upstream-resume` | Disables or enables new upstream release reviews, independently of `pause` / `resume`. |

@@ -74,6 +74,8 @@ export const configSchema = z.preprocess(input => {
   discovery: z.object({ promptFile: absolute, emptyCooldownHours: positive }).strict(),
   // Reviews have their own switch so pausing ticket automation does not stop release reviews.
   upstream: z.object({ enabled: z.boolean().default(false), promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
+  // Untrusted intake: a read-only, network-less model run whose JSON output factory code applies.
+  triage: z.object({ enabled: z.boolean().default(false), sourceProjectId: z.string().min(1), targetProjectId: z.string().min(1), repoPath: absolute }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),
@@ -106,6 +108,8 @@ export const configSchema = z.preprocess(input => {
   const upstreams = c.projects.flatMap(p => p.upstreams.map(u => u.repo));
   if (new Set(upstreams).size !== upstreams.length) ctx.addIssue({ code: 'custom', message: 'Each upstream repository can be watched by only one project' });
   if (upstreams.length && !c.upstream) ctx.addIssue({ code: 'custom', path: ['upstream'], message: 'Watched upstreams need upstream.promptFile' });
+  if (c.triage && c.projects.some(p => p.kanvilId === c.triage!.sourceProjectId)) ctx.addIssue({ code: 'custom', path: ['triage', 'sourceProjectId'], message: 'The triage source project cannot also be a delivery project' });
+  if (c.triage && c.triage.sourceProjectId === c.triage.targetProjectId) ctx.addIssue({ code: 'custom', path: ['triage', 'targetProjectId'], message: 'Triage needs separate source and target projects' });
   const u = new URL(c.t3.url);
   if (!['http:', 'https:'].includes(u.protocol) || !loopback(u)) {
     ctx.addIssue({ code: 'custom', message: 'T3 must be a loopback HTTP(S) endpoint on this Mac' });

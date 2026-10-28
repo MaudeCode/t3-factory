@@ -14,6 +14,8 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
+import { triagePass } from './triage.ts';
+import { readModelQuota } from './models.ts';
 
 const EVENT_SETTLE_MS = 25;
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
@@ -178,6 +180,13 @@ export class FactoryService {
       if (!c.upstream?.enabled) return;
       await pendingReviews(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
+    });
+    // One triage run at a time, gated by the Claude allowance like other jobs.
+    this.runLane('inbox-triage', async () => {
+      const c = this.configure();
+      if (!c.triage?.enabled || c.concurrency.claude === 0) return;
+      const results = await triagePass(c, this.store, await this.ensureKanvil(c), { budget: () => this.triageBudget(c), signal: this.abort.signal });
+      if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
     });
     this.scheduleCleanup(true); this.scheduleCollection();
     if (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory();
@@ -360,7 +369,7 @@ export class FactoryService {
     }
     if (command.type === 'once') {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
-      return { code: result.reason === 'error' ? 1 : 0, data: result };
+      return { code: result.reason === 'error' || (result as { triageSandbox?: { ok: boolean } }).triageSandbox?.ok === false ? 1 : 0, data: result };
     }
     return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); }, receivedAt);
   }
@@ -377,6 +386,16 @@ export class FactoryService {
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
       finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
     }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
+  }
+
+  private async triageBudget(c: Config): Promise<string | undefined> {
+    try {
+      const providers = await this.t3.providers();
+      const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
+      if (!preset) return 'No Claude model is configured';
+      const quota = await readModelQuota(this.t3, c, this.store.jobSummaries(), preset.id);
+      return !quota.hasAllowance ? 'quota-exhausted' : !quota.allowed ? 'quota-budget' : undefined;
+    } catch (error) { return safeError(error); }
   }
 
   private ensureKanvil(c: Config): Promise<Kanvil> {
