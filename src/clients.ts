@@ -30,6 +30,15 @@ const providerPayloadSchema = z.object({ providers: z.array(z.object({
         id: z.string(), usedPercent: z.number(), resetsAt: z.string().optional(), windowDurationMins: z.number().optional(),
       }).passthrough()) }).passthrough().optional(),
     }).passthrough()) });
+// Wire values are JSON. Freeze each new node once, retaining already-frozen entities
+// across shell versions so readers can share them without copying the global state.
+function immutableProjection<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) immutableProjection(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
@@ -118,9 +127,8 @@ export class T3 {
       const view = this.shellView;
       if (view && this.rpc.isLive(view.epoch)) {
         this.probeOrphans(view.value.threads);
-        const value = structuredClone(view.value);
-        for (const thread of value.threads) if (this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`)) thread.orphanedRun = true;
-        return value;
+        const threads = view.value.threads.map(thread => this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`) ? immutableProjection({ ...thread, orphanedRun: true }) : thread);
+        return immutableProjection({ ...view.value, threads });
       }
     }
     let entry = this.shellRead;
@@ -182,30 +190,35 @@ export class T3 {
         const roots = z.array(z.string()).parse(event.resolvedRepositoryIdentityRoots), view = this.shellView;
         // Native enrichment is a marked, partial project snapshot, not a new shell.
         // Its high-water mark cannot skip application events still arriving on the feed.
-        if (view?.epoch === epoch && value.snapshotSequence >= view.sequence) for (const project of value.projects) {
-          const index = view.value.projects.findIndex(current => current.id === project.id && current.workspaceRoot === project.workspaceRoot);
-          if (index >= 0 && roots.includes(project.workspaceRoot)) view.value.projects[index] = project;
+        if (view?.epoch === epoch && value.snapshotSequence >= view.sequence) {
+          const enriched = new Map(value.projects.filter(project => roots.includes(project.workspaceRoot)).map(project => [project.id, project]));
+          const projects = view.value.projects.map(current => {
+            const project = enriched.get(current.id);
+            return project?.workspaceRoot === current.workspaceRoot ? project : current;
+          });
+          view.value = immutableProjection({ ...view.value, projects });
         }
         return;
       }
-      if (!this.shellView || this.shellView.epoch !== epoch || value.snapshotSequence >= this.shellView.sequence) this.shellView = { epoch, sequence: value.snapshotSequence, value };
+      if (!this.shellView || this.shellView.epoch !== epoch || value.snapshotSequence >= this.shellView.sequence) this.shellView = { epoch, sequence: value.snapshotSequence, value: immutableProjection(value) };
       return;
     }
     const sequence = z.number().int().nonnegative().parse(event.sequence), view = this.shellView;
     if (!view || view.epoch !== epoch) return;
     if (sequence < view.sequence) return;
+    const next = { ...view.value };
     if (event.kind === 'thread.updated') {
       const thread = threadSchema.parse(event.thread), location = z.enum(['active', 'archive']).parse(event.location);
-      view.value.threads = view.value.threads.filter(current => current.id !== thread.id); view.value.archivedThreads = view.value.archivedThreads.filter(current => current.id !== thread.id);
-      (location === 'active' ? view.value.threads : view.value.archivedThreads).push(thread);
+      next.threads = next.threads.filter(current => current.id !== thread.id); next.archivedThreads = next.archivedThreads.filter(current => current.id !== thread.id);
+      (location === 'active' ? next.threads : next.archivedThreads).push(thread);
     } else if (event.kind === 'thread.removed') {
-      const id = z.string().parse(event.threadId); view.value.threads = view.value.threads.filter(thread => thread.id !== id); view.value.archivedThreads = view.value.archivedThreads.filter(thread => thread.id !== id);
+      const id = z.string().parse(event.threadId); next.threads = next.threads.filter(thread => thread.id !== id); next.archivedThreads = next.archivedThreads.filter(thread => thread.id !== id);
     } else if (event.kind === 'project.updated') {
-      const project = shellSchema.shape.projects.element.parse(event.project); view.value.projects = [...view.value.projects.filter(current => current.id !== project.id), project];
+      const project = shellSchema.shape.projects.element.parse(event.project); next.projects = [...next.projects.filter(current => current.id !== project.id), project];
     } else if (event.kind === 'project.removed') {
-      const id = z.string().parse(event.projectId); view.value.projects = view.value.projects.filter(project => project.id !== id); view.value.threads = view.value.threads.filter(thread => thread.projectId !== id); view.value.archivedThreads = view.value.archivedThreads.filter(thread => thread.projectId !== id);
+      const id = z.string().parse(event.projectId); next.projects = next.projects.filter(project => project.id !== id); next.threads = next.threads.filter(thread => thread.projectId !== id); next.archivedThreads = next.archivedThreads.filter(thread => thread.projectId !== id);
     } else { this.shellView = undefined; throw new Error('Unsupported T3 shell stream event'); }
-    view.sequence = sequence;
+    view.sequence = sequence; view.value = immutableProjection(next);
   }
   /** T3 can leave a run active after its provider session stopped. Any doubt keeps the run executing. */
   private async orphaned(t: Thread): Promise<boolean | undefined> {
