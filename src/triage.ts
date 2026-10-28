@@ -40,8 +40,9 @@ export interface TriageKanvil {
   addComment(projectId: string, ticketId: string, body: string, requestId: string): Promise<unknown>;
   addRelation(projectId: string, ticketId: string, targetId: string, type: 'duplicate', requestId: string): Promise<unknown>;
 }
-// `budget` is checked before every report, so a switch flipped mid-pass stops the next run.
-export interface TriageOptions { command?: string; timeoutMs?: number; budget?: () => Promise<string | undefined>; signal?: AbortSignal; onRun?: (running?: Task) => void }
+// `budget` admits each report: a switch flipped mid-pass stops the next run, and the run uses the model whose allowance was checked.
+export type Admission = { blocked: string } | { model?: string };
+export interface TriageOptions { command?: string; timeoutMs?: number; budget?: () => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running?: Task) => void }
 /** An inbox and the delivery project it feeds; the project supplies the repository and scopes. */
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
@@ -99,7 +100,7 @@ export async function buildSnapshot(project: Project, ticket: Task, exported: Re
 // Only what the CLI needs to start and authenticate; no tracker, GitHub, or T3 credentials.
 const ENV_ALLOW = ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR'];
 export const sandboxEnv = () => Object.fromEntries(ENV_ALLOW.flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]));
-export function sandboxArgs(dir: string, scopes: string[]) {
+export function sandboxArgs(dir: string, scopes: string[], model?: string) {
   // The CLI validator does not load the 2020-12 meta-schema that the $schema key names.
   const { $schema: _draft, ...outputJsonSchema } = z.toJSONSchema(triageOutputSchema(scopes));
   const settings = {
@@ -107,14 +108,14 @@ export function sandboxArgs(dir: string, scopes: string[]) {
     disableAllHooks: true,
   };
   return ['-p', '--restricted', '--safe-mode', '--tools', 'Read,Grep,Glob', '--permission-mode', 'dontAsk', '--strict-mcp-config', '--disable-slash-commands',
-    '--no-session-persistence', '--settings', JSON.stringify(settings), '--output-format', 'json', '--json-schema', JSON.stringify(outputJsonSchema)];
+    '--no-session-persistence', ...model ? ['--model', model] : [], '--settings', JSON.stringify(settings), '--output-format', 'json', '--json-schema', JSON.stringify(outputJsonSchema)];
 }
 
 type ModelResult = { kind: 'ok'; output: unknown; stdout: string } | { kind: 'timeout' } | { kind: 'error'; message: string; stdout: string };
-export function runSandboxed(dir: string, scopes: string[], prompt: string, command = 'claude', timeoutMs = TRIAGE_TIMEOUT_MS, signal?: AbortSignal): Promise<ModelResult> {
+export function runSandboxed(dir: string, scopes: string[], prompt: string, command = 'claude', timeoutMs = TRIAGE_TIMEOUT_MS, signal?: AbortSignal, model?: string): Promise<ModelResult> {
   return new Promise(done => {
     // A stopping service kills the run; the caller rethrows instead of labelling the ticket.
-    const child = spawn(command, sandboxArgs(dir, scopes), { cwd: dir, env: sandboxEnv(), stdio: ['pipe', 'pipe', 'ignore'], signal, killSignal: 'SIGKILL' });
+    const child = spawn(command, sandboxArgs(dir, scopes, model), { cwd: dir, env: sandboxEnv(), stdio: ['pipe', 'pipe', 'ignore'], signal, killSignal: 'SIGKILL' });
     let stdout = '', timedOut = false, settled = false;
     const finish = (result: ModelResult) => { if (!settled) { settled = true; clearTimeout(timer); done(result); } };
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
@@ -213,7 +214,7 @@ export async function triageTicket(c: Config, store: Store, kanvil: TriageKanvil
   const { dir, commit } = await buildSnapshot(target.project, ticket, exported);
   try {
     const { prompt } = triagePrompt(c.triage!.promptFile, target, ticket);
-    const run = async () => { const r = await runSandboxed(dir, target.scopes, prompt, options.command, options.timeoutMs, options.signal); options.signal?.throwIfAborted(); return r; };
+    const run = async () => { const r = await runSandboxed(dir, target.scopes, prompt, options.command, options.timeoutMs, options.signal, options.model); options.signal?.throwIfAborted(); return r; };
     let result = await run();
     if (result.kind === 'timeout') result = await run();
     if (result.kind === 'timeout') return await fail(kanvil, ticket, 'Timed out twice');
@@ -241,10 +242,10 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
   const results: Record<string, unknown>[] = [];
   for (const { target, ticket } of queue) {
     if (options.signal?.aborted) break;
-    const blocked = await options.budget?.();
-    if (blocked) { results.push({ ticket: ticket.key, outcome: 'waiting', reason: blocked }); break; }
+    const admission = await options.budget?.() ?? {};
+    if ('blocked' in admission) { results.push({ ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
     options.onRun?.(ticket);
-    try { results.push(await triageTicket(c, store, kanvil, target, ticket, options)); }
+    try { results.push(await triageTicket(c, store, kanvil, target, ticket, { ...options, model: admission.model ?? options.model })); }
     catch (error) { results.push({ ticket: ticket.key, outcome: 'error', reason: safeError(error) }); }
   }
   options.onRun?.();

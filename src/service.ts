@@ -14,7 +14,7 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
-import { inboxes, triagePass, triageQueue } from './triage.ts';
+import { inboxes, triagePass, triageQueue, type Admission } from './triage.ts';
 import { readModelQuota } from './models.ts';
 
 const EVENT_SETTLE_MS = 25;
@@ -391,17 +391,18 @@ export class FactoryService {
   }
 
   // Reread before every report: pausing triage or Claude stops the next run, not only the next pass.
-  private async triageBudget(): Promise<string | undefined> {
+  // The run uses the preset whose allowance was checked, so the quota decision governs the model that spends it.
+  private async triageBudget(): Promise<Admission> {
     try {
       const c = this.configure();
-      if (!c.triage?.enabled) return 'triage-disabled';
-      if (c.concurrency.claude === 0) return 'provider-disabled';
+      if (!c.triage?.enabled) return { blocked: 'triage-disabled' };
+      if (c.concurrency.claude === 0) return { blocked: 'provider-disabled' };
       const providers = await this.t3.providers();
       const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
-      if (!preset) return 'No Claude model is configured';
+      if (!preset) return { blocked: 'No Claude model is configured' };
       const quota = await readModelQuota(this.t3, c, this.store.jobSummaries(), preset.id);
-      return !quota.hasAllowance ? 'quota-exhausted' : !quota.allowed ? 'quota-budget' : undefined;
-    } catch (error) { return safeError(error); }
+      return !quota.hasAllowance ? { blocked: 'quota-exhausted' } : !quota.allowed ? { blocked: 'quota-budget' } : { model: preset.model.model };
+    } catch (error) { return { blocked: safeError(error) }; }
   }
 
   private ensureKanvil(c: Config): Promise<Kanvil> {

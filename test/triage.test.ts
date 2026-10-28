@@ -184,7 +184,7 @@ test('a pass reads projections first; the run itself makes no Kanvil reads and a
 
 test('an exhausted Claude budget holds every run', async t => {
   const f = fixture(t);
-  assert.deepEqual(await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => 'quota-budget' }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
+  assert.deepEqual(await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
   assert.equal(f.calls().length, 0);
   assert.deepEqual(writes(f.log), []);
 });
@@ -239,10 +239,12 @@ test('a mid-pass stop starts no further report', async t => {
   f.projects.OTHIN.push(otherReport('2025-12-01T00:00:00Z'));
   f.mode({ stdout: reply(output({ scopes: [] })) });
   let checks = 0;
-  const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ++checks > 1 ? 'triage-disabled' : undefined });
+  const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ++checks > 1 ? { blocked: 'triage-disabled' } : { model: 'admitted-model' } });
   assert.deepEqual(results.map(r => r.outcome), ['triaged', 'waiting']);
   assert.equal(results[1].reason, 'triage-disabled');
   assert.equal(f.calls().length, 1);
+  const { argv } = f.calls()[0];
+  assert.equal(argv[argv.indexOf('--model') + 1], 'admitted-model', 'the run uses the model whose allowance was admitted');
 });
 
 test('queue status comes from the live projections with zero requests', async t => {
