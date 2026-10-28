@@ -369,6 +369,18 @@ test('an upstream admission cannot erase the background inventory used by unname
   assert.equal(result.ticket, 'FIX-1');
 });
 
+test('prepared admission reads label occupancy once instead of reloading jobs for every queued ticket', async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  for (let i = 3; i < 203; i++) f.tasks.push(f.task(`queued-${i}`, i, 'todo'));
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store))));
+  let reads = 0; const summaries = f.store.jobSummaries.bind(f.store);
+  t.mock.method(f.store, 'jobSummaries', () => { reads++; return summaries(); });
+  const result = await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true, deferReconcile: true, deferCleanup: true });
+  assert.equal(result.reason, 'dispatched');
+  assert.ok(reads <= 20, `200 extra hints must not amplify ledger reads; observed ${reads}`);
+  assert.equal(f.launches.length, 1);
+});
+
 test('trusted live quota avoids a foreground provider probe within configured freshness', async t => {
   const f = dispatchFixture(t), quote = f.provider();
   quote.usageLimits.checkedAt = new Date(Date.now() - 5000).toISOString();
