@@ -286,7 +286,9 @@ test('each admission counts as Claude consumption, so the next report needs a ne
   checkedAt = new Date(Date.now() + 1000).toISOString();
   assert.deepEqual(await admitTriage(f.c, t3, store), { model: 'fixture' });
   assert.deepEqual(await admitTriage({ ...f.c, triage: { ...f.c.triage!, enabled: false } }, t3, store), { blocked: 'triage-disabled' });
-  assert.deepEqual(await admitTriage({ ...f.c, concurrency: { claude: 0, codex: 1 } }, t3, store), { blocked: 'provider-disabled' });
+  // Triage takes no T3 run slot: with Claude T3 jobs off it still runs, held only by the quota reserve.
+  checkedAt = new Date(Date.now() + 2000).toISOString();
+  assert.deepEqual(await admitTriage({ ...f.c, concurrency: { claude: 0, codex: 1 } }, t3, store), { model: 'fixture' });
 });
 
 test('a stale or disconnected projection delays the run without fetching', async t => {

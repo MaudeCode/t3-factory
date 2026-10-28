@@ -261,8 +261,8 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
  */
 export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }): Promise<Admission> {
   try {
+    // Triage takes no T3 run slot, so Claude T3 concurrency does not gate it; the quota reserve does.
     if (!c.triage?.enabled) return { blocked: 'triage-disabled' };
-    if (c.concurrency.claude === 0) return { blocked: 'provider-disabled' };
     const providers = await t3.providers();
     const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
     if (!preset) return { blocked: 'No Claude model is configured' };
