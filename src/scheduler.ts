@@ -616,8 +616,10 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
 }
 
 async function openPullRequests(project: Project, store?: Store, fresh = false) {
-  const client = store && githubClients.get(store);
-  const read = async () => pullRequestsSchema.parse(client ? await client.pullRequests(project.githubRepo) : await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
+  const read = async () => {
+    const client = store && githubClients.get(store);
+    return pullRequestsSchema.parse(client ? await client.pullRequests(project.githubRepo) : await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
+  };
   return store ? repositoryRead(store, `prs:${project.githubRepo}`, read, fresh) : read();
 }
 // Extend historical release checks to explicit settlements outside Factory, without releasing any Factory-owned work by this path.
@@ -640,7 +642,7 @@ async function ticketArtifacts(project: Project, key: string, taskId: string, th
 
 const READ_CONCURRENCY = 6;
 const githubClients = new WeakMap<Store, Pick<GitHub, 'pullRequests'>>();
-const repositoryReads = new WeakMap<Store, { context: ReadContext; entries: Map<string, { at: number; fresh: boolean; settled: boolean; pending: Promise<unknown> }> }>();
+const repositoryReads = new WeakMap<Store, { context: ReadContext; entries: Map<string, { at?: number; settled: boolean; pending: Promise<unknown> }> }>();
 function repositoryRead<T>(store: Store, key: string, read: () => Promise<T>, fresh = false): Promise<T> {
   let cache = repositoryReads.get(store);
   if (!cache) {
@@ -649,9 +651,14 @@ function repositoryRead<T>(store: Store, key: string, read: () => Promise<T>, fr
     store.onClose = () => { owned.context.controller.abort(new Error('Factory ledger closed')); owned.entries.clear(); };
   }
   let entry = cache.entries.get(key);
-  if (!entry || (!readContext() && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : Date.now() - entry.at > 1000)) {
-    const pending = cache.context.run(read);
-    entry = { at: Date.now(), fresh, settled: false, pending }; cache.entries.set(key, entry);
+  if (!entry || (!readContext() && entry.settled) || (fresh ? entry.settled || entry.at !== undefined && entry.at < (readContext()?.startedAtMonotonic ?? performance.now()) : entry.at !== undefined && performance.now() - entry.at > 1000)) {
+    let at: number | undefined;
+    const pending = cache.context.run(async () => {
+      // Let already-queued callers join before starting I/O or a blocking spawn.
+      // Once capture starts, later fresh callers must obtain a new snapshot.
+      await backgroundCheckpoint(); at = performance.now(); return read();
+    });
+    entry = { get at() { return at; }, settled: false, pending }; cache.entries.set(key, entry);
     const owned = entry, entries = cache.entries;
     void pending.then(() => { owned.settled = true; }, () => { if (entries.get(key) === owned) entries.delete(key); });
   }
@@ -677,6 +684,10 @@ function cachedRead<T>(cache: Map<string, Promise<T>>, id: string, read: () => P
 }
 
 const taskOwners = (jobs: Job[]) => new Map(jobs.filter(job => !['complete', 'dismissed'].includes(job.state)).map(job => [job.taskId, job]));
+const ticketPreparations = new WeakMap<Store, Map<string, Candidate>>();
+function preparingLabels(store: Store) {
+  return [...(ticketPreparations.get(store)?.values() ?? [])].map(ticket => ({ state: 'dispatching' as const, threadId: '', projectId: ticket.projectId, labels: ticket.labels?.map(label => label.name) }));
+}
 function branchConflict(key: string, refs: string, released: Map<string, string>) {
   if (!released.size) return mentionsTicket(refs, key);
   const unmatched = refs.split('\n').filter(line => {
@@ -1006,7 +1017,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
     const labelAvailability = () => {
       if (skip.has('labels')) return (_ticket: Candidate) => true;
-      const full = labelCapacity(c, [...store.jobSummaries(), ...started], shell.threads);
+      const full = labelCapacity(c, [...store.jobSummaries(), ...preparingLabels(store), ...started], shell.threads);
       return (ticket: Candidate) => !full(ticket);
     };
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
@@ -1082,7 +1093,7 @@ function discoveryAvailable(project: Project, jobs: Job[], store: Store, skipPro
   return project.enabled && !skipProjects.has(project.kanvilId) && !jobs.some(job => job.projectId === project.kanvilId && job.kind === 'discovery' && !['complete', 'dismissed'].includes(job.state)) && Number(store.get(`discoveryAfter:${project.kanvilId}`) ?? 0) <= Date.now();
 }
 
-const selectionChanged = (reason: string) => ['ticket-changed-before-dispatch', 'ticket-order-or-eligibility-changed', 'ticket-preparing', 'no-eligible-ticket'].includes(reason);
+const selectionChanged = (reason: string) => ['ticket-changed-before-dispatch', 'ticket-order-or-eligibility-changed', 'ticket-preparing', 'no-eligible-ticket', 'label-limit'].includes(reason);
 
 // Prepared rows are selection hints. The shared final boundary still authorizes the selected ticket.
 function preparedInventory(c: Config, store: Store): Queue | undefined {
@@ -1127,7 +1138,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   }
   const kanvil = plan?.kanvil ?? clients.kanvil ?? new Kanvil(c.kanvil), ownsKanvil = !(plan?.kanvil ?? clients.kanvil);
   if (ownsKanvil) await kanvil.connect();
-  let prepared: Awaited<ReturnType<T3['prepareLaunch']>> | undefined, releaseTicket: (() => void) | undefined;
+  let prepared: Awaited<ReturnType<T3['prepareLaunch']>> | undefined, releaseTicket: (() => void) | undefined, clearPreparation: (() => void) | undefined;
   try {
     if (!plan && !options.manual && !clients.deferReconcile) await reconcile(c, store, t3, kanvil, shell.threads, !options.dryRun && !options.doctor, !clients.deferCleanup);
     const jobs = store.jobs();
@@ -1144,7 +1155,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // Label limits bind every start except a manual one with limits overridden; chain continuations always respect them.
     const labelGated = !skip.has('labels') || !!options.continuation;
     if (labelGated && !ticketKey && !review) {
-      const full = labelCapacity(c, jobs, shell.threads), open = queue.ready.filter(ticket => !full(ticket));
+      const full = labelCapacity(c, [...jobs, ...preparingLabels(store)], shell.threads), open = queue.ready.filter(ticket => !full(ticket));
       if (queue.ready.length && !open.length) return decision('label-limit', { message: 'Every eligible ticket is waiting for a free label slot' });
       queue.ready = open;
     }
@@ -1173,10 +1184,17 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       : !isManualCodex && !skip.has('idle') && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
     const reservePreparation = !!options.manual && !plan && !activePlanId;
     const pickTicket = () => {
-      releaseTicket?.(); releaseTicket = undefined;
-      const candidates = reservePreparation ? queue.ready.filter(candidate => !store.isLocked(`ticket:${candidate.id}`)) : queue.ready;
+      releaseTicket?.(); releaseTicket = undefined; clearPreparation = undefined;
+      const current = store.jobSummaries(), owned = taskOwners(current);
+      const full = labelGated && !ticketKey ? labelCapacity(c, [...current, ...preparingLabels(store)], shell.threads) : undefined;
+      const candidates = queue.ready.filter(candidate => !owned.has(candidate.id) && (!reservePreparation || !store.isLocked(`ticket:${candidate.id}`)) && !full?.(candidate));
       const ticket = selectTicket(candidates, store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
-      if (ticket && reservePreparation) { releaseTicket = store.tryLock(`ticket:${ticket.id}`); if (!releaseTicket) return; }
+      if (ticket && reservePreparation) {
+        const release = store.tryLock(`ticket:${ticket.id}`); if (!release) return;
+        const preparations = ticketPreparations.get(store) ?? new Map<string, Candidate>(); ticketPreparations.set(store, preparations); preparations.set(ticket.id, ticket);
+        const clear = () => { if (preparations.get(ticket.id) === ticket) preparations.delete(ticket.id); };
+        clearPreparation = clear; releaseTicket = () => { clear(); release(); };
+      }
       return ticket;
     };
     queue.selected = review ? undefined : pickTicket();
@@ -1195,7 +1213,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     prepared = await t3.prepareLaunch();
     for (;;) {
       const reservationIds = () => store.jobSummaries().filter(job => (job.modelSelection?.instanceId ?? 'claudeAgent') === preset.model.instanceId).map(job => job.id).join(',');
-      const quotaGeneration = reservationIds(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId);
+      const quotaGeneration = reservationIds(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId), streamingShell = !!t3.peekShell?.();
       const trackerRevision = kanvil.generations();
       // Each final phase owns fresh snapshots; only independent reads overlap. Artifact cache writes stay after the reads.
       let { fresh, currentQuota, checked, currentActivity, artifacts } = await backgroundRead(async () => {
@@ -1219,8 +1237,19 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         ]);
         return { fresh, currentQuota, checked, artifacts, currentActivity };
       });
-      // Another launch consumed this provider after our quota read began. Revalidate without blocking its worker.
       const currentJobs = store.jobSummaries();
+      const latestShell = t3.peekShell?.();
+      if (streamingShell && !latestShell) continue; // Lost trust: read the authoritative fallback in a new pass.
+      if (latestShell) {
+        if (!latestShell.projects.some(live => live.id === project!.t3Id && live.workspaceRoot === project!.repoPath)) return decision('configuration-changed-before-dispatch', { message: 'The T3 project workspace changed during final validation.' });
+        // An inactive-thread proof belongs to the snapshot that was checked. A
+        // changed live thread must retain duplicate protection until revalidated.
+        if (artifacts) for (const id of artifacts.inactiveThreads) {
+          if (JSON.stringify(fresh.threads.find(thread => thread.id === id)) !== JSON.stringify(latestShell.threads.find(thread => thread.id === id))) artifacts.inactiveThreads.delete(id);
+        }
+        fresh = latestShell;
+      }
+      // Another launch consumed this provider after our quota read began. Revalidate without blocking its worker.
       const latestQuota = liveModelQuota(t3, c, quotaBaseline, preset.id, manualPolicy);
       if (streamingQuota && !latestQuota) continue;
       if (latestQuota) currentQuota = latestQuota;
@@ -1235,6 +1264,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         if (blockers === 'cycle' || blockers.length || children.length) return { reason: 'ticket-changed-before-dispatch', message: 'The ticket gained a blocker or an unfinished child.' };
         if (!artifacts || artifacts.openPR || branchConflict(key, checked.refs, artifacts.branches) || currentJobs.some(job => job.taskId === task.id && !['complete', 'dismissed'].includes(job.state)) || fresh.threads.some(thread => !artifacts.inactiveThreads.has(thread.id) && threadReferencesTicket(thread, selectionProject.t3Id, key))) return { reason: 'ticket-order-or-eligibility-changed' };
         if (kanvil.realtime && (!kanvil.projectSynchronized(selectionProject.kanvilId) || !kanvil.unchanged(trackerRevision, checked.projects, checked.tickets))) return { reason: 'ticket-changed-before-dispatch', message: 'Kanvil changed or disconnected during final validation.' };
+        const full = labelGated && fullLabel(c, currentJobs, fresh.threads, { ...selected, labels: checked.labels });
+        if (full) return { reason: 'label-limit', message: `Waiting for a free ${full} slot` };
       })();
       if (refusal) {
         queue.ready = queue.ready.filter(candidate => candidate.id !== selected!.id);
@@ -1252,9 +1283,6 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
       if (!options.manual && plan && busyProviders(currentJobs, fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
       if (options.continuation && busyProviders(currentJobs, fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
-      // The final tracker read is authoritative: a label added or removed since the queue read counts here.
-      const full = labelGated && queue.selected && fullLabel(c, currentJobs, fresh.threads, checked ? { ...queue.selected, labels: checked.labels } : queue.selected);
-      if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
       if (review) {
         const watched = project.upstreams.find(watched => watched.repo === review.upstream.repo);
         const state = watched && releaseState(project, watched, store, currentJobs);
@@ -1290,6 +1318,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const context = readContext();
       if (context) context.own({ jobId: job.id, threadId: job.threadId }, () => store.save(job));
       else store.save(job); // Durable ownership precedes the external write, including ambiguous timeouts.
+      clearPreparation?.(); // The durable job now accounts for its labels; do not count it twice.
       store.set('lastProject', project.kanvilId);
       if (job.kind === 'discovery') store.set(`discoveryLast:${project.kanvilId}`, String(Date.now()));
       await prepared.launch(job.command);

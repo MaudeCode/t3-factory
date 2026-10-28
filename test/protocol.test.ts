@@ -253,6 +253,7 @@ test('overlapping warm readers do not copy the whole shell or mutate another rea
 
 for (const failure of ['disconnect', 'malformed', 'credential'] as const) test(`live projections lose trust after ${failure}`, async t => {
   const ready = Promise.withResolvers<void>(), invalid = Promise.withResolvers<void>(); let shellRequest = '';
+  let errorSnapshot: ReturnType<T3['shell']> | undefined;
   const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
   const f = fixtureRpc(t, request => {
     if (request.tag === 'orchestration.subscribeShell') { shellRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([]) }] }]; }
@@ -260,7 +261,7 @@ for (const failure of ['disconnect', 'malformed', 'credential'] as const) test(`
     return [success(request)];
   }, true);
   const controller = new AbortController();
-  const stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') ready.resolve(); }, controller.signal, () => invalid.resolve());
+  const stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') ready.resolve(); }, controller.signal, () => { if (failure === 'malformed') errorSnapshot = f.t3.shell(false, true); invalid.resolve(); });
   let reads = 0;
   t.mock.method(f.t3, 'request', async () => { reads++; return v2Shell([v2Thread({ id: 'fallback' })]); });
   try {
@@ -269,7 +270,8 @@ for (const failure of ['disconnect', 'malformed', 'credential'] as const) test(`
     if (failure === 'disconnect') f.disconnect(false);
     else if (failure === 'credential') writeFileSync(f.t3.config.credentialFile, JSON.stringify({ token: 'rotated-fixture-token' }));
     else { f.respond(shellRequest, { kind: 'thread.updated', sequence: 43, location: 'active', thread: { id: 'incompatible' } }, true); await invalid.promise; await new Promise(resolve => setImmediate(resolve)); }
-    assert.equal((await f.t3.shell(false, true)).threads[0].id, 'fallback');
+    const observed = failure === 'malformed' ? await errorSnapshot! : await f.t3.shell(false, true);
+    assert.deepEqual(observed.threads.map(thread => thread.id), ['fallback'], 'error observers cannot consume the invalidated live snapshot');
     assert.equal(reads, 1, 'an untrusted shell must use the authoritative fallback');
     if (failure !== 'malformed') assert.equal(f.t3.peekProvider('codex'), undefined, 'old provider data cannot survive a physical disconnect or credential rotation');
   } finally { controller.abort(); await stream; }

@@ -154,7 +154,10 @@ export class T3Rpc {
           connected = await this.connect();
           const channel = feed === 'shell' ? connected.client['orchestration.subscribeShell']({}) : connected.client.subscribeServerConfig({ workspaceSnapshotsOnDemand: true });
           const epoch = connected.epoch;
-          await connected.runtime.runPromise(Stream.runForEach(channel, value => Effect.sync(() => onItem(value, epoch))), { signal: stop });
+          await connected.runtime.runPromise(Stream.runForEach(channel, value => Effect.sync(() => {
+            try { onItem(value, epoch); }
+            catch (error) { onReset(epoch); throw error; } // Invalidate before error observers can start another read.
+          })), { signal: stop });
         } catch (error) { if (!stop.aborted) onError(error); }
         finally { if (connected) onReset(connected.epoch); }
         if (stop.aborted) return;

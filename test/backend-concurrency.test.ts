@@ -9,6 +9,8 @@ import { execFileSync } from 'node:child_process';
 import { writeStatus, log } from '../src/scheduler.ts';
 import { dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts';
 import { cycle } from '../src/scheduler.ts';
+import { ReadContext } from '../src/read-context.ts';
+import type { GitHub } from '../src/github-client.ts';
 
 for (const held of ['read', 'launch']) test(`independent manual dispatch completes while another ${held} is held`, async t => {
   const f = serviceFixture(t), { internal } = f;
@@ -389,6 +391,62 @@ test('a warm service uses its GitHub connection instead of spawning the CLI for 
   assert.ok(reads > 0); assert.equal(f.launches.length, 1);
 });
 
+test('queued fresh repo reads coalesce but a later request cannot reuse a read already started', async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.tasks.push(f.task('second-queued', 3, 'todo'), f.task('late-queued', 4, 'todo'));
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store))));
+  const initial = Promise.withResolvers<Awaited<ReturnType<GitHub['pullRequests']>>>(), late = Promise.withResolvers<Awaited<ReturnType<GitHub['pullRequests']>>>(), both = deferred(), later = deferred();
+  let reads = 0, second: Promise<any> | undefined, third: Promise<any> | undefined;
+  const clients = { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true, github: { pullRequests: async () => { reads++; return reads === 1 ? initial.promise : late.promise; } } };
+  const run = (context: ReadContext) => context.run(() => cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '', dryRun: true }, clients));
+  const now = Date.now();
+  let time = now; t.mock.method(Date, 'now', () => time);
+  const first = run(new ReadContext(undefined, stage => {
+    if (stage.includes('github.read') && !second) {
+      time = now + 100;
+      second = run(new ReadContext(undefined, stage => { if (stage.includes('github.read')) both.resolve(); }));
+    }
+  }));
+  try {
+    await both.promise; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 1, 'requests queued before capture must share one fresh repository read');
+    time = now + 200;
+    third = run(new ReadContext(undefined, stage => { if (stage.includes('github.read')) later.resolve(); }));
+    await later.promise; await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 2, 'a request arriving after capture must start a new read');
+    late.resolve([{ title: 'FIX-4 already owned', headRefName: 'fix/FIX-4', body: '' }]);
+    assert.equal((await third).reason, 'ticket-order-or-eligibility-changed', 'the late request must observe the newly conflicting PR');
+    initial.resolve([]);
+    assert.equal((await first).reason, 'would-dispatch'); assert.equal((await second!).reason, 'would-dispatch');
+  } finally { initial.resolve([]); late.resolve([]); await Promise.allSettled([first, second, third]); }
+});
+
+test('a live T3 ownership change during final reads blocks reservation', async t => {
+  const f = dispatchFixture(t); let appeared = false;
+  f.hooks.read = async (name, id, final) => { if (final && name === 'ticket' && id === 'root') appeared = true; };
+  Object.defineProperty(f.t3, 'peekShell', { configurable: true, value: () => appeared ? {
+    threads: [v2Thread({ id: 'external-start', projectId: 'FIX', title: 'Working on FIX-1', status: 'running', activeRunId: 'external-run' })], archivedThreads: [],
+    projects: f.c.projects.map(project => ({ id: project.t3Id, title: project.name, workspaceRoot: project.repoPath })),
+  } : undefined });
+  assert.equal((await f.run()).reason, 'ticket-order-or-eligibility-changed');
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+});
+
+test('losing a live T3 projection forces a current fallback before reservation', async t => {
+  const f = dispatchFixture(t); let lost = false;
+  const projects = f.c.projects.map(project => ({ id: project.t3Id, title: project.name, workspaceRoot: project.repoPath }));
+  Object.defineProperty(f.t3, 'peekShell', { configurable: true, value: () => lost ? undefined : { threads: [], archivedThreads: [], projects } });
+  f.hooks.read = async (name, id, final) => { if (final && name === 'ticket' && id === 'root') lost = true; };
+  const shell = f.t3.shell.bind(f.t3);
+  t.mock.method(f.t3, 'shell', async (...args: Parameters<typeof shell>) => {
+    const lostWhenRead = lost;
+    const value = await shell(...args);
+    return lostWhenRead ? { ...value, threads: [v2Thread({ id: 'fallback-owner', projectId: 'FIX', title: 'Working on FIX-1', status: 'running', activeRunId: 'external-run' })] } : value;
+  });
+  assert.equal((await f.run()).reason, 'ticket-order-or-eligibility-changed');
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+});
+
 test('final ancestry checks do not enumerate the selected ticket siblings', async t => {
   const f = dispatchFixture(t); f.tasks.push(f.task('parent', 3));
   f.relations.push({ sourceTaskId: 'parent', targetTaskId: 'root', relationType: 'subtask' });
@@ -447,4 +505,40 @@ test('parallel warm requests prepare distinct hints without repeating the select
     assert.equal(f.calls.filter(call => call.startsWith('ticket:root:')).length, 1, 'another request must pick a distinct preparation hint before remote checks');
   } finally { release.resolve(); await Promise.allSettled(runs); }
   assert.equal(f.launches.length, 2);
+});
+
+test('parallel unnamed starts choose other eligible labels instead of colliding on the last app slot', async t => {
+  const f = serviceFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.c.projects[0].labelLimits = { app: 1 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.tasks[0].labels!.push({ name: 'app' });
+  const app = f.task('another-app', 3, 'todo'); app.labels!.push({ name: 'app' }); f.tasks.push(app, f.task('web-work', 4, 'todo'));
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store))));
+  const quote = f.provider(); t.mock.method(f.t3, 'peekProvider', () => structuredClone(quote));
+  const results = await Promise.all([0, 1].map(() => f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol', overrideLimits: ['idle', 'reserve'] } })));
+  assert.equal(results.filter(result => result.data.reason === 'dispatched').length, 2, 'both starts must find eligible work while respecting app capacity');
+  const jobs = f.store.jobs();
+  assert.equal(jobs.filter(job => job.labels?.includes('app')).length, 1); assert.ok(jobs.some(job => job.ticketKey === 'FIX-4'));
+});
+
+test('a failed preparation releases its temporary label occupancy', async t => {
+  const f = serviceFixture(t);
+  f.c.projects[0].labelLimits = { app: 1 }; f.tasks[0].labels!.push({ name: 'app' }); writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const prepare = f.t3.prepareLaunch.bind(f.t3); let first = true;
+  t.mock.method(f.t3, 'prepareLaunch', async () => { if (first) { first = false; throw new Error('Fixture connection failed'); } return prepare(); });
+  const failed = await f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol' } });
+  assert.equal(failed.data.notLaunched, true); assert.equal(f.store.jobs().length, 0);
+  const retried = await f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol' } });
+  assert.equal(retried.data.reason, 'dispatched'); assert.equal(retried.data.ticket, 'FIX-1');
+});
+
+test('an unnamed start skips a hint whose fresh labels hit an occupied slot', async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.c.projects[0].labelLimits = { app: 1 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const app = f.task('occupied-app', 3, 'todo'); app.labels!.push({ name: 'app' }); f.tasks.push(app, f.task('other-web', 4, 'todo'));
+  assert.equal((await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: 'FIX-3' }, { t3: f.t3, kanvil: f.kanvil })).reason, 'dispatched');
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], f.store.jobs(), f.store))));
+  f.tasks[0].labels!.push({ name: 'app' }); // The prepared hint predates this native metadata change.
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true });
+  assert.equal(result.reason, 'dispatched'); assert.equal(result.ticket, 'FIX-4');
+  assert.equal(f.store.jobs().filter(job => job.labels?.includes('app')).length, 1);
 });
