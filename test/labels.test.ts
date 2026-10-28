@@ -198,6 +198,19 @@ test('native relations include blockers and parentId hierarchy, with every page 
   ]);
 });
 
+test('selected-ticket children are read while its independent relation request is held', async t => {
+  const release = Promise.withResolvers<Response>(); let children = false;
+  const f = fixture(t, url => {
+    if (url.pathname.endsWith('/tickets/ticket')) return json({ ticket: ticket(), readiness: { ready: true, reasons: [] } });
+    if (url.pathname.endsWith('/relations')) return release.promise;
+    children = true; return json({ items: [], total: 0 });
+  });
+  const task = await f.client.task('ticket', 'project');
+  const pending = f.client.relations('ticket', true, true, task);
+  try { for (let i = 0; i < 10 && !children; i++) await turn(); assert.equal(children, true, 'children must not wait for the relation response'); }
+  finally { release.resolve(json([])); await pending; }
+});
+
 test('event checkpoints wake the consumer and cache inventory until a real change; duplicates do not rescan', async t => {
   let controller!: ReadableStreamDefaultController<Uint8Array>, snapshots = 0, notifications = 0, updates = 0;
   const encoder = new TextEncoder();

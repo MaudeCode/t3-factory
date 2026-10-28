@@ -13,6 +13,7 @@ import { serveControl, type ControlCommand, type ControlResult } from './control
 import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
+import { GitHub } from './github-client.ts';
 
 const EVENT_SETTLE_MS = 25;
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
@@ -20,6 +21,7 @@ const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
 export class FactoryService {
   private store!: Store;
   private t3!: T3;
+  private github?: GitHub;
   private t3Settings = '';
   private configSnapshot?: string;
   private kanvilSettings = '';
@@ -62,6 +64,9 @@ export class FactoryService {
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
     if (!this.store.claim()) throw new Error('Another scheduler owns this state directory');
+    if (!process.env.GH_HOST || process.env.GH_HOST === 'github.com') {
+      this.github = new GitHub();
+    }
     for (const operation of savedOperations(c.stateDir)) if (operation.command) {
       if (['running', 'uncertain'].includes(operation.state)) recoverOperation(this.stateDir, this.store, operation);
       if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id);
@@ -108,6 +113,7 @@ export class FactoryService {
     this.stopped = true;
     for (const controller of this.inspections.values()) controller.abort();
     this.abort.abort();
+    this.github?.close();
     for (const item of this.operations.values()) if (!item.foreground) item.context.stopBackground();
     clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
     this.watcher?.close();
@@ -414,7 +420,7 @@ export class FactoryService {
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);

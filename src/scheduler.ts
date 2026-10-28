@@ -16,6 +16,7 @@ import { loadConfig, overridableLimits, type Config, type OverridableLimit, type
 
 import { liveModelQuota, readModelQuota } from './models.ts';
 import { sessionTicketStatus } from './session-tickets.ts';
+import { pullRequestsSchema, type GitHub } from './github-client.ts';
 
 const exec = promisify(execFile);
 // Blocked cleanups wait for something outside the scheduler to change, so retrying every cycle only repeats their cost.
@@ -615,7 +616,8 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
 }
 
 async function openPullRequests(project: Project, store?: Store, fresh = false) {
-  const read = async () => z.array(z.object({ title: z.string(), headRefName: z.string(), body: z.string() })).parse(await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
+  const client = store && githubClients.get(store);
+  const read = async () => pullRequestsSchema.parse(client ? await client.pullRequests(project.githubRepo) : await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
   return store ? repositoryRead(store, `prs:${project.githubRepo}`, read, fresh) : read();
 }
 // Extend historical release checks to explicit settlements outside Factory, without releasing any Factory-owned work by this path.
@@ -637,6 +639,7 @@ async function ticketArtifacts(project: Project, key: string, taskId: string, th
 }
 
 const READ_CONCURRENCY = 6;
+const githubClients = new WeakMap<Store, Pick<GitHub, 'pullRequests'>>();
 const repositoryReads = new WeakMap<Store, { context: ReadContext; entries: Map<string, { at: number; fresh: boolean; settled: boolean; pending: Promise<unknown> }> }>();
 function repositoryRead<T>(store: Store, key: string, read: () => Promise<T>, fresh = false): Promise<T> {
   let cache = repositoryReads.get(store);
@@ -839,7 +842,7 @@ function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsS
 }
 // A long-lived caller (the service) keeps one T3 client and one connected Kanvil client across passes;
 // a one-shot caller leaves these out and the pass opens and closes its own.
-export interface Clients { t3?: T3; kanvil?: Kanvil; deferCleanup?: boolean; deferReconcile?: boolean; backgroundInventory?: boolean; workKind?: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; currentConfig?: () => Config }
+export interface Clients { t3?: T3; kanvil?: Kanvil; github?: Pick<GitHub, 'pullRequests'>; deferCleanup?: boolean; deferReconcile?: boolean; backgroundInventory?: boolean; workKind?: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; currentConfig?: () => Config }
 export type Decision = { reason: string; at: string } & Record<string, unknown>;
 type Queue = Awaited<ReturnType<typeof inventory>>;
 
@@ -891,6 +894,7 @@ export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'pro
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
+  if (clients.github) githubClients.set(store, clients.github);
   if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
   if (options.manual && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
   if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');

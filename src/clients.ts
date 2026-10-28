@@ -619,27 +619,34 @@ export class Kanvil {
     const task = knownTask ?? await this.task(id, undefined, !fresh), projectId = task.projectId;
     if (task.id !== id && task.key !== id) throw new Error('Kanvil relation identity mismatch');
     const path = `/projects/${encodeURIComponent(projectId)}/tickets`;
-    const rows = z.array(z.object({ sourceId: z.string(), targetId: z.string(), type: z.string() })).parse(await this.request(`${path}/${encodeURIComponent(id)}/relations`));
+    const readChildren = async () => {
+      const relations: TaskRelation[] = [];
+      if (!includeChildren) return relations;
+      let offset = 0, total: number | undefined;
+      const children = new Set<string>();
+      do {
+        const page = z.object({ items: z.array(nativeTicket), total: z.number().int().nonnegative() }).parse(await this.request(`${path}?parentId=${encodeURIComponent(id)}&archived=include&sort=number&order=asc&limit=100&offset=${offset}`));
+        if ((total !== undefined && total !== page.total) || (!page.items.length && offset < page.total)) throw new Error('Kanvil children changed during pagination');
+        total = page.total;
+        for (const child of page.items) {
+          if (children.has(child.id) || child.parentId !== task.id || child.projectId !== projectId) throw new Error('Kanvil child ownership mismatch');
+          children.add(child.id);
+          relations.push({ sourceTaskId: id, targetTaskId: child.id, relationType: 'subtask' });
+        }
+        offset += page.items.length;
+        if (offset > total) throw new Error('Kanvil child count mismatch');
+      } while (offset < total);
+      return relations;
+    };
+    const [rows, children] = await readAll([
+      this.request(`${path}/${encodeURIComponent(id)}/relations`).then(value => z.array(z.object({ sourceId: z.string(), targetId: z.string(), type: z.string() })).parse(value)),
+      readChildren(),
+    ]);
     const relations: TaskRelation[] = rows.filter(r => r.type === 'blocks').map(r => ({ sourceTaskId: r.sourceId, targetTaskId: r.targetId, relationType: 'blocks' }));
     for (const relation of relations) this.dependent(relation.sourceTaskId, projectId);
     if (task.parentId) this.dependent(task.parentId, projectId);
     if (task.parentId) relations.push({ sourceTaskId: task.parentId, targetTaskId: task.id, relationType: 'subtask' });
-    if (!includeChildren) return relations;
-    let offset = 0, total: number | undefined;
-    const children = new Set<string>();
-    do {
-      const page = z.object({ items: z.array(nativeTicket), total: z.number().int().nonnegative() }).parse(await this.request(`${path}?parentId=${encodeURIComponent(id)}&archived=include&sort=number&order=asc&limit=100&offset=${offset}`));
-      if ((total !== undefined && total !== page.total) || (!page.items.length && offset < page.total)) throw new Error('Kanvil children changed during pagination');
-      total = page.total;
-      for (const child of page.items) {
-        if (children.has(child.id) || child.parentId !== task.id || child.projectId !== projectId) throw new Error('Kanvil child ownership mismatch');
-        children.add(child.id);
-        relations.push({ sourceTaskId: id, targetTaskId: child.id, relationType: 'subtask' });
-      }
-      offset += page.items.length;
-      if (offset > total) throw new Error('Kanvil child count mismatch');
-    } while (offset < total);
-    return relations;
+    return [...relations, ...children];
   }
   projectSynchronized(projectId: string) { return this.connected && this.projectStreams.get(projectId)?.connected === true; }
   // Unscoped feeds cannot report membership revocation after the caller loses visibility.
