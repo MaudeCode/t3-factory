@@ -1205,8 +1205,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
           (async () => {
             if (!queue.selected) return undefined;
             const reader = taskReader(c, kanvil);
-            const watched = new Set<string>([queue.selected.id]);
-            const rules = dependencyRules(async id => { watched.add(id); return relationsSchema.parse(await kanvil.relations(id, true, true, await reader.task(id))); }, async id => reader.done(await reader.task(id)));
+            const rootId = queue.selected.id, watched = new Set<string>([rootId]);
+            const rules = dependencyRules(async id => { watched.add(id); return relationsSchema.parse(await kanvil.relations(id, true, id === rootId, await reader.task(id))); }, async id => reader.done(await reader.task(id)));
             const [task, blockers, children, prs, refs] = await readAll([
               reader.task(queue.selected.id), rules.blockersOf(queue.selected.id), rules.openChildren(queue.selected.id), openPullRequests(project!, store, true), repositoryRead(store, `refs:${project!.repoPath}`, () => git(project!.repoPath, ['for-each-ref', '--format=%(refname)\t%(objectname)', 'refs/heads', 'refs/remotes']), true),
             ]);
