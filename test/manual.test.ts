@@ -12,7 +12,7 @@ import { cycle } from '../src/scheduler.ts';
 import { saveSettings } from '../src/settings.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { dispatchFixture } from './dispatch-fixture.ts';
+import { dispatchFixture, mockLaunchConnection } from './dispatch-fixture.ts';
 
 test('manual override runs the specified ticket/model while paused, but retains dependency and duplicate guards', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-manual-')), repo = join(dir, 'repo'); mkdirSync(repo);
@@ -61,6 +61,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     { id: 'seven_day_fable', usedPercent, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
   ] } };
   });
+  mockLaunchConnection(t);
   t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => { dispatches.push(command); return { threadId: command.threadId }; });
   t.mock.method(Kanvil.prototype, 'connect', async () => {}); t.mock.method(Kanvil.prototype, 'close', async () => {});
   mockTracker(t, Kanvil.prototype, async (name: string, args: Record<string, unknown>) => {

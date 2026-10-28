@@ -4,8 +4,18 @@ import { T3 } from '../src/clients.ts';
 import { readModelQuota } from '../src/models.ts';
 import type { Config } from '../src/config.ts';
 import { dispatchFixture } from './dispatch-fixture.ts';
+import type { Job } from '../src/store.ts';
+
+test('execution heartbeats do not force a new provider quota probe', async t => {
+  const f = dispatchFixture(t), at = Date.now(); let forced = 0;
+  const job: Job = { id: 'active', kind: 'ticket', projectId: 'FIX', taskId: 'active-task', ticketKey: 'FIX-9', threadId: 'active-thread', messageId: 'message', state: 'running', reason: 'Executing', createdAt: new Date(at - 10_000).toISOString(), lastExecutionAt: new Date(at).toISOString(), lastPersonalActivity: null, completedAt: null, reportPath: '/unused', command: null, prUrls: [], modelSelection: f.c.models[0].model };
+  t.mock.method(f.t3, 'provider', async (_id: string, refresh: boolean) => { const provider = f.provider(); if (refresh) forced++; provider.usageLimits.checkedAt = new Date(refresh ? at + 1000 : at - 1000).toISOString(); return provider; });
+  assert.equal((await readModelQuota(f.t3, f.c, [job], 'sol')).hasAllowance, true);
+  assert.equal(forced, 0, 'an unchanged reservation must not invalidate quota on each execution heartbeat');
+});
 
 test('stale quota automatically bypasses the T3 probe cache over RPC', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const old = new Date(Date.now() - 600_000).toISOString();
   let checkedAt = old, failedRefreshes = 0;
   const requests: { tag: string; payload: Record<string, unknown> }[] = [];
@@ -51,17 +61,17 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
   await readModelQuota(t3, c, [], 'opus');
   assert.equal(requests.some(r => r.tag === 'server.refreshProviders'), false, 'fresh quota avoids unnecessary probes');
 
-  // Each scheduler pass starts with reset(); these reads stand for separate passes.
-  checkedAt = old; failedRefreshes = 1; requests.length = 0; t3.reset();
+  // A later read expires the shared snapshot without resetting another caller's cache.
+  checkedAt = old; failedRefreshes = 1; requests.length = 0; t.mock.timers.tick(1001);
   assert.equal((await readModelQuota(t3, c, [], 'opus')).hasAllowance, true, 'retry a transient probe failure automatically');
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2);
 
-  checkedAt = old; failedRefreshes = 1; requests.length = 0; t3.reset();
+  checkedAt = old; failedRefreshes = 1; requests.length = 0; t.mock.timers.tick(1001);
   assert.equal((await readModelQuota(t3, c, [], 'opus', true, true)).hasAllowance, true, 'dispatch-boundary refresh also retries a transient failure');
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2);
 
   checkedAt = old; failedRefreshes = 5; requests.length = 0;
-  t3.reset();
+  t.mock.timers.tick(1001);
   await assert.rejects(readModelQuota(t3, c, [], 'opus'), /automatic refresh failed.*snapshot is stale/);
   assert.equal(requests.filter(r => r.tag === 'server.refreshProviders').length, 2, 'failed refresh stays bounded and never permits stale quota');
 });

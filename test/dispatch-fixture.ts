@@ -9,11 +9,17 @@ import { configSchema } from '../src/config.ts';
 import { T3, Kanvil, type Task } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
+import { FactoryService } from '../src/service.ts';
 import type { Thread } from '../src/policy.ts';
 
 export const deferred = <T = void>() => Promise.withResolvers<T>();
+export function mockLaunchConnection(t: TestContext, target: T3 = T3.prototype) {
+  if (!('prepareLaunch' in target)) return;
+  t.mock.method(target, 'prepareLaunch', async function(this: T3) { return { check: () => {}, launch: (command: unknown) => this.launch(command), close: async () => {} }; });
+}
 // Shared synthetic dispatch setup for read ordering, freshness, failures, and quota probes.
 export function dispatchFixture(t: TestContext) {
+  const beforeClose: (() => void | Promise<void>)[] = [];
   const dir = mkdtempSync(join(tmpdir(), 'factory-reads-')), repo = join(dir, 'repo'); mkdirSync(repo);
   execFileSync('/usr/bin/git', ['init', '-q', repo]);
   writeFileSync(join(dir, 'prs'), '[]');
@@ -36,6 +42,7 @@ export function dispatchFixture(t: TestContext) {
   const relations = [{ sourceTaskId: 'blocker', targetTaskId: 'root', relationType: 'blocks' }];
   const threads: Thread[] = [], calls: string[] = [], launches: unknown[] = [];
   const store = new Store(c.stateDir), t3 = new T3(c.t3), kanvil = new Kanvil(c.kanvil);
+  mockLaunchConnection(t, t3);
   const hooks = {
     shell: async (_final: boolean) => {}, providers: async () => {},
     quota: async (_refresh: boolean) => {}, read: async (_name: string, _id: string, _final: boolean) => {},
@@ -58,8 +65,19 @@ export function dispatchFixture(t: TestContext) {
     if (name === 'columns') return [{ slug: 'done', isFinal: true }];
     throw new Error(name);
   });
-  t.after(() => { store.close(); process.env.PATH = oldPath; if (oldConfig === undefined) delete process.env.T3_FACTORY_CONFIG; else process.env.T3_FACTORY_CONFIG = oldConfig; rmSync(dir, { recursive: true, force: true }); });
-  return { c, dir, store, t3, kanvil, calls, hooks, tasks, task, relations, threads, launches, provider,
+  t.after(async () => { for (const close of beforeClose) await close(); store.close(); process.env.PATH = oldPath; if (oldConfig === undefined) delete process.env.T3_FACTORY_CONFIG; else process.env.T3_FACTORY_CONFIG = oldConfig; rmSync(dir, { recursive: true, force: true }); });
+  return { c, dir, store, t3, kanvil, calls, hooks, tasks, task, relations, threads, launches, provider, beforeClose,
     run: (model = 'sol', manual = true) => cycle(c, store, manual ? { manual: true, model, ticket: 'FIX-1' } : {}, { t3, kanvil }),
   };
+}
+
+export function serviceFixture(t: TestContext) {
+  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+  Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kanvil: Promise.resolve(f.kanvil), t3Settings: JSON.stringify(f.c.t3), kanvilSettings: JSON.stringify(f.c.kanvil) });
+  for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
+  f.beforeClose.push(async () => {
+    if ('idle' in internal) await service.stop();
+    else { internal.stopped = true; clearTimeout(internal.timer); await internal.queue; }
+  });
+  return { ...f, service, internal };
 }

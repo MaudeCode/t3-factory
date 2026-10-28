@@ -10,7 +10,7 @@ class QuotaRefreshError extends Error {}
 export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false, refresh = false) {
   const preset = configuredModel(c, id);
   const consumedAfter = jobs.filter(j => (j.modelSelection?.instanceId ?? 'claudeAgent') === preset.model.instanceId)
-    .reduce((latest, j) => Math.max(latest, Date.parse(j.lastExecutionAt ?? j.createdAt)), 0);
+    .reduce((latest, j) => Math.max(latest, Date.parse(j.createdAt)), 0);
   const read = async (force: boolean) => {
     const requestedAt = Date.now();
     const provider = await t3.provider(preset.model.instanceId, force);

@@ -7,7 +7,7 @@ export type Operation = {
   id: string; input: unknown; state: 'running' | 'done' | 'failed' | 'pending' | 'uncertain'; createdAt: string;
   result?: { code: number; data: any };
   command?: Record<string, unknown>;
-  progress?: { phase: 'queued' | 'checking' | 'launching'; stage: string; acceptedAt: string; updatedAt: string; deadlineAt: string; jobId?: string; threadId?: string; planId?: string };
+  progress?: { phase: 'queued' | 'checking' | 'launching'; stage: string; acceptedAt: string; updatedAt: string; deadlineAt: string; controlReceivedAt?: string; schedulerAcceptedAt?: string; jobId?: string; threadId?: string; planId?: string };
 };
 function operationPath(stateDir: string, id: string) {
   if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid request ID');

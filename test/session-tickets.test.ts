@@ -202,28 +202,24 @@ test('historical snapshot confirmation retries after yielding to a foreground co
   f.sessions.push(f.session('s1'));
   f.tasks.push(task('native-7', 77, 'FIX', { createdAt: '2026-03-10T00:00:00Z', description: `Original.\n---\nKaneo source: FIX-7\nSource task ID: source-7\nSource created: ${AT.created}\n` }));
   f.bounded.set('s1', { items: [message('filed', 'assistant_message', `Filed [FIX-7](${LINK('source-7', 'old-project', true)}).`, 2, AT.reported, 's1')], cursor: null, more: false });
-  const entered = Promise.withResolvers<void>(), events: string[] = [];
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), events: string[] = [];
   const tasks = f.kanvil.tasks.bind(f.kanvil);
-  let reads = 0, queued = false;
+  let reads = 0;
   t.mock.method(f.kanvil, 'tasks', async (...args: Parameters<Kanvil['tasks']>) => {
-    if (args[0] === 'FIX' && ++reads === 1) return readPhase('fixture.import-snapshot', signal => new Promise<never>((_, reject) => {
-      signal?.throwIfAborted();
-      signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
-      entered.resolve();
-    }));
+    if (args[0] === 'FIX' && ++reads === 1) { entered.resolve(); await release.promise; }
     return tasks(...args);
   });
   const context = new ReadContext();
-  context.cooperate = async () => { if (queued) { queued = false; events.push('foreground'); } };
   const work = context.run(() => f.collect({ lookups: 100 }));
   await entered.promise;
-  queued = true; context.requestYield();
+  await new ReadContext().run(async () => { events.push('foreground'); });
+  release.resolve();
   await work;
   assert.deepEqual(events, ['foreground']);
-  assert.deepEqual(f.keys(), ['FIX-77'], 'the interrupted snapshot is read again and confirms the ticket in the same batch');
-  assert.equal(reads, 2);
+  assert.deepEqual(f.keys(), ['FIX-77'], 'the shared snapshot survives unrelated foreground work without another read');
+  assert.equal(reads, 1);
   assert.deepEqual(f.store.sessionThread('s1')!.pending, []);
-  assert.equal(f.status().error, null, 'a cooperative yield is not a tracker outage');
+  assert.equal(f.status().error, null, 'independent foreground work is not a tracker outage');
 });
 
 test('session sources are unique by thread and retain the latest creation report', async t => {

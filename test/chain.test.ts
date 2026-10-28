@@ -11,7 +11,7 @@ import { Store } from '../src/store.ts';
 import { cycle, runPlans, cancelPlan } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { dispatchFixture, deferred } from './dispatch-fixture.ts';
+import { mockLaunchConnection, dispatchFixture, deferred } from './dispatch-fixture.ts';
 
 // FIX-50 is blocked by FIX-49, FIX-48, and FIX-47; FIX-48 is blocked by FIX-13. The user may run the first
 // runnable blocker, or the whole chain in priority order within the run limits, then FIX-50.
@@ -45,6 +45,7 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
   t.mock.method(T3.prototype, 'provider', async (instanceId: string) => ({ ...providers.find(p => p.instanceId === instanceId)!, usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [{ id: 'primary', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 10080 * 60_000).toISOString() }] : [{ id: 'five_hour', usedPercent: 0, windowDurationMins: 300, resetsAt: new Date(Date.now() + 300 * 60_000).toISOString() }, { id: 'seven_day', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 10080 * 60_000).toISOString() }] } }));
   t.mock.method(T3.prototype, 'detail', async () => ({ messages: [], responses: [] }));
   const launches: Record<string, any>[] = [];
+  mockLaunchConnection(t);
   t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
     launches.push(command);
     // The launched thread shows up as running, so its slot counts and its ticket is owned.
@@ -154,13 +155,9 @@ test('cancelling a chain during suspended final validation cannot launch or rest
   const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
   const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };
   f.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
-  let finalSeen = false, cancelled = false;
-  f.hooks.read = async (name, _id, final) => { if (final && name === 'labels') finalSeen = true; };
+  let cancelled = false;
+  f.hooks.quota = async refresh => { if (refresh && !cancelled) { cancelPlan(f.store, 'chain'); cancelled = true; } };
   const context = new ReadContext();
-  context.cooperate = async () => {
-    if (!finalSeen || cancelled) return;
-    cancelPlan(f.store, 'chain'); cancelled = true; context.revision++; context.suspended = true;
-  };
   const results = await context.run(() => runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), []));
   assert.equal(cancelled, true);
   assert.equal(f.launches.length, 0);

@@ -1,11 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { z } from 'zod';
 import { threadSchema, ticketStatuses, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
 import type { Config } from './config.ts';
-import { callT3Rpc, subscribeT3Shell } from './rpc.ts';
-import { ReadContext, readAll, readPhase, backgroundRead } from './read-context.ts';
+import { callT3Rpc, subscribeT3Shell, T3Rpc, type RpcAction } from './rpc.ts';
+import { ReadContext, readContext, waitFor, readAll, readPhase, backgroundRead } from './read-context.ts';
 
 /** T3 orchestration protocol this client speaks; T3 rejects other versions. */
 export const ORCHESTRATION_PROTOCOL = 2;
@@ -25,13 +25,24 @@ export type TurnItem = z.infer<typeof turnItemSchema>;
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
-  // One provider read serves a whole scheduler pass; a refresh replaces it. reset() starts the next pass.
-  private providerSnapshot?: Promise<Awaited<ReturnType<T3['readProviders']>>>;
-  reset() { this.providerSnapshot = undefined; }
-  constructor(config: Config['t3']) { this.config = config; }
+  private readonly providerSnapshots = new Map<string, { at: number; pending: ReturnType<T3['readProviders']>; settled: boolean }>();
+  private credential?: { stamp: string; token: string; expiresAt?: string };
+  private readonly rpc: T3Rpc;
+  private readonly persistent: boolean;
+  private readonly readLifetime = new ReadContext();
+  private shellEpoch = 0;
+  private shellRead?: { at: number; epoch: number; fresh: boolean; settled: boolean; pending: ReturnType<T3['readShell']> };
+  constructor(config: Config['t3'], options: { persistent?: boolean } = {}) {
+    this.config = config; this.persistent = !!options.persistent; this.rpc = new T3Rpc(() => this.socketUrl());
+  }
+  private rpcCall(action: RpcAction) { return this.persistent ? this.rpc.call(action) : this.socketUrl().then(url => callT3Rpc(url, action)); }
+  async close() { this.readLifetime.controller.abort(new Error('T3 client closed')); await this.rpc.close(); }
+  invalidateShell() { this.shellEpoch++; }
   async request(path: string, body?: unknown): Promise<unknown> {
     return readPhase(path === '/api/orchestration/shell' ? 't3.shell' : path === '/api/auth/websocket-ticket' ? 't3.socket-ticket' : 't3.thread', async signal => {
-      const credential = z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8')));
+      const stat = statSync(this.config.credentialFile), stamp = `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+      if (this.credential?.stamp !== stamp) this.credential = { ...z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8'))), stamp };
+      const credential = this.credential;
       if (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('T3 scheduler credential expired');
       const r = await fetch(new URL(path, this.config.url), {
         method: body === undefined ? 'GET' : 'POST', redirect: 'error',
@@ -64,9 +75,21 @@ export class T3 {
     if (!environmentId) throw new Error('T3 did not report its environment ID');
     return `t3code://threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(id)}`;
   }
-  async shell(includeArchived = false) {
+  async shell(includeArchived = false, fresh = false) {
+    let entry = this.shellRead;
+    if (!entry || entry.epoch !== this.shellEpoch || (!this.persistent && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : Date.now() - entry.at > 1000)) {
+      const pending = this.readLifetime.run(() => this.readShell());
+      entry = { at: Date.now(), epoch: this.shellEpoch, fresh, settled: false, pending }; this.shellRead = entry;
+      const owned = entry;
+      void pending.then(() => { owned.settled = true; }, () => { if (this.shellRead === owned) this.shellRead = undefined; });
+    }
+    const pending = entry.pending;
+    const shell = structuredClone(await readPhase('t3.shell', signal => waitFor(pending, signal)));
+    if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(active => active.id === thread.id)) shell.threads.push(thread);
+    return shell;
+  }
+  private async readShell() {
     const shell = z.object({ threads: z.array(threadSchema), archivedThreads: z.array(threadSchema).default([]), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
-    if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(t => t.id === thread.id)) shell.threads.push(thread);
     const candidates = new Set<string>();
     // Probe concurrently so slow reads cost one request timeout, not one per stale thread.
     await readAll(shell.threads.map(async t => {
@@ -75,7 +98,8 @@ export class T3 {
       candidates.add(key);
       if (!this.orphanVerdicts.has(key)) {
         const verdict = await this.orphaned(t);
-        if (verdict !== undefined) this.orphanVerdicts.set(key, verdict); // Retry failed reads next cycle.
+        if (verdict !== undefined) this.orphanVerdicts.set(key, verdict);
+        else if (!this.persistent) this.shellRead = undefined;
       }
       if (this.orphanVerdicts.get(key)) t.orphanedRun = true;
     }));
@@ -106,7 +130,7 @@ export class T3 {
   }
   /** Every top-level session T3 still exposes, including settled and archived ones; subagent and deleted threads are not sessions. */
   async sessions() {
-    const shell = z.object({ threads: z.array(sessionSchema), archivedThreads: z.array(sessionSchema).default([]) }).passthrough().parse(await this.request('/api/orchestration/shell'));
+    const shell = z.object({ threads: z.array(sessionSchema), archivedThreads: z.array(sessionSchema).default([]) }).passthrough().parse(this.persistent ? await this.shell() : await this.request('/api/orchestration/shell'));
     return [...shell.threads, ...shell.archivedThreads].filter(t => !t.deletedAt && t.lineage?.relationshipToParent !== 'subagent');
   }
   /** Message and tool-call turn items, oldest first: the recent bounded window without a cursor, else the older page behind `cursor`. */
@@ -125,7 +149,7 @@ export class T3 {
   }
   /** One full turn item; snapshots and history pages omit tool output. */
   async turnItem(threadId: string, itemId: string) {
-    return z.object({ item: z.unknown().nullable() }).passthrough().parse(await callT3Rpc(await this.socketUrl(), { type: 'turn-item', threadId, itemId })).item;
+    return z.object({ item: z.unknown().nullable() }).passthrough().parse(await this.rpcCall({ type: 'turn-item', threadId, itemId })).item;
   }
   async socketUrl() {
     const ticket = z.object({ ticket: z.string() }).passthrough().parse(await this.request('/api/auth/websocket-ticket', {}));
@@ -135,7 +159,7 @@ export class T3 {
     return socket.toString();
   }
   async dispatch(command: unknown) {
-    return callT3Rpc(await this.socketUrl(), { type: 'dispatch', command });
+    return this.rpcCall({ type: 'dispatch', command });
   }
   /** Match T3's public interruptThreadTurn: resolve fresh work, hold the queue, or end runless watches. */
   async stop(id: string, beforeStop?: (projection: unknown) => Promise<void>) {
@@ -172,29 +196,43 @@ export class T3 {
       await this.dispatch({ type: 'thread.pull-request.watch', commandId: randomUUID(), threadId: id, host: link.host, repository: link.repository, number: link.number, watching: false });
     }
   }
-  async launch(input: unknown) {
+  async prepareLaunch() {
+    const rpc = this.persistent ? this.rpc : new T3Rpc(() => this.socketUrl());
+    let connection: Awaited<ReturnType<T3Rpc['connect']>>;
+    try { connection = await rpc.connect(); } catch (error) { if (!this.persistent) await rpc.close(); throw error; }
+    const prepared = { call: (action: RpcAction) => rpc.call(action, connection) };
+    return { check: () => { if (!connection.open) throw new Error('T3 launch connection closed before submission'); }, launch: (input: unknown) => this.launch(input, prepared), close: () => this.persistent ? Promise.resolve() : rpc.close() };
+  }
+  async launch(input: unknown, prepared?: Pick<T3Rpc, 'call'>) {
     // Thread launch prepares the worktree and runs the project setup script; plain dispatch does not.
-    return callT3Rpc(await this.socketUrl(), { type: 'launch', input });
+    return prepared ? prepared.call({ type: 'launch', input }) : this.rpcCall({ type: 'launch', input });
   }
   async removeWorktree(cwd: string, path: string, force = false) {
-    return callT3Rpc(await this.socketUrl(), { type: 'remove-worktree', cwd, path, force });
+    return this.rpcCall({ type: 'remove-worktree', cwd, path, force });
   }
   async terminals() {
     return z.object({ type: z.literal('snapshot'), terminals: z.array(z.object({
       threadId: z.string().min(1), terminalId: z.string().min(1), cwd: z.string(), worktreePath: z.string().nullable(),
       status: z.enum(['starting', 'running', 'exited', 'error']), pid: z.number().int().nullable(), hasRunningSubprocess: z.boolean(), label: z.string(), updatedAt: z.string(),
-    }).passthrough()) }).passthrough().parse(await callT3Rpc(await this.socketUrl(), { type: 'terminals' })).terminals;
+    }).passthrough()) }).passthrough().parse(await this.rpcCall({ type: 'terminals' })).terminals;
   }
   async closeTerminal(threadId: string, terminalId: string) {
-    return callT3Rpc(await this.socketUrl(), { type: 'close-terminal', threadId, terminalId });
+    return this.rpcCall({ type: 'close-terminal', threadId, terminalId });
   }
   async providers(refreshInstance?: string) {
-    if (refreshInstance || !this.providerSnapshot) {
-      const read = this.readProviders(refreshInstance);
-      this.providerSnapshot = read;
-      read.catch(() => { if (this.providerSnapshot === read) this.providerSnapshot = undefined; });
+    const key = refreshInstance ?? '*', after = readContext()?.startedAt ?? Date.now();
+    let entry = this.providerSnapshots.get(key);
+    if (!entry || (refreshInstance ? entry.settled || entry.at < after : Date.now() - entry.at > 1000)) {
+      const pending = this.readLifetime.run(() => this.readProviders(refreshInstance));
+      entry = { at: Date.now(), pending, settled: false }; this.providerSnapshots.set(key, entry);
+      const owned = entry;
+      void pending.then(() => {
+        owned.settled = true;
+        if (refreshInstance && (this.providerSnapshots.get('*')?.at ?? 0) <= owned.at) this.providerSnapshots.set('*', owned);
+      }, () => { if (this.providerSnapshots.get(key) === owned) this.providerSnapshots.delete(key); });
     }
-    return this.providerSnapshot;
+    const pending = entry.pending;
+    return readPhase('t3.providers', signal => waitFor(pending, signal));
   }
   // Follows every shell change until the signal aborts; onItem receives snapshots, markers, and change events.
   subscribe(onItem: (item: unknown) => void, signal: AbortSignal, onError?: (error: unknown) => void) {
@@ -207,7 +245,7 @@ export class T3 {
       usageLimits: z.object({ checkedAt: z.string(), unavailable: z.unknown().optional(), windows: z.array(z.object({
         id: z.string(), usedPercent: z.number(), resetsAt: z.string().optional(), windowDurationMins: z.number().optional(),
       }).passthrough()) }).passthrough().optional(),
-    }).passthrough()) }).parse(await callT3Rpc(await this.socketUrl(), { type: 'provider', ...(refreshInstance ? { refreshInstance } : {}) }));
+    }).passthrough()) }).parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance } : {}) }));
     return data.providers;
   }
   async provider(instanceId: string, refresh = false) {
@@ -230,6 +268,7 @@ export const taskSchema = z.object({
   difficulty: z.enum(['low', 'med', 'high']).nullable().optional(), automationReady: z.boolean().optional(),
   holdReason: z.string().nullable().optional(), archived: z.boolean().optional(), parentId: z.string().nullable().optional(),
   readiness: readinessSchema.optional(),
+  version: z.number().int().positive().optional(),
 }).passthrough();
 export type Task = z.infer<typeof taskSchema>;
 const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
@@ -241,7 +280,7 @@ const projectSchema = z.object({ id: z.string(), workspaceId: z.string(), name: 
 const snapshotSchema = z.object({ project: projectSchema, tickets: z.array(nativeTicket), cursor: z.string().regex(/^\d+$/) });
 type Snapshot = z.infer<typeof snapshotSchema>;
 type SnapshotRead = { pending: Promise<Snapshot>; value?: Snapshot };
-const eventSchema = z.object({ id: z.string().regex(/^\d+$/), projectId: z.string(), ticketId: z.string().nullable(), type: z.string() });
+const eventSchema = z.object({ id: z.string().regex(/^\d+$/), projectId: z.string(), ticketId: z.string().nullable(), type: z.string(), data: z.record(z.string(), z.unknown()).optional() });
 type Change = z.infer<typeof eventSchema>;
 type ProjectStream = { connected: boolean; ready: PromiseWithResolvers<void>; done?: Promise<void> };
 const normalized = (ticket: z.infer<typeof nativeTicket>): Task => ({ ...ticket, labels: ticket.labels.map(name => ({ name })) });
@@ -263,8 +302,17 @@ export class Kanvil {
   private position?: string;
   private readonly projectStreams = new Map<string, ProjectStream>();
   private readonly tasksById = new Map<string, Task>();
-  private readonly relationCache = new Map<string, Promise<TaskRelation[]>>();
+  private readonly relationCache = new Map<string, Map<boolean, Promise<TaskRelation[]>>>();
   private readonly snapshots = new Map<string, SnapshotRead>();
+  private readonly eligibility = new Map<string, Promise<Task[]>>();
+  private readonly projectVersions = new Map<string, number>();
+  private readonly metadataVersions = new Map<string, number>();
+  private readonly ticketVersions = new Map<string, number>();
+  private readonly ownedProjects = new Map<string, Promise<void>>();
+  private readonly dirty = new Map<string, Map<string, Change>>();
+  private readonly refreshes = new Map<string, Promise<void>>();
+  private readonly dependents = new Map<string, Set<string>>();
+  private connectionEpoch = 0;
   constructor(config: Config['kanvil']) { this.config = config; }
   async connect(signal?: AbortSignal) { signal?.throwIfAborted(); this.headers(); }
   private headers() {
@@ -309,25 +357,86 @@ export class Kanvil {
     const rows = await readAll((await this.projects()).map(p => this.request(`/projects/${encodeURIComponent(p.id)}/labels/catalog`)));
     return [...new Set(rows.flatMap(r => z.array(z.object({ name: z.string() })).parse(r).map(l => l.name)))].sort();
   }
-  private async snapshot(projectId: string) {
+  generations() { return { epoch: this.connectionEpoch, projects: new Map(this.projectVersions), metadata: new Map(this.metadataVersions), tickets: new Map(this.ticketVersions) }; }
+  unchanged(before: ReturnType<Kanvil['generations']>, projects: Iterable<string>, tickets?: Iterable<string>) {
+    return before.epoch === this.connectionEpoch && [...projects].every(id => tickets
+      ? (before.metadata.get(id) ?? 0) === (this.metadataVersions.get(id) ?? 0)
+      : (before.projects.get(id) ?? 0) === (this.projectVersions.get(id) ?? 0))
+      && (!tickets || [...tickets].every(id => (before.tickets.get(id) ?? 0) === (this.ticketVersions.get(id) ?? 0)));
+  }
+  private touchProject(projectId: string) { this.projectVersions.set(projectId, (this.projectVersions.get(projectId) ?? 0) + 1); }
+  private dependent(ticketId: string, projectId: string) {
+    if (!this.dependents.has(ticketId)) this.dependents.set(ticketId, new Set());
+    this.dependents.get(ticketId)!.add(projectId);
+  }
+  private async project(projectId: string): Promise<void> {
+    if (this.watching) await this.ensureProjectStream(projectId);
+    if (!this.ownedProjects.has(projectId)) {
+      const pending = new ReadContext().run(async () => {
+        const project = projectSchema.parse(await this.request(`/projects/${encodeURIComponent(projectId)}`));
+        if (project.id !== projectId || project.workspaceId !== this.config.workspaceId) throw new Error('Kanvil project workspace mismatch');
+      });
+      this.ownedProjects.set(projectId, pending);
+      void pending.catch(() => { if (this.ownedProjects.get(projectId) === pending) this.ownedProjects.delete(projectId); });
+    }
+    const pending = this.ownedProjects.get(projectId)!;
+    await readPhase('kanvil.project', signal => waitFor(pending, signal));
+    if (this.ownedProjects.get(projectId) !== pending) return this.project(projectId);
+  }
+  private async eligibleTasks(projectId: string): Promise<Task[]> {
+    await this.project(projectId);
+    if (!this.eligibility.has(projectId)) {
+      const generation = this.generations();
+      const pending = new ReadContext().run(async () => {
+        const tasks: Task[] = [], ids = new Set<string>();
+        let total: number | undefined;
+        do {
+          const page = z.object({ items: z.array(z.object({ ticket: nativeTicket, readiness: readinessSchema })), total: z.number().int().nonnegative() }).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/eligibility?limit=100&offset=${tasks.length}`));
+          if ((total !== undefined && total !== page.total) || (!page.items.length && tasks.length < page.total)) throw new Error('Kanvil eligibility changed during pagination');
+          total = page.total;
+          for (const { ticket, readiness } of page.items) {
+            if (ids.has(ticket.id) || ticket.projectId !== projectId || ticket.archived) throw new Error('Kanvil eligibility ownership mismatch');
+            ids.add(ticket.id); tasks.push({ ...normalized(ticket), readiness });
+            for (const reason of readiness.reasons) if (reason.ticketId) this.dependent(reason.ticketId, projectId);
+          }
+          if (tasks.length > total) throw new Error('Kanvil eligibility count mismatch');
+        } while (tasks.length < total);
+        if (!this.unchanged(generation, [projectId])) throw new Error('Kanvil eligibility changed during read');
+        for (const task of tasks) this.tasksById.set(task.id, task);
+        return tasks;
+      });
+      if (this.watching) this.eligibility.set(projectId, pending);
+      else return readPhase('kanvil.eligibility', signal => waitFor(pending, signal));
+      void pending.catch(() => { if (this.eligibility.get(projectId) === pending) this.eligibility.delete(projectId); });
+    }
+    const pending = this.eligibility.get(projectId)!;
+    return readPhase('kanvil.eligibility', signal => waitFor(pending, signal));
+  }
+  async findTask(key: string, projectId: string) { await this.project(projectId); return this.task(key, projectId); }
+  private async snapshot(projectId: string): Promise<Snapshot> {
     const read = async () => {
-      const revision = this.revision;
+      const revision = this.generations();
       const snapshot = snapshotSchema.parse(await this.request(`/snapshot?projectId=${encodeURIComponent(projectId)}`));
       if (snapshot.project.id !== projectId || snapshot.project.workspaceId !== this.config.workspaceId || snapshot.tickets.some(t => t.projectId !== projectId)) throw new Error('Kanvil snapshot ownership mismatch');
-      if (revision === this.revision) for (const ticket of snapshot.tickets) this.tasksById.set(ticket.id, normalized(ticket));
+      if (!this.unchanged(revision, [projectId])) throw new Error('Kanvil snapshot changed during read');
+      for (const ticket of snapshot.tickets) this.tasksById.set(ticket.id, normalized(ticket));
       return snapshot;
     };
     if (!this.watching) return read();
     if (!this.connected) throw new Error('Kanvil event stream is not synchronized');
     await this.ensureProjectStream(projectId);
     if (!this.snapshots.has(projectId)) {
-      const entry: SnapshotRead = { pending: read() };
+      const entry: SnapshotRead = { pending: new ReadContext().run(read) };
       entry.pending = entry.pending.then(value => { entry.value = value; return value; }).catch(error => { if (this.snapshots.get(projectId) === entry) this.snapshots.delete(projectId); throw error; });
       this.snapshots.set(projectId, entry);
     }
-    return this.snapshots.get(projectId)!.pending;
+    if (this.dirty.get(projectId)?.size) await this.refreshChanges(projectId);
+    const pending = this.snapshots.get(projectId)?.pending;
+    if (!pending) return this.snapshot(projectId);
+    return readPhase('kanvil.snapshot', signal => waitFor(pending, signal));
   }
   async tasks(projectId: string, statuses?: string[], includeArchived = false): Promise<Task[]> {
+    if (!includeArchived && statuses?.length && statuses.every(status => ['backlog', 'todo', 'in_progress', 'in_review'].includes(status))) return (await this.eligibleTasks(projectId)).filter(task => statuses.includes(task.status));
     return (await this.snapshot(projectId)).tickets.filter(t => (includeArchived || !t.archived) && (!statuses || statuses.includes(t.status))).map(ticket => {
       const cached = this.tasksById.get(ticket.id);
       return cached?.version === ticket.version && cached.readiness ? { ...normalized(ticket), readiness: cached.readiness } : normalized(ticket);
@@ -339,9 +448,9 @@ export class Kanvil {
     }
     if (cached && this.watching && this.connected) for (const entry of this.snapshots.values()) {
       const found = entry.value?.tickets.find(t => t.id === id);
-      if (found) { await this.ensureProjectStream(found.projectId); return normalized(found); }
+      if (found && !this.dirty.get(found.projectId)?.has(id)) { await this.ensureProjectStream(found.projectId); return normalized(found); }
     }
-    const revision = this.revision;
+    const revision = this.generations();
     projectId ??= this.tasksById.get(id)?.projectId;
     if (!projectId || /^[A-Z0-9]+-\d+$/.test(id)) {
       const resolved = z.object({ ticket: nativeTicket }).parse(await this.request(`/tickets/resolve?ticketId=${encodeURIComponent(id)}`));
@@ -352,7 +461,7 @@ export class Kanvil {
     if (result.ticket.projectId !== projectId || (result.ticket.id !== id && result.ticket.key !== id)) throw new Error('Kanvil ticket identity mismatch');
     const task = { ...normalized(result.ticket), readiness: result.readiness };
     if (this.watching) await this.ensureProjectStream(task.projectId);
-    if (this.watching && this.connected && revision === this.revision) this.tasksById.set(task.id, task);
+    if (!this.watching || this.connected && this.unchanged(revision, [task.projectId])) this.tasksById.set(task.id, task);
     return task;
   }
   async eligibleTask(task: Task): Promise<Task> {
@@ -361,20 +470,27 @@ export class Kanvil {
     if (this.watching && this.connected && cached?.readiness && cached.version === task.version) return cached;
     return this.task(task.id, task.projectId);
   }
-  async relations(id: string, fresh = true): Promise<TaskRelation[]> {
-    if (fresh || !this.watching || !this.connected) return this.readRelations(id, fresh);
-    if (!this.relationCache.has(id)) {
-      const pending = this.readRelations(id, false).catch(error => { if (this.relationCache.get(id) === pending) this.relationCache.delete(id); throw error; });
-      this.relationCache.set(id, pending);
+  async relations(id: string, fresh = true, includeChildren = true, knownTask?: Task): Promise<TaskRelation[]> {
+    if (fresh || !this.watching || !this.connected) return this.readRelations(id, fresh, includeChildren, knownTask);
+    let variants = this.relationCache.get(id);
+    if (!variants) { variants = new Map(); this.relationCache.set(id, variants); }
+    if (!variants.has(includeChildren)) {
+      const cache = variants;
+      const pending = new ReadContext().run(() => this.readRelations(id, false, includeChildren, knownTask)).catch(error => { if (cache.get(includeChildren) === pending) cache.delete(includeChildren); throw error; });
+      cache.set(includeChildren, pending);
     }
-    return this.relationCache.get(id)!;
+    return readPhase('kanvil.relations', signal => waitFor(variants!.get(includeChildren)!, signal));
   }
-  private async readRelations(id: string, fresh: boolean): Promise<TaskRelation[]> {
-    const task = await this.task(id, undefined, !fresh), projectId = task.projectId;
+  private async readRelations(id: string, fresh: boolean, includeChildren: boolean, knownTask?: Task): Promise<TaskRelation[]> {
+    const task = knownTask ?? await this.task(id, undefined, !fresh), projectId = task.projectId;
+    if (task.id !== id && task.key !== id) throw new Error('Kanvil relation identity mismatch');
     const path = `/projects/${encodeURIComponent(projectId)}/tickets`;
     const rows = z.array(z.object({ sourceId: z.string(), targetId: z.string(), type: z.string() })).parse(await this.request(`${path}/${encodeURIComponent(id)}/relations`));
     const relations: TaskRelation[] = rows.filter(r => r.type === 'blocks').map(r => ({ sourceTaskId: r.sourceId, targetTaskId: r.targetId, relationType: 'blocks' }));
+    for (const relation of relations) this.dependent(relation.sourceTaskId, projectId);
+    if (task.parentId) this.dependent(task.parentId, projectId);
     if (task.parentId) relations.push({ sourceTaskId: task.parentId, targetTaskId: task.id, relationType: 'subtask' });
+    if (!includeChildren) return relations;
     let offset = 0, total: number | undefined;
     const children = new Set<string>();
     do {
@@ -417,31 +533,58 @@ export class Kanvil {
   }
   private invalidateProject(projectId: string) {
     this.snapshots.delete(projectId);
+    this.eligibility.delete(projectId); this.ownedProjects.delete(projectId); this.dirty.delete(projectId);
     for (const [id, task] of this.tasksById) if (task.projectId === projectId) this.tasksById.delete(id);
-    this.relationCache.clear();
+    for (const id of this.relationCache.keys()) if (!this.tasksById.has(id) || this.tasksById.get(id)?.projectId === projectId) this.relationCache.delete(id);
   }
-  private async applyChange(change: Change) {
-    this.tasksById.clear(); this.relationCache.clear();
+  private applyChange(change: Change) {
+    const cached = change.ticketId ? this.tasksById.get(change.ticketId) : undefined;
+    if (change.type === 'ticket.updated' && typeof change.data?.version === 'number' && cached?.version && cached.version >= change.data.version) return false;
+    this.touchProject(change.projectId); this.eligibility.delete(change.projectId);
+    if (change.ticketId) this.ticketVersions.set(change.ticketId, (this.ticketVersions.get(change.ticketId) ?? 0) + 1);
+    else this.metadataVersions.set(change.projectId, (this.metadataVersions.get(change.projectId) ?? 0) + 1);
+    for (const id of change.ticketId ? this.dependents.get(change.ticketId) ?? [] : []) { this.touchProject(id); this.eligibility.delete(id); }
+    for (const id of this.relationCache.keys()) if (this.tasksById.get(id)?.projectId === change.projectId) this.relationCache.delete(id);
+    if (change.ticketId) this.tasksById.delete(change.ticketId);
     const snapshot = this.snapshots.get(change.projectId)?.value;
-    if (!snapshot || !change.ticketId || /^(project|workspace|workflow)\./.test(change.type)) {
-      this.snapshots.delete(change.projectId); return;
+    if (!change.ticketId || /^(project|workspace|workflow)\./.test(change.type)) {
+      this.invalidateProject(change.projectId); return;
+    }
+    if (!snapshot) {
+      this.snapshots.delete(change.projectId);
+      for (const [id, task] of this.tasksById) if (task.projectId === change.projectId) this.tasksById.set(id, { ...task, readiness: undefined });
+      return;
     }
     if (BigInt(change.id) <= BigInt(snapshot.cursor)) return;
-    if (change.ticketId) {
-      let ticket: z.infer<typeof nativeTicket> | undefined;
-      if (!['ticket.deleted', 'ticket.moved_away'].includes(change.type)) {
-        try {
-          const task = await this.task(change.ticketId, change.projectId);
-          ticket = nativeTicket.parse({ ...task, labels: task.labels?.map(l => l.name) });
-        } catch (error) {
-          if (!(error instanceof KanvilTaskNotFound)) { this.snapshots.delete(change.projectId); throw error; }
-          // A later delete or move may already have committed. Its event will replay after this one.
-        }
-      }
+    if (['ticket.deleted', 'ticket.moved_away'].includes(change.type)) {
       snapshot.tickets = snapshot.tickets.filter(t => t.id !== change.ticketId);
-      if (ticket) snapshot.tickets.push(ticket);
+      this.dirty.get(change.projectId)?.delete(change.ticketId);
+    } else {
+      if (!this.dirty.has(change.projectId)) this.dirty.set(change.projectId, new Map());
+      this.dirty.get(change.projectId)!.set(change.ticketId, change);
     }
     snapshot.cursor = change.id;
+  }
+  private async refreshChanges(projectId: string) {
+    if (!this.refreshes.has(projectId)) {
+      const changes = [...this.dirty.get(projectId)!.values()];
+      const pending = new ReadContext().run(async () => {
+        for (let start = 0; start < changes.length; start += 6) await readAll(changes.slice(start, start + 6).map(async change => {
+          let task: Task | undefined;
+          try { task = await this.task(change.ticketId!, projectId); } catch (error) { if (!(error instanceof KanvilTaskNotFound)) throw error; }
+          if (this.dirty.get(projectId)?.get(change.ticketId!) !== change) return;
+          const snapshot = this.snapshots.get(projectId)?.value;
+          if (snapshot) {
+            snapshot.tickets = snapshot.tickets.filter(ticket => ticket.id !== change.ticketId);
+            if (task) snapshot.tickets.push(nativeTicket.parse({ ...task, labels: task.labels?.map(label => label.name) }));
+          }
+          this.dirty.get(projectId)?.delete(change.ticketId!);
+        }));
+      });
+      this.refreshes.set(projectId, pending);
+      void pending.finally(() => { if (this.refreshes.get(projectId) === pending) this.refreshes.delete(projectId); }).catch(() => {});
+    }
+    return readPhase('kanvil.changes', signal => waitFor(this.refreshes.get(projectId)!, signal));
   }
   // In-memory projection and cursor share a lifetime. Restart always starts with fresh snapshots, never a cursor alone.
   subscribe(onChange: (event?: Change) => void, signal: AbortSignal, onError?: (error: unknown) => void) {
@@ -483,15 +626,14 @@ export class Kanvil {
               const change = eventSchema.parse(JSON.parse(message.data));
               if (change.id !== id) throw new Error('Kanvil event cursor mismatch');
               if (!/^(comment|evidence)\./.test(change.type)) {
-                this.revision++;
-                await this.applyChange(change);
+                if (this.applyChange(change) !== false) this.revision++;
                 onChange(change);
               } // Invalidation and notification precede cursor advancement.
             }
             if (projectId) {
               const entry = this.projectStreams.get(projectId)!;
-              if (!entry.connected) { entry.connected = true; entry.ready.resolve(); this.revision++; onChange({ id, projectId, ticketId: null, type: 'stream.connected' }); }
-            } else if (!this.connected) { this.connected = true; this.revision++; onChange(); }
+              if (!entry.connected) { entry.connected = true; entry.ready.resolve(); this.revision++; this.touchProject(projectId); this.metadataVersions.set(projectId, (this.metadataVersions.get(projectId) ?? 0) + 1); onChange({ id, projectId, ticketId: null, type: 'stream.connected' }); }
+            } else if (!this.connected) { this.connected = true; this.revision++; this.connectionEpoch++; onChange(); }
             if (BigInt(id) > BigInt(cursor)) cursor = id;
             if (!projectId) this.position = cursor;
             backoff = 1000;
@@ -508,12 +650,13 @@ export class Kanvil {
           const entry = this.projectStreams.get(projectId)!;
           const wasConnected = entry.connected;
           entry.connected = false; entry.ready.reject(new Error('Kanvil project stream is not synchronized'));
-          this.revision++; this.invalidateProject(projectId);
+          this.revision++; this.touchProject(projectId); this.metadataVersions.set(projectId, (this.metadataVersions.get(projectId) ?? 0) + 1); this.invalidateProject(projectId);
           await reader?.cancel().catch(() => {});
           if (wasConnected && !signal.aborted) onChange({ id: cursor ?? '0', projectId, ticketId: null, type: 'stream.disconnected' });
         } else {
           const wasConnected = this.connected;
-          this.connected = false; this.revision++;
+          this.connected = false; this.revision++; this.connectionEpoch++;
+          this.eligibility.clear(); this.ownedProjects.clear(); this.dirty.clear();
           this.tasksById.clear(); this.relationCache.clear();
           this.snapshots.clear(); // Revoked access and disconnected streams cannot keep a trusted inventory.
           await reader?.cancel().catch(() => {});

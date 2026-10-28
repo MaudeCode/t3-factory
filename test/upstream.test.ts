@@ -10,7 +10,7 @@ import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { dispatchFixture } from './dispatch-fixture.ts';
+import { dispatchFixture, mockLaunchConnection } from './dispatch-fixture.ts';
 
 // What gh returns after --exclude-drafts, with and without --exclude-pre-releases.
 const stable = [{ tagName: 'v1', publishedAt: '2026-03-01T00:00:00Z' }, { tagName: 'v2', publishedAt: '2026-03-02T00:00:00Z' }];
@@ -60,7 +60,7 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   ], 'pre-releases count only when enabled, and an already-reviewed candidate yields nothing');
   assert.equal(ghCalls(), 3);
   assert.ok(releaseCalls().every(call => call.includes('--exclude-drafts')), 'drafts are excluded before the limit');
-  assert.deepEqual(releaseCalls().map(call => call.includes('--exclude-pre-releases')), [true, false, true], 'skipped pre-releases are excluded before the limit');
+  for (const [repo, excluded] of [['up/stable', true], ['up/exp', false], ['up/current', true]] as const) assert.equal(releaseCalls().find(call => call.includes(`--repo ${repo} `))?.includes('--exclude-pre-releases'), excluded, 'each concurrent repository read applies its own prerelease policy before the limit');
 
   await pendingReviews(c, store, [], now + 59 * 60_000);
   assert.equal(ghCalls(), 3, 'GitHub is not read again within checkMinutes');
@@ -91,9 +91,9 @@ test('upstream detection: a repository checkMinutes overrides the shared interva
   const now = Date.parse('2026-03-05T00:00:00Z'), reads = () => releaseCalls().map(call => call.match(/--repo (\S+)/)![1]);
   await pendingReviews(c, store, [], now);
   await pendingReviews(c, store, [], now + 61 * 60_000);
-  assert.deepEqual(reads(), ['up/daily', 'up/stable', 'up/stable'], 'the daily repository is not read again within its own interval');
+  assert.deepEqual(reads().toSorted(), ['up/daily', 'up/stable', 'up/stable'], 'the daily repository is not read again within its own interval');
   await pendingReviews(c, store, [], now + 1441 * 60_000);
-  assert.deepEqual(reads().slice(3), ['up/daily', 'up/stable']);
+  assert.deepEqual(reads().slice(3).toSorted(), ['up/daily', 'up/stable']);
 });
 
 test('upstream detection: a failed release read is recorded on its row', async t => {
@@ -150,6 +150,7 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paus
     throw new Error(name);
   });
   const launched: Record<string, any>[] = [];
+  mockLaunchConnection(t);
   t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
     launched.push(command);
     if (scenario === 'ambiguous-launch' && launched.length === 1) throw new Error('RPC outcome unknown');

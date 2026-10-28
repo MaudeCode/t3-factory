@@ -21,17 +21,18 @@ export type ControlCommand =
 export type ControlResult = { code: number; data: unknown };
 export const controlPath = (stateDir: string) => join(stateDir, 'control.sock');
 
-export function serveControl(stateDir: string, handle: (command: ControlCommand) => Promise<ControlResult>): Server {
+export function serveControl(stateDir: string, handle: (command: ControlCommand, receivedAt: string) => Promise<ControlResult>): Server {
   const path = controlPath(stateDir);
   if (existsSync(path)) unlinkSync(path); // A stale socket from a crashed run; the claim already proves we own the directory.
   const server = createServer((req, res) => {
+    const receivedAt = new Date().toISOString();
     const chunks: Buffer[] = [];
     req.on('data', c => chunks.push(c));
     req.on('end', async () => {
       let result: ControlResult;
       try {
         const command = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{"type":"health"}') as ControlCommand;
-        result = await handle(command);
+        result = await handle(command, receivedAt);
       } catch (error) { result = { code: 1, data: { message: String(error instanceof Error ? error.message : error).slice(0, 800) } }; }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));

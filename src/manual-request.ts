@@ -26,19 +26,22 @@ export function recoverOperation(stateDir: string, store: Store, operation: Oper
   return operation.result;
 }
 
-export function runManualRequest(c: Config, store: Store, options: CycleOptions, enqueue: Enqueue, pass: (options: CycleOptions, queueWaitMs: number) => Promise<{ reason: string } & Record<string, unknown>>, requests = new Map<string, Promise<ControlResult>>(), finished: (operation: Operation) => void = () => {}): Promise<ControlResult> {
+export function runManualRequest(c: Config, store: Store, options: CycleOptions, enqueue: Enqueue, pass: (options: CycleOptions, queueWaitMs: number) => Promise<{ reason: string } & Record<string, unknown>>, requests = new Map<string, Promise<ControlResult>>(), finished: (operation: Operation) => void = () => {}, controlReceivedAt?: string): Promise<ControlResult> {
   const id = options.requestId ?? randomUUID(), command = { ...options, requestId: id, manual: true };
   const prior = readOperation(c.stateDir, id);
   if (prior?.command && !isDeepStrictEqual(prior.command, command)) return Promise.resolve({ code: 1, data: { message: 'Request ID already belongs to another command' } });
   const running = requests.get(id);
   if (running) return running;
+  if (prior && !prior.command && ['done', 'failed', 'uncertain'].includes(prior.state)) return Promise.resolve(prior.result ?? { code: 1, data: { reason: 'launch-uncertain', uncertain: true, message: 'This legacy request has no confirmed outcome. Inspect its existing run before starting another request.' } });
   if (prior?.command) {
     if (prior.state === 'uncertain') return Promise.resolve(recoverOperation(c.stateDir, store, prior));
     return Promise.resolve(prior.result ?? recoverOperation(c.stateDir, store, prior));
   }
-  const accepted = Date.now();
+  const now = Date.now(), received = Date.parse(prior?.createdAt ?? '');
+  const accepted = Number.isFinite(received) ? Math.min(received, now) : now;
   const operation: Operation = { ...prior, id, input: prior?.input ?? command, command, state: 'running', createdAt: prior?.createdAt ?? new Date(accepted).toISOString(),
-    progress: { phase: 'queued', stage: 'queued', acceptedAt: new Date(accepted).toISOString(), updatedAt: new Date(accepted).toISOString(), deadlineAt: new Date(accepted + c.manualPrelaunchSeconds * 1000).toISOString() } };
+    progress: { phase: 'queued', stage: 'queued', acceptedAt: new Date(accepted).toISOString(), updatedAt: new Date(now).toISOString(), deadlineAt: new Date(accepted + c.manualPrelaunchSeconds * 1000).toISOString(), controlReceivedAt, schedulerAcceptedAt: new Date(now).toISOString() } };
+  log('manual-accepted', { requestId: id, receivedAt: prior?.createdAt ?? new Date(accepted).toISOString(), controlReceivedAt, acceptedAt: new Date(now).toISOString(), admissionMs: now - accepted });
   const publish = () => { saveOperation(c.stateDir, operation); };
   const context = new ReadContext(Date.parse(operation.progress!.deadlineAt), stage => {
     const previous = operation.progress!;

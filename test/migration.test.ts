@@ -114,14 +114,12 @@ test('state migration preserves session evidence and tombstones while replacing 
   assert.deepEqual(calls, ['native-project'], 'persisted rows regain scoped access monitoring after restart');
 });
 
-test('a retained project stream yields to a foreground command before its connection is released', async t => {
+test('a retained project stream does not block an independent foreground context', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-migration-yield-')), store = new Store(dir);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   store.saveSessionTicket({ taskId: 'ticket', projectId: 'project', key: 'FIX-1', number: 1, title: 'Retained', priority: 'high', status: 'todo', labels: [], createdAt: '2026-01-01', firstSeenAt: '2026-01-01', refreshedAt: new Date().toISOString(), refreshAfter: new Date(Date.now() + 60_000).toISOString(), sources: [{ threadId: 'thread', messageId: 'message', projectId: 't3', title: 'Session', at: '2026-01-01' }] });
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), events: string[] = [];
-  let commandQueued = false;
   const context = new ReadContext();
-  context.cooperate = async () => { if (commandQueued) { commandQueued = false; events.push('foreground'); } };
   const client = { realtime: true, ensureProjectStream: async () => {
     if (events.includes('foreground')) return;
     await readPhase('kanvil.project-stream', signal => new Promise<void>((resolve, reject) => {
@@ -132,7 +130,7 @@ test('a retained project stream yields to a foreground command before its connec
   const work = context.run(() => collectSessionTickets({ projects: [] } as unknown as Config, store, { sessions: async () => [] } as unknown as T3, client));
   try {
     await entered.promise;
-    commandQueued = true; context.requestYield();
+    await new ReadContext().run(async () => { events.push('foreground'); });
     for (let n = 0; n < 10; n++) await new Promise<void>(resolve => setImmediate(resolve));
     assert.deepEqual(events, ['foreground'], 'foreground work must run while the project connection is still held');
   } finally { release.resolve(); await work; }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { ReadContext } from '../src/read-context.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { executing, providerExecuting } from '../src/policy.ts';
 import { publicStopCommand, v2Shell, v2Thread } from './v2-fixture.ts';
@@ -135,10 +136,13 @@ test('old internal requests undergo orphan probing without exposing human reques
   }
 });
 
-function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string; payload: unknown }) => unknown[]) {
+function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string; payload: unknown }) => unknown[], persistent = false) {
   const requests: { tag: string; payload: unknown }[] = [];
+  const sockets: FixtureSocket[] = [];
+  let connections = 0;
   class FixtureSocket extends EventTarget {
     readyState = 1;
+    constructor() { super(); connections++; sockets.push(this); }
     send(data: string) {
       const message = JSON.parse(data);
       if (message._tag !== 'Request') return;
@@ -150,11 +154,45 @@ function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: str
   const original = globalThis.WebSocket;
   globalThis.WebSocket = FixtureSocket as unknown as typeof WebSocket;
   t.after(() => { globalThis.WebSocket = original; });
-  const t3 = new T3({ url: 'http://localhost', credentialFile: '/unused' });
+  const t3 = new (T3 as any)({ url: 'http://localhost', credentialFile: '/unused' }, { persistent }) as T3;
+  t.after(async () => { await (t3 as any).close?.(); });
   t.mock.method(t3, 'socketUrl', async () => 'ws://fixture');
-  return { t3, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })) };
+  return { t3, connections: () => connections, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })), respond: (requestId: string, value: unknown) => {
+    for (const socket of sockets) if (socket.readyState === 1) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ _tag: 'Exit', requestId, exit: { _tag: 'Success', value } }) }));
+  } };
 }
 const success = (request: { id: string }) => ({ _tag: 'Exit', requestId: request.id, exit: { _tag: 'Success', value: null } });
+
+test('persistent RPC multiplexes independent calls over one connection', async t => {
+  const f = fixtureRpc(t, request => [success(request)], true);
+  await Promise.all([1, 2, 3].map(id => f.t3.dispatch({ id })));
+  assert.equal(f.connections(), 1, 'a connected client must reuse its transport across concurrent RPCs');
+});
+
+test('cancelling one persistent RPC leaves sibling calls and the connection usable', async t => {
+  const entered = Promise.withResolvers<void>();
+  const f = fixtureRpc(t, request => { if ((request.payload as any)?.itemId === 'held') { entered.resolve(); return []; } return [{ ...success(request), exit: { _tag: 'Success', value: { item: null } } }]; }, true);
+  const context = new ReadContext();
+  const held = context.run(() => f.t3.turnItem('thread', 'held')).catch(error => error);
+  await entered.promise;
+  await f.t3.turnItem('thread', 'sibling');
+  context.controller.abort(new Error('Fixture request cancelled'));
+  assert.ok(await held);
+  await f.t3.turnItem('thread', 'later');
+  assert.equal(f.connections(), 1, 'caller cancellation must not close or recreate the shared socket');
+});
+
+test('an accepted RPC mutation drains after caller cancellation without replay', async t => {
+  const entered = Promise.withResolvers<void>(); let requestId = '', settled = false;
+  const f = fixtureRpc(t, request => { if ((request.payload as any)?.held) { requestId = request.id; entered.resolve(); return []; } return [success(request)]; }, true);
+  const context = new ReadContext();
+  const held = context.run(() => f.t3.dispatch({ held: true })).then(value => { settled = true; return value; });
+  await entered.promise;
+  context.controller.abort(new Error('Fixture caller cancelled'));
+  try { await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false, 'an accepted writer must settle before its client can close'); }
+  finally { f.respond(requestId, null); await held; }
+  assert.equal(f.requests().filter(request => request.tag === 'orchestration.dispatchCommand').length, 1);
+});
 
 test('workspace removal uses the native T3 RPC without force', async t => {
   const { t3, requests } = fixtureRpc(t, request => [success(request)]);

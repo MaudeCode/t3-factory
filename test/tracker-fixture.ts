@@ -1,5 +1,5 @@
 import type { TestContext } from 'node:test';
-import { Kanvil, taskSchema, type Task } from '../src/clients.ts';
+import { Kanvil, KanvilTaskNotFound, taskSchema, type Task } from '../src/clients.ts';
 
 // Scheduler scenarios share an in-memory tracker boundary. HTTP/SSE contracts are tested separately.
 export function mockTracker(t: TestContext, target: Kanvil, read: (name: string, args: any) => Promise<any>) {
@@ -30,6 +30,11 @@ export function mockTracker(t: TestContext, target: Kanvil, read: (name: string,
       } while (page <= totalPages);
     }
     return [...new Map(rows.map(row => [row.id, row])).values()];
+  });
+  if ('findTask' in target) t.mock.method(target, 'findTask', async (key: string, projectId: string) => {
+    const row = (await target.tasks(projectId)).find(row => row.number === Number(key.split('-').at(-1)));
+    if (!row) throw new KanvilTaskNotFound('Fixture ticket not found');
+    return row;
   });
   t.mock.method(target, 'eligibleTask', async (row: Task) => row);
   t.mock.method(target, 'relations', (id: string) => read('relations', { taskId: id }));

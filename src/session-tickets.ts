@@ -239,7 +239,7 @@ export function refreshTicket(row: SessionTicket, task: Task, project: Pick<Cata
 export async function collectSessionTickets(c: Config, store: Store, t3: T3, kanvil: Kanvil, budget: Budget = {}): Promise<boolean> {
   const limits = { reads: 8, lookups: 10, refreshes: 10, ...budget };
   const now = Date.now(), at = new Date(now).toISOString(), errors: SessionTicketsFailure[] = [];
-  let includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
+  let includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
   let more = false;
   let listed: Set<string> | undefined;
   try {
@@ -267,7 +267,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (store.sessionThread(session.id)?.backfill) more = true;
     }
   } catch (error) { errors.push({ step: 'list', cause: safeError(error) }); }
-  includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
+  includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
   let cat: Catalog | undefined;
   let imported: { catalog: Catalog; revision: number; records: Promise<Map<string, Task>> } | undefined;
   const imports = (catalog: Catalog) => {
@@ -436,8 +436,8 @@ export function dismissSessionTicket(store: Store, taskId: string) {
 
 // The list as the page shows it: actionable, not dismissed, not consumed by a confirmed Factory start, in priority order.
 export function sessionTicketStatus(c: Config, store: Store) {
-  const jobs = store.jobs(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
-  const includeSource = sessionSourceFilter(store.history(), store.sessionThreads());
+  const jobs = store.jobSummaries(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
+  const includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
   const rows = store.sessionTickets().filter(r => !r.archived && !r.missing && !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
     const bySession = new Map<string, SessionSource>();
     for (const source of r.sources) {

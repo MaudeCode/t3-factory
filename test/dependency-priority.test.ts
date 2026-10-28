@@ -49,12 +49,18 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     if (name === 'relations') { const id = String(args.taskId); reads.set(id, (reads.get(id) ?? 0) + 1); return relations.filter(r => r.sourceTaskId === id || r.targetTaskId === id); }
     throw new Error(name);
   });
+  t.mock.method(k, 'findTask', async (key: string, projectId: string) => {
+    const found = tasks.find(task => task.projectId === projectId && task.number === Number(key.split('-').at(-1)));
+    assert.ok(found, 'the named lookup must resolve exactly one ticket');
+    return k.task(found.id, projectId);
+  });
   const queue = (key?: string) => { reads.clear(); listed.length = 0; fetched.length = 0; return inventory(c, k, [], [], store, key); };
   try {
-    await t.test('named-ticket inventory lists only its project across every page and ignores unrelated listing failures', async () => {
+    await t.test('named-ticket lookup reads only its requested identity and ignores unrelated listing failures', async () => {
       let q = await queue(`${p.key}-18`);
       assert.equal(q.selected?.key, `${p.key}-18`, 'the requested ticket on the last page is found');
-      assert.deepEqual(listed.map(a => [a.projectId, a.status, a.page]), [[p.kanvilId, undefined, 1], [p.kanvilId, undefined, 2], [p.kanvilId, undefined, 3]], 'named inventory must not list unrelated projects');
+      assert.equal(listed.length, 0, 'a named ticket must not list its own project or unrelated projects');
+      assert.deepEqual(fetched, ['task-18'], 'the requested identity is fetched directly');
       unavailableProject = other.kanvilId;
       try { q = await queue(`${p.key}-18`); assert.equal(q.selected?.key, `${p.key}-18`); }
       finally { unavailableProject = ''; }
@@ -100,7 +106,7 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
         const named = await queue(`${p.key}-19`);
         assert.equal(named.selected?.labelRank, 0, 'lazy cross-project reads must retain the associated security label');
         assert.equal(named.selected?.priority, 'urgent');
-        assert.deepEqual(fetched, ['task-20']);
+        assert.deepEqual(fetched.toSorted(), ['task-19', 'task-20', 'task-22'], 'only the named ticket and its priority dependents need individual reads');
       } finally { tasks[1].status = 'todo'; }
     });
     await t.test('named-ticket dependencies still block across projects and unconfigured final statuses', async () => {
