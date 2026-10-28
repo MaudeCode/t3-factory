@@ -23,6 +23,7 @@ export class ManualDeadline extends Error {
 }
 export class ReadContext {
   readonly startedAt = Date.now();
+  readonly startedAtMonotonic = performance.now();
   readonly controller = new AbortController();
   private timer?: NodeJS.Timeout;
   private reads = new Map<symbol, string>();

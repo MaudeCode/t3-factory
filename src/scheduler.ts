@@ -616,8 +616,10 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
 }
 
 async function openPullRequests(project: Project, store?: Store, fresh = false) {
-  const client = store && githubClients.get(store);
-  const read = async () => pullRequestsSchema.parse(client ? await client.pullRequests(project.githubRepo) : await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
+  const read = async () => {
+    const client = store && githubClients.get(store);
+    return pullRequestsSchema.parse(client ? await client.pullRequests(project.githubRepo) : await gh(['pr', 'list', '--repo', project.githubRepo, '--state', 'open', '--limit', '1000', '--json', 'title,headRefName,body']));
+  };
   return store ? repositoryRead(store, `prs:${project.githubRepo}`, read, fresh) : read();
 }
 // Extend historical release checks to explicit settlements outside Factory, without releasing any Factory-owned work by this path.
@@ -640,7 +642,7 @@ async function ticketArtifacts(project: Project, key: string, taskId: string, th
 
 const READ_CONCURRENCY = 6;
 const githubClients = new WeakMap<Store, Pick<GitHub, 'pullRequests'>>();
-const repositoryReads = new WeakMap<Store, { context: ReadContext; entries: Map<string, { at: number; fresh: boolean; settled: boolean; pending: Promise<unknown> }> }>();
+const repositoryReads = new WeakMap<Store, { context: ReadContext; entries: Map<string, { at?: number; settled: boolean; pending: Promise<unknown> }> }>();
 function repositoryRead<T>(store: Store, key: string, read: () => Promise<T>, fresh = false): Promise<T> {
   let cache = repositoryReads.get(store);
   if (!cache) {
@@ -649,9 +651,14 @@ function repositoryRead<T>(store: Store, key: string, read: () => Promise<T>, fr
     store.onClose = () => { owned.context.controller.abort(new Error('Factory ledger closed')); owned.entries.clear(); };
   }
   let entry = cache.entries.get(key);
-  if (!entry || (!readContext() && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : Date.now() - entry.at > 1000)) {
-    const pending = cache.context.run(read);
-    entry = { at: Date.now(), fresh, settled: false, pending }; cache.entries.set(key, entry);
+  if (!entry || (!readContext() && entry.settled) || (fresh ? entry.settled || entry.at !== undefined && entry.at < (readContext()?.startedAtMonotonic ?? performance.now()) : entry.at !== undefined && performance.now() - entry.at > 1000)) {
+    let at: number | undefined;
+    const pending = cache.context.run(async () => {
+      // Let already-queued callers join before starting I/O or a blocking spawn.
+      // Once capture starts, later fresh callers must obtain a new snapshot.
+      await backgroundCheckpoint(); at = performance.now(); return read();
+    });
+    entry = { get at() { return at; }, settled: false, pending }; cache.entries.set(key, entry);
     const owned = entry, entries = cache.entries;
     void pending.then(() => { owned.settled = true; }, () => { if (entries.get(key) === owned) entries.delete(key); });
   }
@@ -1195,7 +1202,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     prepared = await t3.prepareLaunch();
     for (;;) {
       const reservationIds = () => store.jobSummaries().filter(job => (job.modelSelection?.instanceId ?? 'claudeAgent') === preset.model.instanceId).map(job => job.id).join(',');
-      const quotaGeneration = reservationIds(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId);
+      const quotaGeneration = reservationIds(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId), streamingShell = !!t3.peekShell?.();
       const trackerRevision = kanvil.generations();
       // Each final phase owns fresh snapshots; only independent reads overlap. Artifact cache writes stay after the reads.
       let { fresh, currentQuota, checked, currentActivity, artifacts } = await backgroundRead(async () => {
@@ -1219,8 +1226,19 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         ]);
         return { fresh, currentQuota, checked, artifacts, currentActivity };
       });
-      // Another launch consumed this provider after our quota read began. Revalidate without blocking its worker.
       const currentJobs = store.jobSummaries();
+      const latestShell = t3.peekShell?.();
+      if (streamingShell && !latestShell) continue; // Lost trust: read the authoritative fallback in a new pass.
+      if (latestShell) {
+        if (!latestShell.projects.some(live => live.id === project!.t3Id && live.workspaceRoot === project!.repoPath)) return decision('configuration-changed-before-dispatch', { message: 'The T3 project workspace changed during final validation.' });
+        // An inactive-thread proof belongs to the snapshot that was checked. A
+        // changed live thread must retain duplicate protection until revalidated.
+        if (artifacts) for (const id of artifacts.inactiveThreads) {
+          if (JSON.stringify(fresh.threads.find(thread => thread.id === id)) !== JSON.stringify(latestShell.threads.find(thread => thread.id === id))) artifacts.inactiveThreads.delete(id);
+        }
+        fresh = latestShell;
+      }
+      // Another launch consumed this provider after our quota read began. Revalidate without blocking its worker.
       const latestQuota = liveModelQuota(t3, c, quotaBaseline, preset.id, manualPolicy);
       if (streamingQuota && !latestQuota) continue;
       if (latestQuota) currentQuota = latestQuota;

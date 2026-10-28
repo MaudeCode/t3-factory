@@ -121,16 +121,10 @@ export class T3 {
     return `t3code://threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(id)}`;
   }
   async shell(includeArchived = false, fresh = false): Promise<z.infer<typeof shellSchema>> {
+    const live = !includeArchived ? this.peekShell() : undefined;
+    if (live) return live;
     if (this.persistent) this.authenticateRpc();
     const generation = this.credentialGeneration;
-    if (this.persistent && !includeArchived) {
-      const view = this.shellView;
-      if (view && this.rpc.isLive(view.epoch)) {
-        this.probeOrphans(view.value.threads);
-        const threads = view.value.threads.map(thread => this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`) ? immutableProjection({ ...thread, orphanedRun: true }) : thread);
-        return immutableProjection({ ...view.value, threads });
-      }
-    }
     let entry = this.shellRead;
     if (!entry || entry.epoch !== this.shellEpoch || (!this.persistent && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : Date.now() - entry.at > 1000)) {
       const pending = this.readLifetime.run(() => this.readShell());
@@ -143,6 +137,15 @@ export class T3 {
     if (this.persistent) { this.authenticateRpc(); if (generation !== this.credentialGeneration) return this.shell(includeArchived, fresh); }
     if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(active => active.id === thread.id)) shell.threads.push(thread);
     return shell;
+  }
+  peekShell() {
+    if (!this.persistent) return;
+    this.authenticateRpc();
+    const view = this.shellView;
+    if (!view || !this.rpc.isLive(view.epoch)) return;
+    this.probeOrphans(view.value.threads);
+    const threads = view.value.threads.map(thread => this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`) ? immutableProjection({ ...thread, orphanedRun: true }) : thread);
+    return immutableProjection({ ...view.value, threads });
   }
   private async readShell() {
     const shell = shellSchema.parse(await this.request('/api/orchestration/shell'));
