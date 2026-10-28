@@ -1093,7 +1093,7 @@ function discoveryAvailable(project: Project, jobs: Job[], store: Store, skipPro
   return project.enabled && !skipProjects.has(project.kanvilId) && !jobs.some(job => job.projectId === project.kanvilId && job.kind === 'discovery' && !['complete', 'dismissed'].includes(job.state)) && Number(store.get(`discoveryAfter:${project.kanvilId}`) ?? 0) <= Date.now();
 }
 
-const selectionChanged = (reason: string) => ['ticket-changed-before-dispatch', 'ticket-order-or-eligibility-changed', 'ticket-preparing', 'no-eligible-ticket'].includes(reason);
+const selectionChanged = (reason: string) => ['ticket-changed-before-dispatch', 'ticket-order-or-eligibility-changed', 'ticket-preparing', 'no-eligible-ticket', 'label-limit'].includes(reason);
 
 // Prepared rows are selection hints. The shared final boundary still authorizes the selected ticket.
 function preparedInventory(c: Config, store: Store): Queue | undefined {
@@ -1264,6 +1264,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         if (blockers === 'cycle' || blockers.length || children.length) return { reason: 'ticket-changed-before-dispatch', message: 'The ticket gained a blocker or an unfinished child.' };
         if (!artifacts || artifacts.openPR || branchConflict(key, checked.refs, artifacts.branches) || currentJobs.some(job => job.taskId === task.id && !['complete', 'dismissed'].includes(job.state)) || fresh.threads.some(thread => !artifacts.inactiveThreads.has(thread.id) && threadReferencesTicket(thread, selectionProject.t3Id, key))) return { reason: 'ticket-order-or-eligibility-changed' };
         if (kanvil.realtime && (!kanvil.projectSynchronized(selectionProject.kanvilId) || !kanvil.unchanged(trackerRevision, checked.projects, checked.tickets))) return { reason: 'ticket-changed-before-dispatch', message: 'Kanvil changed or disconnected during final validation.' };
+        const full = labelGated && fullLabel(c, currentJobs, fresh.threads, { ...selected, labels: checked.labels });
+        if (full) return { reason: 'label-limit', message: `Waiting for a free ${full} slot` };
       })();
       if (refusal) {
         queue.ready = queue.ready.filter(candidate => candidate.id !== selected!.id);
@@ -1281,9 +1283,6 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
       if (!options.manual && plan && busyProviders(currentJobs, fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
       if (options.continuation && busyProviders(currentJobs, fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
-      // The final tracker read is authoritative: a label added or removed since the queue read counts here.
-      const full = labelGated && queue.selected && fullLabel(c, currentJobs, fresh.threads, checked ? { ...queue.selected, labels: checked.labels } : queue.selected);
-      if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
       if (review) {
         const watched = project.upstreams.find(watched => watched.repo === review.upstream.repo);
         const state = watched && releaseState(project, watched, store, currentJobs);

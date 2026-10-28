@@ -530,3 +530,15 @@ test('a failed preparation releases its temporary label occupancy', async t => {
   const retried = await f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol' } });
   assert.equal(retried.data.reason, 'dispatched'); assert.equal(retried.data.ticket, 'FIX-1');
 });
+
+test('an unnamed start skips a hint whose fresh labels hit an occupied slot', async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.c.projects[0].labelLimits = { app: 1 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const app = f.task('occupied-app', 3, 'todo'); app.labels!.push({ name: 'app' }); f.tasks.push(app, f.task('other-web', 4, 'todo'));
+  assert.equal((await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: 'FIX-3' }, { t3: f.t3, kanvil: f.kanvil })).reason, 'dispatched');
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], f.store.jobs(), f.store))));
+  f.tasks[0].labels!.push({ name: 'app' }); // The prepared hint predates this native metadata change.
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true });
+  assert.equal(result.reason, 'dispatched'); assert.equal(result.ticket, 'FIX-4');
+  assert.equal(f.store.jobs().filter(job => job.labels?.includes('app')).length, 1);
+});
