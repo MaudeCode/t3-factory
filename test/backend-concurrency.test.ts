@@ -342,10 +342,20 @@ test('warm unnamed selection uses prepared queue hints and validates only the se
   const queue = await inventory(f.c, f.kanvil, f.threads, [], f.store);
   f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, queue)));
   t.mock.method(f.kanvil, 'tasks', async () => { assert.fail('warm unnamed starts must not rescan project inventories'); });
-  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil });
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true });
   assert.equal(result.reason, 'dispatched');
   assert.equal(result.ticket, 'FIX-1');
   assert.equal(f.launches.length, 1);
+});
+
+for (const manual of [true, false]) test(`standalone passes refresh persisted hints before selecting new work: manual=${manual}`, async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.tasks[0].status = 'done';
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store))));
+  f.tasks[0].status = 'todo';
+  const result = await cycle(f.c, f.store, manual ? { manual: true, model: 'sol', ticket: '' } : {}, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'dispatched');
+  assert.equal(f.store.jobs()[0].ticketKey, 'FIX-1', 'newly eligible tickets must beat discovery and cannot be hidden by an old empty projection');
 });
 
 test('trusted live quota avoids a foreground provider probe within configured freshness', async t => {
@@ -375,7 +385,7 @@ test('prepared selection rechecks selected-repository branches and moves to the 
   execFileSync('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '--allow-empty', '-qm', 'fixture']);
   execFileSync('git', ['-C', repo, 'branch', 'fix/FIX-1-existing']);
   t.mock.method(f.kanvil, 'tasks', async () => { assert.fail('stale hints must not trigger a queue-wide scan'); });
-  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil });
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true });
   assert.equal(result.reason, 'dispatched'); assert.equal(result.ticket, 'FIX-3', 'a newly conflicting branch must prevent the old hint from launching');
   assert.equal(f.launches.length, 1);
 });

@@ -838,7 +838,7 @@ function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsS
 }
 // A long-lived caller (the service) keeps one T3 client and one connected Kanvil client across passes;
 // a one-shot caller leaves these out and the pass opens and closes its own.
-export interface Clients { t3?: T3; kanvil?: Kanvil; deferCleanup?: boolean; deferReconcile?: boolean; workKind?: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; currentConfig?: () => Config }
+export interface Clients { t3?: T3; kanvil?: Kanvil; deferCleanup?: boolean; deferReconcile?: boolean; backgroundInventory?: boolean; workKind?: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; currentConfig?: () => Config }
 export type Decision = { reason: string; at: string } & Record<string, unknown>;
 type Queue = Awaited<ReturnType<typeof inventory>>;
 
@@ -952,7 +952,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true, preparedQueue = false;
     try {
       if (!options.upstream && clients.workKind !== 'upstream' && (ticketsOn || !clients.workKind)) {
-        const hints = !options.ticket && !options.doctor ? preparedInventory(c, store) : undefined;
+        const hints = clients.backgroundInventory && !options.ticket && !options.doctor ? preparedInventory(c, store) : undefined;
         preparedQueue = !!hints; queue = hints ?? await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
       }
     }
@@ -1108,7 +1108,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
     if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     // A review needs no ticket queue, so ticket-only reads cannot block it.
-    const queue = plan?.queue ?? (options.manual && !ticketKey && !review && !options.doctor ? preparedInventory(c, store) : undefined) ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey));
+    const queue = plan?.queue ?? (clients.backgroundInventory && options.manual && !ticketKey && !review && !options.doctor ? preparedInventory(c, store) : undefined) ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey));
     const discovery = !ticketKey && !options.manual && !review;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));

@@ -414,7 +414,7 @@ export class FactoryService {
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true, deferReconcile: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
