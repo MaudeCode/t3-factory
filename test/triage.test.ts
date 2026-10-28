@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
-import { inboxes, needsTriage, quoteSummary, triageCanary, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil } from '../src/triage.ts';
+import { admitTriage, inboxes, needsTriage, quoteSummary, triageCanary, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil } from '../src/triage.ts';
 import { triageRows } from '../src/scheduler.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'f', GIT_AUTHOR_EMAIL: 'f@example.test', GIT_COMMITTER_NAME: 'f', GIT_COMMITTER_EMAIL: 'f@example.test' } }).toString().trim();
@@ -266,6 +266,27 @@ test('queue status comes from the live projections with zero requests', async t 
   assert.deepEqual(status.map(r => [r.inboxId, r.untriaged, r.oldestAgeSeconds]), [['TALIN', 2, 86_400 * 2], ['OTHIN', 0, null]]);
   const single = configSchema.parse({ ...baseConfig(f.dir, f.dir), projects: [project('OTH', f.dir, { scopes: ['api'], inbox: { kanvilId: 'OTHIN', label: 'report' } })] });
   assert.deepEqual(triageRows(single, f.store as never, now).map(r => r.inboxId), ['OTHIN']);
+});
+
+test('each admission counts as Claude consumption, so the next report needs a newer quota reading', async t => {
+  const f = fixture(t);
+  let checkedAt = new Date(Date.now() - 1000).toISOString();
+  const reads: boolean[] = [];
+  const provider = () => ({ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'fixture' }], usageLimits: { checkedAt, windows: [
+    { id: 'five_hour', usedPercent: 10, windowDurationMins: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+    { id: 'seven_day', usedPercent: 10, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
+  ] } });
+  const t3 = { providers: async () => [provider()], provider: async (_id: string, force?: boolean) => { reads.push(!!force); return provider(); }, peekProvider: () => undefined } as never;
+  const store = { ...f.store, jobSummaries: () => [] };
+  assert.deepEqual(await admitTriage(f.c, t3, store), { model: 'fixture' });
+  // The same reading cannot admit a second report: a forced refresh that returns nothing newer is refused.
+  const second = await admitTriage(f.c, t3, store);
+  assert.ok('blocked' in second && /stale|refresh/i.test(second.blocked), JSON.stringify(second));
+  assert.ok(reads.includes(true), 'a refresh was forced');
+  checkedAt = new Date(Date.now() + 1000).toISOString();
+  assert.deepEqual(await admitTriage(f.c, t3, store), { model: 'fixture' });
+  assert.deepEqual(await admitTriage({ ...f.c, triage: { ...f.c.triage!, enabled: false } }, t3, store), { blocked: 'triage-disabled' });
+  assert.deepEqual(await admitTriage({ ...f.c, concurrency: { claude: 0, codex: 1 } }, t3, store), { blocked: 'provider-disabled' });
 });
 
 test('a stale or disconnected projection delays the run without fetching', async t => {

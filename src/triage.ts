@@ -8,7 +8,9 @@ import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { Config, Project } from './config.ts';
-import type { Task } from './clients.ts';
+import type { T3, Task } from './clients.ts';
+import type { Job } from './store.ts';
+import { readModelQuota } from './models.ts';
 import { log, safeError } from './scheduler.ts';
 
 const exec = promisify(execFile);
@@ -250,6 +252,28 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
   }
   options.onRun?.();
   return results;
+}
+
+/**
+ * Admits one report against the Claude allowance and returns the model to run.
+ * A run creates no job, so each admission is recorded as consumption: the next one needs a
+ * quota reading taken after it (forcing a refresh), and public reports cannot reuse one snapshot.
+ */
+export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }): Promise<Admission> {
+  try {
+    if (!c.triage?.enabled) return { blocked: 'triage-disabled' };
+    if (c.concurrency.claude === 0) return { blocked: 'provider-disabled' };
+    const providers = await t3.providers();
+    const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
+    if (!preset) return { blocked: 'No Claude model is configured' };
+    const key = `triageAdmittedAt:${preset.model.instanceId}`, last = store.get(key);
+    const jobs = [...store.jobSummaries(), ...last ? [{ modelSelection: preset.model, createdAt: last } as Job] : []];
+    const quota = await readModelQuota(t3 as T3, c, jobs, preset.id);
+    if (!quota.hasAllowance) return { blocked: 'quota-exhausted' };
+    if (!quota.allowed) return { blocked: 'quota-budget' };
+    store.set(key, new Date().toISOString());
+    return { model: preset.model.model };
+  } catch (error) { return { blocked: safeError(error) }; }
 }
 
 /** Per-inbox queue from the live projections only: null counts while a projection is not current. */
