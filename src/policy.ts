@@ -170,6 +170,20 @@ export function selectTicket(candidates: Candidate[], lastProject: string | null
   }
 }
 const ticketMatchers = new Map<string, RegExp>();
+const canonicalTicketKey = /^[A-Z0-9]+-[0-9]+$/i;
+// Zero-width matches preserve overlapping keys such as APP-123A-4 and 123A-4.
+const ticketReferences = /(?=(?:^|[^A-Z0-9])([A-Z0-9]+-[0-9]+)(?![0-9]))/gi;
+const threadReferences = new WeakMap<Thread, { title: string; branch: string | null; keys: Set<string> }>();
+function referencedKeys(thread: Thread) {
+  const title = thread.title, branch = thread.branch;
+  let entry = threadReferences.get(thread);
+  if (!entry || entry.title !== title || entry.branch !== branch) {
+    const keys = new Set<string>();
+    for (const match of `${title}\n${branch ?? ''}`.matchAll(ticketReferences)) keys.add(match[1]!.toUpperCase());
+    entry = { title, branch, keys }; threadReferences.set(thread, entry);
+  }
+  return entry.keys;
+}
 export function mentionsTicket(text: string, key: string): boolean {
   let matcher = ticketMatchers.get(key);
   if (!matcher) {
@@ -181,7 +195,30 @@ export function mentionsTicket(text: string, key: string): boolean {
 }
 // Subagents share their parent's worktree and branch; their titles name tickets they were only asked to read or redraft.
 export function threadReferencesTicket(thread: Thread, projectId: string, key: string): boolean {
-  return thread.projectId === projectId && thread.lineage?.relationshipToParent !== 'subagent' && mentionsTicket(`${thread.title}\n${thread.branch ?? ''}`, key);
+  return thread.projectId === projectId && thread.lineage?.relationshipToParent !== 'subagent' && (canonicalTicketKey.test(key) ? referencedKeys(thread).has(key.toUpperCase()) : mentionsTicket(`${thread.title}\n${thread.branch ?? ''}`, key));
+}
+const snapshotReferences = new WeakMap<readonly Thread[], Map<string, Map<string, Thread[]>>>();
+const noThreads: readonly Thread[] = Object.freeze([]);
+/** Only immutable snapshots can retain a bulk index; mutable inputs keep the per-thread predicate. */
+export function threadsReferencingTicket(threads: readonly Thread[], projectId: string, key: string): readonly Thread[] {
+  if (!canonicalTicketKey.test(key)) return threads.filter(thread => threadReferencesTicket(thread, projectId, key));
+  let projects = snapshotReferences.get(threads);
+  if (!projects) {
+    if (!Object.isFrozen(threads) || !threads.every(thread => Object.isFrozen(thread) && (!thread.lineage || Object.isFrozen(thread.lineage)))) return threads.filter(thread => threadReferencesTicket(thread, projectId, key));
+    projects = new Map();
+    for (const thread of threads) {
+      if (thread.lineage?.relationshipToParent === 'subagent') continue;
+      for (const reference of referencedKeys(thread)) {
+        if (!projects.has(thread.projectId)) projects.set(thread.projectId, new Map());
+        const project = projects.get(thread.projectId)!;
+        if (!project.has(reference)) project.set(reference, []);
+        project.get(reference)!.push(thread);
+      }
+    }
+    for (const project of projects.values()) for (const matches of project.values()) Object.freeze(matches);
+    snapshotReferences.set(threads, projects);
+  }
+  return projects.get(projectId)?.get(key.toUpperCase()) ?? noThreads;
 }
 
 // The order the scheduler would take these tickets in if nothing else changed: each pick rotates projects as a real dispatch would.

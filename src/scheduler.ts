@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { taskDifficulty, taskHold } from './policy.ts';
 import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task } from './clients.ts';
-import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadReferencesTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
+import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project } from './config.ts';
@@ -627,7 +627,7 @@ async function ticketArtifacts(project: Project, key: string, taskId: string, th
   const openPR = (await prs).some(pr => mentionsTicket(`${pr.title}\n${pr.headRefName}\n${pr.body}`, key));
   const history = jobs.filter(j => j.taskId === taskId && ['complete', 'dismissed'].includes(j.state));
   const artifacts = await historicalArtifacts(project, history, threads, undefined, store);
-  for (const thread of threads.filter(t => threadReferencesTicket(t, project.t3Id, key))) {
+  for (const thread of threadsReferencingTicket(threads, project.t3Id, key)) {
     if (jobs.some(j => j.threadId === thread.id) || thread.settledOverride !== 'settled' || executing(thread) || waiting(thread) || thread.activeRunId || thread.pendingRuntimeRequest || thread.pendingBackgroundTasks.length || !thread.branch || !thread.worktreePath || !existsSync(thread.worktreePath)) continue;
     // A shared checkout or branch can still belong to work whose title does not mention this ticket.
     if (threads.some(t => t.id !== thread.id && (t.worktreePath === thread.worktreePath || t.projectId === project.t3Id && t.branch === thread.branch))) continue;
@@ -793,7 +793,7 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
       try { artifacts = await ticketArtifacts(p, key, t.id, threads, jobs, store, Promise.resolve(prs.get(p.kanvilId)!)); }
       catch { reason = 'Previous work could not be verified; inspect its PR and worktree before restarting'; }
     }
-    if (!reason && threads.some(s => !artifacts.inactiveThreads.has(s.id) && threadReferencesTicket(s, p.t3Id, key))) reason = 'Existing T3 thread or branch references this ticket';
+    if (!reason && threadsReferencingTicket(threads, p.t3Id, key).some(thread => !artifacts.inactiveThreads.has(thread.id))) reason = 'Existing T3 thread or branch references this ticket';
     if (!reason) {
       if (branchConflict(key, refs.get(p.kanvilId)!, artifacts.branches)) reason = 'Existing Git branch references this ticket';
       if (artifacts.openPR) reason = 'Existing open PR references this ticket';
@@ -1262,7 +1262,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         try { difficulty = taskDifficulty(task); } catch { difficulty = undefined; }
         if (difficulty !== selected.difficulty || !acceptsDifficulty(preset, { ...selected, difficulty })) return { reason: 'ticket-changed-before-dispatch', message: "The ticket's difficulty changed." };
         if (blockers === 'cycle' || blockers.length || children.length) return { reason: 'ticket-changed-before-dispatch', message: 'The ticket gained a blocker or an unfinished child.' };
-        if (!artifacts || artifacts.openPR || branchConflict(key, checked.refs, artifacts.branches) || currentJobs.some(job => job.taskId === task.id && !['complete', 'dismissed'].includes(job.state)) || fresh.threads.some(thread => !artifacts.inactiveThreads.has(thread.id) && threadReferencesTicket(thread, selectionProject.t3Id, key))) return { reason: 'ticket-order-or-eligibility-changed' };
+        if (!artifacts || artifacts.openPR || branchConflict(key, checked.refs, artifacts.branches) || currentJobs.some(job => job.taskId === task.id && !['complete', 'dismissed'].includes(job.state)) || threadsReferencingTicket(fresh.threads, selectionProject.t3Id, key).some(thread => !artifacts.inactiveThreads.has(thread.id))) return { reason: 'ticket-order-or-eligibility-changed' };
         if (kanvil.realtime && (!kanvil.projectSynchronized(selectionProject.kanvilId) || !kanvil.unchanged(trackerRevision, checked.projects, checked.tickets))) return { reason: 'ticket-changed-before-dispatch', message: 'Kanvil changed or disconnected during final validation.' };
         const full = labelGated && fullLabel(c, currentJobs, fresh.threads, { ...selected, labels: checked.labels });
         if (full) return { reason: 'label-limit', message: `Waiting for a free ${full} slot` };

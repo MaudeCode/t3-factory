@@ -383,6 +383,17 @@ test('prepared admission reads label occupancy once instead of reloading jobs fo
   assert.equal(f.launches.length, 1);
 });
 
+test('background inventory indexes an immutable shell instead of rescanning it per candidate', async t => {
+  const f = dispatchFixture(t), { inventory } = await import('../src/scheduler.ts');
+  for (let i = 3; i < 43; i++) f.tasks.push(f.task(`indexed-${i}`, i, 'todo'));
+  const thread = v2Thread({ projectId: 'FIX', title: 'Unrelated session', branch: null }); Object.freeze(thread.lineage); Object.freeze(thread);
+  let scans = 0;
+  const threads = new Proxy(Object.freeze([thread]), { get(target, property, receiver) { if (property === '0') scans++; return Reflect.get(target, property, receiver); } });
+  const queue = await inventory(f.c, f.kanvil, threads as unknown as Parameters<typeof inventory>[2], [], f.store);
+  assert.equal(queue.ready.length, 41);
+  assert.ok(scans <= 4, `candidate count must not amplify full-shell scans; observed ${scans}`);
+});
+
 test('a warm service uses its GitHub connection instead of spawning the CLI for PR checks', async t => {
   const f = dispatchFixture(t); let reads = 0;
   writeFileSync(join(f.dir, 'gh'), '#!/bin/sh\necho "Unexpected GitHub CLI process on warm dispatch" >&2\nexit 1\n', { mode: 0o755 });

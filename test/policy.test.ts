@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, commandWait, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadReferencesTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
+import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, commandWait, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadReferencesTicket, threadsReferencingTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
 
 test('matching one ticket across many shell entries does not repeatedly compile its matcher', t => {
   const Native = globalThis.RegExp; let compiled = 0;
@@ -13,6 +13,33 @@ test('matching one ticket across many shell entries does not repeatedly compile 
   for (let i = 0; i < 1000; i++) assert.equal(mentionsTicket(`thread ${i}: fix/PERF-953642-work`, 'PERF-953642'), true);
   assert.equal(mentionsTicket('fix/PERF-9536420-other', 'PERF-953642'), false);
   assert.equal(compiled, 1, 'the shell inventory must reuse the ticket matcher');
+});
+
+test('matching many tickets against one thread does not repeatedly scan its full text', t => {
+  const original = RegExp.prototype.test; let scans = 0;
+  t.mock.method(RegExp.prototype, 'test', function(this: RegExp, value: string) { if (value.includes('fixture thread-index')) scans++; return original.call(this, value); });
+  const thread = v2Thread({ projectId: 'project', title: 'fixture thread-index APP-1 APP-2', branch: null });
+  for (let i = 0; i < 1000; i++) assert.equal(threadReferencesTicket(thread, 'project', i % 2 ? 'APP-1' : 'APP-2'), true);
+  assert.ok(scans <= 1, `stable thread text must be indexed once rather than scanned per ticket; observed ${scans}`);
+  thread.title = 'fixture thread-index APP-3';
+  assert.equal(threadReferencesTicket(thread, 'project', 'APP-1'), false); assert.equal(threadReferencesTicket(thread, 'project', 'APP-3'), true);
+});
+
+test('indexed thread references preserve ticket boundaries, overlaps and mutable-input behavior', () => {
+  const thread = v2Thread({ projectId: 'project', branch: null });
+  for (const text of ['APP-1/APP-2', 'APP-1APP-2', 'APP-123A-4', 'APP-1-2', 'XAPP-1 APP-001 APP-10', 'πapp-1 APP-2A']) {
+    thread.title = text;
+    const frozen = Object.freeze({ ...thread, lineage: Object.freeze({ ...thread.lineage }) }), snapshot = Object.freeze([frozen]);
+    for (const key of ['APP-1', 'APP-2', 'APP-10', 'APP-001', '123A-4', '1-2', 'XAPP-1']) {
+      const expected = mentionsTicket(`${text}\n`, key);
+      assert.equal(threadReferencesTicket(thread, 'project', key), expected, `${text}: ${key}`);
+      assert.equal(threadsReferencingTicket(snapshot, 'project', key).length, Number(expected), `snapshot ${text}: ${key}`);
+    }
+  }
+  const mutable = [thread]; thread.title = 'APP-77';
+  assert.equal(threadsReferencingTicket(mutable, 'project', 'APP-77').length, 1);
+  thread.title = 'Unrelated'; assert.equal(threadsReferencingTicket(mutable, 'project', 'APP-77').length, 0);
+  thread.branch = 'fix/APP-77'; assert.equal(threadsReferencingTicket(mutable, 'project', 'APP-77').length, 1);
 });
 import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
