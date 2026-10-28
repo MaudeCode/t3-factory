@@ -1,5 +1,6 @@
 import { ReadContext, independentOperation, waitFor, readAll, readContext, readPhase, readFailure, backgroundCheckpoint, backgroundRead } from './read-context.ts';
 export { readAll } from './read-context.ts';
+import { inboxes, triageCanary, type TriageRow } from './triage.ts';
 import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees } from './workspace.ts';
 import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -1084,8 +1085,10 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       : results.some(r => r.reason === 'would-dispatch') ? 'would-dispatch'
       : options.upstream ? results.at(-1)?.reason ?? 'no-eligible-model' : options.manual ? candidates.length && !candidates.some(labelOpen) ? 'label-limit' : 'no-eligible-ticket' : !ticketsOn ? results.at(-1)?.reason ?? 'disabled' : streams.every(s => s.reason === 'provider-running') ? 'autonomous-job-running' : 'watching-streams';
     saveStreams();
+    // Operators run this after every Claude CLI upgrade: the sandbox must still refuse both probes.
+    const triageSandbox = options.doctor && c.triage ? await triageCanary() : undefined;
     if (options.manual && queue.ready.length && !readyModels.length && !results.length) return decision('no-ready-model', { streams, eligible: queue.ready.length, message: 'No configured model is ready. ' + streams.flatMap(stream => stream.models.map(model => `${model.name}: ${model.reason}`)).join('; ') });
-    return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length });
+    return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length, ...triageSandbox ? { triageSandbox } : {} });
   } finally { if (ownsKanvil) await kanvil.close(); }
 }
 
@@ -1522,11 +1525,19 @@ export function upstreamRows(c: Config, store: Store) {
   }));
 }
 
+// The lane publishes each inbox's queue from the live projections; rows follow the current config.
+export function triageRows(c: Config, store: Store, now = Date.now()) {
+  const rows = JSON.parse(store.get('triageStreams') || '[]') as TriageRow[];
+  return inboxes(c).map(({ project, inbox }): TriageRow => rows.find(row => row.inboxId === inbox.kanvilId && row.projectId === project.kanvilId)
+    ?? { project: project.name, projectId: project.kanvilId, inboxId: inbox.kanvilId, label: inbox.label, synchronized: false, untriaged: null, failed: null, running: null, oldestUntriagedAt: null })
+    .map(row => ({ ...row, oldestAgeSeconds: row.oldestUntriagedAt ? Math.max(0, Math.round((now - Date.parse(row.oldestUntriagedAt)) / 1000)) : null }));
+}
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {
   const result = {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
+    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),

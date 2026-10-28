@@ -68,4 +68,34 @@ Projects may override `discoveryPromptFile`. `discovery.emptyCooldownHours` cont
 
 A project's `upstreams` list names GitHub repositories whose releases the project should review: `name`, `repo` (`OWNER/REPOSITORY`), `prereleases` (default `false`), and `firstBase`, the tag or commit the first review starts from. Each repository belongs to one project. `upstream.promptFile` is the review invocation; the scheduler replaces `{{name}}`, `{{repo}}`, `{{base}}` and `{{candidate}}` in it. [`prompts/upstream-review.md`](../prompts/upstream-review.md) is a starting point. `upstream.checkMinutes` (default 360) limits how often each repository's releases are read; an upstream's own `checkMinutes` overrides it, for example `1440` to review a busy repository at most once a day. `upstream.enabled` (default `false`) allows new reviews, independently of the top-level `enabled`; a config written before this setting existed keeps reviews paused until it is turned on.
 
+### Inbox triage
+
+The `inbox-triage` work kind checks untrusted public reports against a project's tickets and code, then applies only schema-validated fields. It follows the upstream pattern: each project names the inbox that feeds it, and a global section holds the switch and prompt.
+
+- `projects[].inbox`: `{ kanvilId, label }` names the Kanvil project of untrusted reports about this project, and the label that marks a report for triage (default `intake`). The project is the inbox's target. Its `repoPath`, `githubRepo` and `baseBranch` provide the code and evidence links. A project has at most one inbox. An inbox may feed only one project, and it cannot itself be listed in `projects`, so inbox tickets are never dispatched for implementation.
+- `projects[].scopes`: the project's native scope names. Required with `inbox`; the triage output may only choose scopes from this list.
+- `triage.enabled` (default `false`) allows new triage runs, independently of the top-level `enabled`. `triage.promptFile` is the triage invocation, required once any project has an inbox. The scheduler replaces `{{project}}`, `{{scopes}}`, `{{key}}`, `{{nonce}}` and `{{report}}` in it. [`prompts/inbox-triage.md`](../prompts/inbox-triage.md) is a starting point.
+
+The service reacts to Kanvil events. A report is waiting when it is open and unarchived, carries its inbox label, and has neither `triaged` nor `triage-failed`. Waiting reports from every inbox run oldest first, one at a time overall. Runs need a Claude allowance (`concurrency.claude` above zero) and are held by the Claude quota budget like other jobs, but do not occupy a T3 run slot. The first configured Claude model is checked against that budget, and the run passes it to the CLI with `--model`, so the allowance that was checked is the one spent. A triage run creates no job, so each admission is recorded as Claude consumption: the next report needs a quota reading taken after it, which forces a refresh. Public reports cannot run past the reserve on one reading. The switch, the allowance and the budget are rechecked before each report, so pausing triage stops the next run. Each run:
+
+1. Writes the ticket export from the Kanvil client's live projections of the inbox and its project, making no Kanvil request. A disconnected or unsettled projection delays the run until the next pass.
+2. Fetches the project's `baseBranch` from `origin` and extracts `git archive` of that commit into a new temporary snapshot:
+   - `code/`: no `.git`, untracked or ignored files, or symlinks.
+   - `tickets/target.jsonl`: every project ticket; open tickets and those closed within 180 days include the first 1,500 description characters.
+   - `tickets/inbox.jsonl`: other non-spam inbox reports with their report text, each marked `"untrusted": true`.
+   - `report.md`: the report being triaged.
+3. Runs `claude -p` in the snapshot under the read-only sandbox in [SECURITY.md](../SECURITY.md#inbox-triage). The prompt is filled from `triage.promptFile`. Each run has a 300-second timeout and one retry after a timeout.
+4. Validates the JSON result against the project's scopes and applies it to the report:
+   - native kind, difficulty, priority and scopes;
+   - the work-type, difficulty, scope, `triaged`, `verdict:<verdict>` and `validation:<validation>` labels, plus `injection-suspected` when flagged;
+   - one comment quoting the summary, with evidence links to `githubRepo` at the snapshot commit;
+   - a `duplicate` relation when `duplicateOf` names an exported ticket;
+   - `cancelled` for spam.
+
+   `automationReady`, `holdReason`, the project, and other statuses are never changed, and target tickets are never edited or commented on.
+
+Invalid output, a CLI error, or a second timeout labels the report `triage-failed` and changes nothing else. Evidence locations missing from the snapshot are dropped. The snapshot is deleted after every run. Promoting a report into the project stays a human `relocate_ticket` action.
+
+Status reports a triage stream beside upstream reviews: `triageEnabled`, `triageDecision`, and `triageStreams` with one row per inbox. Each row holds the waiting count, `triage-failed` count, the running report, the oldest waiting report and its age. Rows come from the same live projections, with no extra requests; they show `synchronized: false` and null counts until a projection is current. The web Upstream page and the menu bar app show these rows.
+
 Keep actual skill paths and deployment-specific prompt variants in your private configuration. These skills are not downloaded by the installer.

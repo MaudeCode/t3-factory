@@ -446,6 +446,18 @@ struct FactorySettingsView: View {
         let rows = model.status["upstreams"] as? [[String: Any]] ?? []
         let interval = (valueAt(c, ["upstream", "checkMinutes"]) as? NSNumber)?.doubleValue ?? 360
         return ScrollView {
+            if !model.triageRows.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    SectionTitle("Inbox triage")
+                    ForEach(Array(model.triageRows.enumerated()), id: \.offset) { _, row in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) { Text(row["project"] as? String ?? "").font(.system(size: 13, weight: .semibold)); Text("\(row["label"] as? String ?? "") label\(model.triageEnabled ? "" : ", triage off")").font(.system(size: 11)).foregroundStyle(Theme.muted) }
+                            Spacer()
+                            Text(Words.triage(row, now: model.now)).font(.system(size: 11)).foregroundStyle((row["untriaged"] as? Int ?? 0) > 0 ? Theme.attention : Theme.muted)
+                        }.padding(.vertical, 4)
+                    }
+                }.card().padding(.horizontal, 24).padding(.bottom, 12)
+            }
             if !model.hasUpstream { Text("No watched repositories. Add upstream with a prompt file to the config file to turn reviews on.").font(.system(size: 12)).foregroundStyle(Theme.muted).padding(.horizontal, 24) }
             else {
                 HStack(alignment: .top, spacing: 16) {

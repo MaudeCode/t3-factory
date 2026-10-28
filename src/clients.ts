@@ -407,6 +407,7 @@ export const taskSchema = z.object({
   holdReason: z.string().nullable().optional(), archived: z.boolean().optional(), parentId: z.string().nullable().optional(),
   readiness: readinessSchema.optional(),
   version: z.number().int().positive().optional(),
+  kind: z.string().optional(), scopes: z.array(z.string()).optional(), updatedAt: z.string().optional(),
 }).passthrough();
 export type Task = z.infer<typeof taskSchema>;
 const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
@@ -474,6 +475,24 @@ export class Kanvil {
       if (!response.ok) await this.failure(response);
       try { return await response.json(); } catch { throw new Error('Kanvil returned invalid JSON'); }
     });
+  }
+  // Writes carry a caller-chosen requestId, so a retry after an uncertain response cannot apply twice.
+  private async send(method: 'POST' | 'PATCH', path: string, body: Record<string, unknown>): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await fetch(new URL(`/api/v1${path}`, this.config.url), { method, headers: { ...this.headers(), 'Content-Type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(30_000)]) });
+    } catch { throw new Error(this.abort.signal.aborted ? 'Kanvil client closed' : 'Kanvil connection failed'); }
+    if (!response.ok) await this.failure(response);
+    return response.json().catch(() => null);
+  }
+  async updateTicket(projectId: string, ticketId: string, expectedVersion: number, changes: Record<string, unknown>, requestId: string) {
+    return this.send('PATCH', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}`, { expectedVersion, changes, requestId });
+  }
+  async addComment(projectId: string, ticketId: string, body: string, requestId: string) {
+    return this.send('POST', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/comments`, { body, requestId });
+  }
+  async addRelation(projectId: string, ticketId: string, targetId: string, type: 'duplicate', requestId: string) {
+    return this.send('POST', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/relations`, { targetId, type, requestId });
   }
   private async failure(response: Response): Promise<never> {
     const error = z.object({ error: z.object({ code: z.string().regex(/^[a-z_]+$/) }) }).safeParse(await response.json().catch(() => null));
@@ -651,6 +670,12 @@ export class Kanvil {
     if (task.parentId) this.dependent(task.parentId, projectId);
     if (task.parentId) relations.push({ sourceTaskId: task.parentId, targetTaskId: task.id, relationType: 'subtask' });
     return [...relations, ...children];
+  }
+  // The live projection only: no request, and nothing while the stream or any pending change is unsettled.
+  cachedTickets(projectId: string): Task[] | undefined {
+    const snapshot = this.snapshots.get(projectId)?.value;
+    if (!this.watching || !this.projectSynchronized(projectId) || !snapshot || this.dirty.get(projectId)?.size || this.refreshes.has(projectId)) return undefined;
+    return snapshot.tickets.map(normalized);
   }
   projectSynchronized(projectId: string) { return this.connected && this.projectStreams.get(projectId)?.connected === true; }
   // Unscoped feeds cannot report membership revocation after the caller loses visibility.

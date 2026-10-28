@@ -74,6 +74,9 @@ export const configSchema = z.preprocess(input => {
   discovery: z.object({ promptFile: absolute, emptyCooldownHours: positive }).strict(),
   // Reviews have their own switch so pausing ticket automation does not stop release reviews.
   upstream: z.object({ enabled: z.boolean().default(false), promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
+  // Untrusted intake: a read-only, network-less model run whose JSON output factory code applies.
+  // Its own switch, like upstream reviews; each project names its inbox.
+  triage: z.object({ enabled: z.boolean().default(false), promptFile: absolute }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),
@@ -87,6 +90,10 @@ export const configSchema = z.preprocess(input => {
       z.object({ limit: z.number().int().min(0), mode: z.enum(['full', 'running']) }).strict(),
     ])).default({}),
     discoveryPromptFile: absolute.optional(),
+    // Allowed native scopes, for example the triage output's scope allowlist.
+    scopes: z.array(z.string().trim().min(1)).refine(scopes => new Set(scopes).size === scopes.length, 'Scopes must be unique').optional(),
+    // A Kanvil project of untrusted reports about this project; triage targets this project and its repository.
+    inbox: z.object({ kanvilId: z.string().min(1), label: z.string().trim().min(1).default('intake') }).strict().optional(),
     upstreams: z.array(z.object({
       // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
       name: z.string().min(1), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()),
@@ -106,6 +113,15 @@ export const configSchema = z.preprocess(input => {
   const upstreams = c.projects.flatMap(p => p.upstreams.map(u => u.repo));
   if (new Set(upstreams).size !== upstreams.length) ctx.addIssue({ code: 'custom', message: 'Each upstream repository can be watched by only one project' });
   if (upstreams.length && !c.upstream) ctx.addIssue({ code: 'custom', path: ['upstream'], message: 'Watched upstreams need upstream.promptFile' });
+  // Inbox tickets are never dispatched: an inbox cannot be a delivery project, and feeds exactly one project.
+  const inboxIds = c.projects.flatMap(p => p.inbox ? [p.inbox.kanvilId] : []);
+  c.projects.forEach((p, i) => {
+    if (!p.inbox) return;
+    if (c.projects.some(other => other.kanvilId === p.inbox!.kanvilId)) ctx.addIssue({ code: 'custom', path: ['projects', i, 'inbox', 'kanvilId'], message: 'An inbox project cannot also be a delivery project' });
+    if (!p.scopes?.length) ctx.addIssue({ code: 'custom', path: ['projects', i, 'scopes'], message: 'A project with an inbox needs scopes' });
+  });
+  if (new Set(inboxIds).size !== inboxIds.length) ctx.addIssue({ code: 'custom', message: 'Each inbox can feed only one project' });
+  if (inboxIds.length && !c.triage) ctx.addIssue({ code: 'custom', path: ['triage'], message: 'Inboxes need triage.promptFile' });
   const u = new URL(c.t3.url);
   if (!['http:', 'https:'].includes(u.protocol) || !loopback(u)) {
     ctx.addIssue({ code: 'custom', message: 'T3 must be a loopback HTTP(S) endpoint on this Mac' });

@@ -75,6 +75,16 @@ enum Words {
         guard let text, let date = Words.date(text) else { return "never" }
         return span(now.timeIntervalSince(date)) + " ago"
     }
+    // One inbox queue row from status: waiting, failed, and the oldest waiting report's age.
+    static func triage(_ row: [String: Any], now: Date) -> String {
+        guard row["synchronized"] as? Bool == true else { return "not synchronized" }
+        let waiting = row["untriaged"] as? Int ?? 0, failed = row["failed"] as? Int ?? 0
+        var parts = ["\(waiting) waiting"]
+        if failed > 0 { parts.append("\(failed) failed") }
+        if let oldest = row["oldestUntriagedAt"] as? String { parts.append("oldest " + ago(oldest, now: now)) }
+        if let running = row["running"] as? String { parts.append("triaging " + running) }
+        return parts.joined(separator: ", ")
+    }
     static func clock(_ text: String?) -> String {
         guard let text, let date = Words.date(text) else { return "" }
         let f = DateFormatter(); f.dateStyle = .none; f.timeStyle = .short
@@ -165,6 +175,8 @@ struct RunRequest: Identifiable, Codable {
     var enabled: Bool { status["enabled"] as? Bool ?? config["enabled"] as? Bool ?? false }
     var hasUpstream: Bool { config["upstream"] is [String: Any] }
     var upstreamEnabled: Bool { status["upstreamEnabled"] as? Bool ?? (config["upstream"] as? [String: Any])?["enabled"] as? Bool ?? false }
+    var triageEnabled: Bool { status["triageEnabled"] as? Bool ?? (config["triage"] as? [String: Any])?["enabled"] as? Bool ?? false }
+    var triageRows: [[String: Any]] { status["triageStreams"] as? [[String: Any]] ?? [] }
     var configuredModels: [[String: Any]] { config["models"] as? [[String: Any]] ?? [] }
     var projects: [[String: Any]] { config["projects"] as? [[String: Any]] ?? [] }
     var selectedPreset: [String: Any]? { configuredModels.first { $0["id"] as? String == selectedModel } }

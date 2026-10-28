@@ -14,6 +14,7 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
+import { admitTriage, inboxes, triagePass, triageQueue } from './triage.ts';
 
 const EVENT_SETTLE_MS = 25;
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
@@ -178,6 +179,15 @@ export class FactoryService {
       if (!c.upstream?.enabled) return;
       await pendingReviews(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
+    });
+    // One triage run at a time across every inbox. The queue status is published even while triage is off.
+    this.runLane('inbox-triage', async () => {
+      const c = this.configure();
+      if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); return; }
+      const kanvil = await this.ensureKanvil(c);
+      const publish = (running?: Parameters<typeof triageQueue>[2]) => { this.store.set('triageStreams', JSON.stringify(triageQueue(c, kanvil, running))); this.publishWork(); };
+      const results = await triagePass(c, this.store, kanvil, { budget: () => admitTriage(this.configure(), this.t3, this.store), signal: this.abort.signal, onRun: publish });
+      if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
     });
     this.scheduleCleanup(true); this.scheduleCollection();
     if (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory();
@@ -360,7 +370,7 @@ export class FactoryService {
     }
     if (command.type === 'once') {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
-      return { code: result.reason === 'error' ? 1 : 0, data: result };
+      return { code: result.reason === 'error' || (result as { triageSandbox?: { ok: boolean } }).triageSandbox?.ok === false ? 1 : 0, data: result };
     }
     return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); }, receivedAt);
   }

@@ -49,6 +49,11 @@
     "promptFile": "/absolute/path/to/discovery.md",
     "emptyCooldownHours": 24
   },
+  // Optional: required once any project has an inbox.
+  "triage": {
+    "enabled": false,
+    "promptFile": "/absolute/path/to/inbox-triage.md"
+  },
   // Optional: required once any project lists upstreams.
   "upstream": {
     "enabled": false,
@@ -69,6 +74,9 @@
       "readyStatuses": ["todo"],
       "doneStatuses": ["done"],
       "priorityLabels": [],
+      // Optional: untrusted reports in another Kanvil project, triaged against this project and its repository.
+      // "scopes": ["app", "web"],
+      // "inbox": { "kanvilId": "YOUR_INBOX_KANVIL_PROJECT_ID", "label": "intake" },
       "upstreams": [
         { "name": "Example library", "repo": "OWNER/LIBRARY", "prereleases": false, "firstBase": "v1.0.0" }
       ]
