@@ -108,6 +108,14 @@ export const DIFFICULTIES = [
 ];
 // Thresholds a manual start may override; `true` (and older saved requests) means all of them.
 export const OVERRIDES = [["idle", "Idle time"], ["reserve", "Quota reserve"], ["labels", "Label limits"]];
+// What a dispatch request is doing, or why it ended without starting.
+export function operationText(op) {
+  const d = op.result?.data, p = op.progress;
+  if (op.choiceHandled) return "Choice submitted; a new check is queued below.";
+  if (op.state === "queued") return "Queued";
+  if (op.state === "running") return p?.phase === "queued" ? "Queued at scheduler" : p?.phase === "checking" ? `Checking · ${p.stage}` : p?.phase === "launching" ? "Starting T3 run" : "Waiting for scheduler progress";
+  return d?.reason === "dispatched" ? `Started ${d.ticket || "ticket"} with ${d.model}.` : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
+}
 export const overrideText = (value) => {
   const names = OVERRIDES.filter(([v]) => value === true || (Array.isArray(value) && value.includes(v))).map(([, name]) => name.toLowerCase());
   return names.length === OVERRIDES.length ? "Override limits" : names.length ? `Override ${names.join(", ")}` : "Respect limits";

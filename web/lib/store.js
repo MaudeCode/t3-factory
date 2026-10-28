@@ -3,7 +3,7 @@
 // event stream, the poll fallback, and every action that reloads all feed the same path.
 import { signal, computed, batch } from "./h.js";
 import { api, post } from "./api.js";
-import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState } from "./format.js";
+import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState, operationText } from "./format.js";
 
 // State -----------------------------------------------------------------
 export const auth = signal({ mode: "pairing", loginUrl: "" });
@@ -25,8 +25,22 @@ export const operations = signal([]);
 export const launchOperations = computed(() => operations.value.filter(op => op.kind !== "cleanup"));
 export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
-// Background problems listed by the top bar's notification area, each with the page it affects.
-export const issues = computed(() => [{ source: "Session tickets", href: "/session-tickets", error: status.value.sessionTickets?.error }].filter((i) => i.error));
+// Requests started from Session tickets that ended without starting. The page keeps its rows in place and
+// reports these in the notification area instead of adding request rows.
+export const SESSION_ORIGIN = "session-tickets";
+const startProblem = (op) => {
+  const key = op.input.ticket, d = op.result?.data;
+  const title = d?.reason === "blocked-ticket-plan-required" ? `${key} waits on other tickets` : op.state === "uncertain" ? `Couldn't confirm ${key} started` : `Couldn't start ${key}`;
+  return { title, cause: operationText(op), subjects: [], raw: [], op };
+};
+// Problems listed by the top bar's notification area, each with the page it affects.
+export const issues = computed(() => {
+  const failed = operations.value.filter((op) => op.origin === SESSION_ORIGIN && !["queued", "running"].includes(op.state));
+  return [
+    { source: "Session tickets", href: "/session-tickets", error: status.value.sessionTickets?.error },
+    { source: "Session ticket starts", href: "/session-tickets", note: "Not started", error: failed.length && { problems: failed.map(startProblem) } },
+  ].filter((i) => i.error);
+});
 export const issuesOpen = signal(false);
 export const selectedModel = signal(0);
 export const selectedProject = signal(0);
@@ -380,14 +394,15 @@ export function pendingRun(ticket) {
 export function pendingReview(repo) {
   return !!repo && operations.value.some((op) => op.input.upstream?.toLowerCase() === repo.toLowerCase() && ["queued", "running", "uncertain"].includes(op.state));
 }
-export function startRun(input) {
+// `origin` names the page that started the request; it stays on the saved request, never in the dispatch input.
+export function startRun(input, origin) {
   if (pendingRun(input.ticket) || pendingReview(input.upstream)) return null;
-  return enqueueOperation(input);
+  return enqueueOperation(input, "dispatch", undefined, origin);
 }
-function enqueueOperation(input, kind = "dispatch", cleanupTargets) {
+function enqueueOperation(input, kind = "dispatch", cleanupTargets, origin) {
   const id = uuid();
   if (kind === "dispatch" && input.ticket && !("ticketKeyRevision" in input) && status.value.ticketKeyRevision) input = { ...input, ticketKeyRevision: status.value.ticketKeyRevision };
-  operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued", ...(cleanupTargets ? { cleanupTargets: clone(cleanupTargets) } : {}) }];
+  operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued", ...(cleanupTargets ? { cleanupTargets: clone(cleanupTargets) } : {}), ...(origin ? { origin } : {}) }];
   saveOperations();
   void drainOperations();
   return id;
@@ -408,7 +423,7 @@ function answerRequest(choice, reason, extra) {
   const op = request(choice?.id);
   if (!op || op.choiceHandled || op.result?.data?.reason !== reason) return;
   updateOperation(op.id, { choiceHandled: true });
-  return startRun({ ...op.input, ticketKeyRevision: op.input.ticketKeyRevision, ...extra });
+  return startRun({ ...op.input, ticketKeyRevision: op.input.ticketKeyRevision, ...extra }, op.origin);
 }
 export function runChain(mode) {
   const choice = blocked.value;

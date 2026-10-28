@@ -35,6 +35,7 @@ import {
   stopOf,
   OVERRIDES,
   overrideText,
+  operationText,
 } from "../lib/format.js";
 import { Button, Switch, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
@@ -86,23 +87,19 @@ function Machine({ provider }) {
 }
 
 function Operation({ op }) {
-  const d = op.result?.data,
-    running = op.state === "running";
-  const text = op.choiceHandled ? "Choice submitted; a new check is queued below." : op.state === "queued" ? "Queued" : running
-    ? op.progress?.phase === "queued" ? "Queued at scheduler"
-      : op.progress?.phase === "checking" ? `Checking · ${op.progress.stage}`
-      : op.progress?.phase === "launching" ? "Starting T3 run"
-      : "Waiting for scheduler progress"
-    : d?.reason === "dispatched"
-      ? `Started ${d.ticket || "ticket"} with ${d.model}.`
-      : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
   return html`<div class=${`operation ${op.state}`} role="status">
-    ${running && html`<i class="spinner"></i>`}
-    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${text}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
-    ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
-    ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
-    ${!running && op.state !== "queued" && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.upstream || op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}
+    ${op.state === "running" && html`<i class="spinner"></i>`}
+    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${operationText(op)}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <${OperationActions} op=${op} />
   </div>`;
+}
+
+// What can be done with a request that ended without starting. The request row and the notification area share these.
+export function OperationActions({ op }) {
+  const d = op.result?.data;
+  return html`${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
+    ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
+    ${!["queued", "running"].includes(op.state) && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.upstream || op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}`;
 }
 
 // Start bar: project key, dash, ticket number; model; override; start. An empty number means the next eligible ticket.
@@ -169,10 +166,13 @@ export function Chains() {
   });
 }
 
+// A ticket that already has an open run or is the target of an active chain.
+export const openRun = (t) => jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
+
 // Why a ticket cannot be started from here right now, or null when it can.
 export function startHold(t) {
   if (pendingRun(t.key)) return "A request for this ticket is already pending.";
-  if (jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id)) return "This ticket already has an open run or active chain.";
+  if (openRun(t)) return "This ticket already has an open run or active chain.";
   return null;
 }
 
@@ -199,11 +199,11 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
   </div>`;
 }
 
-// Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled.
-export const runNow = (t, hold) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits: true }) : null;
-export const RunNow = ({ ticket: t, hold }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
+// Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.
+export const runNow = (t, hold, origin) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits: true }, origin) : null;
+export const RunNow = ({ ticket: t, hold, origin }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
   title=${hold ?? "Override limits and start this ticket now."}
-  onClick=${() => runNow(t, hold)}><${Icon} name="play" /><//>`;
+  onClick=${() => runNow(t, hold, origin)}><${Icon} name="play" /><//>`;
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "" }) {

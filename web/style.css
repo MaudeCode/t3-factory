@@ -1061,6 +1061,12 @@ button.conn[aria-expanded="true"] {
 .issue { padding: var(--space-3); font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .issue + .issue { border-top: 1px solid var(--line); }
 .issue-title { color: var(--ink); font-weight: 600; }
+/* A request's dismiss sits beside its title; its other actions follow the cause. */
+.issue:has(> .issue-actions) { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-2); align-items: start; }
+.issue > :not(.issue-actions) { grid-column: 1; }
+.issue > .issue-actions { display: contents; }
+.issue-actions > .btn { grid-column: 1; justify-self: start; margin-top: var(--space-2); }
+.issue-actions > .btn-icon { grid-column: 2; grid-row: 1 / span 2; margin-top: 0; }
 .issue details { margin-top: var(--space-2); font-size: 12px; }
 .issue summary { width: max-content; cursor: pointer; }
 .issue summary:hover,
@@ -1262,7 +1268,7 @@ button.conn[aria-expanded="true"] {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.operation .spinner {
+.spinner {
   width: 14px;
   height: 14px;
   border: 2px solid var(--line);
@@ -1527,6 +1533,10 @@ h2 .icon,
   justify-content: flex-start;
   gap: var(--space-2);
   padding: 0 var(--space-3);
+}
+.meta .spinner {
+  width: 10px;
+  height: 10px;
 }
 .meta > .session-sources {
   white-space: normal;
@@ -2473,7 +2483,6 @@ h1 .crumb::after {
 .cleanup-open .row-body > small { display: flex; align-items: center; gap: var(--space-2); white-space: normal; }
 .cleanup-reason { overflow-wrap: anywhere; }
 .cleanup-note { flex: 0 0 15px; display: inline-flex; }
-.cleanup-row-actions .spinner { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .cleanup-page .selection-bar { padding-top: var(--space-2); }
 .cleanup-note .help { margin: 0; }
 .cleanup-age { flex: 0 0 92px; text-align: right; white-space: nowrap; }
