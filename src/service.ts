@@ -82,7 +82,7 @@ export class FactoryService {
   private onConfigChange(name: string | null) {
     if (this.stopped || name !== basename(this.configPath)) return;
     let snapshot: string | undefined;
-    try { snapshot = JSON.stringify(loadConfig(this.configPath)); } catch { /* A broken configuration still needs its diagnostic pass. */ }
+    try { const c = loadConfig(this.configPath); this.pollSeconds = c.pollSeconds; snapshot = JSON.stringify(c); } catch { /* A broken configuration still needs its diagnostic pass. */ }
     if (snapshot !== undefined && snapshot === this.configSnapshot) return;
     this.configSnapshot = snapshot;
     this.wake('config');
@@ -144,6 +144,10 @@ export class FactoryService {
   // Each domain coalesces only its own wake bursts. No domain owns another domain's worker.
   wake(reason: string) {
     if (this.stopped) return;
+    if (reason === 'config') { clearTimeout(this.timer); this.timer = undefined; }
+    // Maintenance cadence belongs to the service, even when no admission can run.
+    // Ordinary events cannot postpone this fallback indefinitely.
+    this.timer ??= setTimeout(() => { this.timer = undefined; this.wake('timer'); }, this.pollSeconds * 1000);
     this.runLane('reconcile', async () => {
       const c = this.configure(), kanvil = await this.ensureKanvil(c);
       await reconcile(c, this.store, this.t3, kanvil, (await this.t3.shell()).threads, true, false);
@@ -400,7 +404,6 @@ export class FactoryService {
   }
 
   private async pass(options: CycleOptions, reason: string, queueWaitMs: number, workKind?: Clients['workKind'], providerDriver?: string) {
-    clearTimeout(this.timer);
     const started = performance.now();
     let c: Config | undefined;
     try {
@@ -423,8 +426,6 @@ export class FactoryService {
       throw error;
     } finally {
       if ((options.manual || reason === 'once') && !options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
-      clearTimeout(this.timer);
-      if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
-    }
+      }
   }
 }

@@ -302,3 +302,26 @@ test('zero provider capacity still observes completed explicit chains without la
   assert.equal(f.store.plan('completed-chain')?.state, 'done');
   assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
 });
+
+test('fallback maintenance continues without admission and is not postponed by thread wakes', async t => {
+  const f = serviceFixture(t), reasons: string[] = [];
+  f.c.enabled = false; f.c.concurrency = { claude: 0, codex: 0 }; f.c.models[0].automatic = false; f.c.pollSeconds = 15;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c)); f.internal.pollSeconds = 15;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const wake = f.internal.wake.bind(f.internal), runLane = f.internal.runLane.bind(f.internal);
+  t.mock.method(f.internal, 'wake', (reason: string) => { reasons.push(reason); wake(reason); });
+  t.mock.method(f.internal, 'runLane', (name: string, work: () => Promise<void>) => { if (/^(tickets|chains|upstream):/.test(name)) runLane(name, work); });
+  t.mock.method(f.internal, 'pass', async () => { assert.fail('unavailable admission must not be needed to schedule maintenance'); });
+  f.internal.wake('start'); await f.internal.idle;
+  for (let n = 0; n < 14; n++) { t.mock.timers.tick(1000); f.internal.wake('t3'); await f.internal.idle; }
+  t.mock.timers.tick(1000); await f.internal.idle;
+  assert.equal(reasons.filter(reason => reason === 'timer').length, 1, 'manual-only startup still needs its own fallback timer');
+  t.mock.timers.tick(15000); await f.internal.idle;
+  assert.equal(reasons.filter(reason => reason === 'timer').length, 2, 'fallback must rearm independently of successful admissions');
+  f.c.pollSeconds = 30; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.internal.onConfigChange('config.jsonc'); await f.internal.idle;
+  t.mock.timers.tick(15000); await f.internal.idle;
+  assert.equal(reasons.filter(reason => reason === 'timer').length, 2, 'configuration edits must replace the previous cadence');
+  t.mock.timers.tick(15000); await f.internal.idle;
+  assert.equal(reasons.filter(reason => reason === 'timer').length, 3);
+});
