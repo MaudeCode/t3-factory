@@ -1,6 +1,6 @@
 import { html, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
-import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
+import { ago, until, byNewest, repoLink, releaseLink, span, triageSummary } from "../lib/format.js";
 import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody } from "../ui/index.js";
 import { RunGroup, Operations } from "./Deck.js";
 
@@ -48,6 +48,19 @@ function WatchDialog({ edit, onClose }) {
   <//>`;
 }
 
+// Inbox queues the scheduler publishes from the live tracker projections.
+function InboxQueues({ now }) {
+  const rows = status.value.triageStreams || [];
+  if (!rows.length) return null;
+  return html`<${Section} title="Inbox triage">
+    ${rows.map((r) => html`<div class="release" key=${r.inboxId}>
+      <span><${RowBody} title=${html`<b>${r.project}</b>`}>${r.label} label${status.value.triageEnabled ? "" : ", triage off"}<//></span>
+      <span class="release-state">${r.running ? html`<${Tag} tone="on">triaging<//>` : r.untriaged ? html`<${Tag} tone="attention">${r.untriaged} waiting<//>` : r.synchronized ? html`<${Tag} tone="ok">clear<//>` : html`<${Tag}>not synchronized<//>`}</span>
+      <span class="release-versions"><span>${triageSummary(r, now)}</span></span>
+    </div>`)}
+  <//>`;
+}
+
 export function Upstream() {
   clock.value;
   const [edit, setEdit] = useState(null);
@@ -55,6 +68,7 @@ export function Upstream() {
   const c = config.value;
   if (!c.upstream)
     return html`<${Page} narrow title="Upstream">
+      <${InboxQueues} now=${now} />
       <${Empty}>No watched repositories. Add <code>upstream</code> with a prompt file to the config file to turn reviews on.<//>
     <//>`;
   const byRepo = Object.fromEntries((status.value.upstreams || []).map((r) => [r.repo, r]));
@@ -89,6 +103,7 @@ export function Upstream() {
             : html`<${Empty}>No watched repositories yet.<//>`}
           <${Button} size="sm" style="margin-top:8px" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })}>Watch a repository<//>
         <//>
+        <${InboxQueues} now=${now} />
         <${RunGroup} title="Reviews" list=${reviews} empty="No reviews yet." />
       </div>
       <div>

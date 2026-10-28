@@ -14,7 +14,7 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
-import { triagePass } from './triage.ts';
+import { inboxes, triagePass, triageQueue } from './triage.ts';
 import { readModelQuota } from './models.ts';
 
 const EVENT_SETTLE_MS = 25;
@@ -181,11 +181,13 @@ export class FactoryService {
       await pendingReviews(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
-    // One triage run at a time, gated by the Claude allowance like other jobs.
+    // One triage run at a time across every inbox. The queue status is published even while triage is off.
     this.runLane('inbox-triage', async () => {
       const c = this.configure();
-      if (!c.triage?.enabled || c.concurrency.claude === 0) return;
-      const results = await triagePass(c, this.store, await this.ensureKanvil(c), { budget: () => this.triageBudget(c), signal: this.abort.signal });
+      if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); return; }
+      const kanvil = await this.ensureKanvil(c);
+      const publish = (running?: Parameters<typeof triageQueue>[2]) => { this.store.set('triageStreams', JSON.stringify(triageQueue(c, kanvil, running))); this.publishWork(); };
+      const results = await triagePass(c, this.store, kanvil, { budget: () => this.triageBudget(), signal: this.abort.signal, onRun: publish });
       if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
     });
     this.scheduleCleanup(true); this.scheduleCollection();
@@ -388,8 +390,12 @@ export class FactoryService {
     }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
   }
 
-  private async triageBudget(c: Config): Promise<string | undefined> {
+  // Reread before every report: pausing triage or Claude stops the next run, not only the next pass.
+  private async triageBudget(): Promise<string | undefined> {
     try {
+      const c = this.configure();
+      if (!c.triage?.enabled) return 'triage-disabled';
+      if (c.concurrency.claude === 0) return 'provider-disabled';
       const providers = await this.t3.providers();
       const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
       if (!preset) return 'No Claude model is configured';

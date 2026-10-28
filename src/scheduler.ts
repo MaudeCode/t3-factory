@@ -1,6 +1,6 @@
 import { ReadContext, independentOperation, waitFor, readAll, readContext, readPhase, readFailure, backgroundCheckpoint, backgroundRead } from './read-context.ts';
 export { readAll } from './read-context.ts';
-import { triageCanary } from './triage.ts';
+import { inboxes, triageCanary, type TriageRow } from './triage.ts';
 import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees } from './workspace.ts';
 import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -1525,12 +1525,19 @@ export function upstreamRows(c: Config, store: Store) {
   }));
 }
 
+// The lane publishes each inbox's queue from the live projections; rows follow the current config.
+export function triageRows(c: Config, store: Store, now = Date.now()) {
+  const rows = JSON.parse(store.get('triageStreams') || '[]') as TriageRow[];
+  return inboxes(c).map(({ project, inbox }): TriageRow => rows.find(row => row.inboxId === inbox.kanvilId && row.projectId === project.kanvilId)
+    ?? { project: project.name, projectId: project.kanvilId, inboxId: inbox.kanvilId, label: inbox.label, synchronized: false, untriaged: null, failed: null, running: null, oldestUntriagedAt: null })
+    .map(row => ({ ...row, oldestAgeSeconds: row.oldestUntriagedAt ? Math.max(0, Math.round((now - Date.parse(row.oldestUntriagedAt)) / 1000)) : null }));
+}
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {
   const result = {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
-    triage: c.triage ? { enabled: c.triage.enabled, last: JSON.parse(store.get('triageDecision') ?? 'null') } : undefined,
+    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),

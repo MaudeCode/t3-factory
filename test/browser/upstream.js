@@ -8,7 +8,10 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const state = {
   config: { enabled: false, upstream: { enabled: false, checkMinutes: 360, promptFile: '/reviews.md' }, models: [], projects: [{ enabled: true, kanvilId: 'p', name: 'Example', upstreams: [{ name: 'Example upstream', repo: 'example/project', firstBase: 'v1.0' }, { name: 'Current upstream', repo: 'example/current', firstBase: 'v3.0' }] }] },
-  status: { jobs: [], upstreams: [{ repo: 'example/project', pending: true, reviewed: 'v1.0', latest: 'v2.0', checkedAt: new Date().toISOString() }, { repo: 'example/current', pending: false, reviewed: 'v3.0', latest: 'v3.0', checkedAt: new Date().toISOString() }] },
+  status: { jobs: [], triageEnabled: true, triageStreams: [
+    { project: 'Example', projectId: 'p', inboxId: 'pin', label: 'intake', synchronized: true, untriaged: 2, failed: 1, running: 'PIN-4', oldestUntriagedAt: new Date(Date.now() - 3 * 3600_000 - 5 * 60_000).toISOString() },
+    { project: 'Other', projectId: 'o', inboxId: 'oin', label: 'report', synchronized: true, untriaged: 0, failed: 0, running: null, oldestUntriagedAt: null },
+  ], upstreams: [{ repo: 'example/project', pending: true, reviewed: 'v1.0', latest: 'v2.0', checkedAt: new Date().toISOString() }, { repo: 'example/current', pending: false, reviewed: 'v3.0', latest: 'v3.0', checkedAt: new Date().toISOString() }] },
 };
 let calls = [], release;
 window.fetch = async (url, init) => {
@@ -24,6 +27,8 @@ async function show() {
 }
 async function run() {
   await show();
+  const inbox = root.textContent;
+  assert(inbox.includes('Inbox triage') && /2 waiting, 1 failed, oldest 3 h [45] min ago, triaging PIN-4/.test(inbox) && inbox.includes('report label') && inbox.includes('clear'), 'each inbox queue shows its counts, oldest age and running report');
   const button = root.querySelector('[aria-label="Review Example upstream now"]');
   assert(button && button.textContent.trim() === '' && button.querySelector('.icon-play'), 'a due release has an icon-only review action');
   assert(!root.querySelector('[aria-label="Review Current upstream now"]'), 'current releases have no launch action');

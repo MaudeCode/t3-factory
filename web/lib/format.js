@@ -49,6 +49,11 @@ export const span = (seconds, compact = false) => {
 // Dates arrive as ISO strings from the server or as millisecond numbers computed here.
 const ms = (date) => (typeof date === "number" ? date : Date.parse(date));
 export const ago = (date, now = Date.now(), compact = false) => (date ? `${span(Math.max(0, (now - ms(date)) / 1000), compact)} ago` : "never");
+// One inbox queue row from status: waiting, failed, and the oldest waiting report's age.
+export const triageSummary = (row, now = Date.now()) => {
+  if (!row.synchronized) return "not synchronized";
+  return [`${row.untriaged} waiting`, row.failed && `${row.failed} failed`, row.oldestUntriagedAt && `oldest ${ago(row.oldestUntriagedAt, now)}`, row.running && `triaging ${row.running}`].filter(Boolean).join(", ");
+};
 export const until = (date, now = Date.now()) => {
   const s = (ms(date) - now) / 1000;
   return s > 0 ? `in ${span(s)}` : "now";

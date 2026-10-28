@@ -12,13 +12,14 @@ The agent receives scoped ticket instructions, but its configured runtime still 
 
 ## Inbox triage
 
-[Inbox triage](docs/configuration.md#inbox-triage) gives untrusted public text to a model. Its safety rests on capability limits; the hardened prompt is a second layer.
+[Inbox triage](docs/configuration.md#inbox-triage) gives untrusted public text to a model. Each configured inbox gets the same boundary. Its safety rests on capability limits; the hardened prompt is a second layer.
 
 - **No writes or actions.** The CLI runs with `--restricted --safe-mode --tools "Read,Grep,Glob" --permission-mode dontAsk --strict-mcp-config --disable-slash-commands` and `--settings` that allow reads only inside the snapshot. It has no shell, network, MCP, task, or write tools, no T3 thread, and no `--add-dir`.
-- **No reads outside the snapshot.** The working directory is a fresh snapshot of the target's release commit and the ticket export; symlinks are removed. `--restricted` confines file tools to it. The child environment is an allowlist that excludes Kanvil, GitHub, and T3 credentials. The factory itself performs the only network step, a `git fetch`, before the run.
-- **One output channel.** The model can only return a JSON object. Factory code rejects extra keys and out-of-range values, checks `duplicateOf` and evidence against the snapshot, and applies a fixed allowlist to the Inbox ticket. The summary is quoted with links, images, HTML, and fences removed, in a comment visible only to project members. Reporters never see triage output; a future reporter-facing status must not carry triage text.
+- **No reads outside the snapshot.** The working directory is a fresh snapshot of the target project's release commit and the ticket export; symlinks are removed. `--restricted` confines file tools to it. The child environment is an allowlist that excludes Kanvil, GitHub, and T3 credentials. The factory itself performs the only network step, a `git fetch`, before the run.
+- **One output channel.** The model can only return a JSON object. Factory code rejects extra keys, out-of-range values and scopes outside the target project's `scopes`, checks `duplicateOf` and evidence against the snapshot, and applies a fixed allowlist to the report in its inbox project. The summary is quoted with links, images, HTML, and fences removed, in a comment visible only to project members. Reporters never see triage output; a future reporter-facing status must not carry triage text.
 - **Other reports are data too.** Inbox entries in the export are marked untrusted and grant no extra capability.
-- **Bounded cost.** One run at a time, a 300-second timeout, and the Claude quota budget.
+- **Bounded cost.** One run at a time across all inboxes, a 300-second timeout, and the Claude quota budget, rechecked before each report.
+- **No cross-project dispatch.** An inbox project can never be a delivery project, and each inbox feeds exactly one project; config validation enforces both.
 
 `doctor` runs the real CLI with the exact triage flags against a canary file outside a snapshot and a shell command. It fails unless both are refused. Run it after every Claude CLI upgrade.
 

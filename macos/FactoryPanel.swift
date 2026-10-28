@@ -62,6 +62,9 @@ struct FactoryPanel: View {
             if model.hasUpstream {
                 HStack { Text("Upstream reviews").font(.system(size: 12)).foregroundStyle(Theme.muted); Toggle("", isOn: Binding(get: { model.upstreamEnabled }, set: { value in Task { await model.setEnabled(value, upstream: true) } })).toggleStyle(.switch).labelsHidden().controlSize(.small).disabled(model.busy != nil) }
             }
+            ForEach(Array(model.triageRows.enumerated()), id: \.offset) { _, row in
+                Text("\(row["project"] as? String ?? "") inbox\(model.triageEnabled ? "" : " (triage off)"): \(Words.triage(row, now: model.now))").font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            }
             if let error = model.error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.danger).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
             else if let notice = model.notice { Text(notice).font(.system(size: 11)).foregroundStyle(Theme.ok).fixedSize(horizontal: false, vertical: true) }
         }.card()
