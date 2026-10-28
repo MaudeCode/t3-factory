@@ -29,6 +29,7 @@ function serviceFixture(t: test.TestContext) {
     projects: [{ name: 'Fixture', key: 'FIX', enabled: true, kanvilId: 'FIX', t3Id: 'FIX', repoPath: dir, githubRepo: 'fixture/FIX', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] }],
   });
   const path = join(dir, 'config.jsonc'); writeFileSync(path, JSON.stringify(c));
+  writeFileSync(c.t3.credentialFile, JSON.stringify({ token: 'fixture-token' }));
   const thread = v2Thread({ id: 'session-1', projectId: 'FIX', title: 'Plan the uploads fix', createdAt: AT.threadStart, updatedAt: AT.threadEnd, latestUserMessageAt: AT.threadStart });
   const turnItems = [message('u1', 'user_message', 'Please file a ticket for the upload bug.', 1, AT.threadStart), message('a1', 'assistant_message', 'Created FIX-7: Fix uploads.', 2)];
   const tasks = [task('task-7', 7)];

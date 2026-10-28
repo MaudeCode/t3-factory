@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { writeStatus, log } from '../src/scheduler.ts';
 import { dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts';
 import { cycle } from '../src/scheduler.ts';
@@ -49,6 +50,7 @@ test('simultaneous requests for the same ticket submit exactly one launch', asyn
 
 for (const manual of [true, false]) test(`connection preflight failure leaves no launch reservation: manual=${manual}`, async t => {
   const f = dispatchFixture(t);
+  writeFileSync(f.c.t3.credentialFile, JSON.stringify({ token: 'fixture-token' }));
   t.mock.method(f.t3, 'socketUrl', async () => { throw new Error('Fixture connection preflight failed'); });
   t.mock.method(f.t3, 'launch', T3.prototype.launch);
   if ('prepareLaunch' in f.t3) t.mock.method(f.t3, 'prepareLaunch', T3.prototype.prepareLaunch);
@@ -324,4 +326,72 @@ test('fallback maintenance continues without admission and is not postponed by t
   assert.equal(reasons.filter(reason => reason === 'timer').length, 2, 'configuration edits must replace the previous cadence');
   t.mock.timers.tick(15000); await f.internal.idle;
   assert.equal(reasons.filter(reason => reason === 'timer').length, 3);
+});
+
+test('manual Codex dispatch does not read activity for an idle rule it never enforces', async t => {
+  const f = dispatchFixture(t);
+  f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', providerInstanceId: 'codex', modelSelection: { instanceId: 'codex', model: 'fixture-sol' }, status: 'completed', activeRunId: null, updatedAt: new Date().toISOString() }));
+  t.mock.method(f.t3, 'detail', async () => { assert.fail('waived idle checks cannot block a manual dispatch on unrelated conversation reads'); });
+  const result = await f.run();
+  assert.equal(result.reason, 'dispatched');
+});
+
+test('warm unnamed selection uses prepared queue hints and validates only the selected ticket', async t => {
+  const f = dispatchFixture(t);
+  const { inventory, upNext } = await import('../src/scheduler.ts');
+  const queue = await inventory(f.c, f.kanvil, f.threads, [], f.store);
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, queue)));
+  t.mock.method(f.kanvil, 'tasks', async () => { assert.fail('warm unnamed starts must not rescan project inventories'); });
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'dispatched');
+  assert.equal(result.ticket, 'FIX-1');
+  assert.equal(f.launches.length, 1);
+});
+
+test('trusted live quota avoids a foreground provider probe within configured freshness', async t => {
+  const f = dispatchFixture(t), quote = f.provider();
+  quote.usageLimits.checkedAt = new Date(Date.now() - 5000).toISOString();
+  t.mock.method(f.t3, 'peekProvider', () => quote);
+  t.mock.method(f.t3, 'provider', async () => { assert.fail('a current connected allowance must not force provider discovery'); });
+  const { readModelQuota } = await import('../src/models.ts');
+  const quota = await readModelQuota(f.t3, f.c, [], 'sol', true, true);
+  assert.equal(quota.hasAllowance, true);
+});
+
+test('a live allowance exhaustion arriving during checks prevents the reservation', async t => {
+  const f = dispatchFixture(t), quote = f.provider();
+  t.mock.method(f.t3, 'peekProvider', () => structuredClone(quote));
+  f.hooks.read = async (name, id, final) => { if (final && name === 'ticket' && id === 'root') quote.usageLimits.windows[0].usedPercent = 100; };
+  const result = await f.run();
+  assert.equal(result.reason, 'codex-quota-exhausted');
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
+});
+
+test('prepared selection rechecks selected-repository branches and moves to the next hint', async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.tasks.push(f.task('second-hint', 3, 'todo'));
+  const queue = await inventory(f.c, f.kanvil, [], [], f.store); f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, queue)));
+  const repo = f.c.projects[0].repoPath;
+  execFileSync('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '--allow-empty', '-qm', 'fixture']);
+  execFileSync('git', ['-C', repo, 'branch', 'fix/FIX-1-existing']);
+  t.mock.method(f.kanvil, 'tasks', async () => { assert.fail('stale hints must not trigger a queue-wide scan'); });
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'dispatched'); assert.equal(result.ticket, 'FIX-3', 'a newly conflicting branch must prevent the old hint from launching');
+  assert.equal(f.launches.length, 1);
+});
+
+test('parallel warm requests prepare distinct hints without repeating the selected read', async t => {
+  const f = serviceFixture(t), { inventory, upNext } = await import('../src/scheduler.ts'), first = deferred(), release = deferred(), second = deferred();
+  f.tasks.push(f.task('parallel-hint', 3, 'todo'));
+  const queue = await inventory(f.c, f.kanvil, [], [], f.store); f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, queue))); f.calls.length = 0;
+  const quote = f.provider(); quote.usageLimits.checkedAt = new Date(Date.now() - 5000).toISOString();
+  t.mock.method(f.t3, 'peekProvider', () => structuredClone(quote));
+  t.mock.method(f.t3, 'launch', async (command: any) => { f.launches.push(command); if (command.title === 'Factory: FIX-1') { first.resolve(); await release.promise; } else second.resolve(); });
+  const runs = [1, 2].map(() => f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol' } }));
+  try {
+    await first.promise;
+    assert.equal(await Promise.race([second.promise.then(() => true), delay(1500, false, { ref: false })]), true);
+    assert.equal(f.calls.filter(call => call.startsWith('ticket:root:')).length, 1, 'another request must pick a distinct preparation hint before remote checks');
+  } finally { release.resolve(); await Promise.allSettled(runs); }
+  assert.equal(f.launches.length, 2);
 });

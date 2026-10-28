@@ -8,7 +8,7 @@ import { T3, Kanvil } from '../src/clients.ts';
 import { executing, providerExecuting } from '../src/policy.ts';
 import { publicStopCommand, v2Shell, v2Thread } from './v2-fixture.ts';
 
-function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestInit) => Response>) {
+function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestInit) => Response>, persistent = false) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-protocol-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const credentialFile = join(dir, 'credential.json');
@@ -20,7 +20,7 @@ function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestIn
     const route = routes[url.pathname];
     return route ? route(init) : new Response('not found', { status: 404 });
   });
-  return { t3: new T3({ url: 'http://t3.invalid', credentialFile }), requests };
+  return { t3: new T3({ url: 'http://t3.invalid', credentialFile }, { persistent }), requests };
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -178,11 +178,11 @@ function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: str
   const original = globalThis.WebSocket;
   globalThis.WebSocket = FixtureSocket as unknown as typeof WebSocket;
   t.after(() => { globalThis.WebSocket = original; });
-  const t3 = new (T3 as any)({ url: 'http://localhost', credentialFile: '/unused' }, { persistent }) as T3;
+  const { t3 } = fixtureT3(t, {}, persistent);
   t.after(async () => { await (t3 as any).close?.(); });
   t.mock.method(t3, 'socketUrl', async () => 'ws://fixture');
-  return { t3, disconnect: () => { const socket = sockets.at(-1)!; socket.readyState = 3; socket.dispatchEvent(Object.assign(new Event('close'), { code: 1006, reason: 'Fixture disconnect' })); }, connections: () => connections, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })), respond: (requestId: string, value: unknown) => {
-    for (const socket of sockets) if (socket.readyState === 1) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ _tag: 'Exit', requestId, exit: { _tag: 'Success', value } }) }));
+  return { t3, disconnect: (notify = true) => { const socket = sockets.at(-1)!; socket.readyState = 3; if (notify) socket.dispatchEvent(Object.assign(new Event('close'), { code: 1006, reason: 'Fixture disconnect' })); }, connections: () => connections, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })), respond: (requestId: string, value: unknown, stream = false) => {
+    for (const socket of sockets) if (socket.readyState === 1) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(stream ? { _tag: 'Chunk', requestId, values: [value] } : { _tag: 'Exit', requestId, exit: { _tag: 'Success', value } }) }));
   } };
 }
 const success = (request: { id: string }) => ({ _tag: 'Exit', requestId: request.id, exit: { _tag: 'Success', value: null } });
@@ -200,6 +200,123 @@ test('persistent RPC reconnects for the next caller without replaying a submitte
   await f.t3.dispatch({ id: 'second' });
   assert.equal(f.connections(), 2);
   assert.deepEqual(f.requests().filter(request => request.tag === 'orchestration.dispatchCommand').map(request => request.payload), [{ id: 'first' }, { id: 'second' }]);
+});
+
+test('connected shell snapshots and updates serve warm reads without HTTP scans', async t => {
+  const shell = v2Shell([v2Thread({ id: 'live', title: 'Before' })]);
+  let shellRequest = '';
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') { shellRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: shell }] }]; }
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ version: 1, type: 'snapshot', config: { providers: [] } }] }];
+    return [success(request)];
+  }, true);
+  t.mock.method(f.t3, 'request', async () => { assert.fail('a synchronized shell stream must not re-fetch the whole HTTP shell'); });
+  const seen = Promise.withResolvers<void>(), controller = new AbortController();
+  const stream = f.t3.subscribe((item: any) => { if (item?.kind === 'snapshot') seen.resolve(); }, controller.signal);
+  try {
+    await seen.promise;
+    assert.equal((await f.t3.shell(false, true)).threads[0].title, 'Before');
+    f.respond(shellRequest, { kind: 'thread.updated', sequence: shell.snapshotSequence + 1, location: 'active', thread: v2Thread({ id: 'live', title: 'After' }) }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await f.t3.shell(false, true)).threads[0].title, 'After');
+    f.respond(shellRequest, { kind: 'thread.updated', sequence: shell.snapshotSequence + 1, location: 'active', thread: v2Thread({ id: 'same-sequence' }) }, true);
+    f.respond(shellRequest, { kind: 'snapshot', snapshot: shell }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await f.t3.shell()).threads.length, 2, 'same-sequence entity changes apply and older snapshots cannot replace them');
+    f.respond(shellRequest, { kind: 'thread.removed', sequence: shell.snapshotSequence + 2, location: 'active', threadId: 'live' }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual((await f.t3.shell()).threads.map(thread => thread.id), ['same-sequence']);
+    assert.equal(f.connections(), 1, 'streams and requests share the owning RPC connection');
+  } finally { controller.abort(); await stream; }
+});
+
+for (const failure of ['disconnect', 'malformed', 'credential'] as const) test(`live projections lose trust after ${failure}`, async t => {
+  const ready = Promise.withResolvers<void>(), invalid = Promise.withResolvers<void>(); let shellRequest = '';
+  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') { shellRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([]) }] }]; }
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ version: 1, type: 'snapshot', config: { providers: [provider] } }] }];
+    return [success(request)];
+  }, true);
+  const controller = new AbortController();
+  const stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') ready.resolve(); }, controller.signal, () => invalid.resolve());
+  let reads = 0;
+  t.mock.method(f.t3, 'request', async () => { reads++; return v2Shell([v2Thread({ id: 'fallback' })]); });
+  try {
+    await ready.promise;
+    assert.equal(f.t3.peekProvider('codex')?.instanceId, 'codex');
+    if (failure === 'disconnect') f.disconnect(false);
+    else if (failure === 'credential') writeFileSync(f.t3.config.credentialFile, JSON.stringify({ token: 'rotated-fixture-token' }));
+    else { f.respond(shellRequest, { kind: 'thread.updated', sequence: 43, location: 'active', thread: { id: 'incompatible' } }, true); await invalid.promise; await new Promise(resolve => setImmediate(resolve)); }
+    assert.equal((await f.t3.shell(false, true)).threads[0].id, 'fallback');
+    assert.equal(reads, 1, 'an untrusted shell must use the authoritative fallback');
+    if (failure !== 'malformed') assert.equal(f.t3.peekProvider('codex'), undefined, 'old provider data cannot survive a physical disconnect or credential rotation');
+  } finally { controller.abort(); await stream; }
+});
+
+test('a delayed quota refresh cannot replace a newer provider stream update', async t => {
+  const ready = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(), changed = Promise.withResolvers<void>(); let configRequest = '', refreshRequest = '';
+  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [], usageLimits: { checkedAt: new Date().toISOString(), windows: [{ id: 'weekly', usedPercent: 0 }] } };
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([]) }] }];
+    if (request.tag === 'subscribeServerConfig') { configRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider] } }] }]; }
+    if (request.tag === 'server.refreshProviders') { refreshRequest = request.id; entered.resolve(); return []; }
+    return [success(request)];
+  }, true);
+  const controller = new AbortController(), stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') { ready.resolve(); if (f.t3.peekProvider('codex')?.usageLimits?.windows[0]?.usedPercent === 100) changed.resolve(); } }, controller.signal);
+  try {
+    await ready.promise; const refresh = f.t3.provider('codex', true); await entered.promise;
+    const exhausted = structuredClone(provider); exhausted.usageLimits.windows[0].usedPercent = 100;
+    f.respond(configRequest, { type: 'providerStatuses', payload: { providers: [exhausted] } }, true);
+    await changed.promise;
+    f.respond(refreshRequest, { providers: [provider] }); await refresh;
+    assert.equal(f.t3.peekProvider('codex')?.usageLimits?.windows[0]?.usedPercent, 100, 'the latest streamed exhaustion must win over an older refresh response');
+  } finally { controller.abort(); await stream; }
+});
+
+test('a physically closed cached socket fails preflight and the next read gets a new scope', async t => {
+  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
+  const f = fixtureRpc(t, request => [{ ...success(request), exit: { _tag: 'Success', value: { providers: [provider] } } }], true);
+  const prepared = await f.t3.prepareLaunch();
+  f.disconnect(false);
+  assert.throws(() => prepared.check(), /closed/, 'physical state must fence reservation even before a close event arrives');
+  assert.equal((await f.t3.provider('codex', true)).instanceId, 'codex');
+  assert.equal(f.connections(), 2);
+});
+
+test('marked repository enrichment preserves shell ownership and the application cursor', async t => {
+  const shell = v2Shell([v2Thread({ id: 'owned' })]);
+  shell.projects.push({ id: 'other', title: 'Other', workspaceRoot: '/tmp/other' });
+  let requestId = ''; const ready = Promise.withResolvers<void>();
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') { requestId = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: shell }] }]; }
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [] } }] }];
+    return [success(request)];
+  }, true);
+  const controller = new AbortController(), stream = f.t3.subscribe((item: any) => { if (item.kind === 'snapshot') ready.resolve(); }, controller.signal);
+  t.mock.method(f.t3, 'request', async () => { assert.fail('valid enrichment must preserve the connected shell'); });
+  try {
+    await ready.promise;
+    f.respond(requestId, { kind: 'snapshot', resolvedRepositoryIdentityRoots: ['/tmp/fixture-repo'], snapshot: { ...shell, snapshotSequence: 100, projects: [{ ...shell.projects[0], repositoryIdentity: { owner: 'fixture' } }], threads: [], archivedThreads: [] } }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    const enriched = await f.t3.shell(false, true);
+    assert.deepEqual(enriched.threads.map(thread => thread.id), ['owned'], 'partial enrichment cannot erase active ownership');
+    assert.equal(enriched.projects.length, 2, 'unrelated projects remain in the shell');
+    f.respond(requestId, { kind: 'thread.updated', sequence: 43, location: 'active', thread: v2Thread({ id: 'owned', title: 'Updated after enrichment' }) }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await f.t3.shell()).threads[0].title, 'Updated after enrichment', 'enrichment must not advance the application cursor past unseen events');
+  } finally { controller.abort(); await stream; }
+});
+
+test('quota refresh consumes the compact targeted reply without model rediscovery', async t => {
+  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'fixture-sol' }], usageLimits: { checkedAt: new Date().toISOString(), windows: [{ id: 'weekly', usedPercent: 1, windowDurationMins: 10080 }] } };
+  const f = fixtureRpc(t, request => [{ ...success(request), exit: { _tag: 'Success', value: { providers: [provider] } } }], true);
+  assert.equal((await f.t3.provider('codex', true)).instanceId, 'codex');
+  const calls = f.requests();
+  const refresh = calls.find(call => call.tag === 'server.refreshProviders')!;
+  assert.notEqual((refresh.payload as any).refreshModels, true, 'quota must not enter global model-manifest refresh or rediscovery');
+  assert.equal((refresh.payload as any).workspaceSnapshotsOnDemand, true);
+  assert.equal(calls.filter(call => call.tag === 'server.getConfig').length, 0, 'connection handshake and refresh must not load the full server config');
 });
 
 test('cancelling one persistent RPC leaves sibling calls and the connection usable', async t => {
@@ -225,6 +342,20 @@ test('an accepted RPC mutation drains after caller cancellation without replay',
   try { await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false, 'an accepted writer must settle before its client can close'); }
   finally { f.respond(requestId, null); await held; }
   assert.equal(f.requests().filter(request => request.tag === 'orchestration.dispatchCommand').length, 1);
+});
+
+test('closing the RPC owner drains a submitted mutation before disposing its socket', async t => {
+  const entered = Promise.withResolvers<void>(); let heldId = '', settled = false, closed = false, failed: unknown;
+  const f = fixtureRpc(t, request => { if ((request.payload as any)?.held) { heldId = request.id; entered.resolve(); return []; } return [success(request)]; }, true);
+  const mutation = f.t3.dispatch({ held: true }).then(value => { settled = true; return value; }, error => { failed = error; });
+  await entered.promise;
+  const closing = f.t3.close().then(() => { closed = true; });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(closed, false, 'closing must retain ownership until the submitted write settles');
+    assert.equal(settled, false);
+  } finally { f.respond(heldId, null); await Promise.allSettled([mutation, closing]); }
+  assert.equal(failed, undefined); assert.equal(settled, true); assert.equal(closed, true);
 });
 
 test('workspace removal uses the native T3 RPC without force', async t => {
