@@ -85,10 +85,10 @@ test('manual override runs the specified ticket/model while paused, but retains 
         for (const model of ['opus', 'auto']) {
           const options = { manual: true, model, ticket: 'fix-1', overrideLimits: true, dryRun: true };
           listed.length = 0;
-          assert.equal((await cycle(c, store, options)).reason, 'would-dispatch');
+          assert.equal((await cycle(c, store, options, { currentConfig: () => c })).reason, 'would-dispatch');
           assert.deepEqual(listed.map(a => [a.projectId, a.status]), [['kp', undefined]]);
           unrelatedUnavailable = true;
-          assert.equal((await cycle(c, store, options)).reason, 'would-dispatch', 'an unrelated listing outage cannot block the request');
+          assert.equal((await cycle(c, store, options, { currentConfig: () => c })).reason, 'would-dispatch', 'an unrelated listing outage cannot block the request');
           assert.equal((await cycle(c, store, { ...options, ticket: 'FIX-999' })).reason, 'no-eligible-ticket');
           tasks[0].status = 'done';
           const closed = await cycle(c, store, options);
@@ -96,7 +96,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
           assert.match(JSON.stringify(closed.skipped), /Ticket is done/);
           tasks[0].status = 'todo';
           tasks[0].labels = [{ name: 'high' }];
-          assert.equal((await cycle(c, store, options)).reason, 'would-dispatch', 'native-ready tickets need no sf label');
+          assert.equal((await cycle(c, store, options, { currentConfig: () => c })).reason, 'would-dispatch', 'native-ready tickets need no sf label');
           tasks[0].labels = [{ name: 'sf' }];
           assert.equal((await cycle(c, store, options)).reason, 'no-eligible-ticket', 'difficulty remains mandatory');
           tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];

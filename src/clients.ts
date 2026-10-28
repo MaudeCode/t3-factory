@@ -22,28 +22,53 @@ const turnItemSchema = z.object({
 }).passthrough();
 export type TurnItem = z.infer<typeof turnItemSchema>;
 
+const shellSchema = z.object({ threads: z.array(threadSchema), archivedThreads: z.array(threadSchema).default([]), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) });
+const providerPayloadSchema = z.object({ providers: z.array(z.object({
+      instanceId: z.string(), driver: z.string(), status: z.string(), installed: z.boolean(), enabled: z.boolean(),
+      models: z.array(z.object({ slug: z.string(), aliases: z.array(z.string()).optional() }).passthrough()),
+      usageLimits: z.object({ checkedAt: z.string(), unavailable: z.unknown().optional(), windows: z.array(z.object({
+        id: z.string(), usedPercent: z.number(), resetsAt: z.string().optional(), windowDurationMins: z.number().optional(),
+      }).passthrough()) }).passthrough().optional(),
+    }).passthrough()) });
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
-  private readonly providerSnapshots = new Map<string, { at: number; pending: ReturnType<T3['readProviders']>; settled: boolean }>();
+  private readonly providerSnapshots = new Map<string, { generation: number; at: number; pending: ReturnType<T3['readProviders']>; settled: boolean }>();
   private credential?: { stamp: string; token: string; expiresAt?: string };
   private readonly rpc: T3Rpc;
   private readonly persistent: boolean;
   private readonly readLifetime = new ReadContext();
   private shellEpoch = 0;
+  private shellView?: { epoch: number; sequence: number; value: z.infer<typeof shellSchema> };
+  private providerView?: { epoch: number; value: z.infer<typeof providerPayloadSchema>['providers'] };
+  private streams?: Promise<void>;
+  private connectionCredentialStamp?: string;
+  private credentialGeneration = 0;
+  private orphanProbe?: Promise<void>;
+  private projectionChanged?: (item: unknown) => void;
   private shellRead?: { at: number; epoch: number; fresh: boolean; settled: boolean; pending: ReturnType<T3['readShell']> };
   constructor(config: Config['t3'], options: { persistent?: boolean } = {}) {
     this.config = config; this.persistent = !!options.persistent; this.rpc = new T3Rpc(() => this.socketUrl());
   }
-  private rpcCall(action: RpcAction) { return this.persistent ? this.rpc.call(action) : this.socketUrl().then(url => callT3Rpc(url, action)); }
-  async close() { this.readLifetime.controller.abort(new Error('T3 client closed')); await this.rpc.close(); }
+  private readCredential() {
+    const stat = statSync(this.config.credentialFile), stamp = `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+    if (this.credential?.stamp !== stamp) this.credential = { ...z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8'))), stamp };
+    if (this.credential.expiresAt && Date.parse(this.credential.expiresAt) <= Date.now()) throw new Error('T3 scheduler credential expired');
+    return this.credential;
+  }
+  private authenticateRpc() {
+    const stamp = this.readCredential().stamp;
+    if (this.connectionCredentialStamp && this.connectionCredentialStamp !== stamp) { this.credentialGeneration++; this.shellView = undefined; this.providerView = undefined; this.shellRead = undefined; this.shellEpoch++; this.providerSnapshots.clear(); this.orphanVerdicts.clear(); this.rpc.reset(); }
+    this.connectionCredentialStamp = stamp;
+  }
+  private rpcCall(action: RpcAction) { if (this.persistent) this.authenticateRpc(); return this.persistent ? this.rpc.call(action) : this.socketUrl().then(url => callT3Rpc(url, action)); }
+  async close() { this.readLifetime.controller.abort(new Error('T3 client closed')); await this.rpc.close(); await Promise.allSettled([this.streams, this.orphanProbe]); }
+  get liveProviders() { if (!this.persistent) return false; this.authenticateRpc(); return !!this.providerView && this.rpc.isLive(this.providerView.epoch); }
+  peekProvider(instanceId: string) { return this.liveProviders ? structuredClone(this.providerView!.value.find(provider => provider.instanceId === instanceId)) : undefined; }
   invalidateShell() { this.shellEpoch++; }
   async request(path: string, body?: unknown): Promise<unknown> {
     return readPhase(path === '/api/orchestration/shell' ? 't3.shell' : path === '/api/auth/websocket-ticket' ? 't3.socket-ticket' : 't3.thread', async signal => {
-      const stat = statSync(this.config.credentialFile), stamp = `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
-      if (this.credential?.stamp !== stamp) this.credential = { ...z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8'))), stamp };
-      const credential = this.credential;
-      if (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('T3 scheduler credential expired');
+      const credential = this.readCredential();
       const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
       for (let attempt = 0; ; attempt++) {
         try {
@@ -86,7 +111,18 @@ export class T3 {
     if (!environmentId) throw new Error('T3 did not report its environment ID');
     return `t3code://threads/${encodeURIComponent(environmentId)}/${encodeURIComponent(id)}`;
   }
-  async shell(includeArchived = false, fresh = false) {
+  async shell(includeArchived = false, fresh = false): Promise<z.infer<typeof shellSchema>> {
+    if (this.persistent) this.authenticateRpc();
+    const generation = this.credentialGeneration;
+    if (this.persistent && !includeArchived) {
+      const view = this.shellView;
+      if (view && this.rpc.isLive(view.epoch)) {
+        this.probeOrphans(view.value.threads);
+        const value = structuredClone(view.value);
+        for (const thread of value.threads) if (this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`)) thread.orphanedRun = true;
+        return value;
+      }
+    }
     let entry = this.shellRead;
     if (!entry || entry.epoch !== this.shellEpoch || (!this.persistent && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : Date.now() - entry.at > 1000)) {
       const pending = this.readLifetime.run(() => this.readShell());
@@ -96,11 +132,12 @@ export class T3 {
     }
     const pending = entry.pending;
     const shell = structuredClone(await readPhase('t3.shell', signal => waitFor(pending, signal)));
+    if (this.persistent) { this.authenticateRpc(); if (generation !== this.credentialGeneration) return this.shell(includeArchived, fresh); }
     if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(active => active.id === thread.id)) shell.threads.push(thread);
     return shell;
   }
   private async readShell() {
-    const shell = z.object({ threads: z.array(threadSchema), archivedThreads: z.array(threadSchema).default([]), projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await this.request('/api/orchestration/shell'));
+    const shell = shellSchema.parse(await this.request('/api/orchestration/shell'));
     const candidates = new Set<string>();
     // Probe concurrently so slow reads cost one request timeout, not one per stale thread.
     await readAll(shell.threads.map(async t => {
@@ -116,6 +153,59 @@ export class T3 {
     }));
     for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) this.orphanVerdicts.delete(key);
     return shell;
+  }
+  private probeOrphans(threads: Thread[]) {
+    if (this.orphanProbe) return;
+    const candidates = threads.filter(thread => thread.activeRunId != null && !(thread.pendingRuntimeRequest && humanRequest(thread.pendingRuntimeRequest.kind)) && Date.now() - Date.parse(thread.updatedAt) >= ORPHANED_RUN_GRACE_MINUTES * 60_000 && !this.orphanVerdicts.has(`${thread.id}:${thread.updatedAt}`));
+    if (!candidates.length) return;
+    this.orphanProbe = this.readLifetime.run(async () => {
+      let changed = false;
+      for (let at = 0; at < candidates.length; at += 6) {
+        this.readLifetime.check();
+        await readAll(candidates.slice(at, at + 6).map(async thread => {
+          const verdict = await this.orphaned(thread);
+          if (verdict !== undefined && this.shellView?.value.threads.some(current => current.id === thread.id && current.updatedAt === thread.updatedAt)) {
+            this.orphanVerdicts.set(`${thread.id}:${thread.updatedAt}`, verdict); changed ||= verdict;
+          }
+        }));
+      }
+      if (changed) this.projectionChanged?.({ kind: 'runtime.probed' });
+    }).catch(() => {}).finally(() => { this.orphanProbe = undefined; });
+  }
+  private applyShell(item: unknown, epoch: number) {
+    if (!this.rpc.isLive(epoch)) return;
+    const event = z.object({ kind: z.string() }).passthrough().parse(item);
+    if (event.kind === 'synchronized') return;
+    if (event.kind === 'snapshot') {
+      const value = shellSchema.extend({ snapshotSequence: z.number().int().nonnegative() }).parse(event.snapshot);
+      if (event.resolvedRepositoryIdentityRoots !== undefined) {
+        const roots = z.array(z.string()).parse(event.resolvedRepositoryIdentityRoots), view = this.shellView;
+        // Native enrichment is a marked, partial project snapshot, not a new shell.
+        // Its high-water mark cannot skip application events still arriving on the feed.
+        if (view?.epoch === epoch && value.snapshotSequence >= view.sequence) for (const project of value.projects) {
+          const index = view.value.projects.findIndex(current => current.id === project.id && current.workspaceRoot === project.workspaceRoot);
+          if (index >= 0 && roots.includes(project.workspaceRoot)) view.value.projects[index] = project;
+        }
+        return;
+      }
+      if (!this.shellView || this.shellView.epoch !== epoch || value.snapshotSequence >= this.shellView.sequence) this.shellView = { epoch, sequence: value.snapshotSequence, value };
+      return;
+    }
+    const sequence = z.number().int().nonnegative().parse(event.sequence), view = this.shellView;
+    if (!view || view.epoch !== epoch) return;
+    if (sequence < view.sequence) return;
+    if (event.kind === 'thread.updated') {
+      const thread = threadSchema.parse(event.thread), location = z.enum(['active', 'archive']).parse(event.location);
+      view.value.threads = view.value.threads.filter(current => current.id !== thread.id); view.value.archivedThreads = view.value.archivedThreads.filter(current => current.id !== thread.id);
+      (location === 'active' ? view.value.threads : view.value.archivedThreads).push(thread);
+    } else if (event.kind === 'thread.removed') {
+      const id = z.string().parse(event.threadId); view.value.threads = view.value.threads.filter(thread => thread.id !== id); view.value.archivedThreads = view.value.archivedThreads.filter(thread => thread.id !== id);
+    } else if (event.kind === 'project.updated') {
+      const project = shellSchema.shape.projects.element.parse(event.project); view.value.projects = [...view.value.projects.filter(current => current.id !== project.id), project];
+    } else if (event.kind === 'project.removed') {
+      const id = z.string().parse(event.projectId); view.value.projects = view.value.projects.filter(project => project.id !== id); view.value.threads = view.value.threads.filter(thread => thread.projectId !== id); view.value.archivedThreads = view.value.archivedThreads.filter(thread => thread.projectId !== id);
+    } else { this.shellView = undefined; throw new Error('Unsupported T3 shell stream event'); }
+    view.sequence = sequence;
   }
   /** T3 can leave a run active after its provider session stopped. Any doubt keeps the run executing. */
   private async orphaned(t: Thread): Promise<boolean | undefined> {
@@ -163,7 +253,9 @@ export class T3 {
     return z.object({ item: z.unknown().nullable() }).passthrough().parse(await this.rpcCall({ type: 'turn-item', threadId, itemId })).item;
   }
   async socketUrl() {
+    const stamp = this.readCredential().stamp;
     const ticket = z.object({ ticket: z.string() }).passthrough().parse(await this.request('/api/auth/websocket-ticket', {}));
+    if (this.readCredential().stamp !== stamp) throw new Error('T3 credential changed during connection setup');
     const socket = new URL('/ws', this.config.url); socket.protocol = socket.protocol === 'https:' ? 'wss:' : 'ws:';
     socket.searchParams.set('wsTicket', ticket.ticket);
     socket.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, String(ORCHESTRATION_PROTOCOL));
@@ -208,11 +300,13 @@ export class T3 {
     }
   }
   async prepareLaunch() {
+    if (this.persistent) this.authenticateRpc();
+    const credentialStamp = this.readCredential().stamp;
     const rpc = this.persistent ? this.rpc : new T3Rpc(() => this.socketUrl());
     let connection: Awaited<ReturnType<T3Rpc['connect']>>;
     try { connection = await rpc.connect(); } catch (error) { if (!this.persistent) await rpc.close(); throw error; }
     const prepared = { call: (action: RpcAction) => rpc.call(action, connection) };
-    return { check: () => { if (!connection.open) throw new Error('T3 launch connection closed before submission'); }, launch: (input: unknown) => this.launch(input, prepared), close: () => this.persistent ? Promise.resolve() : rpc.close() };
+    return { check: () => { this.authenticateRpc(); if (this.readCredential().stamp !== credentialStamp || !connection.open || connection.retired || this.persistent && !rpc.isLive(connection.epoch)) throw new Error('T3 launch connection closed before submission'); }, launch: (input: unknown) => this.launch(input, prepared), close: () => this.persistent ? Promise.resolve() : rpc.close() };
   }
   async launch(input: unknown, prepared?: Pick<T3Rpc, 'call'>) {
     // Thread launch prepares the worktree and runs the project setup script; plain dispatch does not.
@@ -230,33 +324,49 @@ export class T3 {
   async closeTerminal(threadId: string, terminalId: string) {
     return this.rpcCall({ type: 'close-terminal', threadId, terminalId });
   }
-  async providers(refreshInstance?: string) {
+  async providers(refreshInstance?: string): Promise<z.infer<typeof providerPayloadSchema>['providers']> {
+    if (this.persistent) this.authenticateRpc();
+    if (!refreshInstance && this.persistent && this.liveProviders) return structuredClone(this.providerView!.value);
     const key = refreshInstance ?? '*', after = readContext()?.startedAt ?? Date.now();
     let entry = this.providerSnapshots.get(key);
-    if (!entry || (refreshInstance ? entry.settled || entry.at < after : Date.now() - entry.at > 1000)) {
+    if (!entry || entry.generation !== this.credentialGeneration || (refreshInstance ? entry.settled || entry.at < after : Date.now() - entry.at > 1000)) {
       const pending = this.readLifetime.run(() => this.readProviders(refreshInstance));
-      entry = { at: Date.now(), pending, settled: false }; this.providerSnapshots.set(key, entry);
+      entry = { generation: this.credentialGeneration, at: Date.now(), pending, settled: false }; this.providerSnapshots.set(key, entry);
       const owned = entry;
       void pending.then(() => {
         owned.settled = true;
-        if (refreshInstance && (this.providerSnapshots.get('*')?.at ?? 0) <= owned.at) this.providerSnapshots.set('*', owned);
+        if (refreshInstance && owned.generation === this.credentialGeneration && this.providerSnapshots.get(key) === owned && (this.providerSnapshots.get('*')?.at ?? 0) <= owned.at) this.providerSnapshots.set('*', owned);
       }, () => { if (this.providerSnapshots.get(key) === owned) this.providerSnapshots.delete(key); });
     }
     const pending = entry.pending;
-    return readPhase('t3.providers', signal => waitFor(pending, signal));
+    const value = await readPhase('t3.providers', signal => waitFor(pending, signal));
+    if (this.persistent) { this.authenticateRpc(); if (entry.generation !== this.credentialGeneration) return this.providers(refreshInstance); }
+    return value;
   }
   // Follows every shell change until the signal aborts; onItem receives snapshots, markers, and change events.
   subscribe(onItem: (item: unknown) => void, signal: AbortSignal, onError?: (error: unknown) => void) {
-    return subscribeT3Shell(() => this.socketUrl(), onItem, signal, onError);
+    if (!this.persistent) return subscribeT3Shell(() => this.socketUrl(), onItem, signal, onError);
+    if (this.streams) throw new Error('T3 streams already active');
+    this.authenticateRpc(); this.projectionChanged = onItem;
+    this.streams = Promise.all([
+      this.rpc.follow('shell', (item, epoch) => { this.applyShell(item, epoch); onItem(item); }, epoch => { if (this.shellView?.epoch === epoch) this.shellView = undefined; }, signal, onError),
+      this.rpc.follow('config', (item, epoch) => {
+        if (!this.rpc.isLive(epoch)) return;
+        const event = z.object({ type: z.string() }).passthrough().parse(item);
+        const providers = event.type === 'snapshot' ? providerPayloadSchema.parse(event.config).providers : event.type === 'providerStatuses' ? providerPayloadSchema.parse(event.payload).providers : undefined;
+        if (providers) {
+          const changed = JSON.stringify(this.providerView?.value) !== JSON.stringify(providers);
+          this.providerView = { epoch, value: providers };
+          if (changed) onItem({ kind: 'providers.updated' });
+        }
+      }, epoch => { if (this.providerView?.epoch === epoch) this.providerView = undefined; }, signal, onError),
+    ]).then(() => {});
+    return this.streams;
   }
   private async readProviders(refreshInstance?: string) {
-    const data = z.object({ providers: z.array(z.object({
-      instanceId: z.string(), driver: z.string(), status: z.string(), installed: z.boolean(), enabled: z.boolean(),
-      models: z.array(z.object({ slug: z.string(), aliases: z.array(z.string()).optional() }).passthrough()),
-      usageLimits: z.object({ checkedAt: z.string(), unavailable: z.unknown().optional(), windows: z.array(z.object({
-        id: z.string(), usedPercent: z.number(), resetsAt: z.string().optional(), windowDurationMins: z.number().optional(),
-      }).passthrough()) }).passthrough().optional(),
-    }).passthrough()) }).parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance } : {}) }));
+    const view = this.providerView;
+    const data = providerPayloadSchema.parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance } : {}) }));
+    if (refreshInstance && view && this.providerView === view && this.rpc.isLive(view.epoch)) this.providerView = { epoch: view.epoch, value: data.providers };
     return data.providers;
   }
   async provider(instanceId: string, refresh = false) {

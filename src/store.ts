@@ -153,14 +153,17 @@ export class Store {
     return (['jobs', 'job_history'] as const).flatMap(table => this.statement(`SELECT json_remove(data, '$.command') AS data, ${at} AS at FROM ${table} WHERE json_extract(data, '$.state') IN ('complete', 'dismissed') ${table === 'job_history' ? 'AND id NOT IN (SELECT id FROM jobs)' : ''} ORDER BY ${at} DESC LIMIT ?`).all(limit))
       .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit).map(row => JSON.parse(row.data as string));
   }
+  private lock(key: string) {
+    const previous = this.locks.get(key), gate = Promise.withResolvers<void>();
+    this.locks.set(key, gate.promise);
+    return { previous, release: () => { gate.resolve(); if (this.locks.get(key) === gate.promise) this.locks.delete(key); } };
+  }
+  tryLock(key: string) { if (!this.locks.has(key)) return this.lock(key).release; }
   async exclusive<T>(keys: string[], work: () => Promise<T>): Promise<T> {
     const releases: (() => void)[] = [];
     try {
       for (const key of [...new Set(keys)].sort()) {
-        const previous = this.locks.get(key), gate = Promise.withResolvers<void>();
-        this.locks.set(key, gate.promise);
-        releases.push(() => { gate.resolve(); if (this.locks.get(key) === gate.promise) this.locks.delete(key); });
-        await previous;
+        const lease = this.lock(key); releases.push(lease.release); await lease.previous;
       }
       return await work();
     } finally { for (const release of releases.reverse()) release(); }

@@ -125,6 +125,10 @@ export class FactoryService {
   private onShellItem(item: unknown) {
     if (this.stopped) return;
     const kind = item && typeof item === 'object' && 'kind' in item ? String((item as { kind: unknown }).kind) : '';
+    if (kind === 'providers.updated') {
+      for (const workKind of ['tickets', 'chains', 'upstream'] as const) this.scheduleAdmissions('providers', workKind);
+      return;
+    }
     if (KINDS_WITHOUT_WORK.has(kind)) return;
     this.t3.invalidateShell();
     if (kind === 'thread.updated' && item && typeof item === 'object' && 'thread' in item) {
@@ -158,6 +162,7 @@ export class FactoryService {
       const c = this.configure();
       await refreshInventory(c, this.store, this.t3, await this.ensureKanvil(c));
       this.publishWork();
+      if (!this.stopped) this.scheduleAdmissions(reason, 'tickets');
     });
     this.scheduleAdmissions(reason, 'tickets');
     this.scheduleAdmissions(reason, 'chains');
@@ -409,7 +414,7 @@ export class FactoryService {
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true, deferReconcile: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);

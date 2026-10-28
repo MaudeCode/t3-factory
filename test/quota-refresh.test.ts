@@ -33,7 +33,7 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
       const message = JSON.parse(data);
       if (message._tag !== 'Request') return;
       requests.push(message);
-      if (message.tag === 'server.refreshProviders' && message.payload.refreshModels === true) {
+      if (message.tag === 'server.refreshProviders') {
         if (failedRefreshes > 0) failedRefreshes--;
         else checkedAt = new Date().toISOString();
       }
@@ -55,7 +55,7 @@ test('stale quota automatically bypasses the T3 probe cache over RPC', async t =
   };
   assert.equal((await readModelQuota(t3, c, [], 'opus')).hasAllowance, true);
   assert.notEqual(checkedAt, old);
-  assert.deepEqual(requests.filter(r => r.tag === 'server.refreshProviders').map(r => r.payload), [{ instanceId: 'claudeAgent', refreshModels: true }]);
+  assert.deepEqual(requests.filter(r => r.tag === 'server.refreshProviders').map(r => r.payload), [{ instanceId: 'claudeAgent', workspaceSnapshotsOnDemand: true }]);
 
   requests.length = 0;
   await readModelQuota(t3, c, [], 'opus');
