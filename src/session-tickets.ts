@@ -330,13 +330,18 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   // A failed read keeps the row's last honest reading and waits before trying again, so an outage cannot loop on the same rows.
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
   const retained = () => store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
-  if (kanvil.realtime) for (const projectId of new Set(retained().map(r => r.projectId))) {
+  if (retained().length) {
+    try { cat ??= await catalog(c, store, kanvil); }
+    catch (error) { errors.push({ step: 'catalog', cause: safeError(error) }); }
+  }
+  const trackedProject = (id: string) => !cat || !!cat.projects[id];
+  if (kanvil.realtime) for (const projectId of new Set(retained().map(r => r.projectId).filter(trackedProject))) {
     await backgroundCheckpoint();
     try { await backgroundRead(() => kanvil.ensureProjectStream(projectId)); }
     catch (error) { errors.push({ step: 'watch', cause: safeError(error) }); }
   }
   const stale = retained().filter(r => (!kanvil.realtime || r.missing || r.refreshError || Date.parse(r.refreshAfter ?? '') === 0) && Date.parse(dueAt(r)) <= now).toSorted((a, b) => dueAt(a).localeCompare(dueAt(b)));
-  if (kanvil.realtime) for (const projectId of new Set(stale.slice(0, limits.refreshes).map(r => r.projectId))) {
+  if (kanvil.realtime) for (const projectId of new Set(stale.slice(0, limits.refreshes).map(r => r.projectId).filter(trackedProject))) {
     try { await backgroundRead(() => kanvil.tasks(projectId)); }
     catch (error) { errors.push({ step: 'snapshot', cause: safeError(error) }); }
   }
@@ -347,9 +352,17 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     if (row.dismissedAt || row.consumed) continue;
     try {
       const revision = kanvil.revision;
-      const task = await backgroundRead(() => readTicket(kanvil, cached.taskId, true));
+      let task = await backgroundRead(() => readTicket(kanvil, cached.taskId, trackedProject(cached.projectId)));
       row = store.sessionTicket(cached.taskId)!;
       if (row.dismissedAt || row.consumed) continue;
+      let project: CatalogProject | undefined;
+      if (task) {
+        cat ??= await catalog(c, store, kanvil);
+        if (!cat.projects[task.projectId] && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); }
+        project = cat.projects[task.projectId];
+        // Archived/deleted projects and tickets outside this workspace are no longer list members.
+        if (!project || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId)) task = null;
+      }
       if (!task) {
         row.missing = true; delete row.refreshError;
         row.refreshAfter = new Date(revision !== kanvil.revision ? 0 : now + RETRY_MS).toISOString();
@@ -357,13 +370,9 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         store.saveSessionTicket(row);
         continue;
       }
-      cat ??= await catalog(c, store, kanvil);
-      if (!cat.projects[task.projectId] && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); }
-      const project = cat.projects[task.projectId];
-      if (!project || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId)) throw new Error('Ticket moved outside the configured Kanvil workspace');
       row = store.sessionTicket(cached.taskId)!;
       if (row.dismissedAt || row.consumed) continue;
-      refreshTicket(row, task, project, { at, now, changed: revision !== kanvil.revision });
+      refreshTicket(row, task, project!, { at, now, changed: revision !== kanvil.revision });
       if (revision !== kanvil.revision) more = true;
     } catch (error) { row.refreshError = safeError(error); row.refreshAfter = new Date(now + RETRY_MS).toISOString(); errors.push({ step: 'refresh', subject: row.key, cause: row.refreshError }); }
     store.saveSessionTicket(row);

@@ -648,6 +648,40 @@ test('missing session ticket references retire and missing saved tickets leave t
   assert.equal(f.status().error, null, 'missing tickets do not make collection fail');
 });
 
+test('tickets in an archived or removed project leave the list without a workspace-move error and recover on restore', async t => {
+  for (const realtime of [false, true]) await t.test(`realtime=${realtime}`, async t => {
+    const f = collectorFixture(t);
+    f.tasks.push(task('task-7', 7));
+    f.sessions.push(f.session('s1'));
+    f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+    await f.collect();
+    const saved = f.store.sessionTicket('task-7')!;
+    Object.defineProperty(f.kanvil, 'realtime', { value: realtime });
+    // Archiving removes the project from Kanvil.projects(), but its tickets remain readable.
+    f.projects.shift();
+    f.store.set('sessionCatalog', 'null');
+    f.store.saveSessionTicket({ ...saved, refreshAfter: new Date(0).toISOString() });
+    t.mock.method(f.kanvil, 'ensureProjectStream', async () => { throw new Error('Archived project stream unavailable'); });
+    t.mock.method(f.kanvil, 'tasks', async () => { throw new Error('Archived project snapshot unavailable'); });
+    await f.collect();
+    assert.equal(f.status().error, null, 'an excluded project does not create a retrying collection warning');
+    assert.deepEqual(f.keys(), []);
+    const hidden = f.store.sessionTicket('task-7')!;
+    assert.equal(hidden.missing, true);
+    assert.equal(hidden.refreshError, undefined);
+    assert.equal(hidden.refreshedAt, saved.refreshedAt);
+    assert.deepEqual(hidden.sources, saved.sources);
+    f.projects.unshift({ id: 'FIX', name: 'Fixture', slug: 'FIX' });
+    f.store.set('sessionCatalog', 'null');
+    f.store.saveSessionTicket({ ...hidden, refreshAfter: new Date(0).toISOString() });
+    t.mock.method(f.kanvil, 'ensureProjectStream', async () => {});
+    t.mock.method(f.kanvil, 'tasks', async () => f.tasks as any);
+    await f.collect();
+    assert.deepEqual(f.keys(), ['FIX-7']);
+    assert.equal(f.status().error, null);
+  });
+});
+
 test('missing saved tickets back off and recover without an event, including after restart', async t => {
   for (const realtime of [false, true]) await t.test(`realtime=${realtime}`, async t => {
     const f = collectorFixture(t);
