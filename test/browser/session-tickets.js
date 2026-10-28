@@ -341,8 +341,31 @@ async function overflowEdges() {
   scrollTo(0, 0);
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.sessionTests = { readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
+window.sessionTests = { unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
 await show();
+
+async function unavailableProjects() {
+  const reason = 'Project disabled in Factory settings';
+  const tickets = [row('disabled', 'APP-1', 'high', { unavailable: reason }), row('missing', 'WEB-9', 'medium', { projectId: 'q', unavailable: 'Project not configured in Factory' }), row('enabled', 'APP-2', 'low')];
+  await show({ sessionTickets: { at, error: null, rows: tickets } });
+  for (const ticket of tickets.filter(t => t.unavailable)) {
+    const entry = [...root.querySelectorAll('.next')].find(el => el.querySelector('.key').textContent === ticket.key);
+    const symbol = entry.querySelector('.icon-circleSlash[role="img"]');
+    assert(symbol?.getAttribute('aria-label') === ticket.unavailable, `${ticket.key} shows a named circle-slash symbol`);
+    assert(symbol.closest('[title]')?.title === ticket.unavailable, `${ticket.key} retains its exact former text as the hover tooltip`);
+    assert(![...symbol.parentElement.childNodes].some(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim()), 'unavailable reasons have no inline text');
+    assert(symbol.getBoundingClientRect().width <= 24, 'unavailable symbols stay compact');
+    assert(button(`Run ${ticket.key} now`).disabled && button(`Run ${ticket.key} now`).title === ticket.unavailable, 'Run stays disabled with its full reason');
+  }
+  const symbols = () => root.querySelectorAll('.next .icon-circleSlash');
+  assert(symbols().length === 2, 'only unavailable projects show the symbol');
+  update({ sessionTickets: { at, error: null, rows: tickets.map(t => ({ ...t, unavailable: null, projectId: 'p' })) } }); await pause();
+  assert(!symbols().length && tickets.every(t => !button(`Run ${t.key} now`).disabled), 'configuring and enabling projects removes their symbols and holds on live update');
+  update({ sessionTickets: { at, error: null, rows: tickets } }); await pause();
+  assert(symbols().length === 2 && button('Run APP-1 now').disabled && button('Run WEB-9 now').disabled, 'unavailable projects regain their symbols and holds on live update');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'unavailable project symbols fit the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
 
 
 async function readiness() {
