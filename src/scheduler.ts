@@ -1,4 +1,4 @@
-import { readAll, readContext, readPhase, backgroundCheckpoint, backgroundRead } from './read-context.ts';
+import { readAll, readContext, readPhase, readFailure, backgroundCheckpoint, backgroundRead } from './read-context.ts';
 export { readAll } from './read-context.ts';
 import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees } from './workspace.ts';
 import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
@@ -36,11 +36,26 @@ export function log(event: string, fields: Record<string, unknown> = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
 }
 export function safeError(error: unknown): string {
-  // Never log HTTP headers, credentials, prompts, or complete SDK error objects.
-  // T3 RPC failures arrive as plain tagged objects (`{ _tag, detail }`); their message getter does not survive serialization.
-  const fields = error && typeof error === 'object' && !(error instanceof Error) ? error as Record<string, unknown> : undefined;
-  const text = fields ? [fields._tag, fields.message ?? fields.detail].filter(v => typeof v === 'string' && v).join(': ') || 'Unknown error' : error instanceof Error ? error.message ?? error.name : error;
-  return String(text).replace(/(?:Bearer\s+|sk-ant-)[^\s"']+/g, '[redacted]').replace(/([?&](?:wsTicket|token|access_token)=)[^&\s)]+/gi, '$1[redacted]').slice(0, 800);
+  // Read only diagnostic fields, never headers, bodies, stacks or socket/SDK objects.
+  const redact = (text: string) => text.replace(/(?:https?|wss?):\/\/[^\s"'<>]+/gi, '[redacted URL]')
+    .replace(/(?:Bearer\s+|sk-)[^\s"']+/gi, '[redacted]')
+    .replace(/((?:api[_-]?key|access[_-]?token|wsTicket|token|password|secret)["']?\s*[:=]\s*)(["']?)[^&\s"']+\2/gi, '$1$2[redacted]$2');
+  const parts: string[] = [], seen = new Set<unknown>();
+  let value = error;
+  for (let depth = 0; depth < 4 && !seen.has(value); depth++) {
+    seen.add(value);
+    if (value === null || typeof value !== 'object') { parts.push(redact(String(value)).slice(0, 180)); break; }
+    const fields = value as Record<string, unknown>;
+    const type = value instanceof Error ? value.name === 'Error' ? undefined : value.name : fields._tag;
+    const code = typeof fields.code === 'string' || typeof fields.code === 'number' ? `[${fields.code}]` : undefined;
+    const message = value instanceof Error ? value.message : fields.message ?? fields.detail;
+    const text = [type, code, message].filter(v => typeof v === 'string' && v).join(': ') || 'Unknown error';
+    parts.push(redact(text).slice(0, 180));
+    if (fields.cause === undefined) break;
+    value = fields.cause;
+  }
+  const read = readFailure(error), prefix = read ? `${read.stage} failed after ${read.elapsedMs}ms: ` : '';
+  return (prefix + parts.join('; caused by ')).slice(0, 800);
 }
 async function git(path: string, args: string[], signal?: AbortSignal): Promise<string> {
   return readPhase('git.read', async scoped => (await exec('git', ['-C', path, ...args], { timeout: 20_000, maxBuffer: 2_000_000, signal: signal && scoped ? AbortSignal.any([signal, scoped]) : signal ?? scoped })).stdout.trim());

@@ -6,7 +6,7 @@ import type { CycleOptions } from './scheduler.ts';
 import { log, safeError } from './scheduler.ts';
 import type { ControlResult } from './control.ts';
 import { readOperation, saveOperation, type Operation } from './operations.ts';
-import { ReadContext, ManualDeadline } from './read-context.ts';
+import { ReadContext, ManualDeadline, readFailure } from './read-context.ts';
 
 type Enqueue = (work: (queueWaitMs: number) => Promise<void>, foreground: boolean, metadata: { reason: string; context: ReadContext; id: string }) => Promise<void>;
 
@@ -60,7 +60,7 @@ export function runManualRequest(c: Config, store: Store, options: CycleOptions,
   const failure = (error: unknown) => {
     if (operation.state !== 'running') return;
     const deadline = context.controller.signal.reason instanceof ManualDeadline ? context.controller.signal.reason : error;
-    const stage = deadline instanceof ManualDeadline ? deadline.stage : context.stage;
+    const stage = deadline instanceof ManualDeadline ? deadline.stage : readFailure(error)?.stage ?? context.stage;
     log('manual-request-failed', { requestId: id, stage, message: safeError(deadline), launched: context.launched });
     settle({ code: 1, data: { reason: context.launched ? 'launch-uncertain' : deadline instanceof ManualDeadline ? 'manual-deadline-exceeded' : 'error', message: safeError(deadline), stage,
       ...context.launched ? { uncertain: true, ...context.ownership } : { notLaunched: true } } });
