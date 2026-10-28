@@ -169,8 +169,15 @@ export function selectTicket(candidates: Candidate[], lastProject: string | null
     return at.filter(t => t.projectId === project).toSorted((a, b) => a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key))[0];
   }
 }
+const ticketMatchers = new Map<string, RegExp>();
 export function mentionsTicket(text: string, key: string): boolean {
-  return new RegExp(`(?:^|[^A-Z0-9])${key}(?![0-9])`, 'i').test(text);
+  let matcher = ticketMatchers.get(key);
+  if (!matcher) {
+    matcher = new RegExp(`(?:^|[^A-Z0-9])${key}(?![0-9])`, 'i');
+    if (ticketMatchers.size >= 512) ticketMatchers.delete(ticketMatchers.keys().next().value!);
+    ticketMatchers.set(key, matcher);
+  }
+  return matcher.test(text);
 }
 // Subagents share their parent's worktree and branch; their titles name tickets they were only asked to read or redraft.
 export function threadReferencesTicket(thread: Thread, projectId: string, key: string): boolean {

@@ -675,6 +675,7 @@ function cachedRead<T>(cache: Map<string, Promise<T>>, id: string, read: () => P
 
 const taskOwners = (jobs: Job[]) => new Map(jobs.filter(job => !['complete', 'dismissed'].includes(job.state)).map(job => [job.taskId, job]));
 function branchConflict(key: string, refs: string, released: Map<string, string>) {
+  if (!released.size) return mentionsTicket(refs, key);
   const unmatched = refs.split('\n').filter(line => {
     const [ref, head] = line.split('\t');
     return ![...released].some(([branch, mergedHead]) => head === mergedHead && (ref === `refs/heads/${branch}` || ref.startsWith('refs/remotes/') && ref.endsWith(`/${branch}`)));
@@ -860,16 +861,33 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
   return new Set(['claudeAgent', 'codex'].filter(driver => (counts.get(driver) ?? 0) >= limits[driver === 'codex' ? 'codex' : 'claude']));
 }
 
+// One occupancy snapshot serves every candidate in a synchronous selection. A new
+// snapshot is taken after asynchronous work and again at the reservation boundary.
+function labelCapacity(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[], threads: Thread[]) {
+  const byThread = new Map<string, Thread>();
+  for (const thread of threads) if (!byThread.has(thread.id)) byThread.set(thread.id, thread);
+  const counts = new Map<string, Map<string, { running: number; full: number }>>();
+  for (const job of jobs) {
+    if (!counts.has(job.projectId)) counts.set(job.projectId, new Map());
+    const project = counts.get(job.projectId)!, running = holdsSlot(job, byThread.get(job.threadId), c.monitoringTimeoutMinutes), full = !['complete', 'dismissed'].includes(job.state);
+    for (const label of new Set(job.labels)) {
+      const usage = project.get(label) ?? { running: 0, full: 0 };
+      usage.running += Number(running); usage.full += Number(full); project.set(label, usage);
+    }
+  }
+  return (ticket: { projectId: string; labels?: { name: string }[] }) => {
+    const limits = c.projects.find(project => project.kanvilId === ticket.projectId)?.labelLimits ?? {};
+    return ticket.labels?.map(label => label.name).find(name => {
+      if (!(name in limits)) return false;
+      const setting = limits[name], full = typeof setting !== 'number' && setting.mode === 'full';
+      const held = counts.get(ticket.projectId)?.get(name)?.[full ? 'full' : 'running'] ?? 0;
+      return held >= (typeof setting === 'number' ? setting : setting.limit);
+    });
+  };
+}
 // The first of a ticket's limited labels whose runs in its project already fill the limit.
 export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[], threads: Thread[], ticket: { projectId: string; labels?: { name: string }[] }): string | undefined {
-  const limits = c.projects.find(p => p.kanvilId === ticket.projectId)?.labelLimits ?? {};
-  return ticket.labels?.map(l => l.name).find(name => {
-    if (!(name in limits)) return false;
-    const setting = limits[name], full = typeof setting !== 'number' && setting.mode === 'full';
-    const held = jobs.filter(j => j.projectId === ticket.projectId && j.labels?.includes(name) &&
-      (full ? !['complete', 'dismissed'].includes(j.state) : holdsSlot(j, threads.find(t => t.id === j.threadId), c.monitoringTimeoutMinutes)));
-    return held.length >= (typeof setting === 'number' ? setting : setting.limit);
-  });
+  return labelCapacity(c, jobs, threads)(ticket);
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
@@ -982,12 +1000,17 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     let planningLastProject = store.get('lastProject');
     // Dry runs record nothing, so their would-be runs count against label limits here.
     const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
-    const labelOpen = (t: Candidate) => skip.has('labels') || !fullLabel(c, [...store.jobSummaries(), ...started], shell.threads, t);
+    const labelAvailability = () => {
+      if (skip.has('labels')) return (_ticket: Candidate) => true;
+      const full = labelCapacity(c, [...store.jobSummaries(), ...started], shell.threads);
+      return (ticket: Candidate) => !full(ticket);
+    };
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
     const free = (m: { driver: string }) => !busy.has(m.driver);
     const launches: Promise<Decision>[] = [];
     while (readyModels.some(free) || (reviews.length && idleModels.some(free))) {
       if (options.manual) await backgroundCheckpoint();
+      const labelOpen = labelAvailability();
       const review = reviews[0];
       const assignment = review ? undefined : selectAssignment(candidates.filter(ticket => labelOpen(ticket) && !store.isLocked(`ticket:${ticket.id}`)), readyModels, busy, planningLastProject, c.projects.filter(p => p.enabled).map(p => p.kanvilId));
       const discovery = ticketsOn && !review && !options.manual && !queue.ready.length && !skipped.some(s => /difficulty/.test(s.reason));
@@ -1040,6 +1063,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       if (assignment) candidates.splice(candidates.findIndex(ticket => ticket.id === assignment.ticket.id), 1);
     }
     results.push(...await readAll(launches));
+    const labelOpen = labelAvailability();
     for (const stream of streams) if (stream.reason === 'ready') stream.reason = candidates.length && !candidates.some(labelOpen) ? 'label-limit' : queue.ready.length ? 'difficulty-limit' : skipped.some(s => /difficulty/.test(s.reason)) ? 'needs-classification' : 'no-eligible-ticket';
     const reason = options.doctor ? 'doctor' : results.some(r => r.reason === 'dispatched') ? 'dispatched'
       : results.some(r => r.reason === 'would-dispatch') ? 'would-dispatch'
@@ -1116,7 +1140,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // Label limits bind every start except a manual one with limits overridden; chain continuations always respect them.
     const labelGated = !skip.has('labels') || !!options.continuation;
     if (labelGated && !ticketKey && !review) {
-      const open = queue.ready.filter(t => !fullLabel(c, jobs, shell.threads, t));
+      const full = labelCapacity(c, jobs, shell.threads), open = queue.ready.filter(ticket => !full(ticket));
       if (queue.ready.length && !open.length) return decision('label-limit', { message: 'Every eligible ticket is waiting for a free label slot' });
       queue.ready = open;
     }

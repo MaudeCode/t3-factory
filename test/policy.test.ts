@@ -5,6 +5,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { reserveAt, quotaDecision, providerQuotaSnapshot, selectTicket, commandWait, executing, providerExecuting, waiting, stalledMonitor, mentionsTicket, threadReferencesTicket, threadSchema, subagentDescendants } from '../src/policy.ts';
+
+test('matching one ticket across many shell entries does not repeatedly compile its matcher', t => {
+  const Native = globalThis.RegExp; let compiled = 0;
+  globalThis.RegExp = new Proxy(Native, { construct(target, args) { if (String(args[0]).includes('PERF-953642')) compiled++; return Reflect.construct(target, args); } });
+  t.after(() => { globalThis.RegExp = Native; });
+  for (let i = 0; i < 1000; i++) assert.equal(mentionsTicket(`thread ${i}: fix/PERF-953642-work`, 'PERF-953642'), true);
+  assert.equal(mentionsTicket('fix/PERF-9536420-other', 'PERF-953642'), false);
+  assert.equal(compiled, 1, 'the shell inventory must reuse the ticket matcher');
+});
 import { v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { configSchema } from '../src/config.ts';
