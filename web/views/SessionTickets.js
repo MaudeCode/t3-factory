@@ -62,7 +62,7 @@ export function SessionTickets() {
                 <span class="session-sources" title="The T3 session that reported creating this ticket">${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
                 <span class="muted" title=${new Date(t.createdAt).toLocaleString()}>${ago(t.createdAt, now, true)}</span>
                 ${t.refreshError && html`<span class="tone-attention" title=${`Last read failed: ${t.refreshError}`}>tracker read failed</span>`}
-                ${t.unavailable && html`<b class="tone-attention">${t.unavailable}</b>`}
+                ${t.unavailable && html`<b class="tone-attention" title=${t.unavailable}>${t.unavailable === "Project disabled in Factory settings" ? html`<${Icon} name="circleSlash" label=${t.unavailable} />` : t.unavailable}</b>`}
               <//>`;
             })
           : html`<${Empty}>${narrowed ? "No session tickets match." : "No session has reported creating a ticket that is still open."}<//>`}
