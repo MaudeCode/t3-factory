@@ -23,7 +23,7 @@ export interface Job {
   upstream?: { name: string; repo: string; base: string; candidate: string };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
-  lastPersonalActivity: string | null; reportPath: string; command: unknown;
+  lastPersonalActivity: string | null; reportPath: string; command?: unknown;
   lastExecutionAt?: string;
   // When reconciliation last saw the job resume from waiting; an awaiting-human report written earlier has been answered.
   resumedAt?: string;
@@ -101,7 +101,12 @@ export function decisionText(result: { reason: string } & Record<string, unknown
 }
 export class Store {
   db: DatabaseSync;
+  private closed = false;
+  private readonly statements = new Map<string, ReturnType<DatabaseSync['prepare']>>();
+  private statement(sql: string) { if (!this.statements.has(sql)) this.statements.set(sql, this.db.prepare(sql)); return this.statements.get(sql)!; }
+  private readonly locks = new Map<string, Promise<void>>();
   onCleanupChange?: (projectIds: string[]) => void;
+  onClose?: () => void;
   constructor(dir: string) {
     mkdirSync(join(dir, 'reports'), { recursive: true, mode: 0o700 });
     const path = join(dir, 'state.sqlite');
@@ -114,28 +119,66 @@ export class Store {
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_job ON events(job_id);
+      CREATE TRIGGER IF NOT EXISTS events_retention AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= new.id - 5000; END;
       CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_threads(id TEXT PRIMARY KEY, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS session_tickets(task_id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS session_tickets(task_id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS job_sources(id TEXT PRIMARY KEY, kind TEXT, thread_id TEXT);
+      CREATE TRIGGER IF NOT EXISTS jobs_source_insert AFTER INSERT ON jobs BEGIN
+        INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
+      CREATE TRIGGER IF NOT EXISTS jobs_source_update AFTER UPDATE ON jobs WHEN json_extract(new.data, '$.kind') IS NOT json_extract(old.data, '$.kind') OR json_extract(new.data, '$.threadId') IS NOT json_extract(old.data, '$.threadId') BEGIN
+        INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
+      CREATE TRIGGER IF NOT EXISTS history_source_insert AFTER INSERT ON job_history BEGIN
+        INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
+      CREATE INDEX IF NOT EXISTS jobs_recent ON jobs(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');
+      CREATE INDEX IF NOT EXISTS history_recent ON job_history(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');`);
+    if (this.get('jobSourcesVersion') !== '1') {
+      this.db.exec(`      INSERT OR IGNORE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM job_history;
+      INSERT OR REPLACE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM jobs;
+`);
+      this.set('jobSourcesVersion', '1');
+    }
     // task_id is the live claim. Completed and dismissed history retain their ticket IDs in data.
     this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND json_extract(data, '$.state') IN ('complete', 'dismissed')");
   }
-  jobs(): Job[] { return this.db.prepare('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  jobs(): Job[] { return this.statement('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   // Hot inventory reads need lifecycle metadata, not historical dispatch prompts and commands.
-  jobSummaries(): Omit<Job, 'command'>[] { return this.db.prepare("SELECT json_remove(data, '$.command') AS data FROM jobs ORDER BY rowid").all().map(row => JSON.parse(row.data as string)); }
+  jobSummaries(): Omit<Job, 'command'>[] { return this.statement("SELECT json_remove(data, '$.command') AS data FROM jobs ORDER BY rowid").all().map(row => JSON.parse(row.data as string)); }
+  // Historical source classification needs identity and kind, never dispatch prompts.
+  jobSources(): Pick<Job, 'kind' | 'threadId'>[] {
+    return this.statement("SELECT kind, thread_id AS threadId FROM job_sources WHERE id IN (SELECT id FROM jobs UNION ALL SELECT id FROM job_history)").all() as Pick<Job, 'kind' | 'threadId'>[];
+  }
+  recentJobs(limit = 15): Omit<Job, 'command'>[] {
+    const at = "coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt'))";
+    return (['jobs', 'job_history'] as const).flatMap(table => this.statement(`SELECT json_remove(data, '$.command') AS data, ${at} AS at FROM ${table} WHERE json_extract(data, '$.state') IN ('complete', 'dismissed') ${table === 'job_history' ? 'AND id NOT IN (SELECT id FROM jobs)' : ''} ORDER BY ${at} DESC LIMIT ?`).all(limit))
+      .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit).map(row => JSON.parse(row.data as string));
+  }
+  async exclusive<T>(keys: string[], work: () => Promise<T>): Promise<T> {
+    const releases: (() => void)[] = [];
+    try {
+      for (const key of [...new Set(keys)].sort()) {
+        const previous = this.locks.get(key), gate = Promise.withResolvers<void>();
+        this.locks.set(key, gate.promise);
+        releases.push(() => { gate.resolve(); if (this.locks.get(key) === gate.promise) this.locks.delete(key); });
+        await previous;
+      }
+      return await work();
+    } finally { for (const release of releases.reverse()) release(); }
+  }
+  isLocked(key: string) { return this.locks.has(key); }
   history(): Omit<Job, 'command'>[] {
-    return this.db.prepare("SELECT json_remove(data, '$.command') AS data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT json_remove(data, '$.command') AS data FROM jobs").all()
+    return this.statement("SELECT json_remove(data, '$.command') AS data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT json_remove(data, '$.command') AS data FROM jobs").all()
       .map(r => JSON.parse(r.data as string)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   archiveJob(job: Job) {
-    this.db.prepare('INSERT INTO job_history VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(job.id, JSON.stringify({ ...job, historyOnly: true }));
+    this.statement('INSERT INTO job_history VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(job.id, JSON.stringify({ ...job, historyOnly: true }));
   }
-  job(id: string): Job | undefined { const row = this.db.prepare('SELECT data FROM jobs WHERE id=? UNION ALL SELECT data FROM job_history WHERE id=? LIMIT 1').get(id, id); return row ? JSON.parse(row.data as string) : undefined; }
+  job(id: string): Job | undefined { const row = this.statement('SELECT data FROM jobs WHERE id=? UNION ALL SELECT data FROM job_history WHERE id=? LIMIT 1').get(id, id); return row ? JSON.parse(row.data as string) : undefined; }
   // Every job write passes through here, so the journal records each state change and delivered PR once.
   save(job: Job) {
-    if (job.historyOnly || this.db.prepare('SELECT id FROM job_history WHERE id=?').get(job.id)) throw new Error('Historical runs are read-only');
+    if (job.historyOnly || this.statement('SELECT id FROM job_history WHERE id=?').get(job.id)) throw new Error('Historical runs are read-only');
     const before = this.job(job.id);
-    this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job));
+    this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job));
     const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
@@ -143,36 +186,40 @@ export class Store {
     const lifecycle = (j: Job) => JSON.stringify([j.state, j.thread?.worktreePath, j.thread?.branch, j.thread?.status, j.resumedAt, j.workspaceCleanup?.path, j.dismissedWorktreePath, j.workspaceCleanedAt]);
     if (!before || lifecycle(before) !== lifecycle(job)) this.onCleanupChange?.([...new Set([job.projectId, ...before ? [before.projectId] : []])]);
   }
-  cleanupActions(): CleanupAction[] { return this.db.prepare('SELECT data FROM cleanup_actions ORDER BY rowid DESC').all().map(r => JSON.parse(r.data as string)); }
-  cleanupAction(id: string): CleanupAction | undefined { const row = this.db.prepare('SELECT data FROM cleanup_actions WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  cleanupActions(): CleanupAction[] { return this.statement('SELECT data FROM cleanup_actions ORDER BY rowid DESC').all().map(r => JSON.parse(r.data as string)); }
+  cleanupAction(id: string): CleanupAction | undefined { const row = this.statement('SELECT data FROM cleanup_actions WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   saveCleanupAction(action: CleanupAction) {
     const before = this.cleanupAction(action.id);
-    this.db.prepare('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action));
+    this.statement('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action));
     if (!before || action.outcomes.some(outcome => outcome.state === 'confirmed' && outcome.physicalRemoval === true && !before.outcomes.some(old => old.path === outcome.path && old.physicalRemoval === true))) this.onCleanupChange?.([...new Set(action.targets.map(target => target.projectId))]);
   }
-  plans(): Plan[] { return this.db.prepare('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
-  plan(id: string): Plan | undefined { const row = this.db.prepare('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  plans(): Plan[] { return this.statement('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  plan(id: string): Plan | undefined { const row = this.statement('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   savePlan(plan: Plan) {
     const before = this.plan(plan.id);
-    this.db.prepare('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(plan.id, JSON.stringify(plan));
+    if (before && before.state !== 'active' && plan.state === 'active') return;
+    this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(plan.id, JSON.stringify(plan));
     const detail = { planId: plan.id, ticketKey: plan.target.key, tickets: plan.tickets.map(t => t.key) };
     if (!before) this.record('plan.created', `Chain to ${plan.target.key} started with ${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'} ahead of it`, detail);
     else if (before.state !== plan.state) this.record('plan.state', `Chain to ${plan.target.key} ${plan.state === 'done' ? 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
   }
-  sessionThreads(): SessionThread[] { return this.db.prepare('SELECT data FROM session_threads ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
-  sessionThread(id: string): SessionThread | undefined { const row = this.db.prepare('SELECT data FROM session_threads WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
-  saveSessionThread(thread: SessionThread) { this.db.prepare('INSERT INTO session_threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(thread.id, JSON.stringify(thread)); }
-  sessionTickets(): SessionTicket[] { return this.db.prepare('SELECT data FROM session_tickets ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
-  sessionTicket(taskId: string): SessionTicket | undefined { const row = this.db.prepare('SELECT data FROM session_tickets WHERE task_id=?').get(taskId); return row ? JSON.parse(row.data as string) : undefined; }
-  saveSessionTicket(ticket: SessionTicket) { this.db.prepare('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data').run(ticket.taskId, JSON.stringify(ticket)); }
+  sessionThreads(): SessionThread[] { return this.statement('SELECT data FROM session_threads ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  sessionThread(id: string): SessionThread | undefined { const row = this.statement('SELECT data FROM session_threads WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
+  saveSessionThread(thread: SessionThread) { this.statement('INSERT INTO session_threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(thread.id, JSON.stringify(thread)); }
+  sessionTickets(): SessionTicket[] { return this.statement('SELECT data FROM session_tickets ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  sessionTicket(taskId: string): SessionTicket | undefined { const row = this.statement('SELECT data FROM session_tickets WHERE task_id=?').get(taskId); return row ? JSON.parse(row.data as string) : undefined; }
+  saveSessionTicket(ticket: SessionTicket) {
+    const current = this.sessionTicket(ticket.taskId);
+    ticket = { ...ticket, ...current?.dismissedAt && !Object.hasOwn(ticket, 'dismissedAt') ? { dismissedAt: current.dismissedAt } : {}, ...current?.consumed && !Object.hasOwn(ticket, 'consumed') ? { consumed: current.consumed } : {} };
+    this.statement('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data').run(ticket.taskId, JSON.stringify(ticket));
+  }
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
-    this.db.prepare('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
-    this.db.prepare('DELETE FROM events WHERE id < (SELECT MAX(id) FROM events) - 5000').run();
+    this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
   }
   events(limit = 100, jobId?: string): FactoryEvent[] {
     const rows = jobId
-      ? this.db.prepare('SELECT * FROM events WHERE job_id=? ORDER BY id DESC LIMIT ?').all(jobId, limit)
-      : this.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit);
+      ? this.statement('SELECT * FROM events WHERE job_id=? ORDER BY id DESC LIMIT ?').all(jobId, limit)
+      : this.statement('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit);
     return rows.map(r => ({ id: r.id as number, time: r.time as string, kind: r.kind as string, jobId: r.job_id as string | null, text: r.text as string, data: JSON.parse(r.data as string) }));
   }
   // Store a decision and journal it only when the outcome changes, so a quiet factory does not flood the log.
@@ -183,8 +230,8 @@ export class Store {
     // Dispatches have job events; routine paused checks are status, not activity.
     if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !previous || decisionText(JSON.parse(previous)) !== text)) this.record('decision', text, { reason: result.reason, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
   }
-  get(key: string): string | null { return this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
-  set(key: string, value: string) { this.db.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+  get(key: string): string | null { return this.statement('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
+  set(key: string, value: string) { this.statement('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value != excluded.value').run(key, value); }
   claim(): boolean {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -197,7 +244,10 @@ export class Store {
     } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
   }
   close() {
-    if (Number(this.get('ownerPid')) === process.pid) this.db.prepare("DELETE FROM metadata WHERE key='ownerPid'").run();
+    if (this.closed) return;
+    this.onClose?.();
+    if (Number(this.get('ownerPid')) === process.pid) this.statement("DELETE FROM metadata WHERE key='ownerPid'").run();
     this.db.close();
+    this.closed = true;
   }
 }

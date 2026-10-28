@@ -10,7 +10,7 @@ import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { dispatchFixture } from './dispatch-fixture.ts';
+import { dispatchFixture, mockLaunchConnection } from './dispatch-fixture.ts';
 
 // What gh returns after --exclude-drafts, with and without --exclude-pre-releases.
 const stable = [{ tagName: 'v1', publishedAt: '2026-03-01T00:00:00Z' }, { tagName: 'v2', publishedAt: '2026-03-02T00:00:00Z' }];
@@ -60,7 +60,7 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   ], 'pre-releases count only when enabled, and an already-reviewed candidate yields nothing');
   assert.equal(ghCalls(), 3);
   assert.ok(releaseCalls().every(call => call.includes('--exclude-drafts')), 'drafts are excluded before the limit');
-  assert.deepEqual(releaseCalls().map(call => call.includes('--exclude-pre-releases')), [true, false, true], 'skipped pre-releases are excluded before the limit');
+  for (const [repo, excluded] of [['up/stable', true], ['up/exp', false], ['up/current', true]] as const) assert.equal(releaseCalls().find(call => call.includes(`--repo ${repo} `))?.includes('--exclude-pre-releases'), excluded, 'each concurrent repository read applies its own prerelease policy before the limit');
 
   await pendingReviews(c, store, [], now + 59 * 60_000);
   assert.equal(ghCalls(), 3, 'GitHub is not read again within checkMinutes');
@@ -91,9 +91,9 @@ test('upstream detection: a repository checkMinutes overrides the shared interva
   const now = Date.parse('2026-03-05T00:00:00Z'), reads = () => releaseCalls().map(call => call.match(/--repo (\S+)/)![1]);
   await pendingReviews(c, store, [], now);
   await pendingReviews(c, store, [], now + 61 * 60_000);
-  assert.deepEqual(reads(), ['up/daily', 'up/stable', 'up/stable'], 'the daily repository is not read again within its own interval');
+  assert.deepEqual(reads().toSorted(), ['up/daily', 'up/stable', 'up/stable'], 'the daily repository is not read again within its own interval');
   await pendingReviews(c, store, [], now + 1441 * 60_000);
-  assert.deepEqual(reads().slice(3), ['up/daily', 'up/stable']);
+  assert.deepEqual(reads().slice(3).toSorted(), ['up/daily', 'up/stable']);
 });
 
 test('upstream detection: a failed release read is recorded on its row', async t => {
@@ -150,6 +150,7 @@ for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paus
     throw new Error(name);
   });
   const launched: Record<string, any>[] = [];
+  mockLaunchConnection(t);
   t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
     launched.push(command);
     if (scenario === 'ambiguous-launch' && launched.length === 1) throw new Error('RPC outcome unknown');
@@ -264,4 +265,31 @@ for (const scenario of ['unknown', 'current', 'disabled', 'candidate-owned', 'fr
   const result = await cycle(configSchema.parse(c), store, { manual: true, model: 'sol', upstream: scenario === 'unknown' ? 'up/unknown' : 'up/stable', overrideLimits: true }, { t3: f.t3, kanvil: f.kanvil });
   assert.equal(result.reason, scenario === 'fresh-change' ? 'upstream-changed-before-dispatch' : scenario === 'exhausted' ? 'codex-quota-exhausted' : scenario === 'waiting-cap' ? 'waiting-cap' : 'upstream-not-due');
   assert.equal(f.launches.length, 0, 'a refused review never falls back to ticket or discovery');
+});
+
+test('concurrent provider lanes reserve one upstream review at the final boundary', async t => {
+  const f = dispatchFixture(t);
+  f.c.enabled = false;
+  f.c.upstream = { enabled: true, promptFile: f.c.factorySkill, checkMinutes: 60 };
+  f.c.projects[0].upstreams = [{ name: 'Shared', repo: 'up/shared', firstBase: 'v1', prereleases: false }];
+  f.c.models.push({ ...f.c.models[0], id: 'opus', name: 'Opus', model: { instanceId: 'claudeAgent', model: 'fixture-opus', options: [] } });
+  const c = configSchema.parse(f.c);
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  f.store.set('upstreamLatest:up/shared', 'v2');
+  const provider = (instanceId: string) => ({ ...f.provider(), instanceId, driver: instanceId, models: [{ slug: instanceId === 'codex' ? 'fixture-sol' : 'fixture-opus' }],
+    usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: [
+      { id: instanceId === 'codex' ? 'primary' : 'five_hour', usedPercent: 0, windowDurationMins: instanceId === 'codex' ? 10080 : 300 },
+      ...instanceId === 'codex' ? [] : [{ id: 'seven_day', usedPercent: 0, windowDurationMins: 10080 }],
+    ] } });
+  t.mock.method(f.t3, 'providers', async () => [provider('codex'), provider('claudeAgent')]);
+  const both = Promise.withResolvers<void>(); let finals = 0;
+  t.mock.method(f.t3, 'provider', async (id: string, fresh: boolean) => {
+    if (fresh) { if (++finals === 2) both.resolve(); await both.promise; }
+    return provider(id);
+  });
+  const results = await Promise.all(['codex', 'claudeAgent'].map(providerDriver => cycle(c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, deferReconcile: true, workKind: 'upstream', providerDriver })));
+  assert.equal(finals, 2, 'both independent providers reached final validation');
+  assert.equal(f.launches.length, 1, 'one due repository candidate must launch exactly once across providers');
+  assert.equal(f.store.jobs().length, 1, 'the loser must not retain an extra upstream reservation');
+  assert.equal(results.filter(result => result.reason === 'dispatched').length, 1);
 });

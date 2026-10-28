@@ -11,7 +11,7 @@ import { Store, type Job } from '../src/store.ts';
 import { cycle } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { dispatchFixture, deferred } from './dispatch-fixture.ts';
+import { mockLaunchConnection, dispatchFixture, deferred } from './dispatch-fixture.ts';
 
 for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'parallel-label-limit', 'parallel-label-dry-run', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'native-ready-without-sf', 'label-ranked', 'label-blocked', 'label-ineligible', 'new-other-project-reference', 'new-project-reference', 'new-open-pr'] as const) {
   test(`provider streams: ${scenario}`, async t => {
@@ -79,7 +79,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
       if (name === 'relations') return (scenario === 'native-ready-without-sf' && args.taskId === 'task-2' || scenario === 'label-blocked' && ['task-1', 'task-2'].includes(String(args.taskId))) ? [{ sourceTaskId: 'task-1', targetTaskId: 'task-2', relationType: 'blocks' }] : [];
       throw new Error(name);
     });
-    t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
+    mockLaunchConnection(t);
+  t.mock.method(T3.prototype, 'launch', async (command: Record<string, any>) => {
       assert.ok(store.jobs().some(j => j.threadId === command.threadId && j.state === 'dispatching'), 'ownership is durable before RPC');
       attempts.push(command);
       if (scenario === 'ambiguous' && command.modelSelection.instanceId === 'codex') throw new Error('RPC outcome unknown');
@@ -208,16 +209,17 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
       if (scenario === 'label-ineligible') assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/);
       if (one && scenario !== 'label-ineligible') assert.equal(attempts[0].modelSelection.instanceId, scenario.startsWith('claude-') ? 'codex' : 'claudeAgent', 'the other provider continues independently');
       if (attempts.length === 2) {
-        assert.equal(attempts[0].modelSelection.model, 'gpt-6-astra', 'highest-ranked model gets first choice');
-        assert.equal(attempts[1].modelSelection.instanceId, 'claudeAgent');
-        assert.notEqual(attempts[0].threadId, attempts[1].threadId);
-        assert.notEqual(attempts[0].workspaceStrategy.branch, attempts[1].workspaceStrategy.branch);
-        if (scenario === 'discovery') assert.notEqual(attempts[0].projectId, attempts[1].projectId);
+        const ordered = [...attempts].sort((a, b) => c.models.findIndex(model => model.model.model === a.modelSelection.model) - c.models.findIndex(model => model.model.model === b.modelSelection.model));
+        assert.equal(ordered[0].modelSelection.model, 'gpt-6-astra', 'the highest-ranked model owns the highest-priority ticket even when another launch finishes first');
+        assert.equal(ordered[1].modelSelection.instanceId, 'claudeAgent');
+        assert.notEqual(ordered[0].threadId, ordered[1].threadId);
+        assert.notEqual(ordered[0].workspaceStrategy.branch, ordered[1].workspaceStrategy.branch);
+        if (scenario === 'discovery') assert.notEqual(ordered[0].projectId, ordered[1].projectId);
         else if (scenario.startsWith('label-')) {
-          assert.match(attempts[0].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-2:/ : /Deliver FIX-1:/);
-          assert.match(attempts[1].initialMessage.text, /Deliver FIX-3:/);
+          assert.match(ordered[0].initialMessage.text, scenario === 'label-ranked' ? /Deliver FIX-2:/ : /Deliver FIX-1:/);
+          assert.match(ordered[1].initialMessage.text, /Deliver FIX-3:/);
         }
-        else { assert.match(attempts[0].initialMessage.text, /Deliver FIX-1:/); assert.match(attempts[1].initialMessage.text, /Deliver FIX-2:/); }
+        else { assert.match(ordered[0].initialMessage.text, /Deliver FIX-1:/); assert.match(ordered[1].initialMessage.text, /Deliver FIX-2:/); }
       }
       for (const command of attempts) {
         const project = c.projects.find(p => p.t3Id === command.projectId)!;
@@ -367,21 +369,17 @@ test('automatic dispatch keeps ownership and launches serial while reads overlap
   assert.equal(new Set(f.store.jobs().map(j => j.taskId)).size, 2);
 });
 
-for (const change of ['automation', 'blockers', 'quota', 'activity', 'config', 'foreground-slot', 'waiting-cap'] as const) test(`resumed automatic final validation rejects changed ${change}`, async t => {
+for (const change of ['automation', 'blockers', 'quota', 'activity', 'config', 'foreground-slot', 'waiting-cap'] as const) test(`concurrent automatic final validation rejects changed ${change}`, async t => {
   const f = dispatchFixture(t);
   const { ReadContext } = await import('../src/read-context.ts');
   const context = new ReadContext();
   if (change === 'waiting-cap') { f.c.maxWaitingPRs = 1; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c)); }
-  let finalSeen = false, changed = false;
-  f.hooks.read = async (name, _id, final) => { if (final && name === 'labels') finalSeen = true; };
+  let changed = false;
   const provider = f.provider;
   t.mock.method(f.t3, 'detail', async () => ({ messages: [], responses: [] }));
-  t.mock.method(f.t3, 'provider', async () => {
-    const p = provider(); if (changed && change === 'quota') p.usageLimits.windows[0].usedPercent = 100; return p;
-  });
-  context.cooperate = async () => {
-    if (!finalSeen || changed) return;
-    changed = true; context.suspended = true; context.revision++;
+  f.hooks.quota = async refresh => {
+    if (!refresh || changed) return;
+    changed = true;
     if (change === 'automation') f.tasks[0].automationReady = false;
     if (change === 'blockers') f.tasks[1].status = 'todo';
     if (change === 'activity') f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', status: 'running', activeRunId: 'active', providerInstanceId: 'codex', updatedAt: new Date().toISOString() }));
@@ -389,21 +387,21 @@ for (const change of ['automation', 'blockers', 'quota', 'activity', 'config', '
     if (change === 'waiting-cap') f.store.save({ id: 'parked', kind: 'ticket', projectId: 'FIX', taskId: 'parked-task', ticketKey: 'FIX-99', threadId: 'parked-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'waiting', reason: 'Foreground run needs input', lastPersonalActivity: null, reportPath: join(f.dir, 'parked-report'), command: {}, prUrls: [], completedAt: null, modelSelection: { instanceId: 'claudeAgent', model: 'fixture-other', options: [] }, providerDriver: 'claudeAgent' });
     if (change === 'foreground-slot') f.store.save({ id: 'manual', kind: 'ticket', projectId: 'FIX', taskId: 'manual-task', ticketKey: 'FIX-99', threadId: 'manual-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'dispatching', reason: 'Foreground launch accepted', lastPersonalActivity: null, reportPath: join(f.dir, 'manual-report'), command: {}, prUrls: [], completedAt: null, modelSelection: f.c.models[0].model, providerDriver: 'codex' });
   };
+  if (change === 'quota') t.mock.method(f.t3, 'provider', async (_id: string, refresh: boolean) => { await f.hooks.quota(refresh); const p = provider(); if (changed) p.usageLimits.windows[0].usedPercent = 100; return p; });
   const result = await context.run(() => f.run('auto', false));
   assert.ok(!(result as any).dispatches?.some((d: any) => d.reason === 'error'), 'validation must reach a policy refusal, not an environment error');
-  assert.equal(changed, true, 'the test suspends after a successful final snapshot');
+  assert.equal(changed, true, 'the mutation occurs during final reads');
   assert.equal(f.launches.length, 0, `a saved plan cannot launch after ${change} changes`);
 });
 
-test('resumed discovery rejects a foreground discovery owned on another provider', async t => {
+test('concurrent discovery rejects a foreground discovery owned on another provider', async t => {
   const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
   f.tasks.length = 0; f.relations.length = 0;
-  let finalSeen = false, foregroundStarted = false;
-  f.hooks.quota = async refresh => { if (refresh) finalSeen = true; };
+  let foregroundStarted = false;
   const context = new ReadContext();
-  context.cooperate = async () => {
-    if (!finalSeen || foregroundStarted) return;
-    foregroundStarted = true; context.suspended = true; context.revision++;
+  f.hooks.quota = async refresh => {
+    if (!refresh || foregroundStarted) return;
+    foregroundStarted = true;
     f.store.save({ id: 'foreground-discovery', kind: 'discovery', projectId: 'FIX', taskId: null, ticketKey: null, threadId: 'foreground-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'dispatching', reason: 'Foreground discovery accepted', lastPersonalActivity: null, reportPath: join(f.dir, 'foreground-report'), command: {}, prUrls: [], completedAt: null, modelSelection: { instanceId: 'claudeAgent', model: 'fixture-other-provider', options: [] }, providerDriver: 'claudeAgent' });
   };
   const result = await context.run(() => f.run('auto', false));
@@ -422,8 +420,9 @@ for (const change of ['unchanged', 'disabled', 'hold', 'claim', 'dependency', 'd
     labels: ['med'], scopes: [], kind: 'bug', parentId: null, archived: false, automationReady: !(final && change === 'disabled'),
     difficulty: final && change === 'difficulty' ? 'high' : 'med', holdReason: final && change === 'hold' ? 'Decision needed' : null });
   t.mock.method(tracker, 'request', async (path: string) => {
+    if (path === '/projects/FIX') return { id: 'FIX', workspaceId: 'workspace', key: 'FIX', name: 'Fixture' };
     if (path.startsWith('/snapshot')) return { project: { id: 'FIX', workspaceId: 'workspace', key: 'FIX', name: 'Fixture' }, tickets: [row()], cursor: '1' };
-    if (path.startsWith('/tickets/resolve')) return { ticket: row('blocker') };
+    if (path.startsWith('/tickets/resolve')) return { ticket: row(path.includes('FIX-1') || path.includes('ticketId=root') ? 'root' : 'blocker') };
     if (path.endsWith('/relations')) return [];
     if (path.includes('?parentId=')) return { items: [], total: 0 };
     const reasons = final && ['claim', 'dependency'].includes(change) ? [{ code: change === 'claim' ? 'claimed' : 'dependency', message: 'Not eligible' }] : [];

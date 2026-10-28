@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Kanvil, KanvilTaskNotFound, listTasks } from '../src/clients.ts';
 import { taskDifficulty, taskHold } from '../src/policy.ts';
+import { ReadContext } from '../src/read-context.ts';
+import { inventory } from '../src/scheduler.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
 export const ticket = (extra: Record<string, unknown> = {}) => ({
   id: 'ticket', projectId: 'project', key: 'APP-1', number: 1, title: 'Fixture', description: 'Problem', acceptanceCriteria: 'Works',
@@ -22,6 +25,7 @@ function fixture(t: test.TestContext, read: (url: URL, init?: RequestInit) => Re
     assert.equal(url.origin, 'https://tracker.example.test');
     assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture-secret');
     assert.equal(init?.redirect, 'error');
+    if (url.pathname === '/api/v1/projects/project') return json({ id: 'project', workspaceId: 'workspace', key: 'APP', name: 'Fixture' });
     if (!scoped && url.pathname.endsWith('/events') && url.searchParams.has('projectId')) return new Response(new ReadableStream<Uint8Array>({ start(c) {
       const cursor = url.searchParams.get('cursor') ?? '0';
       c.enqueue(new TextEncoder().encode(`event: checkpoint\nid: ${cursor}\ndata: ${JSON.stringify({cursor})}\n\n`));
@@ -36,6 +40,7 @@ function fixture(t: test.TestContext, read: (url: URL, init?: RequestInit) => Re
 test('native ticket payloads supply complete labels, priority and difficulty without a workspace scan', async t => {
   const f = fixture(t, url => {
     if (url.pathname === '/api/v1/snapshot') return json(snapshot());
+    if (url.pathname.endsWith('/eligibility')) return json({ items: [{ ticket: ticket(), readiness: { ready: true, reasons: [] } }], total: 1 });
     if (url.pathname === '/api/v1/projects/project/tickets/ticket') return json({ ticket: ticket(), readiness: { ready: true, reasons: [] } });
     throw new Error(url.pathname);
   });
@@ -45,7 +50,7 @@ test('native ticket payloads supply complete labels, priority and difficulty wit
   assert.deepEqual(task.labels?.map(l => l.name), ticket().labels);
   assert.equal(taskDifficulty(task), 'high');
   assert.equal(task.priority, 'none');
-  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls.length, 3);
   assert.equal(taskHold(task), '');
   assert.match(taskHold({ ...task, automationReady: false }), /not enabled/);
   assert.match(taskHold({ ...task, holdReason: 'Product decision' }), /Product decision/);
@@ -58,6 +63,107 @@ test('malformed payloads and project or workspace mismatches fail closed', async
   for (const value of [snapshot([ticket({ labels: [{ name: 'sf' }] })]), snapshot([ticket({ automationReady: undefined })]), snapshot([ticket({ projectId: 'other' })]), { ...snapshot(), project: { ...snapshot().project, workspaceId: 'other' } }]) {
     payload = value; await assert.rejects(listTasks(f.client, 'project'));
   }
+});
+
+test('ready inventory obtains native readiness in one bulk eligibility page', async t => {
+  const rows = [ticket(), ticket({ id: 'second', key: 'APP-2', number: 2 })];
+  const f = fixture(t, url => {
+    if (url.pathname.endsWith('/eligibility')) return json({ items: rows.map(ticket => ({ ticket, readiness: { ready: true, reasons: [] } })), total: rows.length });
+    if (url.pathname === '/api/v1/snapshot') return json(snapshot(rows));
+    if (url.pathname.includes('/tickets/')) return json({ ticket: rows.find(row => url.pathname.endsWith(row.id)), readiness: { ready: true, reasons: [] } });
+    throw new Error(url.pathname);
+  });
+  const tasks = await f.client.tasks('project', ['todo']);
+  assert.equal(tasks.length, 2);
+  assert.ok(tasks.every(task => task.readiness?.ready), 'readiness must arrive with the inventory, without a per-ticket fetch');
+  assert.equal(f.calls.filter(path => path.includes('/eligibility')).length, 1);
+  assert.equal(f.calls.filter(path => path.includes('/tickets/')).length, 0);
+});
+
+test('native-ready inventory retains dependency links without enumerating proven-closed children', async t => {
+  const d = dispatchFixture(t);
+  d.c.projects[0] = { ...d.c.projects[0], kanvilId: 'project', key: 'APP' };
+  const f = fixture(t, url => {
+    if (url.pathname.endsWith('/eligibility')) return json({ items: [{ ticket: ticket(), readiness: { ready: true, reasons: [] } }], total: 1 });
+    if (url.pathname.endsWith('/snapshot')) return json(snapshot());
+    if (url.pathname.endsWith('/relations')) return json([]);
+    if (url.searchParams.has('parentId')) return json({ items: [], total: 0 });
+    if (url.pathname.includes('/tickets/')) return json({ ticket: ticket(), readiness: { ready: true, reasons: [] } });
+    throw new Error(url.pathname);
+  });
+  const queue = await inventory(d.c, f.client, [], [], d.store);
+  assert.equal(queue.selected?.key, 'APP-1');
+  assert.equal(f.calls.filter(path => path.includes('parentId=')).length, 0, 'versioned native readiness already proves direct children are closed');
+  assert.equal(f.calls.filter(path => /tickets\/ticket$/.test(path)).length, 0, 'inventory must reuse the bulk ticket metadata');
+  assert.equal(f.calls.filter(path => path.endsWith('/relations')).length, 1, 'ancestor blockers and inherited priority still require dependency links');
+});
+
+test('event bursts invalidate bulk eligibility without fetching tickets inside the stream', async t => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>, notifications = 0, pages = 0, ticketReads = 0, version = 1;
+  const f = fixture(t, url => {
+    if (url.pathname.endsWith('/checkpoint')) return json({ cursor: '5' });
+    if (url.pathname.endsWith('/snapshot')) return json(snapshot([ticket({ version, title: `Version ${version}` })]));
+    if (url.pathname.endsWith('/eligibility')) { pages++; return json({ items: [{ ticket: ticket({ version, title: `Version ${version}` }), readiness: { ready: true, reasons: [] } }], total: 1 }); }
+    if (url.pathname.includes('/tickets/')) { ticketReads++; return json({ ticket: ticket({ version, title: `Version ${version}` }), readiness: { ready: true, reasons: [] } }); }
+    return new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  const send = (event: string, id: string, data: unknown) => controller.enqueue(new TextEncoder().encode(`event: ${event}\nid: ${id}\ndata: ${JSON.stringify(data)}\n\n`));
+  const abort = new AbortController(), stream = f.client.subscribe(event => { if (!event?.type.startsWith('stream.')) notifications++; }, abort.signal);
+  try {
+    await until(() => !!controller); send('checkpoint', '5', { cursor: '5' }); await until(() => notifications === 1);
+    await f.client.tasks('project', ['todo']);
+    version = 2;
+    for (let n = 6; n <= 105; n++) send('change', String(n), { id: String(n), projectId: 'project', ticketId: 'ticket', type: 'ticket.updated', data: { version } });
+    await until(() => notifications === 101);
+    assert.equal(ticketReads, 0); assert.equal(pages, 1, 'the SSE parser only invalidates; reads belong to consumers');
+    assert.equal((await f.client.tasks('project', ['todo']))[0].title, 'Version 2');
+    await f.client.tasks('project', ['todo']); assert.equal(pages, 2, 'the whole event burst needs one eligibility refresh');
+    send('change', '106', { id: '106', projectId: 'other', ticketId: 'unrelated', type: 'ticket.updated' });
+    await until(() => notifications === 102);
+    await f.client.tasks('project', ['todo']); assert.equal(pages, 2, 'another project cannot flush this project cache');
+    send('change', '107', { id: '107', projectId: 'project', ticketId: 'ticket', type: 'ticket.updated', data: { version: 1 } });
+    await until(() => notifications === 103);
+    await f.client.tasks('project', ['todo']); assert.equal(pages, 2, 'an already-observed version cannot invalidate fresh data');
+  } finally { abort.abort(); await stream; }
+});
+
+test('named ticket resolution does not fetch the project inventory', async t => {
+  const f = fixture(t, url => {
+    if (url.pathname === '/api/v1/tickets/resolve' || url.pathname.endsWith('/tickets/ticket')) return json({ ticket: ticket(), readiness: { ready: true, reasons: [] } });
+    throw new Error(`Unexpected inventory read ${url.pathname}`);
+  });
+  assert.equal((await f.client.findTask('APP-1', 'project')).id, 'ticket');
+  assert.equal(f.calls.length, 3, 'workspace ownership is checked once before the direct identity reads');
+  assert.ok(f.calls.every(path => !path.includes('/snapshot') && !path.includes('/eligibility')));
+});
+
+test('shared Kanvil snapshot survives one caller cancellation', async t => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>, signal!: AbortSignal;
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const f = fixture(t, async (url, init) => {
+    if (url.pathname.endsWith('/checkpoint')) return json({ cursor: '5' });
+    if (url.pathname.endsWith('/snapshot')) {
+      signal = init!.signal!;
+      return new Promise<Response>((resolve, reject) => { signal.addEventListener('abort', () => reject(signal.reason), { once: true }); entered.resolve(); void release.promise.then(() => resolve(json(snapshot()))); });
+    }
+    return new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { headers: { 'content-type': 'text/event-stream' } });
+  });
+  const abort = new AbortController(), stream = f.client.subscribe(() => {}, abort.signal);
+  await until(() => !!controller);
+  controller.enqueue(new TextEncoder().encode('event: checkpoint\nid: 5\ndata: {"cursor":"5"}\n\n'));
+  await turn();
+  const first = new ReadContext(), second = new ReadContext();
+  const a = first.run(() => f.client.tasks('project')).catch(error => error);
+  await entered.promise;
+  const b = second.run(() => f.client.tasks('project')).catch(error => error);
+  try {
+    first.controller.abort(new Error('Fixture caller cancelled'));
+    assert.ok(await a instanceof Error);
+    assert.equal(signal.aborted, false, 'cancelling one waiter must not abort the shared projection fetch');
+    release.resolve();
+    assert.equal((await b)[0].id, 'ticket');
+    assert.equal(f.calls.filter(path => path.includes('/snapshot')).length, 1);
+  } finally { release.resolve(); await Promise.all([a, b]); abort.abort(); await stream; }
 });
 
 test('only HTTP 404 with the stable absence code retires a missing reference; errors redact server prose', async t => {

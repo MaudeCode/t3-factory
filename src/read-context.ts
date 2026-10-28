@@ -4,6 +4,16 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 // Like cleanup's signal, but scoped here so every existing integration caller shares the deadline.
 const current = new AsyncLocalStorage<ReadContext>();
 export const readContext = () => current.getStore();
+// Consumers can stop waiting for a shared read without cancelling its owner or its siblings.
+export function waitFor<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return pending;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason); };
+    signal.addEventListener('abort', abort, { once: true });
+    void pending.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
 // Keep the original thrown value: cancellation and SDK callers rely on its identity.
 const failures = new WeakMap<object, { stage: string; elapsedMs: number }>();
 export const readFailure = (error: unknown) => error !== null && typeof error === 'object' ? failures.get(error) : undefined;
@@ -12,52 +22,22 @@ export class ManualDeadline extends Error {
   constructor(stage: string) { super(`Not launched: manual request deadline exceeded during ${stage}`); this.stage = stage; }
 }
 export class ReadContext {
+  readonly startedAt = Date.now();
   readonly controller = new AbortController();
   private timer?: NodeJS.Timeout;
   private reads = new Map<symbol, string>();
   private owned = false;
-  private batch?: ReadContext;
   private readonly pendingReads = new Set<Promise<unknown>>();
-  cooperate?: () => Promise<void>;
-  suspended = false;
-  revision = 0;
-  needsRefresh = false;
-  readonly invalidatedProjects = new Set<string>();
   private stopping = false;
-  requestYield() { this.batch?.controller.abort(BACKGROUND_YIELD); }
-  stopBackground() { this.stopping = true; this.batch?.controller.abort(new Error('Scheduler stopping')); }
+  stopBackground() { this.stopping = true; this.controller.abort(new Error('Scheduler stopping')); }
   async checkpoint() {
     if (this.stopping) throw new Error('Scheduler stopping');
-    if (this.cooperate) await yieldToEventLoop();
-    this.check(); await this.cooperate?.(); this.check();
-    if (this.stopping) throw new Error('Scheduler stopping');
+    this.check(); await yieldToEventLoop(); this.check();
   }
   async backgroundRead<T>(work: () => Promise<T>): Promise<T> {
-    if (!this.cooperate) return work();
-    // After one cancellation, finish a batch before yielding again so commands cannot starve a scan.
-    for (let attempt = 0; ; attempt++) {
-      const child = new ReadContext();
-      child.onStage = () => this.setStage(child.stage);
-      const abort = () => child.controller.abort(this.controller.signal.reason);
-      this.controller.signal.addEventListener('abort', abort, { once: true });
-      if (!attempt) this.batch = child;
-      try {
-        const result = await child.run(work);
-        await child.drain(); child.check();
-        this.batch = undefined;
-        const revision = this.revision;
-        await this.checkpoint();
-        if (revision !== this.revision) continue; // A command may have changed even a successfully read snapshot.
-        return result;
-      } catch (error) {
-        await child.drain();
-        if (child.controller.signal.reason !== BACKGROUND_YIELD) throw error;
-      } finally {
-        this.batch = undefined;
-        this.controller.signal.removeEventListener('abort', abort);
-      }
-      await this.checkpoint();
-    }
+    this.check();
+    try { const value = await work(); await this.drain(); this.check(); return value; }
+    catch (error) { await this.drain(); throw error; }
   }
   private async drain() { while (this.pendingReads.size) await Promise.allSettled([...this.pendingReads]); }
   stage = 'queued';
@@ -72,7 +52,7 @@ export class ReadContext {
   private expire() { if (!this.owned && !this.controller.signal.aborted) this.controller.abort(new ManualDeadline(this.stage)); }
   check() {
     if (!this.owned && this.deadlineAt !== undefined && Date.now() >= this.deadlineAt) this.expire();
-    this.controller.signal.throwIfAborted();
+    if (!this.owned) this.controller.signal.throwIfAborted();
   }
   get signal() { return this.owned ? undefined : this.controller.signal; }
   get launched() { return this.owned; }
@@ -92,11 +72,18 @@ export class ReadContext {
     finally { this.pendingReads.delete(pending); this.reads.delete(key); if (!this.controller.signal.aborted && this.reads.size) this.setStage([...new Set(this.reads.values())].join(', ')); }
   }
 }
-const BACKGROUND_YIELD = new Error('Background read yielding to a command');
+// Each automatic/chain admission owns its mutation boundary, even within one provider batch.
+export async function independentOperation<T>(work: () => Promise<T>): Promise<T> {
+  const parent = readContext(), context = new ReadContext();
+  const abort = () => context.stopBackground();
+  parent?.controller.signal.addEventListener('abort', abort, { once: true });
+  if (parent?.controller.signal.aborted) abort();
+  context.onStage = () => parent?.setStage(context.stage);
+  try { return await context.run(work); }
+  finally { parent?.controller.signal.removeEventListener('abort', abort); }
+}
 export async function backgroundCheckpoint() {
-  const context = readContext(), revision = context?.revision;
-  await context?.checkpoint();
-  return revision !== context?.revision;
+  await readContext()?.checkpoint();
 }
 // Only wrap disposable reads: publication and external mutations belong after the batch.
 export function backgroundRead<T>(work: () => Promise<T>): Promise<T> { return readContext()?.backgroundRead(work) ?? work(); }

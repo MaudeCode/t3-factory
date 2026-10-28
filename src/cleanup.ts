@@ -212,21 +212,14 @@ export async function cleanupTerminalAccess(t3: T3, recordedErrors: (string | un
 
 async function discoverCleanupInventory(c: Config, store: Store, t3: T3, signal?: AbortSignal) {
   const physical = new Map<string, { registered: Awaited<ReturnType<typeof worktrees>>; space: Awaited<ReturnType<typeof filesystemSpace>>; error?: string }>();
-  for (;;) {
-    const context = readContext(), revision = context?.revision;
-    for (const project of c.projects) if (context?.invalidatedProjects.has(project.kanvilId)) physical.delete(project.repoPath);
-    context?.invalidatedProjects.clear();
-    const data = await scanCleanupInventory(c, store, t3, physical, signal);
-    // Retain completed Git batches unless the job/cleanup lifecycle changed that repository.
-    if (revision !== context?.revision || context?.invalidatedProjects.size) continue;
-    if (!data.errors.length) store.set('cleanupLastScan', data.checkedAt);
-    return { ...data, lastSuccessfulScan: store.get('cleanupLastScan') };
-  }
+  const data = await scanCleanupInventory(c, store, t3, physical, signal);
+  if (!data.errors.length) store.set('cleanupLastScan', data.checkedAt);
+  return { ...data, lastSuccessfulScan: store.get('cleanupLastScan') };
 }
 
 async function scanCleanupInventory(c: Config, store: Store, t3: T3, physical: Map<string, { registered: Awaited<ReturnType<typeof worktrees>>; space: Awaited<ReturnType<typeof filesystemSpace>>; error?: string }>, signal?: AbortSignal) {
-  // Service scans are bounded per read batch; time spent suspended is not a scan timeout.
-  signal = readContext()?.cooperate ? signal ?? new AbortController().signal : AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
+  // Service discovery uses its operation lifetime; offline scans retain their bounded deadline.
+  signal = AbortSignal.any([readContext()?.signal ?? AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
   // Reuse path readings only within this inventory; destructive reviews still inspect fresh identity.
   const canonicalPaths = new Map<string, string>();
   const canonical = (path: string) => {
@@ -399,108 +392,115 @@ function confirmAbsentActions(store: Store, detail: Awaited<ReturnType<typeof in
 export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kanvil, raw: unknown, operator = 'authenticated operator', boundary: Boundary = {}): Promise<any> {
   boundary.signal?.throwIfAborted();
   const input = cleanupRequestSchema.parse(raw);
-  if (input.type === 'inventory') {
-    await refreshCleanupCatalog(c, store, t3, boundary.signal);
-    return readCleanupCatalog(c, store, input.offset, input.limit, input);
-  }
-  if (input.type === 'inspect') {
-    const detail = await inspectCleanup(c, store, t3, kanvil, { ...input, policy: "unused" }, boundary);
-    confirmAbsentActions(store, detail);
-    if (input.size) store.set(`cleanupSize:${digest([input.projectId, detail.path])}`, JSON.stringify({ ...detail.size, head: detail.workspace?.head }));
-    return detail;
-  }
-  if (input.type === 'review') {
-    const detail = await inspectCleanup(c, store, t3, kanvil, { ...input, size: true }, boundary);
+  const paths: string[] = 'path' in input ? [input.path] : 'targets' in input ? input.targets.map(target => target.path)
+    : input.type === 'force' ? [JSON.parse(store.get(`cleanupReview:${input.reviewId}`) ?? 'null')?.input?.path].filter(Boolean) : [];
+  const canonical = paths.map(canonicalPath);
+  const jobs = store.jobSummaries().filter(job => [job.workspaceCleanup?.path, job.thread?.worktreePath, job.dismissedWorktreePath].some(path => path && canonical.includes(canonicalPath(path))));
+  return store.exclusive([...canonical.map(path => `path:${path}`), ...jobs.map(job => `job:${job.id}`), ...'id' in input ? [`cleanup:${input.id}`] : []], async () => {
     boundary.signal?.throwIfAborted();
-    const id = randomUUID(), expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-    const review = { id, expiresAt, input: { projectId: input.projectId, path: detail.path }, fingerprint: detail.fingerprint, detail };
-    store.set(`cleanupReview:${id}`, JSON.stringify(review));
-    return { ...detail, reviewId: id, expiresAt };
-  }
-  const previous = store.cleanupAction(input.id);
-  if (previous) {
-    if (JSON.stringify(previous.input) !== JSON.stringify(input)) throw new Error('Request ID already belongs to another cleanup action');
-    return { ...previous, state: previous.state === 'requested' ? 'uncertain' : previous.state };
-  }
-  let review: any;
-  if (input.type === 'force') {
-    review = JSON.parse(store.get(`cleanupReview:${input.reviewId}`) ?? 'null');
-    if (!review || Date.parse(review.expiresAt) <= Date.now()) throw new Error('Review expired; inspect this worktree again');
-    if (input.confirmation !== review.input.path && input.confirmation !== basename(review.input.path)) throw new Error('Confirmation must exactly match the reviewed folder name or path');
-  }
-  const targets = input.type === 'force' ? [review.input] : input.targets;
-  const action: CleanupAction = { id: input.id, input, operator, reason: safeError(input.reason), requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: 'requested', targets, outcomes: [], ...(review ? { reviewId: review.id, overridden: review.detail.overridden, identity: review.fingerprint } : {}) };
-  const save = (state: CleanupAction['state']) => { action.state = state; action.updatedAt = new Date().toISOString(); store.saveCleanupAction(action); store.record(`cleanup.${state}`, `Cleanup ${input.type}: ${state}`, { actionId: action.id, operator, reason: action.reason, targets, reviewId: action.reviewId, overridden: action.overridden, identity: action.identity, outcomes: action.outcomes }); };
-  save('requested');
-  for (const target of targets) {
-    let mutated = false;
-    try {
-      const project = projectFor(c, target.projectId), beforeFree = await freeBytes(project.repoPath);
-      if (store.cleanupActions().some(a => a.id !== action.id && cleanupActionPending(a, target.path))) throw new Error('An earlier cleanup response is uncertain. Inspect its result; destructive requests are never replayed');
-      if (input.type !== 'retry') {
-        const forced = input.type === 'force';
-        const inspection = { ...target, size: forced, ...!forced ? { policy: 'unused' as const } : {} };
-        let fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
-        const blocked = (detail: typeof fresh) => detail.checks.some(check => check.state !== 'pass' && (!forced || !check.override));
-        // T3 leaves idle setup shells open in worktrees. Like automatic maintenance, close the idle ones and look again.
-        const idleShells = fresh.terminals.filter(t => t.status === 'running' && !t.hasRunningSubprocess);
-        if (idleShells.length === fresh.terminals.length && idleShells.length && !fresh.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name))) {
-          for (const t of idleShells) await t3.closeTerminal(t.threadId, t.terminalId);
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
-        }
-        if (forced && (!fresh.forceAllowed || fresh.fingerprint !== review.fingerprint)) throw new Error('Reviewed identity, content or activity changed; review again');
-        if (!forced && blocked(fresh)) throw new Error(fresh.checks.filter(check => check.state !== 'pass').map(check => check.detail).join('; '));
-        for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanup = { path: fresh.path, branch: fresh.workspace!.branch, head: fresh.workspace!.head }; store.save(job); }
-        const ownedIdentity = digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity));
-        // Detach only the reviewed idle bindings, using T3's expected-path contract. No Stop is authorized here.
-        for (const binding of fresh.bindings.filter(t => t.worktreePath)) {
-          mutated = true;
-          await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: binding.id, expectedWorktreePath: binding.worktreePath, worktreePath: null, branch: null });
-          mutated = false;
-        }
-        // Later readings compare Git identity and status, not another full content hash: any edit shows in status or inode.
-        type Identity = { head: string; branch: string; inode: string; present: boolean; registered: boolean; common: string; tracked: number; untracked: number; ignored: number; changes: { kind: string; path: string }[] };
-        const identityOf = (w: Identity | null | undefined) => w ? JSON.stringify([w.head, w.branch, w.inode, w.present, w.registered, w.common, w.tracked, w.untracked, w.ignored, w.changes]) : '';
-        const recheck = { ...inspection, size: false };
-        // Nothing was detached for an unbound worktree, so the fresh reading still stands.
-        const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kanvil, recheck, boundary) : fresh;
-        if (identityOf(afterDetach.workspace) !== identityOf(fresh.workspace) || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
-        // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
-        await verifyDetachedOwners(t3, fresh.bindings);
-        if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
-        const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
-        if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
-        const result = await removeWorkspace(project.repoPath, target.path, t3, forced, async () => {
-          const evidence = await inspectCleanup(c, store, t3, kanvil, recheck, boundary);
-          if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
-          await verifyDetachedOwners(t3, fresh.bindings);
-          if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
-        }, () => { mutated = true; });
-        action.outcomes.push({ path: target.path, state: 'confirmed', message: result.outcome, physicalRemoval: result.physicalRemoval,
-          freeSpaceChange: beforeFree === null ? null : await freeBytes(project.repoPath).then(n => n === null ? null : n - beforeFree) });
-        for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job); }
-      } else {
-        const path = canonicalPath(target.path);
-        if (path !== resolve(target.path)) throw new Error('Worktree path contains a symlink or alias; inspect its canonical registered path');
-        const shell = await t3.shell(true);
-        const jobs = store.jobs().filter(j => j.projectId === target.projectId && (jobPaths(j).some(p => canonicalPath(p) === path) || shell.threads.some(t => t.id === j.threadId && t.worktreePath && canonicalPath(t.worktreePath) === path)));
-        if (jobs.length !== 1) throw new Error('Normal maintenance requires one Factory-owned job; use a force review for uncertain historical ownership');
-        const job = jobs[0];
-        if (!['complete', 'dismissed'].includes(job.state) && !job.workspaceCleanup) throw new Error('Job is active; cleanup cannot dispatch or finish work');
-        const wasPresent = existsSync(target.path);
-        // Calling the normal verifier directly bypasses only its retry cooldown. Each step re-reads ownership.
-        const result = await cleanupCompletedWorkspace(c, store, t3, kanvil, store.job(job.id)!, { ...boundary, actionId: action.id });
-        mutated = !!result?.uncertain;
-        const current = store.job(job.id)!, physical = await inspectWorkspace(project.repoPath, target.path);
-        if (current.workspaceCleanupError) throw new Error(current.workspaceCleanupError);
-        const absent = !physical.present && !physical.registered;
-        action.outcomes.push({ path: target.path, state: absent ? 'confirmed' : 'pending', message: absent ? 'Directory and Git registration absent' : 'Maintenance advanced; retry to continue', physicalRemoval: absent && wasPresent,
-          freeSpaceChange: beforeFree === null ? null : await freeBytes(project.repoPath).then(n => n === null ? null : n - beforeFree) });
-      }
-    } catch (error) { action.outcomes.push({ path: target.path, state: mutated ? 'uncertain' : 'failed', message: safeError(error) }); }
+    if (input.type === 'inventory') {
+      await refreshCleanupCatalog(c, store, t3, boundary.signal);
+      return readCleanupCatalog(c, store, input.offset, input.limit, input);
+    }
+    if (input.type === 'inspect') {
+      const detail = await inspectCleanup(c, store, t3, kanvil, { ...input, policy: "unused" }, boundary);
+      confirmAbsentActions(store, detail);
+      if (input.size) store.set(`cleanupSize:${digest([input.projectId, detail.path])}`, JSON.stringify({ ...detail.size, head: detail.workspace?.head }));
+      return detail;
+    }
+    if (input.type === 'review') {
+      const detail = await inspectCleanup(c, store, t3, kanvil, { ...input, size: true }, boundary);
+      boundary.signal?.throwIfAborted();
+      const id = randomUUID(), expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+      const review = { id, expiresAt, input: { projectId: input.projectId, path: detail.path }, fingerprint: detail.fingerprint, detail };
+      store.set(`cleanupReview:${id}`, JSON.stringify(review));
+      return { ...detail, reviewId: id, expiresAt };
+    }
+    const previous = store.cleanupAction(input.id);
+    if (previous) {
+      if (JSON.stringify(previous.input) !== JSON.stringify(input)) throw new Error('Request ID already belongs to another cleanup action');
+      return { ...previous, state: previous.state === 'requested' ? 'uncertain' : previous.state };
+    }
+    let review: any;
+    if (input.type === 'force') {
+      review = JSON.parse(store.get(`cleanupReview:${input.reviewId}`) ?? 'null');
+      if (!review || Date.parse(review.expiresAt) <= Date.now()) throw new Error('Review expired; inspect this worktree again');
+      if (input.confirmation !== review.input.path && input.confirmation !== basename(review.input.path)) throw new Error('Confirmation must exactly match the reviewed folder name or path');
+    }
+    const targets = input.type === 'force' ? [review.input] : input.targets;
+    const action: CleanupAction = { id: input.id, input, operator, reason: safeError(input.reason), requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), state: 'requested', targets, outcomes: [], ...(review ? { reviewId: review.id, overridden: review.detail.overridden, identity: review.fingerprint } : {}) };
+    const save = (state: CleanupAction['state']) => { action.state = state; action.updatedAt = new Date().toISOString(); store.saveCleanupAction(action); store.record(`cleanup.${state}`, `Cleanup ${input.type}: ${state}`, { actionId: action.id, operator, reason: action.reason, targets, reviewId: action.reviewId, overridden: action.overridden, identity: action.identity, outcomes: action.outcomes }); };
     save('requested');
-  }
-  save(action.outcomes.some(o => o.state === 'uncertain') ? 'uncertain' : action.outcomes.some(o => o.state === 'failed') ? 'failed' : action.outcomes.some(o => o.state === 'pending') ? 'pending' : 'confirmed');
-  return action;
+    for (const target of targets) {
+      let mutated = false;
+      try {
+        const project = projectFor(c, target.projectId), beforeFree = await freeBytes(project.repoPath);
+        if (store.cleanupActions().some(a => a.id !== action.id && cleanupActionPending(a, target.path))) throw new Error('An earlier cleanup response is uncertain. Inspect its result; destructive requests are never replayed');
+        if (input.type !== 'retry') {
+          const forced = input.type === 'force';
+          const inspection = { ...target, size: forced, ...!forced ? { policy: 'unused' as const } : {} };
+          let fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
+          const blocked = (detail: typeof fresh) => detail.checks.some(check => check.state !== 'pass' && (!forced || !check.override));
+          // T3 leaves idle setup shells open in worktrees. Like automatic maintenance, close the idle ones and look again.
+          const idleShells = fresh.terminals.filter(t => t.status === 'running' && !t.hasRunningSubprocess);
+          if (idleShells.length === fresh.terminals.length && idleShells.length && !fresh.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name))) {
+            for (const t of idleShells) await t3.closeTerminal(t.threadId, t.terminalId);
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
+          }
+          if (forced && (!fresh.forceAllowed || fresh.fingerprint !== review.fingerprint)) throw new Error('Reviewed identity, content or activity changed; review again');
+          if (!forced && blocked(fresh)) throw new Error(fresh.checks.filter(check => check.state !== 'pass').map(check => check.detail).join('; '));
+          for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanup = { path: fresh.path, branch: fresh.workspace!.branch, head: fresh.workspace!.head }; store.save(job); }
+          const ownedIdentity = digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity));
+          // Detach only the reviewed idle bindings, using T3's expected-path contract. No Stop is authorized here.
+          for (const binding of fresh.bindings.filter(t => t.worktreePath)) {
+            mutated = true;
+            await t3.dispatch({ type: 'thread.metadata.update', commandId: randomUUID(), threadId: binding.id, expectedWorktreePath: binding.worktreePath, worktreePath: null, branch: null });
+            mutated = false;
+          }
+          // Later readings compare Git identity and status, not another full content hash: any edit shows in status or inode.
+          type Identity = { head: string; branch: string; inode: string; present: boolean; registered: boolean; common: string; tracked: number; untracked: number; ignored: number; changes: { kind: string; path: string }[] };
+          const identityOf = (w: Identity | null | undefined) => w ? JSON.stringify([w.head, w.branch, w.inode, w.present, w.registered, w.common, w.tracked, w.untracked, w.ignored, w.changes]) : '';
+          const recheck = { ...inspection, size: false };
+          // Nothing was detached for an unbound worktree, so the fresh reading still stands.
+          const afterDetach = fresh.bindings.length ? await inspectCleanup(c, store, t3, kanvil, recheck, boundary) : fresh;
+          if (identityOf(afterDetach.workspace) !== identityOf(fresh.workspace) || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
+          // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
+          await verifyDetachedOwners(t3, fresh.bindings);
+          if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
+          const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
+          if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
+          const result = await removeWorkspace(project.repoPath, target.path, t3, forced, async () => {
+            const evidence = await inspectCleanup(c, store, t3, kanvil, recheck, boundary);
+            if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
+            await verifyDetachedOwners(t3, fresh.bindings);
+            if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
+          }, () => { mutated = true; });
+          action.outcomes.push({ path: target.path, state: 'confirmed', message: result.outcome, physicalRemoval: result.physicalRemoval,
+            freeSpaceChange: beforeFree === null ? null : await freeBytes(project.repoPath).then(n => n === null ? null : n - beforeFree) });
+          for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job); }
+        } else {
+          const path = canonicalPath(target.path);
+          if (path !== resolve(target.path)) throw new Error('Worktree path contains a symlink or alias; inspect its canonical registered path');
+          const shell = await t3.shell(true);
+          const jobs = store.jobs().filter(j => j.projectId === target.projectId && (jobPaths(j).some(p => canonicalPath(p) === path) || shell.threads.some(t => t.id === j.threadId && t.worktreePath && canonicalPath(t.worktreePath) === path)));
+          if (jobs.length !== 1) throw new Error('Normal maintenance requires one Factory-owned job; use a force review for uncertain historical ownership');
+          const job = jobs[0];
+          if (!['complete', 'dismissed'].includes(job.state) && !job.workspaceCleanup) throw new Error('Job is active; cleanup cannot dispatch or finish work');
+          const wasPresent = existsSync(target.path);
+          // Calling the normal verifier directly bypasses only its retry cooldown. Each step re-reads ownership.
+          const result = await cleanupCompletedWorkspace(c, store, t3, kanvil, store.job(job.id)!, { ...boundary, actionId: action.id });
+          mutated = !!result?.uncertain;
+          const current = store.job(job.id)!, physical = await inspectWorkspace(project.repoPath, target.path);
+          if (current.workspaceCleanupError) throw new Error(current.workspaceCleanupError);
+          const absent = !physical.present && !physical.registered;
+          action.outcomes.push({ path: target.path, state: absent ? 'confirmed' : 'pending', message: absent ? 'Directory and Git registration absent' : 'Maintenance advanced; retry to continue', physicalRemoval: absent && wasPresent,
+            freeSpaceChange: beforeFree === null ? null : await freeBytes(project.repoPath).then(n => n === null ? null : n - beforeFree) });
+        }
+      } catch (error) { action.outcomes.push({ path: target.path, state: mutated ? 'uncertain' : 'failed', message: safeError(error) }); }
+      save('requested');
+    }
+    save(action.outcomes.some(o => o.state === 'uncertain') ? 'uncertain' : action.outcomes.some(o => o.state === 'failed') ? 'failed' : action.outcomes.some(o => o.state === 'pending') ? 'pending' : 'confirmed');
+    return action;
+  });
 }

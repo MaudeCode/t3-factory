@@ -1,21 +1,20 @@
 import { manageCleanup, cleanupRequestSchema, readCleanupCatalog, refreshCleanupCatalog } from './cleanup.ts';
-// The long-lived scheduler. One process holds the store claim, a T3 client, and a connected Kanvil
-// client, and runs passes in series from one queue. Passes start from what changes: a T3 thread
-// event, a config edit, a command over the control socket, or the fallback timer.
+// One ledger owner, independent operation lifecycles. Only work on the same resource is ordered.
 import { watch, type FSWatcher } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import type { Server } from 'node:http';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, readAll, type CycleOptions } from './scheduler.ts';
+import { cycle, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
-import { ReadContext, readPhase, backgroundRead } from './read-context.ts';
+import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 
-const EVENT_SETTLE_MS = 750; // T3 coalesces bursts server-side; this folds the remainder into one pass.
+const EVENT_SETTLE_MS = 25;
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
 
 export class FactoryService {
@@ -40,22 +39,24 @@ export class FactoryService {
   private collectionQueued = false;
   private readonly inspections = new Map<string, AbortController>();
   private readonly cleanupVisited = new Set<string>();
-  private queue: Promise<unknown> = Promise.resolve();
-  private readonly pending: { foreground: boolean; run: () => Promise<void>; reason: string; context: ReadContext; id?: string; queuedAt: string }[] = [];
-  private active?: { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string };
+  private readonly operations = new Map<symbol, { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string; done: Promise<unknown> }>();
+  private readonly lanes = new Map<string, { again: boolean; done: Promise<void> }>();
+  private statusTimer?: NodeJS.Timeout;
+  private readonly eventLoop = monitorEventLoopDelay({ resolution: 20 });
+  private readonly retiredClients = new Set<T3>();
   private readonly requests = new Map<string, Promise<ControlResult>>();
   private readonly uncertainRequests = new Set<string>();
-  private kanvilAbort?: AbortController;
-  private running = false;
-  private wanted = false;
   private stopped = false;
+  private shutdown?: Promise<void>;
   private readonly abort = new AbortController();
   private stateDir = '';
   private readonly configPath: string;
+  private pollSeconds = 60;
   constructor(configPath: string) { this.configPath = configPath; }
 
   async start() {
     const c = loadConfig(this.configPath);
+    this.pollSeconds = c.pollSeconds;
     this.configSnapshot = JSON.stringify(c);
     this.stateDir = c.stateDir;
     this.store = new Store(c.stateDir);
@@ -65,14 +66,14 @@ export class FactoryService {
       if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id);
     }
     this.store.onCleanupChange = projectIds => {
-      for (const item of [this.active, ...this.pending]) if (item && !item.foreground) for (const id of projectIds) item.context.invalidatedProjects.add(id);
       this.scheduleInventory();
     };
     this.connectT3(c);
-    this.control = serveControl(c.stateDir, command => this.handle(command));
+    this.control = serveControl(c.stateDir, (command, receivedAt) => this.handle(command, receivedAt));
     this.watcher = watch(dirname(this.configPath), (_, name) => this.onConfigChange(name));
     this.wake('start');
     this.scheduleQuota(c);
+    this.eventLoop.enable();
     log('service-started', { pid: process.pid, stateDir: c.stateDir });
   }
 
@@ -89,22 +90,32 @@ export class FactoryService {
   // A new T3 client and shell stream whenever the connection settings change, so an edit applies without a restart.
   private connectT3(c: Config) {
     this.stream?.abort();
-    this.t3 = new T3(c.t3); this.t3Settings = JSON.stringify(c.t3);
+    const previous = this.t3;
+    if (previous) {
+      this.retiredClients.add(previous);
+      void Promise.allSettled([...this.operations.values()].map(item => item.done)).then(() => previous.close()).finally(() => this.retiredClients.delete(previous));
+    }
+    this.t3 = new T3(c.t3, { persistent: true }); this.t3Settings = JSON.stringify(c.t3);
     if (this.stopped) return;
     const stream = new AbortController(); this.stream = stream;
     this.abort.signal.addEventListener('abort', () => stream.abort(), { once: true });
     void this.t3.subscribe(item => this.onShellItem(item), stream.signal, error => log('t3-stream-error', { message: safeError(error) }));
   }
-  async stop() {
+  stop() { return this.shutdown ??= this.shutdownService(); }
+  private async shutdownService() {
     this.stopped = true;
     for (const controller of this.inspections.values()) controller.abort();
     this.abort.abort();
-    for (const item of [this.active, ...this.pending]) if (item && !item.foreground) item.context.stopBackground();
+    for (const item of this.operations.values()) if (!item.foreground) item.context.stopBackground();
     clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
-    await this.queue.catch(() => {});
+    await this.drainWork();
     await this.kanvil?.then(k => k.close()).catch(() => {});
+    await this.t3.close();
+    await Promise.allSettled([...this.retiredClients].map(client => client.close()));
+    clearTimeout(this.statusTimer); this.eventLoop.disable();
+    this.flushWork();
     this.store.close();
   }
 
@@ -113,84 +124,92 @@ export class FactoryService {
     if (this.stopped) return;
     const kind = item && typeof item === 'object' && 'kind' in item ? String((item as { kind: unknown }).kind) : '';
     if (KINDS_WITHOUT_WORK.has(kind)) return;
-    clearTimeout(this.settle);
-    this.settle = setTimeout(() => this.wake('t3'), EVENT_SETTLE_MS);
+    this.t3.invalidateShell();
+    if (!this.settle) this.settle = setTimeout(() => { this.settle = undefined; this.wake('t3'); }, EVENT_SETTLE_MS);
   }
 
-  // One queued full pass at a time; a request while one is queued joins it.
+  // Each domain coalesces only its own wake bursts. No domain owns another domain's worker.
   wake(reason: string) {
-    if (this.stopped || this.wanted) return;
-    this.wanted = true;
-    void this.enqueue(async queueWaitMs => {
-      this.wanted = false;
-      if (!this.stopped) await this.pass({}, reason, queueWaitMs);
-    }, false, { reason }).catch(error => log('background-pass-failed', { reason, message: safeError(error) }));
+    if (this.stopped) return;
+    this.runLane('reconcile', async () => {
+      const c = this.configure(), kanvil = await this.ensureKanvil(c);
+      await reconcile(c, this.store, this.t3, kanvil, (await this.t3.shell()).threads, true, false);
+      this.publishWork();
+      if (!this.stopped) this.scheduleAdmissions(reason, 'tickets');
+    });
+    this.runLane('inventory', async () => {
+      const c = this.configure();
+      await refreshInventory(c, this.store, this.t3, await this.ensureKanvil(c));
+      this.publishWork();
+    });
+    this.scheduleAdmissions(reason, 'tickets');
+    this.scheduleAdmissions(reason, 'chains');
+    this.scheduleAdmissions(reason, 'upstream');
+    this.runLane('upstream-sources', async () => {
+      const c = this.configure();
+      if (!c.upstream?.enabled) return;
+      await pendingReviews(c, this.store, this.store.jobSummaries());
+      if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
+    });
+    this.scheduleCleanup(true); this.scheduleCollection();
+    if (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory();
+  }
+
+  private scheduleAdmissions(reason: string, workKind: NonNullable<Clients['workKind']>) {
+    for (const driver of ['codex', 'claudeAgent']) this.runLane(`${workKind}:${driver}`, async () => {
+      if (workKind === 'upstream' && !this.configure().upstream?.enabled) return;
+      if (workKind === 'chains' && !this.store.plans().some(plan => plan.state === 'active')) return;
+      await this.pass({}, reason, 0, workKind, driver);
+    });
+  }
+
+  private runLane(reason: string, work: () => Promise<void>) {
+    const running = this.lanes.get(reason);
+    if (running) { running.again = true; return; }
+    const lane = { again: false, done: Promise.resolve() };
+    this.lanes.set(reason, lane);
+    lane.done = (async () => {
+      do {
+        lane.again = false;
+        try { await this.enqueue(work, false, { reason }); }
+        catch (error) { if (!this.stopped) log('background-pass-failed', { reason, message: safeError(error) }); }
+      } while (lane.again && !this.stopped);
+    })().finally(() => { this.lanes.delete(reason); if (lane.again && !this.stopped) this.runLane(reason, work); });
   }
 
   private enqueue<T>(work: (queueWaitMs: number) => Promise<T>, foreground = true, metadata: { reason?: string; context?: ReadContext; id?: string } = {}): Promise<T> {
-    const queued = performance.now();
     const context = metadata.context ?? new ReadContext();
     context.onStage = () => this.publishWork();
-    const result = new Promise<T>((resolve, reject) => {
-      let segment = Promise.withResolvers<void>(), resume: (() => void) | undefined, started = false;
-      const item = { foreground, reason: metadata.reason ?? (foreground ? 'command' : 'maintenance'), context, id: metadata.id, queuedAt: new Date().toISOString(), run: async () => {
-        segment = Promise.withResolvers<void>();
-        if (started) { resume!(); }
-        else {
-          started = true;
-          void context.run(() => work(performance.now() - queued)).then(resolve, reject).finally(() => segment.resolve());
-        }
-        await segment.promise;
-      } };
-      if (!foreground) context.cooperate = async () => {
-        if (this.stopped || !this.pending.some(p => p.foreground && !p.context.controller.signal.aborted)) return;
-        const gate = Promise.withResolvers<void>(); resume = gate.resolve;
-        context.suspended = true;
-        context.revision++;
-        this.pending.push(item); // The continuation retains its state, but rejoins the same fair queue.
-        segment.resolve();
-        await gate.promise;
-      };
-      this.pending.push(item);
-    });
-    if (foreground && this.active && !this.active.foreground) this.active.context.requestYield();
+    const key = Symbol(), started = performance.now(), at = new Date().toISOString();
+    const result = Promise.resolve().then(() => context.run(() => work(0)));
+    this.operations.set(key, { foreground, reason: metadata.reason ?? (foreground ? 'command' : 'maintenance'), context, id: metadata.id, queuedAt: at, startedAt: at, done: result });
     this.publishWork();
-    if (!this.running) this.queue = this.drain();
-    return result;
+    return result.finally(() => {
+      this.operations.delete(key);
+      this.publishWork();
+      log('work', { lane: metadata.reason ?? 'command', requestId: metadata.id, ms: Math.round(performance.now() - started), waitMs: 0 });
+    });
   }
 
-  private async drain() {
-    this.running = true;
-    let foregroundCount = 0;
-    while (this.pending.length) {
-      const background = this.pending.findIndex(item => !item.foreground);
-      const foreground = this.pending.findIndex(item => item.foreground);
-      const index = background !== -1 && foregroundCount >= 3 ? background : foreground !== -1 ? foreground : 0;
-      const [item] = this.pending.splice(index, 1);
-      if (item.context.controller.signal.aborted) { await item.run(); continue; }
-      // Only count commands competing with background work toward the fairness bound.
-      foregroundCount = item.foreground && background !== -1 ? foregroundCount + 1 : 0;
-      this.active = { ...item, startedAt: new Date().toISOString() };
-      this.publishWork();
-      await item.run();
-      this.active = undefined;
-      this.publishWork();
-    }
-    this.running = false;
-  }
-
+  private async drainWork() { while (this.operations.size || this.lanes.size) await Promise.allSettled([...this.operations.values()].map(item => item.done).concat([...this.lanes.values()].map(lane => lane.done))); }
+  private get idle() { return this.drainWork(); }
   private workStatus() {
-    return { queueDepth: this.pending.filter(p => !p.context.controller.signal.aborted).length,
-      active: this.active ? { reason: this.active.reason, requestId: this.active.id, queuedAt: this.active.queuedAt, startedAt: this.active.startedAt, ageMs: Date.now() - Date.parse(this.active.startedAt), stage: this.active.context.stage } : null };
+    const operations = [...this.operations.values()].map(item => ({ reason: item.reason, requestId: item.id, queuedAt: item.queuedAt, startedAt: item.startedAt, ageMs: Date.now() - Date.parse(item.startedAt), stage: item.context.stage }));
+    return { queueDepth: 0, active: operations[0] ?? null, operations,
+      eventLoop: { maxMs: this.eventLoop.max / 1e6, p99Ms: this.eventLoop.percentile(99) / 1e6 } };
   }
   private publishWork() {
+    if (this.statusTimer) return;
+    this.statusTimer = setTimeout(() => { this.statusTimer = undefined; this.flushWork(); }, 100);
+    this.statusTimer.unref();
+  }
+  private flushWork() {
     if (!this.store) return;
     try { this.store.set('serviceWork', JSON.stringify(this.workStatus())); writeStatus(loadConfig(this.configPath), this.store); }
     catch (error) { log('work-status-failed', { message: safeError(error) }); }
   }
 
-  // Yield to the command response and enqueue only one step. Continuations join the tail,
-  // so housekeeping shares the single writer without occupying the dispatch call itself.
+  // Cleanup owns its sweep; each step retains the existing job/path safety boundary.
   private scheduleCleanup(newSweep = false) {
     if (this.stopped) return;
     if (newSweep) this.cleanupVisited.clear();
@@ -202,7 +221,7 @@ export class FactoryService {
         if (this.stopped) return;
         const c = this.configure(), kanvil = await this.ensureKanvil(c);
         more = await cleanupNextWorkspace(c, this.store, this.t3, kanvil, this.cleanupVisited);
-        writeStatus(c, this.store);
+        this.publishWork();
       } catch (error) { log('workspace-maintenance-failed', { message: safeError(error) }); }
       finally {
         this.cleanupQueued = false;
@@ -224,11 +243,11 @@ export class FactoryService {
         if (this.stopped) return;
         const c = this.configure();
         await refreshCleanupCatalog(c, this.store, this.t3, this.abort.signal);
-        writeStatus(c, this.store);
+        this.publishWork();
       } catch (error) {
         if (!this.stopped) {
           this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: false, errors: [{ repository: 'Inventory', message: safeError(error) }] }));
-          writeStatus(loadConfig(this.configPath), this.store);
+          this.publishWork();
         }
       } finally {
         this.inventoryQueued = false;
@@ -237,7 +256,7 @@ export class FactoryService {
     }, false, { reason: 'cleanup-inventory' }), 0);
   }
 
-  // Session-ticket collection runs the same way: one bounded batch per queued item, behind any command, until nothing remains.
+  // Session collection owns bounded batches and durable cursors, independent of admission.
   private scheduleCollection() {
     if (this.stopped || this.collectionQueued) return;
     this.collectionQueued = true;
@@ -247,11 +266,11 @@ export class FactoryService {
         if (this.stopped) return;
         const c = this.configure(), kanvil = await this.ensureKanvil(c);
         more = await collectSessionTickets(c, this.store, this.t3, kanvil);
-        writeStatus(c, this.store);
+        this.publishWork();
       } catch (error) {
         // A batch that could not even start (bad config, no tracker client) is a failure the page must show too.
         recordSessionTicketsFailure(this.store, [{ step: 'start', cause: safeError(error) }]);
-        try { writeStatus(loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
+        try { this.publishWork(); } catch { /* Invalid config is already logged. */ }
       }
       finally {
         this.collectionQueued = false;
@@ -260,21 +279,21 @@ export class FactoryService {
     }, false, { reason: 'session-tickets' }), 0);
   }
 
-  private async handle(command: ControlCommand): Promise<ControlResult> {
+  private async handle(command: ControlCommand, receivedAt = new Date().toISOString()): Promise<ControlResult> {
     if (command.type === 'health') return { code: 0, data: { ok: true, pid: process.pid, ...this.workStatus() } };
     if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
     if (command.type === 'job-stop') {
-      const result = await this.enqueue(() => stopJob(this.configure(), this.store, this.t3, command.jobId));
+      const result = await this.enqueue(() => this.store.exclusive([`job:${command.jobId}`], () => stopJob(this.configure(), this.store, this.t3, command.jobId)), true, { reason: 'job-stop' });
       this.wake('job-stop');
       return { code: 0, data: result };
     }
     if (command.type === 'session-dismiss') {
-      const result = await this.enqueue(async () => { const r = dismissSessionTicket(this.store, command.taskId); writeStatus(loadConfig(this.configPath), this.store); return r; });
+      const result = await this.enqueue(async () => { const r = dismissSessionTicket(this.store, command.taskId); this.publishWork(); return r; });
       return { code: 0, data: result };
     }
     if (command.type === 'plan-cancel') {
-      const result = await this.enqueue(async () => { const r = cancelPlan(this.store, command.planId); writeStatus(loadConfig(this.configPath), this.store); return r; });
+      const result = await this.enqueue(async () => { const r = cancelPlan(this.store, command.planId); this.publishWork(); return r; });
       return { code: 0, data: result };
     }
     if (command.type === 'cleanup-cancel') { this.inspections.get(command.inspectionId)?.abort(); return { code: 0, data: { cancelled: this.inspections.has(command.inspectionId) } }; }
@@ -296,7 +315,7 @@ export class FactoryService {
           // Inspection also verifies tracker evidence when present. Lazy connection keeps inventory available during tracker outages.
           const lazy = { task: async (id: string) => (await this.ensureKanvil(c)).task(id) } as Kanvil;
           const r = await manageCleanup(c, this.store, this.t3, lazy, input, command.operator ?? 'local operator', { signal: controller.signal });
-          if (!['inventory', 'inspect', 'review'].includes(input.type)) writeStatus(c, this.store);
+          if (!['inventory', 'inspect', 'review'].includes(input.type)) this.publishWork();
           return r;
         });
         return { code: 0, data: result };
@@ -306,7 +325,7 @@ export class FactoryService {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
       return { code: result.reason === 'error' ? 1 : 0, data: result };
     }
-    return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); });
+    return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); }, receivedAt);
   }
 
 
@@ -317,7 +336,7 @@ export class FactoryService {
     this.quotaTimer = setTimeout(() => void this.enqueue(async () => {
       if (this.stopped) return;
       let current: Config | undefined;
-      try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3); writeStatus(current, this.store); }
+      try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3); this.publishWork(); }
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
       finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
     }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
@@ -325,9 +344,9 @@ export class FactoryService {
 
   private ensureKanvil(c: Config): Promise<Kanvil> {
     return readPhase('kanvil.connect', async signal => {
-      this.kanvil ??= (async () => {
-        const client = new Kanvil(c.kanvil); this.kanvilAbort = new AbortController();
-        await client.connect(this.kanvilAbort.signal);
+      this.kanvil ??= new ReadContext().run(async () => {
+        const client = new Kanvil(c.kanvil);
+        await client.connect(this.abort.signal);
         void client.subscribe(event => {
           if (this.stopped) return;
           if (!event || /^(project|workspace|workflow)\./.test(event.type)) this.store.set('sessionCatalog', 'null');
@@ -337,13 +356,10 @@ export class FactoryService {
           this.wake('kanvil');
         }, this.abort.signal, error => log('kanvil-stream-error', { message: safeError(error) }));
         return client;
-      })();
-      const pending = this.kanvil, controller = this.kanvilAbort;
-      const abort = () => controller?.abort(signal?.reason);
-      signal?.addEventListener('abort', abort, { once: true });
-      try { return await pending; }
-      catch (error) { if (this.kanvil === pending) this.kanvil = undefined; throw error; }
-      finally { signal?.removeEventListener('abort', abort); }
+      });
+      const pending = this.kanvil;
+      void pending.catch(() => { if (this.kanvil === pending) this.kanvil = undefined; });
+      return waitFor(pending, signal);
     });
   }
   // Closing aborts the HTTP stream before settings are replaced.
@@ -354,38 +370,37 @@ export class FactoryService {
 
   private configure(): Config {
     const c = loadConfig(this.configPath);
+    this.pollSeconds = c.pollSeconds;
     if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
     if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
     if (JSON.stringify(c.kanvil) !== this.kanvilSettings) { if (this.kanvilSettings) log('kanvil-settings-changed'); this.dropKanvil(); this.kanvilSettings = JSON.stringify(c.kanvil); }
     return c;
   }
 
-  private async pass(options: CycleOptions, reason: string, queueWaitMs: number) {
+  private async pass(options: CycleOptions, reason: string, queueWaitMs: number, workKind?: Clients['workKind'], providerDriver?: string) {
     clearTimeout(this.timer);
     const started = performance.now();
     let c: Config | undefined;
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true });
-      if (this.active?.context.needsRefresh && !this.active.foreground) this.wake('resume');
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, deferCleanup: true, deferReconcile: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
         if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
       }
-      writeStatus(c, this.store);
+      this.publishWork();
       log('pass', { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
       return result;
     } catch (error) {
-      if (this.stopped && !this.active?.foreground) return { reason: 'stopped' };
+      if (this.stopped && !options.manual) return { reason: 'stopped' };
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
       this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
-      try { writeStatus(c ?? loadConfig(this.configPath), this.store); } catch { /* Invalid config is already logged. */ }
+      try { this.publishWork(); } catch { /* Invalid config is already logged. */ }
       throw error;
     } finally {
-      if (!options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
-      if (!this.stopped && (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= (c?.pollSeconds ?? 60) * 1000)) this.scheduleInventory();
+      if ((options.manual || reason === 'once') && !options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
       clearTimeout(this.timer);
       if (!this.stopped) this.timer = setTimeout(() => this.wake('timer'), (c?.pollSeconds ?? 60) * 1000);
     }
