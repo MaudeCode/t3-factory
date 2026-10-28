@@ -684,6 +684,10 @@ function cachedRead<T>(cache: Map<string, Promise<T>>, id: string, read: () => P
 }
 
 const taskOwners = (jobs: Job[]) => new Map(jobs.filter(job => !['complete', 'dismissed'].includes(job.state)).map(job => [job.taskId, job]));
+const ticketPreparations = new WeakMap<Store, Map<string, Candidate>>();
+function preparingLabels(store: Store) {
+  return [...(ticketPreparations.get(store)?.values() ?? [])].map(ticket => ({ state: 'dispatching' as const, threadId: '', projectId: ticket.projectId, labels: ticket.labels?.map(label => label.name) }));
+}
 function branchConflict(key: string, refs: string, released: Map<string, string>) {
   if (!released.size) return mentionsTicket(refs, key);
   const unmatched = refs.split('\n').filter(line => {
@@ -1013,7 +1017,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
     const labelAvailability = () => {
       if (skip.has('labels')) return (_ticket: Candidate) => true;
-      const full = labelCapacity(c, [...store.jobSummaries(), ...started], shell.threads);
+      const full = labelCapacity(c, [...store.jobSummaries(), ...preparingLabels(store), ...started], shell.threads);
       return (ticket: Candidate) => !full(ticket);
     };
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
@@ -1134,7 +1138,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   }
   const kanvil = plan?.kanvil ?? clients.kanvil ?? new Kanvil(c.kanvil), ownsKanvil = !(plan?.kanvil ?? clients.kanvil);
   if (ownsKanvil) await kanvil.connect();
-  let prepared: Awaited<ReturnType<T3['prepareLaunch']>> | undefined, releaseTicket: (() => void) | undefined;
+  let prepared: Awaited<ReturnType<T3['prepareLaunch']>> | undefined, releaseTicket: (() => void) | undefined, clearPreparation: (() => void) | undefined;
   try {
     if (!plan && !options.manual && !clients.deferReconcile) await reconcile(c, store, t3, kanvil, shell.threads, !options.dryRun && !options.doctor, !clients.deferCleanup);
     const jobs = store.jobs();
@@ -1151,7 +1155,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // Label limits bind every start except a manual one with limits overridden; chain continuations always respect them.
     const labelGated = !skip.has('labels') || !!options.continuation;
     if (labelGated && !ticketKey && !review) {
-      const full = labelCapacity(c, jobs, shell.threads), open = queue.ready.filter(ticket => !full(ticket));
+      const full = labelCapacity(c, [...jobs, ...preparingLabels(store)], shell.threads), open = queue.ready.filter(ticket => !full(ticket));
       if (queue.ready.length && !open.length) return decision('label-limit', { message: 'Every eligible ticket is waiting for a free label slot' });
       queue.ready = open;
     }
@@ -1180,10 +1184,17 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       : !isManualCodex && !skip.has('idle') && activity.idleMinutes < c.idleMinutes ? 'personal-provider-recently-active' : null;
     const reservePreparation = !!options.manual && !plan && !activePlanId;
     const pickTicket = () => {
-      releaseTicket?.(); releaseTicket = undefined;
-      const candidates = reservePreparation ? queue.ready.filter(candidate => !store.isLocked(`ticket:${candidate.id}`)) : queue.ready;
+      releaseTicket?.(); releaseTicket = undefined; clearPreparation = undefined;
+      const current = store.jobSummaries(), owned = taskOwners(current);
+      const full = labelGated && !ticketKey ? labelCapacity(c, [...current, ...preparingLabels(store)], shell.threads) : undefined;
+      const candidates = queue.ready.filter(candidate => !owned.has(candidate.id) && (!reservePreparation || !store.isLocked(`ticket:${candidate.id}`)) && !full?.(candidate));
       const ticket = selectTicket(candidates, store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
-      if (ticket && reservePreparation) { releaseTicket = store.tryLock(`ticket:${ticket.id}`); if (!releaseTicket) return; }
+      if (ticket && reservePreparation) {
+        const release = store.tryLock(`ticket:${ticket.id}`); if (!release) return;
+        const preparations = ticketPreparations.get(store) ?? new Map<string, Candidate>(); ticketPreparations.set(store, preparations); preparations.set(ticket.id, ticket);
+        const clear = () => { if (preparations.get(ticket.id) === ticket) preparations.delete(ticket.id); };
+        clearPreparation = clear; releaseTicket = () => { clear(); release(); };
+      }
       return ticket;
     };
     queue.selected = review ? undefined : pickTicket();
@@ -1308,6 +1319,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const context = readContext();
       if (context) context.own({ jobId: job.id, threadId: job.threadId }, () => store.save(job));
       else store.save(job); // Durable ownership precedes the external write, including ambiguous timeouts.
+      clearPreparation?.(); // The durable job now accounts for its labels; do not count it twice.
       store.set('lastProject', project.kanvilId);
       if (job.kind === 'discovery') store.set(`discoveryLast:${project.kanvilId}`, String(Date.now()));
       await prepared.launch(job.command);

@@ -506,3 +506,27 @@ test('parallel warm requests prepare distinct hints without repeating the select
   } finally { release.resolve(); await Promise.allSettled(runs); }
   assert.equal(f.launches.length, 2);
 });
+
+test('parallel unnamed starts choose other eligible labels instead of colliding on the last app slot', async t => {
+  const f = serviceFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.c.projects[0].labelLimits = { app: 1 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.tasks[0].labels!.push({ name: 'app' });
+  const app = f.task('another-app', 3, 'todo'); app.labels!.push({ name: 'app' }); f.tasks.push(app, f.task('web-work', 4, 'todo'));
+  f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store))));
+  const quote = f.provider(); t.mock.method(f.t3, 'peekProvider', () => structuredClone(quote));
+  const results = await Promise.all([0, 1].map(() => f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol', overrideLimits: ['idle', 'reserve'] } })));
+  assert.equal(results.filter(result => result.data.reason === 'dispatched').length, 2, 'both starts must find eligible work while respecting app capacity');
+  const jobs = f.store.jobs();
+  assert.equal(jobs.filter(job => job.labels?.includes('app')).length, 1); assert.ok(jobs.some(job => job.ticketKey === 'FIX-4'));
+});
+
+test('a failed preparation releases its temporary label occupancy', async t => {
+  const f = serviceFixture(t);
+  f.c.projects[0].labelLimits = { app: 1 }; f.tasks[0].labels!.push({ name: 'app' }); writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const prepare = f.t3.prepareLaunch.bind(f.t3); let first = true;
+  t.mock.method(f.t3, 'prepareLaunch', async () => { if (first) { first = false; throw new Error('Fixture connection failed'); } return prepare(); });
+  const failed = await f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol' } });
+  assert.equal(failed.data.notLaunched, true); assert.equal(f.store.jobs().length, 0);
+  const retried = await f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol' } });
+  assert.equal(retried.data.reason, 'dispatched'); assert.equal(retried.data.ticket, 'FIX-1');
+});
