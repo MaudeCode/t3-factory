@@ -230,6 +230,27 @@ test('connected shell snapshots and updates serve warm reads without HTTP scans'
   } finally { controller.abort(); await stream; }
 });
 
+test('overlapping warm readers do not copy the whole shell or mutate another reader snapshot', async t => {
+  const ready = Promise.withResolvers<void>(); let requestId = '';
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') { requestId = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'shared', title: 'Before', latestVisibleMessage: { text: 'x'.repeat(100000) } })]) }] }]; }
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [] } }] }];
+    return [success(request)];
+  }, true);
+  const controller = new AbortController(), stream = f.t3.subscribe((item: any) => { if (item.kind === 'snapshot') ready.resolve(); }, controller.signal);
+  try {
+    await ready.promise;
+    const clone = globalThis.structuredClone;
+    t.mock.method(globalThis, 'structuredClone', (value: unknown) => { assert.ok(!value || typeof value !== 'object' || !('threads' in value), 'warm reads cannot deep-copy the global shell on the shared event loop'); return clone(value); });
+    const snapshots = await Promise.all(Array.from({ length: 20 }, () => f.t3.shell(false, true)));
+    assert.throws(() => { snapshots[0].threads[0].modelSelection.model = 'cannot-change-another-reader'; }, TypeError);
+    f.respond(requestId, { kind: 'thread.updated', sequence: 43, location: 'active', thread: v2Thread({ id: 'shared', title: 'After' }) }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(snapshots.every(shell => shell.threads[0].title === 'Before'), 'an update cannot mutate a snapshot already being validated');
+    assert.equal((await f.t3.shell()).threads[0].title, 'After');
+  } finally { controller.abort(); await stream; }
+});
+
 for (const failure of ['disconnect', 'malformed', 'credential'] as const) test(`live projections lose trust after ${failure}`, async t => {
   const ready = Promise.withResolvers<void>(), invalid = Promise.withResolvers<void>(); let shellRequest = '';
   const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
