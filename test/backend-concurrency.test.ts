@@ -358,6 +358,17 @@ for (const manual of [true, false]) test(`standalone passes refresh persisted hi
   assert.equal(f.store.jobs()[0].ticketKey, 'FIX-1', 'newly eligible tickets must beat discovery and cannot be hidden by an old empty projection');
 });
 
+test('an upstream admission cannot erase the background inventory used by unnamed starts', async t => {
+  const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  const catalogue = JSON.stringify(upNext(f.c, f.store, await inventory(f.c, f.kanvil, [], [], f.store)));
+  f.store.set('upNext', catalogue);
+  await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'upstream', backgroundInventory: true });
+  assert.equal(f.store.get('upNext'), catalogue, 'only the background inventory publisher may replace its catalogue');
+  const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true });
+  assert.equal(result.reason, 'dispatched', 'the next unnamed start must still find its prepared ticket');
+  assert.equal(result.ticket, 'FIX-1');
+});
+
 test('trusted live quota avoids a foreground provider probe within configured freshness', async t => {
   const f = dispatchFixture(t), quote = f.provider();
   quote.usageLimits.checkedAt = new Date(Date.now() - 5000).toISOString();

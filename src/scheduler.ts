@@ -949,11 +949,11 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     const reviewsOn = clients.workKind !== 'tickets' && (!!options.upstream || !!c.upstream?.enabled), ticketsOn = clients.workKind !== 'upstream' && !options.upstream && (c.enabled || !!options.manual || !!options.doctor);
     // While tickets are paused the read is for display only, so a Kanvil failure must not hold up reviews.
     await backgroundCheckpoint();
-    let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true, preparedQueue = false;
+    let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true;
     try {
       if (!options.upstream && clients.workKind !== 'upstream' && (ticketsOn || !clients.workKind)) {
         const hints = clients.backgroundInventory && !options.ticket && !options.doctor ? preparedInventory(c, store) : undefined;
-        preparedQueue = !!hints; queue = hints ?? await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
+        queue = hints ?? await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
       }
     }
     catch (error) { if (ticketsOn) throw error; queueRead = false; log('queue-read-failed', { message: safeError(error) }); }
@@ -962,8 +962,9 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       if (chained) return chained;
     }
     await backgroundCheckpoint();
-    // Display and admission retain the same ordering, with ownership filtered at publication.
-    if (!options.ticket && !options.upstream && queueRead && !preparedQueue) {
+    // The service inventory lane owns this catalogue. Other lanes may read a scoped
+    // or empty queue; publishing those would hide ready tickets from manual starts.
+    if (!clients.backgroundInventory && !options.ticket && !options.upstream && queueRead) {
       store.set('upNext', JSON.stringify(upNext(c, store, queue)));
     }
     // Fully paused: provider status, quota, and the queue stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
