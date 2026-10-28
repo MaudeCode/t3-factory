@@ -51,6 +51,30 @@ test('every T3 request negotiates orchestration protocol v2 and reads the v2 she
   assert.ok(requests.length >= 2 && requests.every(r => r.headers.get('x-t3-orchestration-protocol') === '2'));
 });
 
+test('a truncated T3 GET response is recovered once without repeating writes', async t => {
+  const failure = new TypeError('terminated', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+  let reads = 0;
+  const f = fixtureT3(t, { '/api/orchestration/shell': () => ++reads === 1 ? Object.assign(json({}), { json: async () => { throw failure; } }) : json(v2Shell([])) });
+  const shell = await f.t3.shell();
+  assert.deepEqual(shell.threads, []);
+  assert.equal(reads, 2, 'one truncated read must recover using a new GET');
+});
+
+test('repeated truncated T3 GET responses stop after one retry and retain the cause', async t => {
+  const failure = new TypeError('terminated', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+  let reads = 0;
+  const f = fixtureT3(t, { '/api/orchestration/shell': () => { reads++; return Object.assign(json({}), { json: async () => { throw failure; } }); } });
+  await assert.rejects(f.t3.shell(), error => error === failure);
+  assert.equal(reads, 2, 'a persistent failure must not create an unbounded retry loop');
+});
+
+test('a truncated T3 POST response is never replayed', async t => {
+  const failure = new TypeError('terminated', { cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }) });
+  const f = fixtureT3(t, { '/api/auth/websocket-ticket': () => Object.assign(json({}), { json: async () => { throw failure; } }) });
+  await assert.rejects(f.t3.socketUrl(), error => error === failure);
+  assert.equal(f.requests.length, 1);
+});
+
 test('a rejected protocol header reports the mismatch instead of a bare HTTP 400', async t => {
   for (const [descriptor, required] of [[{ serverVersion: '0.0.1' }, 'v1'], [{ serverVersion: '9.0.0', orchestrationProtocolVersion: 3 }, 'v3']] as const) {
     const { t3 } = fixtureT3(t, {
@@ -157,7 +181,7 @@ function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: str
   const t3 = new (T3 as any)({ url: 'http://localhost', credentialFile: '/unused' }, { persistent }) as T3;
   t.after(async () => { await (t3 as any).close?.(); });
   t.mock.method(t3, 'socketUrl', async () => 'ws://fixture');
-  return { t3, connections: () => connections, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })), respond: (requestId: string, value: unknown) => {
+  return { t3, disconnect: () => { const socket = sockets.at(-1)!; socket.readyState = 3; socket.dispatchEvent(Object.assign(new Event('close'), { code: 1006, reason: 'Fixture disconnect' })); }, connections: () => connections, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })), respond: (requestId: string, value: unknown) => {
     for (const socket of sockets) if (socket.readyState === 1) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ _tag: 'Exit', requestId, exit: { _tag: 'Success', value } }) }));
   } };
 }
@@ -167,6 +191,15 @@ test('persistent RPC multiplexes independent calls over one connection', async t
   const f = fixtureRpc(t, request => [success(request)], true);
   await Promise.all([1, 2, 3].map(id => f.t3.dispatch({ id })));
   assert.equal(f.connections(), 1, 'a connected client must reuse its transport across concurrent RPCs');
+});
+
+test('persistent RPC reconnects for the next caller without replaying a submitted mutation', async t => {
+  const f = fixtureRpc(t, request => [success(request)], true);
+  await f.t3.dispatch({ id: 'first' });
+  f.disconnect();
+  await f.t3.dispatch({ id: 'second' });
+  assert.equal(f.connections(), 2);
+  assert.deepEqual(f.requests().filter(request => request.tag === 'orchestration.dispatchCommand').map(request => request.payload), [{ id: 'first' }, { id: 'second' }]);
 });
 
 test('cancelling one persistent RPC leaves sibling calls and the connection usable', async t => {

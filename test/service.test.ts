@@ -284,15 +284,17 @@ test('run completion refreshes one maintained cleanup catalog and explicit refre
   let closed = false;
   const close = async () => { if (closed) return; closed = true; release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); };
   t.after(close);
-  t.mock.method(internal, 'pass', async () => { entered.resolve(); await release.promise; return { reason: 'disabled' }; });
+
   try {
-    await service.start(); await entered.promise;
+    await service.start();
+    const held = internal.enqueue(async () => { entered.resolve(); await release.promise; }, false, { reason: 'fixture-maintenance' });
+    await entered.promise;
     let publication = deferred(), count = 0;
     const set = internal.store.set.bind(internal.store);
     t.mock.method(internal.store, 'set', (key: string, value: string) => { set(key, value); if (key === 'cleanupCatalog') { count++; publication.resolve(); } });
     const job = { ...f.job, state: 'running', thread: { title: 'Fixture', status: 'completed', worktreePath: tree, branch: 'feature', updatedAt: f.thread.updatedAt, pending: null, background: [] } };
     internal.store.save(job); internal.store.save({ ...job, reason: 'Another update in the same pass' });
-    release.resolve(); await publication.promise;
+    release.resolve(); await held; await publication.promise;
     assert.equal(count, 1, 'writes in one pass coalesce into one discovery');
     assert.equal(readCleanupCatalog(f.c, internal.store).items.find(item => item.path === tree)!.state, 'active');
     publication = deferred();

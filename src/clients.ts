@@ -44,14 +44,25 @@ export class T3 {
       if (this.credential?.stamp !== stamp) this.credential = { ...z.object({ token: z.string().min(1), expiresAt: z.string().optional() }).passthrough().parse(JSON.parse(readFileSync(this.config.credentialFile, 'utf8'))), stamp };
       const credential = this.credential;
       if (credential.expiresAt && Date.parse(credential.expiresAt) <= Date.now()) throw new Error('T3 scheduler credential expired');
-      const r = await fetch(new URL(path, this.config.url), {
-        method: body === undefined ? 'GET' : 'POST', redirect: 'error',
-        headers: { Authorization: `Bearer ${credential.token}`, 'Content-Type': 'application/json', [ORCHESTRATION_PROTOCOL_HEADER]: String(ORCHESTRATION_PROTOCOL) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-      });
-      if (r.status === 400) await this.assertProtocol();
-      if (!r.ok) throw new Error(`T3 ${path} returned HTTP ${r.status}`);
-      return r.json();
+      const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const r = await fetch(new URL(path, this.config.url), {
+            method: body === undefined ? 'GET' : 'POST', redirect: 'error',
+            headers: { Authorization: `Bearer ${credential.token}`, 'Content-Type': 'application/json', [ORCHESTRATION_PROTOCOL_HEADER]: String(ORCHESTRATION_PROTOCOL) },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: requestSignal,
+          });
+          if (r.status === 400) await this.assertProtocol();
+          if (!r.ok) throw new Error(`T3 ${path} returned HTTP ${r.status}`);
+          return await r.json();
+        } catch (error) {
+          const cause = error instanceof Error ? error.cause : undefined;
+          const closed = cause !== null && typeof cause === 'object' && 'code' in cause && cause.code === 'UND_ERR_SOCKET';
+          // Retry only a cut-off read, once, within the original budget. Never replay a POST.
+          if (attempt === 0 && body === undefined && closed && !requestSignal.aborted) continue;
+          throw error;
+        }
+      }
     });
   }
   /** T3 rejects an unsupported protocol header with a bare 400; name the mismatch when its descriptor shows one. */

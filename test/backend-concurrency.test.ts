@@ -1,3 +1,4 @@
+import { v2Thread } from './v2-fixture.ts';
 import { T3 } from '../src/clients.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -246,4 +247,58 @@ test('coalescing is per lane and a failed lane cannot block another lane', async
     assert.equal(independentRuns, 1); assert.equal(blockedRuns, 1);
   } finally { release.resolve(); await f.internal.idle; }
   assert.equal(blockedRuns, 2, 'the held domain gets one follow-up despite the failure and wake burst');
+});
+
+test('unavailable automatic lanes leave unnamed manual starts and explicit chains independent', async t => {
+  const f = serviceFixture(t);
+  f.c.concurrency = { claude: 0, codex: 10 };
+  f.c.models[0].automatic = false;
+  f.c.upstream = { enabled: true, promptFile: f.c.factorySkill, checkMinutes: 60 };
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const ticket = { id: 'root', key: 'FIX-1', title: 'Fixture', projectId: 'FIX', status: 'todo', priority: 'high', createdAt: '2026-01-01', difficulty: 'med' as const, automationReady: true, runnable: true, blockedBy: [], done: false };
+  f.store.savePlan({ id: 'explicit-chain', createdAt: new Date().toISOString(), target: ticket, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
+  for (let n = 3; n < 515; n++) { f.tasks.push({ ...f.task(`ready-${n}`, n, 'todo'), version: 1, readiness: { ready: true, reasons: [] } }); f.relations.push({ sourceTaskId: 'blocker', targetTaskId: `ready-${n}`, relationType: 'blocks' }); }
+  const admissions: string[] = [], pass = f.internal.pass.bind(f.internal);
+  t.mock.method(f.internal, 'pass', async (...args: any[]) => {
+    if (args[3]) { admissions.push(`${args[3]}:${args[4]}`); return { reason: 'fixture' }; }
+    return pass(...args);
+  });
+  for (const kind of ['tickets', 'upstream', 'chains']) f.internal.scheduleAdmissions('fixture', kind);
+  await f.internal.idle;
+  assert.deepEqual(admissions, ['chains:codex'], 'manual-only models and zero-capacity providers cannot start automatic RPC/inventory loops');
+  f.store.savePlan({ ...f.store.plan('explicit-chain')!, state: 'cancelled' });
+  const result = await f.internal.handle({ type: 'dispatch', options: { ticket: '', model: 'sol', dryRun: true, overrideLimits: ['idle', 'reserve'] } });
+  assert.equal(result.data.reason, 'would-dispatch', 'the actual unnamed manual path remains available');
+});
+
+test('streamed thread counters do not restart all backend domains', async t => {
+  const f = serviceFixture(t), wakes: string[] = [];
+  let invalidations = 0;
+  t.mock.method(f.internal, 'wake', (reason: string) => wakes.push(reason));
+  t.mock.method(f.t3, 'invalidateShell', () => { invalidations++; });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const thread = v2Thread({ id: 'streaming', status: 'running', activeRunId: 'run' });
+  f.internal.onShellItem({ kind: 'thread.updated', thread }); t.mock.timers.tick(25);
+  for (let n = 0; n < 100; n++) {
+    f.internal.onShellItem({ kind: 'thread.updated', thread: { ...thread, updatedAt: new Date(n).toISOString(), itemCount: n, visibleItemCount: n, latestVisibleMessage: { text: `Token ${n}` }, lastVisitedAt: new Date(n).toISOString(), opens: n } });
+    t.mock.timers.tick(25);
+  }
+  assert.deepEqual(wakes, ['t3'], 'streaming content and visit counters must not continuously restart expensive scheduling and collection');
+  assert.equal(invalidations, 101, 'manual final reads must still see the latest shell');
+  f.internal.onShellItem({ kind: 'thread.updated', thread: { ...thread, status: 'waiting', pendingRuntimeRequest: { kind: 'user_input', createdAt: new Date().toISOString() } } });
+  t.mock.timers.tick(25);
+  assert.deepEqual(wakes, ['t3', 't3'], 'a real run or human-request transition still wakes work immediately');
+});
+
+test('zero provider capacity still observes completed explicit chains without launching', async t => {
+  const f = serviceFixture(t);
+  f.c.concurrency = { claude: 0, codex: 0 };
+  f.c.enabled = false; f.c.models[0].automatic = false;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.tasks[0].status = 'done';
+  const target = { id: 'root', key: 'FIX-1', title: 'Fixture', projectId: 'FIX', status: 'todo', priority: 'high', createdAt: '2026-01-01', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };
+  f.store.savePlan({ id: 'completed-chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
+  f.internal.scheduleAdmissions('fixture', 'chains'); await f.internal.idle;
+  assert.equal(f.store.plan('completed-chain')?.state, 'done');
+  assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
 });
