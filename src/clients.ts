@@ -144,6 +144,7 @@ export class T3 {
     const view = this.shellView;
     if (!view || !this.rpc.isLive(view.epoch)) return;
     this.probeOrphans(view.value.threads);
+    if (!view.value.threads.some(thread => this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`))) return view.value;
     const threads = view.value.threads.map(thread => this.orphanVerdicts.get(`${thread.id}:${thread.updatedAt}`) ? immutableProjection({ ...thread, orphanedRun: true }) : thread);
     return immutableProjection({ ...view.value, threads });
   }
