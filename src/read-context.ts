@@ -4,6 +4,9 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 // Like cleanup's signal, but scoped here so every existing integration caller shares the deadline.
 const current = new AsyncLocalStorage<ReadContext>();
 export const readContext = () => current.getStore();
+// Keep the original thrown value: cancellation and SDK callers rely on its identity.
+const failures = new WeakMap<object, { stage: string; elapsedMs: number }>();
+export const readFailure = (error: unknown) => error !== null && typeof error === 'object' ? failures.get(error) : undefined;
 export class ManualDeadline extends Error {
   readonly stage: string;
   constructor(stage: string) { super(`Not launched: manual request deadline exceeded during ${stage}`); this.stage = stage; }
@@ -97,8 +100,13 @@ export async function backgroundCheckpoint() {
 }
 // Only wrap disposable reads: publication and external mutations belong after the batch.
 export function backgroundRead<T>(work: () => Promise<T>): Promise<T> { return readContext()?.backgroundRead(work) ?? work(); }
-export function readPhase<T>(stage: string, work: (signal?: AbortSignal) => Promise<T>, draining = false): Promise<T> {
-  return current.getStore()?.read(stage, work, draining) ?? work();
+export async function readPhase<T>(stage: string, work: (signal?: AbortSignal) => Promise<T>, draining = false): Promise<T> {
+  const started = performance.now();
+  try { return await (current.getStore()?.read(stage, work, draining) ?? work()); }
+  catch (error) {
+    if (error !== null && typeof error === 'object' && !failures.has(error)) failures.set(error, { stage, elapsedMs: Math.round(performance.now() - started) });
+    throw error;
+  }
 }
 
 // Keep a failed phase open until every read it started has settled.
