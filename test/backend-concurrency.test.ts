@@ -381,6 +381,26 @@ test('prepared admission reads label occupancy once instead of reloading jobs fo
   assert.equal(f.launches.length, 1);
 });
 
+test('a warm service uses its GitHub connection instead of spawning the CLI for PR checks', async t => {
+  const f = dispatchFixture(t); let reads = 0;
+  writeFileSync(join(f.dir, 'gh'), '#!/bin/sh\necho "Unexpected GitHub CLI process on warm dispatch" >&2\nexit 1\n', { mode: 0o755 });
+  const clients = { t3: f.t3, kanvil: f.kanvil, github: { pullRequests: async () => { reads++; return []; } } };
+  await assert.doesNotReject(async () => { assert.equal((await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: 'FIX-1' }, clients)).reason, 'dispatched'); }, 'a connected service must not invoke the GitHub CLI for fresh PR reads');
+  assert.ok(reads > 0); assert.equal(f.launches.length, 1);
+});
+
+test('final ancestry checks do not enumerate the selected ticket siblings', async t => {
+  const f = dispatchFixture(t); f.tasks.push(f.task('parent', 3));
+  f.relations.push({ sourceTaskId: 'parent', targetTaskId: 'root', relationType: 'subtask' });
+  const relations = f.kanvil.relations.bind(f.kanvil); let checked = false;
+  t.mock.method(f.kanvil, 'relations', async (...args: Parameters<typeof relations>) => {
+    const [id, fresh, children] = args;
+    if (id === 'parent' && fresh) { checked = true; assert.equal(children, false, 'ancestor blocker checks must not paginate unrelated children'); }
+    return relations(...args);
+  });
+  assert.equal((await f.run()).reason, 'dispatched'); assert.equal(checked, true);
+});
+
 test('trusted live quota avoids a foreground provider probe within configured freshness', async t => {
   const f = dispatchFixture(t), quote = f.provider();
   quote.usageLimits.checkedAt = new Date(Date.now() - 5000).toISOString();
