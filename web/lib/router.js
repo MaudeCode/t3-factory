@@ -12,6 +12,7 @@ export const PAGES = [
   ["/capacity", "Capacity"],
   ["/projects", "Projects"],
   ["/upstream", "Upstream"],
+  ["/triage", "Triage"],
 ];
 
 // Resolve a path to { page, param }. Unknown paths fall back to the deck.

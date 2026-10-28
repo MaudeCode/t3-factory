@@ -91,11 +91,11 @@ function fixture(t: TestContext) {
     addComment: async (...args: unknown[]) => { log.push({ name: 'addComment', args }); return {}; },
     addRelation: async (...args: unknown[]) => { log.push({ name: 'addRelation', args }); return {}; },
   };
-  const values = new Map<string, string>();
-  const store = { get: (key: string) => values.get(key) ?? null, set: (key: string, value: string) => { values.set(key, value); } };
+  const values = new Map<string, string>(), journal: { kind: string; text: string; data?: Record<string, unknown> }[] = [];
+  const store = { get: (key: string) => values.get(key) ?? null, set: (key: string, value: string) => { values.set(key, value); }, record: (kind: string, text: string, data?: Record<string, unknown>) => { journal.push({ kind, text, data }); } };
   const [tal, oth] = inboxes(c);
   const run = (ticket = report, timeoutMs?: number, into = tal) => triageTicket(c, store, kanvil, into, ticket, { command: join(bin, 'claude'), timeoutMs });
-  return { dir, c, kanvil, store, log, report, inbox, target, projects, tal, oth, mode, calls, run, commit, bin, setCurrent: (value: boolean) => { current = value; } };
+  return { dir, c, kanvil, store, journal, log, report, inbox, target, projects, tal, oth, mode, calls, run, commit, bin, setCurrent: (value: boolean) => { current = value; } };
 }
 const writes = <T extends { name: string }>(log: T[]) => log.filter(entry => !['tasks', 'cachedTickets'].includes(entry.name));
 const failedOnly = (f: ReturnType<typeof fixture>) => {
@@ -142,7 +142,7 @@ test('a pass reads projections first; the run itself makes no Kanvil reads and a
   Object.assign(process.env, planted);
   t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude') });
-  assert.deepEqual(results, [{ ticket: 'TALIN-5', outcome: 'triaged', verdict: 'actionable' }]);
+  assert.deepEqual(results, [{ ticket: 'TALIN-5', outcome: 'triaged', verdict: 'actionable', duplicateOf: null }]);
   assert.deepEqual(f.log.slice(0, 4).map(e => e.name), ['tasks', 'tasks', 'tasks', 'tasks']);
   assert.deepEqual(f.log.slice(4).map(e => e.name), ['cachedTickets', 'cachedTickets', 'addComment', 'updateTicket']);
 
@@ -219,6 +219,11 @@ test('two inboxes route to their own projects, oldest report first', async t => 
   const comments = writes(f.log).filter(e => e.name === 'addComment') as { args: unknown[] }[];
   assert.deepEqual(comments.map(c => c.args.slice(0, 2)), [['OTHIN', 'id-OTHIN-9'], ['TALIN', f.report.id]]);
   assert.match(comments[0].args[2] as string, /github\.com\/fixture\/oth\/blob\//);
+  // Each finished report is journaled for the Triage and Activity pages.
+  assert.deepEqual(f.journal.map(e => [e.kind, e.text, e.data?.ticketId, e.data?.inboxId, e.data?.project]), [
+    ['triage', 'OTHIN-9 triaged: actionable', 'id-OTHIN-9', 'OTHIN', 'OTH'],
+    ['triage', 'TALIN-5 triaged: actionable', f.report.id, 'TALIN', 'TAL'],
+  ]);
 });
 
 test('a scope valid for one project is rejected for the other', async t => {
@@ -227,7 +232,7 @@ test('a scope valid for one project is rejected for the other', async t => {
   assert.equal((await f.run()).outcome, 'triage-failed', 'api is not a TAL scope');
   const other = otherReport('2026-01-01T00:00:00Z');
   f.projects.OTHIN.push(other);
-  assert.deepEqual(await f.run(other, undefined, f.oth), { ticket: 'OTHIN-9', outcome: 'triaged', verdict: 'actionable' });
+  assert.deepEqual(await f.run(other, undefined, f.oth), { ticket: 'OTHIN-9', outcome: 'triaged', verdict: 'actionable', duplicateOf: null });
   f.mode({ stdout: reply(output({ scopes: ['app'] })) });
   const third = task('OTHIN-3', { labels: [{ name: 'report' }] });
   f.projects.OTHIN.push(third);
@@ -418,4 +423,23 @@ test('doctor output keeps the triage sandbox result', t => {
   t.mock.method(console, 'log', (line: string) => { lines.push(line); });
   log('decision', { reason: 'doctor', at: 'now', streams: [], skipped: [], triageSandbox: { ok: false, readRefused: false, shellRefused: true, message: 'The CLI read a file outside the snapshot' } });
   assert.deepEqual(JSON.parse(lines[0]).triageSandbox, { ok: false, readRefused: false, shellRefused: true, message: 'The CLI read a file outside the snapshot' });
+});
+
+test('triage switch: the CLI flips only triage.enabled and refuses configs without triage', t => {
+  const f = fixture(t);
+  const main = new URL('../src/main.ts', import.meta.url).pathname, run = (file: string, command: string) => {
+    try { return { code: 0, out: execFileSync(process.execPath, [main, command], { env: { ...process.env, NODE_NO_WARNINGS: '1', T3_FACTORY_CONFIG: file }, encoding: 'utf8', stdio: 'pipe' }) }; }
+    catch (error: any) { return { code: error.status, out: String(error.stderr) }; }
+  };
+  const file = join(f.dir, 'config.jsonc');
+  writeFileSync(file, JSON.stringify(f.c));
+  assert.equal(run(file, 'triage-pause').code, 0);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual([saved.triage.enabled, saved.enabled], [false, true]);
+  assert.equal(run(file, 'triage-resume').code, 0);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).triage.enabled, true);
+  const bare = join(f.dir, 'bare.jsonc'), { triage: _, ...withoutTriage } = f.c;
+  writeFileSync(bare, JSON.stringify(withoutTriage));
+  assert.deepEqual(run(bare, 'triage-resume'), { code: 1, out: 'No inbox triage is configured\n' });
+  assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(withoutTriage), 'the file is untouched');
 });

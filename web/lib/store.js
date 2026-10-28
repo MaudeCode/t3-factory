@@ -19,7 +19,7 @@ export const providers = signal([]);
 // The driver behind a provider instance, from T3's catalog once loaded; an instance named after its driver needs no catalog.
 export const instanceDriver = (instanceId) => providers.value.find((p) => p.instanceId === instanceId)?.driver ?? (instanceId === "codex" ? "codex" : "claudeAgent");
 export const sources = signal(null); // T3 projects, Kanvil projects with columns, and labels; loaded on demand
-export const live = signal({ enabled: false, upstream: false, concurrency: { claude: 1, codex: 1 } });
+export const live = signal({ enabled: false, upstream: false, triage: false, concurrency: { claude: 1, codex: 1 } });
 export const busy = signal(false);
 export const operations = signal([]);
 export const launchOperations = computed(() => operations.value.filter(op => op.kind !== "cleanup"));
@@ -90,6 +90,7 @@ export function applyState(data, reset = false) {
     live.value = {
       enabled: data.config.enabled,
       upstream: !!data.config.upstream?.enabled,
+      triage: !!data.config.triage?.enabled,
       concurrency: data.config.concurrency,
     };
     authenticated.value = true;
@@ -157,19 +158,18 @@ export const actions = {
       authenticated.value = false;
     }),
   // Each switch saves immediately; mirror the saved value into both copies so the save bar stays clean.
+  // `kind` is "enabled" for ticket automation, or a config section with its own switch ("upstream", "triage").
   toggle: (kind) =>
     run(async () => {
-      const upstream = kind === "upstream";
-      await post(upstream ? "/api/upstream/enabled" : "/api/enabled", {
-        enabled: !(upstream ? live.value.upstream : live.value.enabled),
-      });
+      const section = kind === "enabled" ? null : kind;
+      await post(section ? `/api/${section}/enabled` : "/api/enabled", { enabled: !live.value[kind] });
       const latest = await load();
       for (const copy of [base, config])
-        copy.value = upstream
-          ? copy.value.upstream
-            ? assign(copy.value, ["upstream", "enabled"], latest.config.upstream?.enabled)
-            : copy.value
-          : assign(copy.value, ["enabled"], latest.config.enabled);
+        copy.value = !section
+          ? assign(copy.value, ["enabled"], latest.config.enabled)
+          : copy.value[section]
+            ? assign(copy.value, [section, "enabled"], latest.config[section]?.enabled)
+            : copy.value;
     }),
   save: () =>
     run(async () => {

@@ -219,9 +219,10 @@ export class Store {
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
     this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
   }
-  events(limit = 100, jobId?: string): FactoryEvent[] {
+  events(limit = 100, jobId?: string, kind?: string): FactoryEvent[] {
     const rows = jobId
       ? this.statement('SELECT * FROM events WHERE job_id=? ORDER BY id DESC LIMIT ?').all(jobId, limit)
+      : kind ? this.statement('SELECT * FROM events WHERE kind=? ORDER BY id DESC LIMIT ?').all(kind, limit)
       : this.statement('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit);
     return rows.map(r => ({ id: r.id as number, time: r.time as string, kind: r.kind as string, jobId: r.job_id as string | null, text: r.text as string, data: JSON.parse(r.data as string) }));
   }

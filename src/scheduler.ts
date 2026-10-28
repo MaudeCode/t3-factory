@@ -1537,7 +1537,7 @@ export function writeStatus(c: Config, store: Store) {
   const result = {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
-    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'),
+    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: store.events(30, undefined, 'triage'),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),

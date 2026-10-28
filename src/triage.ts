@@ -48,7 +48,10 @@ export interface TriageOptions { command?: string; timeoutMs?: number; budget?: 
 /** An inbox and the delivery project it feeds; the project supplies the repository and scopes. */
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
-type Store = { get(key: string): string | null; set(key: string, value: string): void };
+type Store = { get(key: string): string | null; set(key: string, value: string): void; record?(kind: string, text: string, data?: Record<string, unknown>): void };
+type Result = { ticket?: string; outcome: string; verdict?: string; duplicateOf?: string | null; reason?: string };
+// One journal entry per finished report, so the Triage and Activity pages can show what happened.
+const outcomeText = (r: Result) => r.outcome === 'triaged' ? `${r.ticket} triaged: ${r.verdict}${r.duplicateOf ? `, duplicate of ${r.duplicateOf}` : ''}` : r.outcome === 'triage-failed' ? `${r.ticket} triage failed: ${r.reason}` : `${r.ticket} triage error: ${r.reason}`;
 
 const names = (t: Task) => (t.labels ?? []).map(l => l.name);
 const open = (t: Task, inbox: Inbox['inbox']) => t.projectId === inbox.kanvilId && !t.archived && !CLOSED.includes(t.status) && names(t).includes(inbox.label);
@@ -207,7 +210,7 @@ export async function triageTicket(c: Config, store: Store, kanvil: TriageKanvil
       return fail(kanvil, ticket, `Applying triage failed: ${safeError(error)}`);
     }
     store.set(planKey, '');
-    return { ticket: ticket.key, outcome: 'triaged', verdict: plan.output.verdict };
+    return { ticket: ticket.key, outcome: 'triaged', verdict: plan.output.verdict, duplicateOf: plan.output.duplicateOf };
   };
   if (saved && saved.version === ticket.version) return applyPlan(saved);
   const targetTickets = kanvil.cachedTickets(target.project.kanvilId), inbox = kanvil.cachedTickets(target.inbox.kanvilId);
@@ -241,14 +244,17 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
   if (!c.triage?.enabled) return [];
   const queue = read.flatMap(({ target, tickets }) => tickets.filter(t => needsTriage(t, target.inbox)).map(ticket => ({ target, ticket })))
     .toSorted((a, b) => oldestFirst(a.ticket, b.ticket));
-  const results: Record<string, unknown>[] = [];
+  const results: Result[] = [];
   for (const { target, ticket } of queue) {
     if (options.signal?.aborted) break;
     const admission = await options.budget?.() ?? {};
     if ('blocked' in admission) { results.push({ ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
     options.onRun?.(ticket);
-    try { results.push(await triageTicket(c, store, kanvil, target, ticket, { ...options, model: admission.model ?? options.model })); }
-    catch (error) { results.push({ ticket: ticket.key, outcome: 'error', reason: safeError(error) }); }
+    let result: Result;
+    try { result = await triageTicket(c, store, kanvil, target, ticket, { ...options, model: admission.model ?? options.model }); }
+    catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
+    results.push(result);
+    if (result.outcome !== 'waiting') store.record?.('triage', outcomeText(result), { ...result, ticketId: ticket.id, inboxId: ticket.projectId, project: target.project.name });
   }
   options.onRun?.();
   return results;

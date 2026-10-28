@@ -75,6 +75,7 @@ const requestId = z.string().uuid();
 const toggles: Record<string, [string, string]> = {
   "/api/enabled": ["pause", "resume"],
   "/api/upstream/enabled": ["upstream-pause", "upstream-resume"],
+  "/api/triage/enabled": ["triage-pause", "triage-resume"],
 };
 
 export function runFactory(args: string[], input?: unknown): Promise<Result> {

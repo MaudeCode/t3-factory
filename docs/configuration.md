@@ -96,6 +96,10 @@ The service reacts to Kanvil events. A report is waiting when it is open and una
 
 Invalid output, a CLI error, or a second timeout labels the report `triage-failed` and changes nothing else. Evidence locations missing from the snapshot are dropped. The snapshot is deleted after every run. Promoting a report into the project stays a human `relocate_ticket` action.
 
-Status reports a triage stream beside upstream reviews: `triageEnabled`, `triageDecision`, and `triageStreams` with one row per inbox. Each row holds the waiting count, `triage-failed` count, the running report, the oldest waiting report and its age. Rows come from the same live projections, with no extra requests; they show `synchronized: false` and null counts until a projection is current. The web Upstream page and the menu bar app show these rows.
+Status reports a triage stream beside upstream reviews: `triageEnabled`, `triageDecision`, `triageResults`, and `triageStreams` with one row per inbox.
+- Each `triageStreams` row holds the waiting count, `triage-failed` count, the running report, the oldest waiting report and its age. Rows come from the same live projections, with no extra requests, and show `synchronized: false` with null counts until a projection is current.
+- Every finished report is recorded in the journal as a `triage` event: verdict, duplicate, or failure reason. `triageResults` holds the 30 most recent.
+
+The web Triage page has the triage switch (also `triage-pause` / `triage-resume`), each inbox's queue, recent results linked to their inbox tickets, and the prompt file setting. The Activity page can filter to triage events, and the menu bar app shows the queue rows.
 
 Keep actual skill paths and deployment-specific prompt variants in your private configuration. These skills are not downloaded by the installer.
