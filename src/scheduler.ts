@@ -1127,7 +1127,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const quotaGeneration = reservationIds();
       const trackerRevision = kanvil.generations();
       // Each final phase owns fresh snapshots; only independent reads overlap. Artifact cache writes stay after the reads.
-      const { fresh, currentQuota, checked, currentActivity, artifacts, currentReviews } = await backgroundRead(async () => {
+      const { fresh, currentQuota, checked, currentActivity, artifacts } = await backgroundRead(async () => {
         const [fresh, currentQuota, checked] = await readAll([
           t3.shell(false, true),
           readSelectedQuota(true),
@@ -1142,12 +1142,11 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
             return { task, labels: task.labels ?? [], blockers, children, prs, projects: reader.projects, tickets: new Set([...watched, ...reader.ids]) };
           })(),
         ]);
-        const [artifacts, currentActivity, currentReviews] = await readAll([
+        const [artifacts, currentActivity] = await readAll([
           checked && queue.selected ? ticketArtifacts(project!, queue.selected.key, checked.task.id, fresh.threads, store.jobs(), store, Promise.resolve(checked.prs)) : Promise.resolve(undefined),
           readActivity(fresh.threads),
-          review ? pendingReviews(c, store, store.jobs(), Date.now(), false) : Promise.resolve([]),
         ]);
-        return { fresh, currentQuota, checked, artifacts, currentActivity, currentReviews };
+        return { fresh, currentQuota, checked, artifacts, currentActivity };
       });
       // Another launch consumed this provider after our quota read began. Revalidate without blocking its worker.
       if (reservationIds() !== quotaGeneration) continue;
@@ -1173,7 +1172,11 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       // The final tracker read is authoritative: a label added or removed since the queue read counts here.
       const full = labelGated && queue.selected && fullLabel(c, currentJobs, fresh.threads, checked ? { ...queue.selected, labels: checked.labels } : queue.selected);
       if (full) return decision('label-limit', { message: `Waiting for a free ${full} slot` });
-      if (review && !currentReviews.some(r => r.project.kanvilId === review.project.kanvilId && JSON.stringify(r.upstream) === JSON.stringify(review.upstream))) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
+      if (review) {
+        const watched = project.upstreams.find(watched => watched.repo === review.upstream.repo);
+        const state = watched && releaseState(project, watched, store, currentJobs);
+        if (!state?.due || state.reviewed !== review.upstream.base || state.latest !== review.upstream.candidate) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
+      }
       if (JSON.stringify((clients.currentConfig ?? plan?.currentConfig ?? loadConfig)()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
       if (activePlanId && store.plan(activePlanId)?.state !== 'active') return decision('plan-cancelled-before-dispatch');
       if (discovery && !discoveryAvailable(project, currentJobs, store, plan?.skipProjects)) return decision('discovery-changed-before-dispatch');

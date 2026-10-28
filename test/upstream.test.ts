@@ -266,3 +266,30 @@ for (const scenario of ['unknown', 'current', 'disabled', 'candidate-owned', 'fr
   assert.equal(result.reason, scenario === 'fresh-change' ? 'upstream-changed-before-dispatch' : scenario === 'exhausted' ? 'codex-quota-exhausted' : scenario === 'waiting-cap' ? 'waiting-cap' : 'upstream-not-due');
   assert.equal(f.launches.length, 0, 'a refused review never falls back to ticket or discovery');
 });
+
+test('concurrent provider lanes reserve one upstream review at the final boundary', async t => {
+  const f = dispatchFixture(t);
+  f.c.enabled = false;
+  f.c.upstream = { enabled: true, promptFile: f.c.factorySkill, checkMinutes: 60 };
+  f.c.projects[0].upstreams = [{ name: 'Shared', repo: 'up/shared', firstBase: 'v1', prereleases: false }];
+  f.c.models.push({ ...f.c.models[0], id: 'opus', name: 'Opus', model: { instanceId: 'claudeAgent', model: 'fixture-opus', options: [] } });
+  const c = configSchema.parse(f.c);
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
+  f.store.set('upstreamLatest:up/shared', 'v2');
+  const provider = (instanceId: string) => ({ ...f.provider(), instanceId, driver: instanceId, models: [{ slug: instanceId === 'codex' ? 'fixture-sol' : 'fixture-opus' }],
+    usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: [
+      { id: instanceId === 'codex' ? 'primary' : 'five_hour', usedPercent: 0, windowDurationMins: instanceId === 'codex' ? 10080 : 300 },
+      ...instanceId === 'codex' ? [] : [{ id: 'seven_day', usedPercent: 0, windowDurationMins: 10080 }],
+    ] } });
+  t.mock.method(f.t3, 'providers', async () => [provider('codex'), provider('claudeAgent')]);
+  const both = Promise.withResolvers<void>(); let finals = 0;
+  t.mock.method(f.t3, 'provider', async (id: string, fresh: boolean) => {
+    if (fresh) { if (++finals === 2) both.resolve(); await both.promise; }
+    return provider(id);
+  });
+  const results = await Promise.all(['codex', 'claudeAgent'].map(providerDriver => cycle(c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, deferReconcile: true, workKind: 'upstream', providerDriver })));
+  assert.equal(finals, 2, 'both independent providers reached final validation');
+  assert.equal(f.launches.length, 1, 'one due repository candidate must launch exactly once across providers');
+  assert.equal(f.store.jobs().length, 1, 'the loser must not retain an extra upstream reservation');
+  assert.equal(results.filter(result => result.reason === 'dispatched').length, 1);
+});
