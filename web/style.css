@@ -1527,6 +1527,21 @@ h2 .icon,
   display: flex;
   gap: var(--space-3);
 }
+/* A badge, such as a triage outcome, sits above the row's buttons. */
+.next-actions:has(> .next-badge) {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  row-gap: var(--space-1);
+  max-width: 50%;
+}
+.next-badge {
+  flex-basis: 100%;
+  text-align: right;
+}
+.meta > .next-badge-inline {
+  display: none;
+}
 .next-more,
 .next-action-label {
   display: none;
@@ -2278,12 +2293,34 @@ h1 .crumb::after {
 .release-versions a {
   color: var(--ink);
 }
-.promotion-limit {
-  grid-column: 1 / -1;
+/* Triage: one line per inbox under the title, and each inbox's limit in the settings dialog. */
+.triage-inboxes > .triage-inbox + .triage-inbox {
   margin-top: var(--space-1);
 }
-.promotion-limit .field {
-  margin-bottom: 0;
+.triage-inbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: 12px;
+}
+.triage-inbox > .muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.triage-inbox-settings {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-3);
+  margin-top: var(--space-3);
+}
+.triage-inbox-settings h3 {
+  font-size: 13px;
+  margin: 0 0 var(--space-2);
+}
+.triage-inbox-settings h3 .muted {
+  font-weight: 400;
 }
 
 /* Mobile ------------------------------------------------------------------ */
@@ -2365,6 +2402,17 @@ h1 .crumb::after {
   .next:has(.next-actions) .row-body > small {
     min-height: var(--next-run-size);
     padding-right: calc(var(--next-actions-width) + var(--space-2));
+  }
+  /* The badge moves to the start of the facet line, so a row without buttons keeps its height. */
+  .next-badge {
+    display: none;
+  }
+  .meta > .next-badge-inline {
+    display: inline-flex;
+  }
+  .next:has(.next-actions):not(:has(.next-run)) .row-body > small {
+    min-height: 0;
+    padding-right: 0;
   }
   :root {
     --gutter: var(--space-4);

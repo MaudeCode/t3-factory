@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showBlockedChoice, loadHistory } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showBlockedChoice, loadHistory, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -37,7 +37,7 @@ import {
   overrideText,
   operationText,
 } from "../lib/format.js";
-import { Button, Switch, Select, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
+import { Button, Switch, Select, Segmented, Chips, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
 // Top bar: the automation switch, the start bar, and when the scheduler last looked.
 function Status({ initialTicket }) {
@@ -177,8 +177,10 @@ export function startHold(t) {
 }
 
 // One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
-// The queue and session list share this row; Start stays visible and secondary actions use a mobile popover.
-export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection }) {
+// The queue, session and triage lists share this row; Start stays visible and secondary actions use a mobile popover.
+// `badge`, such as a triage outcome, sits above the actions, or first on the facet line on a narrow screen.
+// A `plain` row is not a startable ticket, so it has no difficulty to warn about.
+export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain }) {
   const c = config.value;
   const [open, setOpen] = useState(false), button = useRef();
   const label = `More actions for ${t.key}`;
@@ -186,10 +188,10 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
     ${selection}
     <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
       <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${children}<//>
+        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${badge && html`<span class="next-badge-inline">${badge}</span>`}${children}<//>
       <//>
     </a>
-    ${actions && html`<div class="next-actions">${actions}
+    ${(actions || badge) && html`<div class="next-actions">${badge && html`<span class="next-badge">${badge}</span>`}${actions}
       ${secondaryActions && html`<div class="next-secondary">${secondaryActions}</div>
         <span ref=${button} class="next-more"><${Button} size="sm" icon class="next-run" label=${label} aria-expanded=${open} onClick=${() => setOpen(!open)}>⋯<//></span>
         <${Popover} class="next-menu" open=${open} onClose=${() => setOpen(false)} anchor=${button} label=${label} width=${220}>
@@ -197,6 +199,17 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
         <//>`}
     </div>`}
   </div>`;
+}
+
+// How tickets started by hand run: a provider that overrides every limit, or Auto with the chosen overrides.
+// Session tickets and Triage share the choice.
+export const startOptions = () => {
+  const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
+  return { provider, overrideLimits: provider ? true : sessionOverrides.value };
+};
+export function StartOptions() {
+  const { provider } = startOptions();
+  return html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: override all scheduler limits`])]} /><${Chips} label="Override limits" disabled=${!!provider} value=${provider ? OVERRIDES.map(([key]) => key) : sessionOverrides.value} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
 }
 
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.

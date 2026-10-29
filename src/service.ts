@@ -7,14 +7,14 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
-import { admitTriage, inboxes, triagePass, triageQueue } from './triage.ts';
+import { admitTriage, inboxes, promotedTickets, triagePass, triageQueue } from './triage.ts';
 
 const EVENT_SETTLE_MS = 25;
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
@@ -185,7 +185,11 @@ export class FactoryService {
       const c = this.configure();
       if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); return; }
       const kanvil = await this.ensureKanvil(c);
-      const publish = (running?: Parameters<typeof triageQueue>[2]) => { this.store.set('triageStreams', JSON.stringify(triageQueue(c, kanvil, running))); this.publishWork(); };
+      const publish = (running?: Parameters<typeof triageQueue>[2]) => {
+        this.store.set('triageStreams', JSON.stringify(triageQueue(c, kanvil, running)));
+        this.store.set('triagePromoted', JSON.stringify(promotedTickets(c, kanvil, this.store.events(TRIAGE_RESULTS, undefined, 'triage'))));
+        this.publishWork();
+      };
       const results = await triagePass(c, this.store, kanvil, { budget: () => admitTriage(this.configure(), this.t3, this.store), signal: this.abort.signal, onRun: publish });
       if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
     });

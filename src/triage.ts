@@ -518,6 +518,18 @@ export function triageQueue(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanv
 
 export type TriageRow = ReturnType<typeof triageQueue>[number];
 
+/** Each recent promoted result's ticket from the live target projection, keyed by journal event id, so the Triage page can start it. */
+export function promotedTickets(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanvil, 'cachedTickets'>, results: { id: number; data: Record<string, unknown> }[]) {
+  const found: Record<number, { taskId: string; projectId: string; key: string; title: string; status: string; priority: string; difficulty: string | null; labels: string[]; automationReady: boolean }> = {};
+  for (const { id, data } of results) {
+    if (typeof data.promoted !== 'string') continue;
+    const target = inboxes(c).find(i => i.inbox.kanvilId === data.inboxId)?.project;
+    const t = target && kanvil.cachedTickets(target.kanvilId)?.find(t => data.promotedId ? t.id === data.promotedId : t.key === data.promoted);
+    if (t) found[id] = { taskId: t.id, projectId: t.projectId, key: t.key ?? data.promoted, title: t.title, status: t.status, priority: t.priority, difficulty: t.difficulty ?? null, labels: names(t), automationReady: !!t.automationReady };
+  }
+  return found;
+}
+
 /** Doctor: the exact sandbox must refuse a read outside it and a shell command. */
 export async function triageCanary(command = 'claude', timeoutMs = TRIAGE_TIMEOUT_MS) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 't3-factory-triage-'))), outside = realpathSync(mkdtempSync(join(tmpdir(), 't3-factory-canary-')));

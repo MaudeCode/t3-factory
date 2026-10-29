@@ -16,7 +16,7 @@ import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
 import { liveModelQuota, readModelQuota } from './models.ts';
-import { sessionTicketStatus } from './session-tickets.ts';
+import { projectUnavailable, sessionTicketStatus } from './session-tickets.ts';
 import { pullRequestsSchema, type GitHub } from './github-client.ts';
 
 const exec = promisify(execFile);
@@ -1538,12 +1538,25 @@ export function triageRows(c: Config, store: Store, now = Date.now()) {
     return { ...row, limit: inbox.maxPromotionsPerDay ?? null, oldestAgeSeconds: row.oldestUntriagedAt ? Math.max(0, Math.round((now - Date.parse(row.oldestUntriagedAt)) / 1000)) : null };
   });
 }
+/** How many triage results the status file and the Triage page carry. */
+export const TRIAGE_RESULTS = 30;
+// Recent triage results, each promoted one with its ticket as the triage lane last read it and why it cannot start now.
+export function triageResults(c: Config, store: Store) {
+  const promoted = JSON.parse(store.get('triagePromoted') || '{}') as Record<number, { projectId: string; status: string }>;
+  return store.events(TRIAGE_RESULTS, undefined, 'triage').map(event => {
+    const t = promoted[event.id];
+    if (!t) return event;
+    const project = c.projects.find(p => p.kanvilId === t.projectId);
+    const unavailable = projectUnavailable(project) ?? (project!.readyStatuses.includes(t.status) ? null : `Ticket is ${t.status}; it must be in ${project!.readyStatuses.join(' or ')}`);
+    return { ...event, promotedTicket: { ...t, unavailable } };
+  });
+}
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {
   const result = {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
-    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: store.events(30, undefined, 'triage'),
+    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: triageResults(c, store),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),

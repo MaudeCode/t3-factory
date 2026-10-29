@@ -1,7 +1,7 @@
-// Real Triage view and switch, synthetic state and toggle endpoint only.
+// Real Triage view, settings dialog and start path; synthetic state, toggle, config and dispatch endpoints only.
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
-import { applyState, actions, config, notice } from '../../web/lib/store.js';
+import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
 import { Triage } from '../../web/views/Triage.js';
 const root = document.querySelector('#root');
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -13,7 +13,10 @@ const state = {
     { project: 'Example', projectId: 'p', inboxId: 'pin', label: 'intake', synchronized: true, untriaged: 2, failed: 1, running: 'PIN-4', oldestUntriagedAt: ago(185), promoted: 3, queued: 1, blocked: 1, needsOwner: 1, limit: 10 },
     { project: 'Other', projectId: 'o', inboxId: 'oin', label: 'report', synchronized: true, untriaged: 0, failed: 0, running: null, oldestUntriagedAt: null, promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: null },
   ], triageResults: [
-    { id: 6, time: ago(1), kind: 'triage', text: 'PIN-7 promoted to EX-40', data: { ticket: 'PIN-7', ticketId: 't7', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-40', promotedId: 't40' } },
+    { id: 6, time: ago(1), kind: 'triage', text: 'PIN-7 promoted to EX-40', data: { ticket: 'PIN-7', ticketId: 't7', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-40', promotedId: 't40' },
+      promotedTicket: { taskId: 't40', projectId: 'p', key: 'EX-40', title: 'Launch crash with empty saved state', status: 'todo', priority: 'high', difficulty: 'med', labels: ['bug', 'med', 'app', 'from-user-report'], automationReady: true, unavailable: null } },
+    { id: 8, time: ago(12), kind: 'triage', text: 'PIN-8 promoted to EX-41', data: { ticket: 'PIN-8', ticketId: 't8', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-41', promotedId: 't41' },
+      promotedTicket: { taskId: 't41', projectId: 'p', key: 'EX-41', title: 'Settings sheet forgets the chosen theme after relaunch', status: 'todo', priority: 'medium', difficulty: 'low', labels: ['ux', 'low', 'web', 'from-user-report'], automationReady: true, unavailable: null } },
     { id: 5, time: ago(2), kind: 'triage', text: 'PIN-6 needs the owner: sensitive: workType sec', data: { ticket: 'PIN-6', ticketId: 't6', inboxId: 'pin', project: 'Example', outcome: 'needs-owner', reason: 'sensitive: workType sec' } },
     { id: 4, time: ago(3), kind: 'triage', text: 'PIN-5 promotion queued: 2 promotions in the last 24 hours', data: { ticket: 'PIN-5', ticketId: 't5', inboxId: 'pin', project: 'Example', outcome: 'promotion-queued', reason: '2 promotions in the last 24 hours' } },
     { id: 3, time: ago(4), kind: 'triage', text: 'PIN-3 triaged: duplicate, duplicate of EX-12', data: { ticket: 'PIN-3', ticketId: 't3', inboxId: 'pin', project: 'Example', outcome: 'triaged', verdict: 'duplicate', duplicateOf: 'EX-12' } },
@@ -21,8 +24,13 @@ const state = {
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
   ] },
 };
-let posts = [], saves = [];
+let posts = [], saves = [], dispatches = [];
 window.fetch = async (url, init) => {
+  // A start is refused, as a quota refusal answers, so it lands in the notification area.
+  if (url === '/api/dispatch') {
+    const input = JSON.parse(init.body), id = init.headers['Idempotency-Key']; dispatches.push(input);
+    return Response.json({ id, input, state: 'done', result: { data: { reason: 'quota-exhausted' } } });
+  }
   // The real endpoint answers with the config-save field error for an invalid limit.
   if (url === '/api/config') {
     const body = JSON.parse(init.body); saves.push(body);
@@ -39,49 +47,81 @@ window.fetch = async (url, init) => {
   return Response.json(state);
 };
 async function show() {
-  render(null, root); posts = []; saves = [];
+  render(null, root); posts = []; saves = []; dispatches = []; operations.value = [];
   state.config.projects[0].inbox.maxPromotionsPerDay = 10;
   state.config.triage.enabled = true; state.status.triageEnabled = true;
   applyState(state, true); render(html`<${Triage} />`, root); await pause();
 }
+const rows = () => [...root.querySelectorAll('.next')];
+const row = (key) => rows().find((r) => r.querySelector('.key')?.textContent === key);
+const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
+const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|queued|duplicate|failed/.test(el.textContent));
+async function settings() { button('Triage settings').click(); await pause(); return document.querySelector('dialog[open]'); }
 async function run() {
   await show();
   const text = () => root.textContent;
-  assert(text().includes('Triage on'), 'the switch shows triage on');
-  assert(/2 waiting, 1 failed, 3 promoted, 1 queued, 1 blocked, 1 need the owner, oldest 3 h \d+ min ago, triaging PIN-4/.test(text()) && text().includes('report label') && text().includes('clear'), 'each inbox shows its queue');
-  const ticket = [...root.querySelectorAll('a')].find(a => a.textContent === 'PIN-3');
-  assert(ticket && ticket.href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a result links to its inbox ticket');
-  assert(text().includes('duplicate of EX-12') && text().includes('Timed out twice'), 'results show the duplicate and the failure reason');
-  const promoted = [...root.querySelectorAll('a.tag')];
-  assert(promoted.length === 2 && promoted[0].textContent === 'promoted' && promoted[0].href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the promoted tag links to the new ticket');
-  assert(promoted[1].href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'an older entry without the ticket id links by key in the inbox project');
-  const height = (row) => root.querySelectorAll('.release')[row].getBoundingClientRect().height;
-  if (matchMedia('(pointer: coarse)').matches) { const r = promoted[0].getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top - 10); assert(hit === promoted[0], 'the promoted tag has a full touch target'); }
-  assert(Math.abs(height(2) - height(3)) < 1, 'the promoted row is no taller than the others');
-  const tagTop = (row) => root.querySelectorAll('.release')[row].querySelector('.tag').getBoundingClientRect().top - root.querySelectorAll('.release')[row].getBoundingClientRect().top;
-  const tagRight = (row) => root.querySelectorAll('.release')[row].querySelector('.tag').getBoundingClientRect().right;
-  assert(Math.abs(tagTop(2) - tagTop(3)) < 1 && Math.abs(tagRight(2) - tagRight(3)) < 1, 'the promoted tag lines up with the other tags');
-  const toggle = root.querySelector('input[role="switch"][aria-label="Inbox triage"]');
-  assert(toggle && toggle.checked, 'the triage switch is on the Triage page');
+  assert(/2 waiting, 1 failed, 3 promoted, 1 queued, 1 blocked, 1 need the owner, oldest 3 h \d+ min ago, triaging PIN-4/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear'), 'each inbox shows its queue on one line');
+  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-40,PIN-6,PIN-5,PIN-3,EX-41,PIN-2,PIN-1', 'results list newest first, promoted ones as their new ticket');
+  const ex40 = row('EX-40');
+  assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
+  assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
+  assert(visibleTag(ex40)?.textContent === 'promoted' && button('Run EX-40 now'), 'the promoted tag and Start show');
+  if (innerWidth > 900) assert(visibleTag(ex40).getBoundingClientRect().bottom <= button('Run EX-40 now').getBoundingClientRect().top, 'Start sits under the promoted tag');
+  assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
+  assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
+  assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
+  // Start goes through the shared start path with the page's overrides; a refusal lands in the notification area.
+  button('Run EX-40 now').click(); await pause();
+  for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();
+  assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: 'EX-40', model: 'auto', overrideLimits: sessionOverrides.value }), 'Start dispatches the promoted key with the start options');
+  assert(issues.value.some((i) => i.source === 'Triage starts' && i.error.problems[0].title === "Couldn't start EX-40"), 'a refused start is reported as a Triage start');
+  operations.value = []; await pause();
+  // Search, filters and selection, as on Session tickets.
+  const search = root.querySelector('[aria-label="Find a ticket"]');
+  search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-41', 'search narrows the results');
+  search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
+  [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();
+  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-40', 'filters narrow the results');
+  [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.textContent.trim() === 'Clear all').click(); await pause();
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
+  button('Select tickets').click(); await pause();
+  assert(root.querySelectorAll('.next > .check').length === 2, 'only promoted tickets can be selected');
+  button('Select visible promoted tickets').click(); await pause();
+  button('Run selected tickets').click(); await pause();
+  for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();
+  assert(dispatches.slice(1).map((d) => d.ticket).sort().join() === 'EX-40,EX-41', 'Run selected starts each selected ticket');
+  operations.value = []; button('Done selecting tickets').click(); await pause();
+  // The cog holds the triage switch.
+  const dialog = await settings();
+  const toggle = dialog?.querySelector('input[role="switch"][aria-label="Inbox triage"]');
+  assert(toggle && toggle.checked, 'the triage switch is in the settings dialog');
   toggle.click(); await pause(); await pause();
   assert(posts.length === 1 && posts[0].enabled === false, 'the switch posts triage.enabled = false');
-  assert(text().includes('Triage paused'), 'the page shows triage paused');
+  assert(text().includes('Triage is paused'), 'the page warns that triage is paused');
+  dialog.close(); await pause();
+  // Layout: promoted rows are no taller than two lines plus Start, and nothing overflows.
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
+  for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
+  if (innerWidth <= 900) assert(Math.abs(row('PIN-6').getBoundingClientRect().height - row('PIN-2').getBoundingClientRect().height) < 1 && visibleTag(row('PIN-6')).closest('.meta'), 'on a phone the outcome tag sits on the facet line');
   const toggles = posts.length, limits = await promotion();
-  return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, ...limits };
+  return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, dispatches: dispatches.length, ...limits };
 }
 // Each inbox row shows its promotion counts and limit, and edits the limit through the settings save.
 async function promotion() {
   await show();
-  const text = () => root.textContent, rows = () => [...root.querySelectorAll('.release')].slice(0, 2);
-  assert(/3 promoted, 1 queued, 1 blocked, 1 need the owner/.test(rows()[0].textContent), 'the first inbox shows its promotion counts');
-  assert(rows()[0].querySelector('.release-state').textContent.includes('10 per day') && rows()[1].querySelector('.release-state').textContent.includes('Unlimited'), 'each row shows its limit next to its status');
-  assert(text().includes('promoted to EX-40') && text().includes('needs owner') && text().includes('sensitive: workType sec') && text().includes('queued'), 'promotion outcomes are listed');
+  const text = () => root.textContent, lines = () => [...root.querySelectorAll('.triage-inbox')];
+  assert(/3 promoted, 1 queued, 1 blocked, 1 need the owner/.test(lines()[0].textContent), 'the first inbox shows its promotion counts');
+  assert(lines()[0].textContent.includes('10 per day') && lines()[1].textContent.includes('Unlimited'), 'each inbox shows its limit next to its status');
+  await settings();
+  const rows = () => [...document.querySelectorAll('dialog[open] .triage-inbox-settings')];
+  assert(text().includes('Promoted to EX-39') && text().includes('needs owner') && text().includes('sensitive: workType sec') && text().includes('queued'), 'promotion outcomes are listed');
   // The shared limit picker: Paused, 5, 10, 20, 40, Other for any number, and Unlimited.
   const group = (row) => rows()[row].querySelector('[role="radiogroup"]');
   const choice = (row, name) => [...group(row).querySelectorAll('button')].find((b) => b.textContent === name || b.getAttribute('aria-label') === name);
   const checked = (row) => group(row).querySelector('[aria-checked="true"]')?.textContent;
-  const state = (row) => rows()[row].querySelector('.release-state').textContent;
+  const state = (row) => lines()[row].textContent;
   assert(group(0).getAttribute('aria-label') === 'Example promotions per day' && checked(0) === '10' && group(1).querySelector('[aria-checked="true"]')?.getAttribute('aria-label') === 'Unlimited', 'each inbox shows its saved limit in the picker');
   assert([...group(1).querySelectorAll('button')].map((b) => b.textContent).join(' ') === 'Paused 5 10 20 40 Other ∞', 'the quick picks');
   assert(!rows()[0].querySelector('input'), 'no bare number box');

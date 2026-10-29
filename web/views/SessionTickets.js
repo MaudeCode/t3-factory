@@ -1,10 +1,10 @@
 // Tickets that T3 sessions reported creating: start one through the ordinary checks, or take it off the list.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
+import { config, status, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, TRIAGE_ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, OVERRIDES, overrideText, PROVIDERS, providerIcon } from "../lib/format.js";
-import { Button, Check, Chips, Segmented, Select, Icon, Empty, Page, Section } from "../ui/index.js";
-import { TicketRow, RunNow, runNow, startHold, openRun, Operations } from "./Deck.js";
+import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, overrideText } from "../lib/format.js";
+import { Button, Check, Select, Icon, Empty, Page, Section } from "../ui/index.js";
+import { TicketRow, RunNow, runNow, startHold, openRun, Operations, StartOptions, startOptions } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 
 const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. Factory discovery and upstream release-review sessions are excluded. A ticket here still needs its readiness checks to start, and nothing starts on its own.";
@@ -16,9 +16,7 @@ export function SessionTickets() {
   const [order, setOrder] = useState("newest");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState([]);
-  const overrides = sessionOverrides.value;
-  const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
-  const overrideLimits = provider ? true : overrides;
+  const { provider, overrideLimits } = startOptions();
   const c = config.value,
     s = status.value.sessionTickets,
     now = serverNow();
@@ -40,9 +38,9 @@ export function SessionTickets() {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: override all scheduler limits`])]} /><${Chips} label="Override limits" disabled=${!!provider} value=${provider ? OVERRIDES.map(([key]) => key) : overrides} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} /><${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${StartOptions} /><${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
-    <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN)} />
+    <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN && op.origin !== TRIAGE_ORIGIN)} />
     <${Section} title="Reported by sessions" count=${s ? rows.length : null}>
       ${selecting && !!rows.length && html`<div class="selection-bar">
         <${Check} label="Select visible" aria-label="Select visible tickets" checked=${picked.length === rows.length} indeterminate=${picked.length > 0 && picked.length < rows.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === rows.length ? [] : rows.map(t => t.taskId))} />

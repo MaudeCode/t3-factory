@@ -25,9 +25,9 @@ export const operations = signal([]);
 export const launchOperations = computed(() => operations.value.filter(op => op.kind !== "cleanup"));
 export const blocked = signal(null); // a manual ticket waiting on other tickets: the user picks how to run it
 export const notice = signal(null);
-// Requests started from Session tickets that ended without starting. The page keeps its rows in place and
+// Requests started from Session tickets or Triage that ended without starting. The page keeps its rows in place and
 // reports these in the notification area instead of adding request rows.
-export const SESSION_ORIGIN = "session-tickets";
+export const SESSION_ORIGIN = "session-tickets", TRIAGE_ORIGIN = "triage";
 const startProblem = (op) => {
   const key = op.input.ticket, d = op.result?.data;
   const title = d?.reason === "blocked-ticket-plan-required" ? `${key} waits on other tickets` : op.state === "uncertain" ? `Couldn't confirm ${key} started` : `Couldn't start ${key}`;
@@ -35,10 +35,14 @@ const startProblem = (op) => {
 };
 // Problems listed by the top bar's notification area, each with the page it affects.
 export const issues = computed(() => {
-  const failed = operations.value.filter((op) => op.origin === SESSION_ORIGIN && !["queued", "running"].includes(op.state));
+  const failed = (origin) => {
+    const list = operations.value.filter((op) => op.origin === origin && !["queued", "running"].includes(op.state));
+    return list.length && { problems: list.map(startProblem) };
+  };
   return [
     { source: "Session tickets", href: "/session-tickets", error: status.value.sessionTickets?.error },
-    { source: "Session ticket starts", href: "/session-tickets", note: "Not started", error: failed.length && { problems: failed.map(startProblem) } },
+    { source: "Session ticket starts", href: "/session-tickets", note: "Not started", error: failed(SESSION_ORIGIN) },
+    { source: "Triage starts", href: "/triage", note: "Not started", error: failed(TRIAGE_ORIGIN) },
   ].filter((i) => i.error);
 });
 export const issuesOpen = signal(false);
