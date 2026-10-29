@@ -200,10 +200,15 @@ async function choose(label, text) {
   option.click(); await pause();
   if (trigger.getAttribute('aria-expanded') === 'true') { trigger.click(); await pause(); }
 }
+async function order(label, name) {
+  const choice = root.querySelector(`[role="radiogroup"][aria-label="${label}"] [aria-label="${name}"]`);
+  assert(choice, `${name} is an available ${label} choice`);
+  choice.click(); await pause();
+}
 async function controls() {
   await showControls();
   assert(keys().join() === 'APP-2,APP-1,APP-5,WEB-9', 'default ordering follows ticket creation, not priority or report time');
-  await choose('Creation order', 'Oldest first');
+  await order('Creation order', 'Oldest first');
   assert(keys().join() === 'WEB-9,APP-5,APP-1,APP-2', 'oldest-first reverses ticket creation order');
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   await choose('Session', 'Second look');
@@ -221,7 +226,7 @@ async function controls() {
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   update({ sessionTickets: { ...state.status.sessionTickets, rows: [row('t7', 'APP-7', 'urgent', { createdAt: '2026-03-01T14:00:00Z' }), ...state.status.sessionTickets.rows] } }); await pause();
   assert(keys().join() === 'WEB-9,APP-5,APP-1,APP-2,APP-7', 'live additions respect oldest-first order');
-  await choose('Creation order', 'Newest first');
+  await order('Creation order', 'Newest first');
   assert(keys()[0] === 'APP-7', 'newest-first puts the live addition first');
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   await choose('Session', 'Plan APP-2');

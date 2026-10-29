@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
-import { admitTriage, inboxes, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
-import { log, triageRows } from '../src/scheduler.ts';
+import { admitTriage, inboxes, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, promotedTickets, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
+import { log, triageResults, triageRows } from '../src/scheduler.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'f', GIT_AUTHOR_EMAIL: 'f@example.test', GIT_COMMITTER_NAME: 'f', GIT_COMMITTER_EMAIL: 'f@example.test' } }).toString().trim();
 const budget = { reservePercent: 0, minRemainingPercent: 0 };
@@ -607,6 +607,26 @@ test('an unsafe safety review blocks promotion; a weakly validated bug is blocke
   await pass(g);
   assert.deepEqual(await pass(g), [{ ticket: 'TALIN-5', outcome: 'promotion-blocked', reason: 'validity: bug with plausible and 1 valid evidence' }]);
   assert.equal(g.calls().length, 1);
+});
+
+test('the Triage page gets each promoted ticket from the target projection, startable only while its project and status allow', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable()), review: safe });
+  await pass(f); await pass(f);
+  const data = f.journal.at(-1)!.data!, created = current(f, 'TAL-100');
+  const old = { ...data, promotedId: undefined, projectId: undefined }, other = { ticket: 'TALIN-9', outcome: 'needs-owner', inboxId: 'TALIN' };
+  const found = promotedTickets(f.c, f.kanvil, [{ id: 7, data }, { id: 6, data: old }, { id: 5, data: other }]);
+  assert.deepEqual(Object.keys(found), ['6', '7'], 'only promoted results with a projected ticket');
+  assert.deepEqual(found[7], { taskId: created.id, projectId: 'TAL', key: 'TAL-100', title: 'Launch crash with empty saved state', status: created.status, priority: 'high', difficulty: 'med', labels: labelsOf(created), automationReady: true });
+  assert.equal(found[6].taskId, created.id, 'an older entry with only the key is found by key');
+
+  const events = [{ id: 7, time: '2026-01-01T00:00:00Z', kind: 'triage', jobId: null, text: 'TALIN-5 promoted to TAL-100', data }, { id: 5, time: '2026-01-01T00:00:00Z', kind: 'triage', jobId: null, text: 'TALIN-9 needs the owner', data: other }];
+  const store = { get: (key: string) => key === 'triagePromoted' ? JSON.stringify(found) : null, events: () => events };
+  const results = (c: typeof f.c) => triageResults(c, store as never) as (typeof events[number] & { promotedTicket?: { key: string; unavailable: string | null } })[];
+  assert.deepEqual(results(f.c).map(r => [r.id, r.promotedTicket?.key, r.promotedTicket?.unavailable]), [[7, 'TAL-100', null], [5, undefined, undefined]]);
+  const tal = f.c.projects.findIndex(p => p.kanvilId === 'TAL'), withProject = (changes: object) => ({ ...f.c, projects: f.c.projects.map((p, i) => i === tal ? { ...p, ...changes } : p) });
+  assert.equal(results(withProject({ enabled: false }))[0].promotedTicket?.unavailable, 'Project disabled in Factory settings');
+  assert.match(results(withProject({ readyStatuses: ['backlog'] }))[0].promotedTicket?.unavailable ?? '', /^Ticket is \w+; it must be in backlog$/);
 });
 
 test('a readback mismatch marks promotion-failed, leaves the created ticket held, and is never retried', async t => {

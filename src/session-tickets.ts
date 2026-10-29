@@ -8,7 +8,7 @@ import { T3, Kanvil, KanvilTaskNotFound, taskSchema, type Task, type Session } f
 import { Store, type Job, type SessionRef, type SessionSource, type SessionThread, type SessionTicket } from './store.ts';
 import { ticketDifficulty } from './policy.ts';
 import { log, safeError } from './scheduler.ts';
-import type { Config } from './config.ts';
+import type { Config, Project } from './config.ts';
 import { importedTickets, importedTicketSource } from './imported-tickets.ts';
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'];
@@ -443,6 +443,9 @@ export function dismissSessionTicket(store: Store, taskId: string) {
   return { ok: true, taskId };
 }
 
+/** Why Factory cannot start a ticket in this project, or null. */
+export const projectUnavailable = (project: Project | undefined) => !project ? 'Project not configured in Factory' : !project.enabled ? 'Project disabled in Factory settings' : null;
+
 // The list as the page shows it: actionable, not dismissed, not consumed by a confirmed Factory start, in priority order.
 export function sessionTicketStatus(c: Config, store: Store) {
   const jobs = store.jobSummaries(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
@@ -464,7 +467,7 @@ export function sessionTicketStatus(c: Config, store: Store) {
     const name = project?.name ?? known?.name ?? r.projectId;
     return [{ taskId: r.taskId, projectId: r.projectId, project: name, key: r.key, number: r.number, title: r.title, priority: r.priority, status: r.status, labels: r.labels, difficulty, automationReady: r.automationReady, createdAt: r.createdAt, refreshedAt: r.refreshedAt, refreshError: r.refreshError ?? null,
       sources: sources.map(s => ({ threadId: s.threadId, messageId: s.messageId, title: s.title, at: s.at })),
-      unavailable: !project ? 'Project not configured in Factory' : !project.enabled ? 'Project disabled in Factory settings' : null }];
+      unavailable: projectUnavailable(project) }];
   }).toSorted((a, b) => (PRIORITIES.indexOf(a.priority) - PRIORITIES.indexOf(b.priority)) || a.key.replace(/-\d+$/, '').localeCompare(b.key.replace(/-\d+$/, '')) || a.number - b.number);
   return { at: store.get('sessionTickets:at') || null, error: JSON.parse(store.get('sessionTickets:error') || 'null') as SessionTicketsError | null, rows };
 }
