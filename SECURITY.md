@@ -28,9 +28,9 @@ The agent receives scoped ticket instructions, but its configured runtime still 
 - **Rendered by code.** The promoted ticket is a fixed template filled from the schema-bounded proposal, code-rendered evidence links, and the inbox key. The proposal is the triage model's own description of what it verified; the report itself is never copied.
 - **Deterministic lint.** URLs, code, shell-like text, secret and credential words, absolute or outside paths, and agent-aimed directives block promotion. Security work, `research`, and changes to CI, release, dependency, and auth paths need the owner.
 - **Independent review.** A second model run with no tools, no snapshot and the same minimal environment compares the rendered ticket with the raw report and must answer `safe`.
-- **Idempotent and verified.** One request ID per inbox ticket; the created ticket is read back and a mismatch stops promotion without retry.
+- **Idempotent and verified.** One request ID per inbox ticket. The ticket is created held and not ready, read back, and released only when every field matches; a mismatch leaves it held and stops promotion without retry. A hold on the inbox report stops promotion.
+- **Delivery guard.** A `from-user-report` ticket's dispatch prompt limits the run to the acceptance criteria in source and test files. Besides the factory's delivery workflow, it allows only the documented build and test commands, never a command taken from the ticket; it forbids opening the inbox ticket or fetching URLs, and stops for the owner before CI, release, dependency, credential, or auth edits.
 - **Bounded rate.** `inbox.maxPromotionsPerDay` caps each inbox; `0` pauses it.
-- **Delivery guard.** A `from-user-report` ticket's dispatch prompt limits the run to the acceptance criteria in source and test files, forbids opening the inbox ticket, fetching URLs, or running anything but the documented build and test commands, and stops for the owner before CI, release, dependency, credential, or auth edits.
 
 `doctor` runs the real CLI with the exact triage flags against a canary file outside a snapshot and a shell command. It fails unless both are refused. Run it after every Claude CLI upgrade.
 

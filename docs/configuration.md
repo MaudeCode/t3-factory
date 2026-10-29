@@ -100,12 +100,12 @@ Invalid output, a CLI error, or a second timeout labels the report `triage-faile
 
 #### Promotion
 
-An `actionable` verdict also returns a `proposal`: a title (at most 120 characters), problem (1,500), expected behavior (800), and 1 to 8 acceptance criteria (200 each), written by the model from what it verified in the code. Factory code keeps that output with a hash of the report text. On a later pass, a triaged `verdict:actionable` report without a final promotion label goes through these checks in order:
+An `actionable` verdict also returns a `proposal`: a title (at most 120 characters), problem (1,500), expected behavior (800), and 1 to 8 acceptance criteria (200 each), written by the model from what it verified in the code. Factory code keeps that output with a hash of the report text. On a later pass, a triaged `verdict:actionable` report without a final promotion label or a `holdReason` goes through these checks in order:
 
 1. **Gate.** Not `injectionSuspected`, not a duplicate, and a proposal is present. `research` needs the owner. A `bug` needs `confirmed-in-code`, a `feature` `confirmed-in-code` or `plausible`, and each needs at least one evidence location that exists in the snapshot (`validity`). Every proposal field must pass the lint rules `url`, `code`, `shell`, `secret`, `path` (absolute or outside the repository) and `directive` (agent-aimed phrases such as "ignore" or "system prompt"). `workType: sec`, or an evidence or proposal path matching `sensitivePaths`, needs the owner.
 2. **Daily limit.** Over `maxPromotionsPerDay`, the report is labelled `promotion-queued` and waits.
 3. **Safety review.** A second run with no tools at all (`--tools ""`) in an empty directory sees only the rendered ticket and the report in nonce tags, and returns `{ safe, reason }`. It is admitted against the Claude budget like a triage run.
-4. **Create.** One ticket in the target project, created with a request ID derived from the inbox ticket so a retry cannot create a second. The title is the proposal title. The description has Problem, Expected, Evidence links at the snapshot commit, and an origin line naming the inbox key; it carries no report text. The acceptance criteria are the proposal items. Native kind, difficulty, priority and scopes are set, with labels for the work type, difficulty and scopes plus `sf` and `from-user-report`, `automationReady: true`, no `holdReason`, and the project's first ready status. The ticket is read back and checked field by field.
+4. **Create.** One ticket in the target project, created with a request ID derived from the inbox ticket so a retry cannot create a second. The title is the proposal title. The description has Problem, Expected, Evidence links at the snapshot commit, and an origin line naming the inbox key; it carries no report text. The acceptance criteria are the proposal items. Native kind, difficulty, priority and scopes are set, with labels for the work type, difficulty and scopes plus `sf` and `from-user-report`, and the project's first ready status. The inbox ticket is reread first, so a hold placed since the pass started stops the create. The ticket is created with `automationReady: false` and a verification `holdReason`, read back and checked field by field, and only then released to `automationReady: true` with no hold.
 5. **Close the report.** The inbox ticket is retitled with the vetted title, related `duplicate` to the new ticket, labelled `promoted`, commented with the new key, and moved to `done`.
 
 Outcomes on the inbox ticket:
@@ -116,7 +116,7 @@ Outcomes on the inbox ticket:
 | `promotion-queued` | Daily limit reached, or `0` | Promotes automatically when allowed |
 | `promotion-blocked` | Gate, lint or validity failure, or an unsafe review; a comment names the reason | None; the report stays in the inbox |
 | `needs-owner` | `research`, `sec`, or a sensitive path; `holdReason` names the check | The owner decides |
-| `promotion-failed` | The readback did not match | Never retried automatically |
+| `promotion-failed` | The readback did not match; the created ticket keeps its verification hold and is not ready | Never retried automatically |
 
 An actionable report triaged before proposals existed, or whose report text has changed since, has no usable saved output, so it is triaged again first, replacing its earlier `verdict:` and `validation:` labels. Promotion runs in the triage passes, so the triage switch pauses it for every inbox.
 

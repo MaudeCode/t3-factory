@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
-import { admitTriage, inboxes, needsTriage, promotionGate, quoteSummary, rememberTriage, triageCanary, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
+import { admitTriage, inboxes, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
 import { log, triageRows } from '../src/scheduler.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'f', GIT_AUTHOR_EMAIL: 'f@example.test', GIT_COMMITTER_NAME: 'f', GIT_COMMITTER_EMAIL: 'f@example.test' } }).toString().trim();
@@ -490,9 +490,15 @@ test('an actionable, confirmed bug becomes one templated, factory-ready ticket a
     `- [\`src/app.ts:3\`](https://github.com/fixture/tal/blob/${f.commit}/src/app.ts#L3)`, '',
     'Auto-promoted from an external user report (TALIN-5). The report is untrusted and is not reproduced here; do not open it.'].join('\n'));
   assert.equal(fields.acceptanceCriteria, '- Launching with empty saved state opens the main view\n- A regression test covers empty saved state');
-  assert.deepEqual([fields.kind, fields.difficulty, fields.priority, fields.scopes, fields.automationReady, fields.holdReason, fields.status], ['bug', 'med', 'high', ['app'], true, null, 'todo']);
+  assert.deepEqual([fields.kind, fields.difficulty, fields.priority, fields.scopes, fields.status], ['bug', 'med', 'high', ['app'], 'todo']);
+  assert.deepEqual([fields.automationReady, fields.holdReason], [false, VERIFYING_HOLD], 'created held and not ready');
   assert.deepEqual(fields.labels, ['bug', 'med', 'app', 'sf', 'from-user-report']);
   assert.ok(named(f, 'task').some(e => e.args[0] === current(f, 'TAL-100').id), 'the created ticket is read back');
+  // Released only after the readback matched.
+  const release = named(f, 'updateTicket').find(e => e.args[0] === 'TAL')!;
+  assert.deepEqual([release.args[1], release.args[3]], [current(f, 'TAL-100').id, { automationReady: true, holdReason: null }]);
+  assert.ok(named(f, 'updateTicket').indexOf(release) < named(f, 'updateTicket').findIndex(e => e.args[0] === 'TALIN' && (e.args[3] as { status?: string }).status === 'done'));
+  assert.deepEqual([current(f, 'TAL-100').automationReady, current(f, 'TAL-100').holdReason], [true, null]);
 
   // The safety review ran with no tools in an empty directory, seeing the rendered ticket and the raw report.
   const review = f.calls()[1];
@@ -600,16 +606,33 @@ test('an unsafe safety review blocks promotion; a weakly validated bug is blocke
   assert.equal(g.calls().length, 1);
 });
 
-test('a readback mismatch marks promotion-failed and is never retried', async t => {
+test('a readback mismatch marks promotion-failed, leaves the created ticket held, and is never retried', async t => {
   const f = fixture(t);
   f.mode({ stdout: reply(promotable()), review: safe });
   await pass(f);
   const read = f.kanvil.task;
-  f.kanvil.task = async (...args) => ({ ...await read(...args), automationReady: false });
-  assert.deepEqual(await pass(f), [{ ticket: 'TALIN-5', outcome: 'promotion-failed', reason: 'readback mismatch: automationReady', promoted: 'TAL-100' }]);
+  f.kanvil.task = async (id, projectId) => { const ticket = await read(id, projectId); return projectId === 'TAL' ? { ...ticket, labels: [{ name: 'bug' }] } : ticket; };
+  assert.deepEqual(await pass(f), [{ ticket: 'TALIN-5', outcome: 'promotion-failed', reason: 'readback mismatch: labels', promoted: 'TAL-100' }]);
   assert.ok(labelsOf(current(f, 'TALIN-5')).includes('promotion-failed'));
+  assert.deepEqual([current(f, 'TAL-100').automationReady, current(f, 'TAL-100').holdReason], [false, VERIFYING_HOLD], 'nothing dispatchable is left behind');
+  assert.ok(!named(f, 'updateTicket').some(e => e.args[0] === 'TAL'));
   assert.deepEqual(await pass(f), []);
   assert.equal(named(f, 'createTicket').length, 1);
+});
+
+test('an operator hold on the report stops promotion, including one set after the pass read', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable()), review: safe });
+  await pass(f);
+  const at = f.projects.TALIN.findIndex(t => t.key === 'TALIN-5'), triagedReport = f.projects.TALIN[at];
+  f.projects.TALIN[at] = { ...triagedReport, holdReason: 'Owner is checking this report', version: ++version };
+  assert.deepEqual(await pass(f), [], 'a held report is not a candidate');
+  // The hold lands after the pass read: the fresh check before create still stops it.
+  f.projects.TALIN[at] = triagedReport;
+  const tasks = f.kanvil.tasks;
+  f.kanvil.tasks = async (...args) => { const list = [...await tasks(...args)]; if (args[0] === 'TALIN') f.projects.TALIN[at] = { ...triagedReport, holdReason: 'Owner is checking this report', version: ++version }; return list; };
+  assert.deepEqual(await pass(f), []);
+  assert.deepEqual(named(f, 'createTicket'), []);
 });
 
 // Reports already triaged as actionable, each with its saved triage output.

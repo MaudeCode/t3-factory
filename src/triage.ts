@@ -75,7 +75,8 @@ const failed = (t: Task, inbox: Inbox['inbox']) => open(t, inbox) && names(t).in
 // Promotion outcomes on the inbox ticket. `promotion-queued` waits on the inbox's daily limit; the rest are final.
 const FINAL_PROMOTION_LABELS = ['promoted', 'promotion-blocked', 'needs-owner', 'promotion-failed'], PROMOTION_LABELS = [...FINAL_PROMOTION_LABELS, 'promotion-queued'];
 /** A triaged actionable report with no final promotion outcome, including ones triaged before proposals existed. */
-export const awaitingPromotion = (t: Task, inbox: Inbox['inbox']) => open(t, inbox) && names(t).includes('triaged') && names(t).includes('verdict:actionable')
+// An operator's hold on the report keeps it out of promotion.
+export const awaitingPromotion = (t: Task, inbox: Inbox['inbox']) => open(t, inbox) && !t.holdReason && names(t).includes('triaged') && names(t).includes('verdict:actionable')
   && !names(t).includes('triage-failed') && !FINAL_PROMOTION_LABELS.some(label => names(t).includes(label));
 const oldestFirst = (a: Task, b: Task) => a.createdAt.localeCompare(b.createdAt) || (a.key ?? '').localeCompare(b.key ?? '');
 const isSpam = (t: Task) => t.status === 'cancelled' && names(t).includes('verdict:spam');
@@ -326,6 +327,8 @@ export function promotionGate(output: TriageOutput, evidence: Evidence, sensitiv
   return { outcome: 'eligible' };
 }
 
+// The ticket is created held and not ready, and released only once its readback matches, so a failed check leaves nothing dispatchable.
+export const VERIFYING_HOLD = 'Auto-promoted from an inbox report; held until the factory verifies this ticket. If this hold stays, verification failed and the owner should review the ticket.';
 /** The promoted ticket, rendered by code from validated fields only. */
 export function promotedFields(target: Inbox, ticket: Task, { output, evidence, commit }: Triaged) {
   const p = output.proposal!;
@@ -336,7 +339,7 @@ export function promotedFields(target: Inbox, ticket: Task, { output, evidence, 
     acceptanceCriteria: p.acceptanceCriteria.map(item => `- ${item}`).join('\n'),
     kind: output.kind, difficulty: output.difficulty, priority: output.priority, scopes: output.scopes,
     labels: union([output.workType, output.difficulty, ...output.scopes, 'sf', 'from-user-report']),
-    automationReady: true, holdReason: null, status: target.project.readyStatuses[0],
+    automationReady: false, holdReason: VERIFYING_HOLD, status: target.project.readyStatuses[0],
   };
 }
 type Fields = ReturnType<typeof promotedFields>;
@@ -348,7 +351,8 @@ function readbackMismatch(fields: Fields, projectId: string, t: Task) {
     acceptanceCriteria: String(t.acceptanceCriteria ?? '').trim() === fields.acceptanceCriteria.trim(),
     kind: t.kind === fields.kind, difficulty: t.difficulty === fields.difficulty, priority: t.priority === fields.priority,
     scopes: sorted(t.scopes ?? []) === sorted(fields.scopes), labels: fields.labels.every(label => names(t).includes(label)),
-    automationReady: t.automationReady === true, holdReason: !t.holdReason,
+    // Still held for verification, or already released by an earlier attempt.
+    readiness: t.automationReady ? !t.holdReason : t.holdReason === VERIFYING_HOLD,
   }).filter(([, ok]) => !ok).map(([field]) => field).join(', ');
 }
 
@@ -422,11 +426,14 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
     store.set(triagedKey(ticket), JSON.stringify(saved));
   }
   if (!saved.review.safe) return block(`safety review: ${saved.review.reason}`);
+  // The pass read may be stale: a hold or a final outcome set since then stops the create.
+  if (!awaitingPromotion(await kanvil.task(ticket.id, ticket.projectId), target.inbox)) return undefined;
   const created = await kanvil.createTicket(target.project.kanvilId, fields, requestId(ticket, 'promote', false));
   store.set(promotionsKey(target), JSON.stringify({ ...recent, [ticket.id]: recent[ticket.id] ?? now }));
   const readback = await kanvil.task(created.id, target.project.kanvilId);
   const mismatch = readbackMismatch(fields, target.project.kanvilId, readback);
   if (mismatch) { await settle('promotion-failed'); return result('promotion-failed', { reason: `readback mismatch: ${mismatch}`, promoted: readback.key }); }
+  if (!readback.automationReady) await kanvil.updateTicket(target.project.kanvilId, readback.id, readback.version!, { automationReady: true, holdReason: null }, requestId(readback, 'release'));
   // The inbox ticket then shows the vetted title, not the reporter's, wherever it is listed or related.
   await kanvil.addRelation(ticket.projectId, ticket.id, readback.id, 'duplicate', requestId(ticket, 'promoted-relation', false));
   await kanvil.addComment(ticket.projectId, ticket.id, `Promoted to ${readback.key}.`, requestId(ticket, 'promoted-comment', false));
