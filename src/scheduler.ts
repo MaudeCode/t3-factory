@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { taskDifficulty, taskHold } from './policy.ts';
 import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
-import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket } from './store.ts';
+import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
@@ -854,8 +854,8 @@ function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsS
 }
 // A long-lived caller (the service) keeps one T3 client and one connected Kanvil client across passes;
 // a one-shot caller leaves these out and the pass opens and closes its own.
-export interface Clients { t3?: T3; kanvil?: Kanvil; github?: Pick<GitHub, 'pullRequests'>; deferCleanup?: boolean; deferReconcile?: boolean; backgroundInventory?: boolean; workKind?: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; currentConfig?: () => Config }
-export type Decision = { reason: string; at: string } & Record<string, unknown>;
+export interface Clients { t3?: T3; kanvil?: Kanvil; github?: Pick<GitHub, 'pullRequests'>; deferCleanup?: boolean; deferReconcile?: boolean; backgroundInventory?: boolean; workKind?: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; currentConfig?: () => Config; decide?: ReturnType<Store['decisionRecorder']> }
+export type { Decision } from './store.ts';
 type Queue = Awaited<ReturnType<typeof inventory>>;
 
 // Running jobs retain reservations while commands can wake them without another admission check.
@@ -907,6 +907,7 @@ export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'pro
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
+  clients = { ...clients, decide: clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual }) };
   if (options.provider && (!options.manual || options.model && options.model !== 'auto')) throw new Error('A provider choice requires manual automatic model selection');
   if (clients.github) githubClients.set(store, clients.github);
   if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
@@ -914,8 +915,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
     const result = { reason, at: new Date().toISOString(), ...extra };
-    if (clients.workKind === 'upstream' || clients.workKind === 'chains') store.set(clients.workKind === 'upstream' ? 'upstreamDecision' : 'chainDecision', JSON.stringify(result));
-    else store.decide(result);
+    clients.decide!(result);
     log('decision', result); return result;
   };
   const skip = skips(options);
@@ -928,7 +928,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     if (!options.manual && !clients.deferReconcile) await reconcile(c, store, t3, kanvil, shell.threads, !options.dryRun && !options.doctor, !clients.deferCleanup);
     // Chains the user started run whether or not automation is on; they take their slots first.
     if (!options.manual && !options.doctor && !options.dryRun && (!clients.workKind || clients.workKind === 'chains')) {
-      const dispatches = await runPlans(c, store, t3, kanvil, instances, shell.threads, undefined, clients.providerDriver, clients.currentConfig);
+      const dispatches = await runPlans(c, store, t3, kanvil, instances, shell.threads, undefined, clients.providerDriver, clients.currentConfig, clients.decide);
       if (clients.workKind === 'chains') return decision(dispatches.some(result => result.reason === 'dispatched') ? 'dispatched' : 'plans-checked', { dispatches });
     }
     const jobs = store.jobs();
@@ -994,7 +994,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     }
     catch (error) { if (ticketsOn) throw error; queueRead = false; log('queue-read-failed', { message: safeError(error) }); }
     if (options.manual && options.ticket && !queue.ready.length) {
-      const chained = await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision, clients.currentConfig);
+      const chained = await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision, clients.currentConfig, clients.decide);
       if (chained) return chained;
     }
     await backgroundCheckpoint();
@@ -1045,7 +1045,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       const scoped: Queue = { ready: assignment ? queue.ready.filter(t => t.id === assignment.ticket.id) : [], skipped: queue.skipped, selected: undefined };
       const attempt = async (): Promise<Decision> => {
         try {
-          const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects, inspect: options.doctor, review, shell, queue: scoped, t3, kanvil, currentConfig: clients.currentConfig });
+          const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects, inspect: options.doctor, review, shell, queue: scoped, t3, kanvil, currentConfig: clients.currentConfig }, clients);
           stream.reason = result.reason;
           if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
           if (result.reason === 'dispatched' || result.reason === 'would-dispatch') (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: null, upstream: review?.upstream }));
@@ -1119,6 +1119,7 @@ function preparedInventory(c: Config, store: Store): Queue | undefined {
 }
 
 async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?: { driver: string; instanceDrivers: Map<string, string>; skipProjects: Set<string>; inspect?: boolean; review?: PendingReview; shell?: Awaited<ReturnType<T3['shell']>>; queue?: Queue; t3?: T3; kanvil?: Kanvil; currentConfig?: () => Config }, clients: Clients = {}, activePlanId?: string): Promise<Decision> {
+  const recordDecision = clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual && !options.continuation });
   const preset = options.model && options.model !== 'auto' ? c.models.find(p => p.id === options.model) : undefined;
   if (options.model && options.model !== 'auto' && !preset) throw new Error('Unknown model; select a configured model');
   if (!preset) throw new Error('Select a configured model');
@@ -1129,7 +1130,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   if (ticketKey && !c.projects.some(p => p.enabled && ticketKey.startsWith(`${p.key}-`))) throw new Error('Ticket project is not enabled in the factory settings');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
     const result = { reason, at: new Date().toISOString(), ...extra };
-    store.decide(result); log('decision', result); return result;
+    recordDecision(result); log('decision', result); return result;
   };
   if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && c.upstream?.enabled)) return decision('disabled');
   const t3 = plan?.t3 ?? clients.t3 ?? new T3(c.t3);
@@ -1166,7 +1167,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       queue.ready = open;
     }
     if (!discovery && !review && !queue.ready.length) {
-      const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision, clients.currentConfig ?? plan?.currentConfig) : undefined;
+      const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision, clients.currentConfig ?? plan?.currentConfig, recordDecision) : undefined;
       return chained ?? decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
     }
     // A chain continuation is still user-authorized work, but it starts later and on its own, so it keeps the automatic quota and idle policy.
@@ -1399,14 +1400,14 @@ export function chainReady(plan: Pick<Plan, 'target' | 'tickets'>, jobs: Job[]) 
   return [...plan.tickets.filter(free), ...(plan.tickets.every(t => t.done) && free(plan.target) ? [plan.target] : [])].toSorted(byPlanPriority);
 }
 // A blocked manual ticket: describe its chain, run the first runnable blocker, or start the whole chain.
-async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, queue: Pick<Queue, 'skipped'>, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision, currentConfig?: () => Config): Promise<Decision | undefined> {
+async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, queue: Pick<Queue, 'skipped'>, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>): Promise<Decision | undefined> {
   const ticketKey = options.ticket!.trim().toUpperCase();
   const blocked = queue.skipped.find(s => s.key === ticketKey && s.id && /blocker|Umbrella/.test(s.reason));
   if (!blocked?.id) return undefined;
   const tree = await blockerTree(c, kanvil, blocked.id);
   const count = tree.tickets.length;
   if (!options.chain) return decision('blocked-ticket-plan-required', { ticket: ticketKey, tree, message: `${ticketKey} waits on ${count} unfinished ticket${count === 1 ? '' : 's'}. Run the first one that can start, or the whole chain and then ${ticketKey}.` });
-  const run = (opts: CycleOptions): Promise<Decision> => opts.model && opts.model !== 'auto' ? dispatchOne(c, store, opts, undefined, { t3, kanvil, currentConfig }) : cycle(c, store, opts, { t3, kanvil, currentConfig });
+  const run = (opts: CycleOptions): Promise<Decision> => opts.model && opts.model !== 'auto' ? dispatchOne(c, store, opts, undefined, { t3, kanvil, currentConfig, decide }) : cycle(c, store, opts, { t3, kanvil, currentConfig, decide });
   if (options.chain === 'first') {
     const pick = chainReady(tree, store.jobs()).find(t => t.runnable && t.id !== tree.target.id);
     if (!pick) return decision('chain-nothing-runnable', { ticket: ticketKey, tree, message: `Nothing in the chain to ${ticketKey} can start right now.` });
@@ -1417,12 +1418,12 @@ async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, in
   const context = readContext();
   if (context) context.own({ planId: plan.id }, () => store.savePlan(plan));
   else store.savePlan(plan);
-  const dispatches = await runPlans(c, store, t3, kanvil, instances, threads, plan.id, undefined, currentConfig);
+  const dispatches = await runPlans(c, store, t3, kanvil, instances, threads, plan.id, undefined, currentConfig, decide);
   const started = dispatches.filter(d => d.reason === 'dispatched').length;
   return decision('plan-started', { ticket: ticketKey, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Chain to ${ticketKey} started: ${started} of ${count} ticket${count === 1 ? '' : 's'} running now, the rest as they unblock.` });
 }
 // Advance every active chain: refresh ticket states, finish chains whose tickets are all done, start what can start within the run limits.
-export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], only?: string, providerDriver?: string, currentConfig?: () => Config): Promise<Decision[]> {
+export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], only?: string, providerDriver?: string, currentConfig?: () => Config, decide = store.decisionRecorder({ workKind: 'chains', providerDriver })): Promise<Decision[]> {
   const results: Decision[] = [];
   for (const original of store.plans().filter(p => p.state === 'active' && (!only || p.id === only))) {
     await backgroundCheckpoint();
@@ -1458,7 +1459,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       planned.set(driver, (planned.get(driver) ?? 0) + 1);
       pending.push(independentOperation(() => store.exclusive([`ticket:${t.id}`], async () => {
         try {
-          const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig }, plan.id);
+          const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
           results.push(result);
           t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
         } catch (error) { t.note = safeError(error); results.push({ reason: 'error', at: new Date().toISOString(), ticket: t.key, message: t.note }); }
@@ -1560,7 +1561,7 @@ export function writeStatus(c: Config, store: Store) {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
     triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: triageResults(c, store),
-    enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: JSON.parse(store.get('lastDecision') ?? 'null'),
+    enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: store.currentDecision(),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
