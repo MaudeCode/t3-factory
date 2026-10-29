@@ -480,7 +480,7 @@ test('an actionable, confirmed bug becomes one templated, factory-ready ticket a
   f.mode({ stdout: reply(promotable()), review: safe });
   assert.deepEqual((await pass(f)).map(r => r.outcome), ['triaged']);
   const [promotedResult] = await pass(f);
-  assert.deepEqual(promotedResult, { ticket: 'TALIN-5', outcome: 'promoted', promoted: 'TAL-100' });
+  assert.deepEqual(promotedResult, { ticket: 'TALIN-5', outcome: 'promoted', promoted: 'TAL-100', promotedId: current(f, 'TAL-100').id });
 
   const [create] = named(f, 'createTicket'), [projectId, fields] = create.args as [string, Record<string, unknown>];
   assert.equal(projectId, 'TAL');
@@ -516,6 +516,7 @@ test('an actionable, confirmed bug becomes one templated, factory-ready ticket a
   assert.deepEqual([inbox.title, inbox.status], ['Launch crash with empty saved state', 'done']);
   assert.ok(labelsOf(inbox).includes('promoted'));
   assert.equal(f.journal.at(-1)!.text, 'TALIN-5 promoted to TAL-100');
+  assert.deepEqual([f.journal.at(-1)!.data?.projectId, f.journal.at(-1)!.data?.promotedId], ['TAL', current(f, 'TAL-100').id], 'the journal entry can link the new ticket');
   assert.deepEqual(await pass(f), [], 'a promoted report is final');
 });
 
@@ -614,7 +615,7 @@ test('a readback mismatch marks promotion-failed, leaves the created ticket held
   await pass(f);
   const read = f.kanvil.task;
   f.kanvil.task = async (id, projectId) => { const ticket = await read(id, projectId); return projectId === 'TAL' ? { ...ticket, labels: [{ name: 'bug' }] } : ticket; };
-  assert.deepEqual(await pass(f), [{ ticket: 'TALIN-5', outcome: 'promotion-failed', reason: 'readback mismatch: labels', promoted: 'TAL-100' }]);
+  assert.deepEqual(await pass(f), [{ ticket: 'TALIN-5', outcome: 'promotion-failed', reason: 'readback mismatch: labels', promoted: 'TAL-100', promotedId: current(f, 'TAL-100').id }]);
   assert.ok(labelsOf(current(f, 'TALIN-5')).includes('promotion-failed'));
   assert.deepEqual([current(f, 'TAL-100').automationReady, current(f, 'TAL-100').holdReason], [false, VERIFYING_HOLD], 'nothing dispatchable is left behind');
   assert.ok(!named(f, 'updateTicket').some(e => e.args[0] === 'TAL'));

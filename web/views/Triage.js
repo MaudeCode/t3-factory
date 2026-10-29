@@ -24,12 +24,14 @@ function Queue({ row, now }) {
   </div>`;
 }
 
-// One finished report from the journal, linked to its inbox ticket.
+// One finished report from the journal, linked to its inbox ticket and, once promoted, to the new ticket.
 function Result({ event, now }) {
   const d = event.data, c = config.value;
   const [tone, label] = d.outcome === "triaged" ? [verdictTone[d.verdict] ?? "", d.verdict] : outcomeTag[d.outcome] ?? ["attention", "error"];
   const detail = d.outcome === "triaged" ? (d.duplicateOf ? `duplicate of ${d.duplicateOf}` : "") : d.outcome === "promoted" ? `promoted to ${d.promoted}` : d.reason;
-  const tag = html`<${Tag} tone=${tone}>${label}<//>`;
+  // The tag opens the promoted ticket; older journal entries carry only its key, so their tag stays plain.
+  const promoted = d.promotedId && d.projectId && kanvil(c, "projects", d.projectId, "tickets", d.promotedId);
+  const tag = html`<${Tag} tone=${tone} href=${promoted || undefined} title=${promoted ? `Open ${d.promoted} in Kanvil` : undefined}>${label}<//>`;
   return html`<div class="release" key=${event.id}>
     <span><${RowBody} title=${html`<${Link} href=${kanvil(c, "projects", d.inboxId, "tickets", d.ticketId)} class="mono">${d.ticket}<//>`}>${d.project}${detail ? `, ${detail}` : ""}<//></span>
     <span class="release-state">${tag}</span>
