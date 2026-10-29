@@ -20,6 +20,7 @@ const state = {
     { id: 5, time: ago(2), kind: 'triage', text: 'PIN-6 needs the owner: sensitive: workType sec', data: { ticket: 'PIN-6', ticketId: 't6', inboxId: 'pin', project: 'Example', outcome: 'needs-owner', reason: 'sensitive: workType sec' } },
     { id: 4, time: ago(3), kind: 'triage', text: 'PIN-5 promotion queued: 2 promotions in the last 24 hours', data: { ticket: 'PIN-5', ticketId: 't5', inboxId: 'pin', project: 'Example', outcome: 'promotion-queued', reason: '2 promotions in the last 24 hours' } },
     { id: 3, time: ago(4), kind: 'triage', text: 'PIN-3 triaged: duplicate, duplicate of EX-12', data: { ticket: 'PIN-3', ticketId: 't3', inboxId: 'pin', project: 'Example', outcome: 'triaged', verdict: 'duplicate', duplicateOf: 'EX-12' } },
+    { id: 9, time: ago(200), kind: 'triage', text: 'GONE-1 promoted to EX-38', data: { ticket: 'GONE-1', ticketId: 'g1', inboxId: 'gone', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-38', promotedId: 't38' } },
     { id: 1, time: ago(90), kind: 'triage', text: 'PIN-1 promoted to EX-39', data: { ticket: 'PIN-1', ticketId: 't1', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-39' } },
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
   ] },
@@ -61,7 +62,7 @@ async function run() {
   await show();
   const text = () => root.textContent;
   assert(/2 waiting, 1 failed, 3 promoted, 1 queued, 1 blocked, 1 need the owner, oldest 3 h \d+ min ago, triaging PIN-4/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear'), 'each inbox shows its queue on one line');
-  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-40,PIN-6,PIN-5,PIN-3,EX-41,PIN-2,PIN-1', 'results list newest first, promoted ones as their new ticket');
+  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-40,PIN-6,PIN-5,PIN-3,EX-41,PIN-2,PIN-1,GONE-1', 'results list newest first, promoted ones as their new ticket');
   const ex40 = row('EX-40');
   assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
   assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
@@ -70,6 +71,7 @@ async function run() {
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
   assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
+  assert(row('GONE-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t38', 'a result from an inbox no longer configured keeps its recorded project');
   // Start goes through the shared start path with the page's overrides; a refusal lands in the notification area.
   button('Run EX-40 now').click(); await pause();
   for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();

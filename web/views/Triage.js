@@ -64,7 +64,7 @@ function Result({ row, now, selection, start, progress }) {
     <//>`;
   }
   // A promoted result the scheduler could not read back links its tag to the promoted key in the inbox's project.
-  const promoted = d.promoted && row.projectId && kanvil(c, "projects", d.projectId ?? row.projectId, "tickets", d.promotedId ?? d.promoted);
+  const promoted = d.promoted && row.projectId && kanvil(c, "projects", row.projectId, "tickets", d.promotedId ?? d.promoted);
   const badge = promoted ? html`<${Tag} tone=${tone} href=${promoted} title=${`Open ${d.promoted} in Kanvil`}>${label}<//>` : tag;
   return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} plain>${when}<//>`;
 }
@@ -83,10 +83,11 @@ export function Triage() {
   const requests = launchOperations.value;
   const progress = (t) => requests.find((op) => ["queued", "running"].includes(op.state) && ticketKey(op.input.ticket) === ticketKey(t.key));
   // A promoted ticket the scheduler read back is a startable row; every other result is its report, titled with its outcome.
+  // A report row keeps the project its journal entry recorded; older entries use the inbox's current project.
   const inboxProject = (id) => c.projects.find((p) => p.inbox?.kanvilId === id);
   const all = results.map((event) => {
     const t = event.promotedTicket, project = c.projects.find((p) => p.kanvilId === t?.projectId);
-    return t ? { ...t, id: t.taskId, promoted: true, project, event, createdAt: event.time } : { id: `report-${event.id}`, event, key: event.data.ticket, title: outcomeText(event), projectId: inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time };
+    return t ? { ...t, id: t.taskId, promoted: true, project, event, createdAt: event.time } : { id: `report-${event.id}`, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time };
   });
   const starting = (row) => row.promoted && (!!progress(row) || openRun(row));
   const rows = all.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
