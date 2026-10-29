@@ -29,8 +29,10 @@ function Result({ event, now }) {
   const d = event.data, c = config.value;
   const [tone, label] = d.outcome === "triaged" ? [verdictTone[d.verdict] ?? "", d.verdict] : outcomeTag[d.outcome] ?? ["attention", "error"];
   const detail = d.outcome === "triaged" ? (d.duplicateOf ? `duplicate of ${d.duplicateOf}` : "") : d.outcome === "promoted" ? `promoted to ${d.promoted}` : d.reason;
-  // The tag opens the promoted ticket; older journal entries carry only its key, so their tag stays plain.
-  const promoted = d.promotedId && d.projectId && kanvil(c, "projects", d.projectId, "tickets", d.promotedId);
+  // The tag opens the promoted ticket. Older journal entries carry only its key: the inbox's project and the key,
+  // which Kanvil's ticket page also resolves, stand in for the id.
+  const target = d.projectId ?? c.projects.find((p) => p.inbox?.kanvilId === d.inboxId)?.kanvilId;
+  const promoted = d.promoted && target && kanvil(c, "projects", target, "tickets", d.promotedId ?? d.promoted);
   const tag = html`<${Tag} tone=${tone} href=${promoted || undefined} title=${promoted ? `Open ${d.promoted} in Kanvil` : undefined}>${label}<//>`;
   return html`<div class="release" key=${event.id}>
     <span><${RowBody} title=${html`<${Link} href=${kanvil(c, "projects", d.inboxId, "tickets", d.ticketId)} class="mono">${d.ticket}<//>`}>${d.project}${detail ? `, ${detail}` : ""}<//></span>
