@@ -38,6 +38,7 @@ const icons = {
   plus: octicon("plus"),
   trash: octicon("trash"),
   filter: octicon("filter"),
+  search: octicon("search"),
   signOut: octicon("sign-out"),
   paintbrush: octicon("paintbrush"),
   sync: octicon("sync"),

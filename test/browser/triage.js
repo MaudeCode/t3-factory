@@ -1,4 +1,5 @@
 // Real Triage view, settings dialog and start path; synthetic state, toggle, config and dispatch endpoints only.
+import { openSearch } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
@@ -88,7 +89,7 @@ async function run() {
   assert(issues.value.some((i) => i.source === 'Triage starts' && i.error.problems[0].title === "Couldn't start EX-40"), 'a refused start is reported as a Triage start');
   operations.value = []; await pause();
   // Search, filters and selection, as on Session tickets.
-  const search = root.querySelector('[aria-label="Find a ticket"]');
+  const search = await openSearch();
   search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   assert(keys('Tickets') === 'EX-41' && keys('Activity') === 'PIN-8', 'search narrows both lists');
   search.value = 'sensitive'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
@@ -139,6 +140,8 @@ async function promotion() {
   assert(text().includes('Promoted to EX-39') && text().includes('needs owner') && text().includes('sensitive: workType sec') && text().includes('queued'), 'promotion outcomes are listed');
   // The shared limit picker: Paused, 5, 10, 20, 40, Other for any number, and Unlimited.
   const group = (row) => rows()[row].querySelector('[role="radiogroup"]');
+  const one = (row) => new Set([...group(row).children].map((el) => Math.round(el.getBoundingClientRect().top))).size === 1;
+  assert(one(0) && one(1), 'both promotion pickers initially fit one line, including at 382px');
   const choice = (row, name) => [...group(row).querySelectorAll('button')].find((b) => b.textContent === name || b.getAttribute('aria-label') === name);
   const checked = (row) => group(row).querySelector('[aria-checked="true"]')?.textContent;
   const state = (row) => lines()[row].textContent;
@@ -162,14 +165,13 @@ async function promotion() {
   await actions.save(); await pause();
   assert(saves.length === 1 && saves[0].config.projects[0].inbox.maxPromotionsPerDay === 20 && saves[0].config.projects[1].inbox.maxPromotionsPerDay === undefined, 'saving writes only that inbox limit');
   assert(checked(0) === '20' && state(0).includes('20 per day'), 'the saved limit shows');
-  const one = (row) => new Set([...group(row).children].map((el) => Math.round(el.getBoundingClientRect().top))).size === 1;
   assert(one(0) && one(1), 'each picker stays on one line');
   // The server still answers an invalid config with its field error.
   config.value = { ...config.value, projects: [{ ...config.value.projects[0], inbox: { ...config.value.projects[0].inbox, maxPromotionsPerDay: -1 } }, config.value.projects[1]] };
   await actions.save(); await pause();
   assert(saves.length === 2 && notice.value?.error && notice.value.text.startsWith('projects.0.inbox.maxPromotionsPerDay:'), 'the save path rejects an invalid limit with its field error');
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
-  return { saves: saves.length };
+  return { saves: saves.length, promotionPickersOnOneLine: true, viewport: [innerWidth, innerHeight] };
 }
 window.triageTests = { show, run, promotion };
 await show();

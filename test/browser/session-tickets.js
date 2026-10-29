@@ -4,6 +4,7 @@ import "../../web/lib/theme.js";
 import { applyState, operations, status, notice, blocked, serverNow, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { route, match } from "../../web/lib/router.js";
+import { openSearch } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = () => new Promise((resolve) => setTimeout(resolve, 60));
@@ -119,7 +120,7 @@ async function run() {
   for (let n = 0; n < 50 && keys().includes("APP-1"); n++) await pause();
   assert(calls.some((c) => c.url === "/api/session-tickets/t1/dismiss"), "removal posts the task identity");
   assert(keys().join() === "WEB-9,APP-2,APP-5", "the removed entry leaves the list");
-  const search = root.querySelector('[aria-label="Find a ticket"]');
+  const search = await openSearch();
   search.value = "app-5"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
   assert(keys().join() === "APP-5", "search matches ticket keys");
   search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
@@ -149,7 +150,7 @@ async function run() {
   assert(tray()?.querySelector(".issue-title")?.textContent === "T3 /api/orchestration/shell returned HTTP 503", "a saved error without problems still shows its message");
   update({ sessionTickets: { ...state.status.sessionTickets, error: null } }); await pause();
   assert(!tray() && !root.querySelector("button.conn") && root.querySelector('.conn[role="status"]') && !root.querySelector(".stale-list"), "clearing the last issue closes the list and restores the plain indicator");
-  for (const el of [root.querySelector(".next"), root.querySelector('[aria-label="Find a ticket"]')]) { const b = el.getBoundingClientRect(); assert(b.left >= 0 && b.right <= innerWidth, "content fits the viewport"); }
+  for (const el of [root.querySelector(".next"), root.querySelector('button[aria-label="Search"]')]) { const b = el.getBoundingClientRect(); assert(b.left >= 0 && b.right <= innerWidth, "content fits the viewport"); }
   assert(document.documentElement.scrollWidth <= innerWidth, "no horizontal overflow");
   await show({ sessionTickets: { at, error: null, rows: [] } });
   assert(root.querySelector(".empty")?.textContent.includes("No session has reported"), "an empty list says so");
@@ -157,7 +158,40 @@ async function run() {
   assert(root.querySelector(".empty")?.textContent.includes("not been read yet"), "an unread state is not an empty list");
   await controls();
   await startNotices();
+  await density();
   await show();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+async function density() {
+  await show();
+  const head = root.querySelector('.page-head'), height = head.getBoundingClientRect().height;
+  assert(!root.querySelector('input.search'), 'search starts collapsed');
+  const inactiveBackground = getComputedStyle(button('Search')).backgroundColor;
+  assert(root.querySelector('h1 small')?.textContent === '4', 'ticket count stays beside the page title');
+  assert(!root.querySelector('.section.list > header'), 'the list has no repeated section heading');
+  if (innerWidth >= 800) assert(height <= 44.5, 'the title and collapsed toolbar share one row when they fit');
+  const input = await openSearch();
+  assert(document.activeElement === input, 'opening search focuses the field');
+  assert(Math.abs(head.getBoundingClientRect().height - height) < 1, 'opening search does not expand the toolbar');
+  const panel = document.querySelector('.search-panel').getBoundingClientRect();
+  assert(panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8, 'search fits the visible viewport');
+  input.value = 'APP-2'; input.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(keys().join() === 'APP-2' && root.querySelector('h1 small').textContent === '1', 'search filters rows and updates the visible count');
+  const composing = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true });
+  input.dispatchEvent(composing); await pause();
+  assert(!composing.defaultPrevented && document.activeElement === input && root.querySelector('input.search') === input, 'confirming IME input keeps search open and focused');
+  const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  input.dispatchEvent(enter); await pause();
+  assert(enter.defaultPrevented, 'Enter cannot activate the Search button after focus returns to it');
+  assert(!root.querySelector('input.search') && keys().join() === 'APP-2' && button('Search').getAttribute('aria-pressed') === 'true', 'Enter collapses search while keeping its query and active indicator');
+  assert(getComputedStyle(button('Search')).backgroundColor !== inactiveBackground, 'the collapsed search button visibly marks an active query');
+  assert((await openSearch()).value === 'APP-2', 'reopening search keeps the query');
+  button('Clear search').click(); await pause();
+  assert(keys().length === 4 && root.querySelector('h1 small').textContent === '4', 'Clear search restores all rows and the count');
+  assert(getComputedStyle(button('Search')).backgroundColor === inactiveBackground, 'clearing the query removes its visual indicator');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
+  assert(!root.querySelector('input.search') && document.activeElement === button('Search'), 'Escape collapses search and restores focus');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'the compact header and list fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 // Unfinished outcomes of starts from this page live in the notification area with their actions; requests from other pages keep their rows.
@@ -216,7 +250,7 @@ async function controls() {
   await choose('Session', 'Plan APP-2');
   assert(keys().join() === 'APP-1,APP-2', 'selected sessions match any source and retain the chosen order');
   assert(root.querySelector('[aria-label^="Filter runs"]').getAttribute('aria-label').includes('1 active'), 'session picks count as one active facet');
-  const search = root.querySelector('[aria-label="Find a ticket"]');
+  const search = await openSearch();
   search.value = 'APP-2'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   assert(keys().join() === 'APP-2', 'session filters combine with search');
   search.value = 'absent'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
@@ -276,7 +310,7 @@ async function bulk() {
   assert(button('Run selected tickets').disabled, 'an unavailable selected ticket blocks bulk Run with its ordinary hold');
   button('Select visible tickets').click(); await pause();
   assert([...root.querySelectorAll('.next input[type=checkbox]')].every(el => el.checked), 'Select visible selects the shown list');
-  const search = root.querySelector('[aria-label="Find a ticket"]');
+  const search = await openSearch();
   search.value = 'APP-5'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   assert(keys().join() === 'APP-5' && pick('APP-5').checked && root.textContent.includes('1 selected'), 'filter changes drop hidden selections');
   calls = [];
@@ -319,11 +353,12 @@ async function rowHeight() {
   await show({ sessionTickets: { at, error: null, rows: [row('t2', 'APP-2', 'high', { title: 'App: every write shows its result immediately', difficulty: 'high', labels: ['bug', 'sf', 'high', 'app'], sources: [{ threadId: 'thread-t2', title: 'Fix Immediate Action Feedback', at }] })] } });
   const entry = root.querySelector('.next'), height = entry.getBoundingClientRect().height;
   assert(button('Run APP-2 now'), 'Start stays visible before opening the mobile menu');
-  assert(innerWidth > 900 || height <= entry.querySelector('.next-ticket').getBoundingClientRect().height + 1.5, `mobile row height follows its content with visible Start, got ${height}px`);
+  const actions = entry.querySelector('.next-actions').getBoundingClientRect(), ticket = entry.querySelector('.next-ticket').getBoundingClientRect(), rect = entry.getBoundingClientRect();
+  assert(height <= Math.max(ticket.height, actions.height) + 1.5, `row height follows its text or buttons without reserved space, got ${height}px`);
+  assert(Math.abs(actions.top + actions.height / 2 - rect.top - rect.height / 2) <= 1, 'actions are centered beside the whole row');
   if (innerWidth <= 900) {
-    const title = entry.querySelector('.row-body > span').getBoundingClientRect(), actions = entry.querySelector('.next-actions').getBoundingClientRect(), facets = entry.querySelector('.row-body > small').getBoundingClientRect();
-    assert(title.right > actions.left && title.bottom <= actions.top + 0.5, 'the title uses the full row width above the actions');
-    assert(facets.bottom >= actions.bottom - 0.5, 'the actions sit beside the facet lines without adding height');
+    const title = entry.querySelector('.row-body > span').getBoundingClientRect();
+    assert(title.right < actions.left, 'text and actions have separate columns without overlap');
     await more('APP-2');
     const panel = document.querySelector('.popover[aria-label="More actions for APP-2"]');
     assert(panel && ['Open session', 'Remove'].every(label => panel.textContent.includes(label)) && !panel.querySelector('[aria-label="Run APP-2 now"]'), 'menu contains only secondary actions');
@@ -418,7 +453,7 @@ async function providerChoice() {
   return 'provider choice checks passed';
 }
 
-window.sessionTests = { overrides, providerChoice, unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
+window.sessionTests = { overrides, providerChoice, unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, density, overflowEdges, showError, showEmpty };
 await show();
 
 async function unavailableProjects() {

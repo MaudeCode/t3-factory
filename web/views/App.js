@@ -47,11 +47,11 @@ function Updates() {
   useEffect(() => { if (!count) issuesOpen.value = false; }, [count]);
   // A chain choice opened from the list replaces it.
   useEffect(() => { if (blocked.value) issuesOpen.value = false; }, [blocked.value]);
-  if (!count) return html`<span role="status" class=${`conn ${connection.value}`} title=${`Updates: ${state}`}><i></i>${state}</span>`;
+  if (!count) return html`<span role="status" class=${`conn ${connection.value}`} title=${`Updates: ${state}`}><i></i><span class="conn-label">${state}</span></span>`;
   const close = () => (issuesOpen.value = false);
   return html`<span ref=${anchor}>
     <button type="button" class=${`conn ${connection.value}`} aria-expanded=${issuesOpen.value} aria-label=${`Updates: ${state}. ${count} ${count === 1 ? "issue" : "issues"}`} title="Show issues" onClick=${() => (issuesOpen.value = !issuesOpen.value)}>
-      <i></i><span role="status">${state}</span><b class="badge">${count}</b>
+      <i></i><span role="status" class="conn-label">${state}</span><b class="badge">${count}</b>
     </button>
     <${Popover} class="issues" open=${issuesOpen.value} onClose=${close} anchor=${anchor} label="Issues" width=${400}>
       ${list.map((i) => html`<section key=${i.source} class="issue-source">
@@ -125,21 +125,34 @@ function usePullToRefresh(onRefresh) {
 function Shell() {
   const { page, param } = route.value;
   const [picking, setPicking] = useState(false);
+  const nav = useRef();
+  useEffect(() => {
+    const reveal = () => {
+      const strip = nav.current, active = strip.querySelector('[aria-current="page"]');
+      if (!active) return;
+      const left = active.offsetLeft, right = left + active.offsetWidth;
+      if (left < strip.scrollLeft) strip.scrollLeft = left;
+      else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth;
+    };
+    reveal();
+    window.addEventListener("resize", reveal);
+    return () => window.removeEventListener("resize", reveal);
+  }, [page, param]);
   const ptr = usePullToRefresh(actions.refresh);
   const Page = pages[page];
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
+  const current = (path) => page === path || (path === "/" && page === "/start") || (path === "/runs" && page === "/runs/:id");
+  const pageLink = ([path, name]) => html`<a key=${path} href=${path} onClick=${follow} aria-current=${current(path) ? "page" : undefined}>
+    ${name}${path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`}
+  </a>`;
   return html`<header class="top">
-    <a class="wordmark" href="/" onClick=${follow}>FACTORY</a>
-    <nav aria-label="Pages">
-      ${PAGES.map(
-        ([path, name]) => html`<a key=${path} href=${path} onClick=${follow} aria-current=${page === path || (path === "/" && page === "/start") || (path === "/runs" && page === "/runs/:id") ? "page" : undefined}>
-          ${name}${path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`}
-        </a>`,
-      )}
+    <a class="wordmark" href="/" onClick=${follow} aria-label="Factory deck"><img src="/icon.svg" width="28" height="28" alt="" /><span>FACTORY</span></a>
+    <nav ref=${nav} aria-label="Pages">
+      ${PAGES.map(pageLink)}
     </nav>
     <span class="right">
       <${Updates} />
-      <${Button} variant="ghost" size="sm" icon="paintbrush" label="Theme" onClick=${() => setPicking(true)} />
+      <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
       <${Button} variant="ghost" size="sm" icon="signOut" label=${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"} onClick=${() => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout()} />
     </span>
   </header>
@@ -179,11 +192,26 @@ function Blocked() {
   <//>`;
 }
 
-const SaveBar = () => html`<div class="save-bar" role="region" aria-label="Unsaved changes">
+function SaveBar() {
+  const ref = useRef();
+  useEffect(() => {
+    let frame;
+    const measure = () => {
+      const style = document.documentElement.style, height = `${ref.current.getBoundingClientRect().height}px`;
+      if (style.getPropertyValue("--save-bar-height") !== height) style.setProperty("--save-bar-height", height);
+    };
+    // The height changes page padding; apply it outside observer delivery to avoid a resize feedback loop.
+    const observer = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(measure); });
+    measure();
+    observer.observe(ref.current);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); document.documentElement.style.removeProperty("--save-bar-height"); };
+  }, []);
+  return html`<div ref=${ref} class="save-bar" role="region" aria-label="Unsaved changes">
   <span>${changes.value} unsaved ${changes.value === 1 ? "change" : "changes"}</span>
   <${Button} variant="ghost" disabled=${busy.value} onClick=${actions.revert}>Discard<//>
   <${Button} variant="primary" disabled=${busy.value} onClick=${actions.save}>Save changes<//>
 </div>`;
+}
 
 // Cmd or Ctrl+S saves; leaving the page with edits asks first.
 function useEditGuards() {

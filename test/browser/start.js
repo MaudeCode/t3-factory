@@ -159,5 +159,64 @@ async function statusLayout() {
   await showDecision();
   return { passed: true, viewport: [innerWidth, innerHeight], decisions: 3 };
 }
-window.startTests = { show, run, whitespace, paste, showDecision, statusLayout };
+async function duoLayout() {
+  calls = [];
+  await show('/');
+  const visible = el => el.getClientRects().length > 0;
+  const bounds = el => el.getBoundingClientRect();
+  const noOverflow = () => assert(document.documentElement.scrollWidth <= innerWidth, 'Factory fits the viewport');
+  noOverflow();
+  const top = root.querySelector('.top'), header = bounds(top);
+  assert(top.querySelectorAll('[aria-current="page"]').length === 1, 'only the Deck tab marks the current page');
+  const priorConnection = store.connection.value, priorStatus = store.status.value;
+  for (const withIssue of [false, true]) {
+    store.status.value = withIssue ? { ...priorStatus, sessionTickets: { error: { message: 'Fixture connection problem' } } } : priorStatus;
+    for (const state of ['retrying', 'live']) {
+      store.connection.value = state; await pause();
+      const live = top.querySelector('[role="status"]'), label = top.querySelector('.conn-label'), style = getComputedStyle(label);
+      assert(live.textContent === (state === 'live' ? 'Live' : 'Retrying') && !live.hasAttribute('aria-label'), 'connection changes remain readable live-region text with and without issues');
+      assert(style.display !== 'none' && style.visibility !== 'hidden', 'phone connection text stays in the accessibility tree');
+      if (innerWidth <= 600) assert(bounds(label).width === 1 && bounds(label).height === 1 && style.clipPath !== 'none', 'the compact connection label is visually clipped instead of hidden');
+    }
+  }
+  store.status.value = priorStatus;
+  store.connection.value = priorConnection; await pause();
+  for (const el of top.querySelectorAll(':scope > a, :scope > .right button')) {
+    if (!visible(el)) continue;
+    const b = bounds(el);
+    assert(b.left >= 0 && b.right <= innerWidth && b.top >= header.top && b.bottom <= header.bottom, 'header actions stay visible');
+    if (matchMedia('(pointer: coarse)').matches) assert(b.width >= 44 && b.height >= 44, 'header links and buttons have touch targets');
+  }
+  const meters = [...root.querySelectorAll('.machine')].map(bounds);
+  assert(innerWidth > 600 ? meters[0].top === meters[1].top : meters[1].top >= meters[0].bottom, 'provider meters use two columns only when there is room');
+  const nav = top.querySelector('nav'), links = [...nav.querySelectorAll('a')];
+  assert(links.length === 10 && links.every(visible), 'all pages are direct tabs without an overflow menu');
+  if (matchMedia('(pointer: coarse)').matches) {
+    assert(links.every(el => bounds(el).width >= 44 && bounds(el).height >= 44), 'every page tab has a touch target');
+  }
+  nav.scrollLeft = nav.scrollWidth;
+  assert(bounds(links.at(-1)).right <= bounds(nav).right + 1, 'swiping the tabs reveals the last destination');
+  navigate('/activity'); await pause();
+  const active = nav.querySelector('a[aria-current="page"]'), a = bounds(active), n = bounds(nav);
+  assert(active.getAttribute('href') === '/activity' && a.left >= n.left - 1 && a.right <= n.right + 1, 'navigation keeps the active page tab in view');
+  assert(root.querySelector('h1').textContent.includes('Activity'), 'a secondary destination uses the ordinary page route');
+  root.querySelector('button[aria-label="Appearance"]').click(); await pause();
+  assert(root.querySelector('dialog[open][aria-label="Appearance"]'), 'Appearance is directly accessible');
+  root.querySelector('dialog[open] .dialog-head button').click(); await pause();
+  store.set(['pollSeconds'], 90); await pause();
+  const save = root.querySelector('.save-bar');
+  save.firstElementChild.textContent = '1200 unsaved changes';
+  await pause();
+  store.message('Could not save. Try again.', true); await pause();
+  const s = bounds(save), toast = bounds(root.querySelector('.toast'));
+  assert(s.left >= 16 && s.right <= innerWidth - 16, 'unsaved changes and both actions fit the screen');
+  assert(toast.bottom < s.top, 'notifications clear the actual save bar height');
+  noOverflow();
+  root.querySelector('.save-bar button').click(); await pause();
+  assert(!root.querySelector('.save-bar') && !document.documentElement.style.getPropertyValue('--save-bar-height'), 'discard removes the save bar and its measured space');
+  store.message('');
+  assert(calls.length === 0, 'layout checks never submit a run');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.startTests = { show, run, whitespace, paste, showDecision, statusLayout, duoLayout };
 await show();

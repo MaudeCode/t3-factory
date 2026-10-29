@@ -38,10 +38,10 @@ export function SessionTickets() {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${StartOptions} /><${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} title="Session tickets" count=${s ? rows.length : null} hint=${HINT} actions=${html`<${StartOptions} /><${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN && op.origin !== TRIAGE_ORIGIN)} />
-    <${Section} title="Reported by sessions" count=${s ? rows.length : null}>
+    <${Section} class="list">
       ${selecting && !!rows.length && html`<div class="selection-bar">
         <${Check} label="Select visible" aria-label="Select visible tickets" checked=${picked.length === rows.length} indeterminate=${picked.length > 0 && picked.length < rows.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === rows.length ? [] : rows.map(t => t.taskId))} />
         <span class="muted">${picked.length} selected</span>
