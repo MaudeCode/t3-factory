@@ -44,9 +44,11 @@ function Editor({ index }) {
       <${Field} label="Model"><${Select} label="Model" value=${m.model.model} options=${slugOptions} onChange=${(v) => chooseModel(index, m.model.instanceId, v)} /><//>
       ${descriptors.map((d) => {
         const current = m.model.options?.find((o) => o.id === d.id)?.value ?? d.currentValue ?? d.options.find((o) => o.isDefault)?.id;
-        return html`<${Field} key=${d.id} label=${d.label || d.id}>
-          <${Select} label=${d.label || d.id} value=${current} options=${d.options.map((o) => [o.id, o.label || o.id])} onChange=${(v) => setModelOption(index, d.id, v)} />
-        <//>`;
+        const options = d.options.map((o) => [o.id, o.label || o.id]), name = d.label || d.id;
+        // A short fixed list reads better as buttons; a long catalog stays a dropdown.
+        return options.length <= 5
+          ? html`<${Field} group key=${d.id} label=${name}><${Segmented} label=${name} value=${current} options=${options} onChange=${(v) => setModelOption(index, d.id, v)} /><//>`
+          : html`<${Field} key=${d.id} label=${name}><${Select} label=${name} value=${current} options=${options} onChange=${(v) => setModelOption(index, d.id, v)} /><//>`;
       })}
     </div>
     ${m.quotaWindowId && html`<p class="small muted">Budgeted against the ${m.quotaWindowId.replaceAll("_", " ")} window.</p>`}
