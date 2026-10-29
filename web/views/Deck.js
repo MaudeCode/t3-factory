@@ -212,6 +212,9 @@ export function StartOptions() {
   return html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: override all scheduler limits`])]} /><${Chips} label="Override limits" disabled=${!!provider} value=${provider ? OVERRIDES.map(([key]) => key) : sessionOverrides.value} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
 }
 
+// Newest or oldest first, for the Session tickets and Triage lists.
+export const OrderChoice = ({ label, value, onChange }) => html`<${Segmented} label=${label} value=${value} onChange=${onChange} icons=${{ newest: "arrowDown", oldest: "arrowUp" }} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} />`;
+
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.
 export const runNow = (t, hold, origin, { overrideLimits = true, provider } = {}) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits, ...(provider ? { provider } : {}) }, origin) : null;
 export const RunNow = ({ ticket: t, hold, origin, overrideLimits = true, provider }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}

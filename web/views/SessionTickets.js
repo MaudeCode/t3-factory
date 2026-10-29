@@ -3,8 +3,8 @@ import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, TRIAGE_ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, overrideText } from "../lib/format.js";
-import { Button, Check, Select, Icon, Empty, Page, Section } from "../ui/index.js";
-import { TicketRow, RunNow, runNow, startHold, openRun, Operations, StartOptions, startOptions } from "./Deck.js";
+import { Button, Check, Icon, Empty, Page, Section } from "../ui/index.js";
+import { TicketRow, RunNow, runNow, startHold, openRun, Operations, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 
 const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. Factory discovery and upstream release-review sessions are excluded. A ticket here still needs its readiness checks to start, and nothing starts on its own.";
@@ -38,7 +38,7 @@ export function SessionTickets() {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${StartOptions} /><${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${StartOptions} /><${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN && op.origin !== TRIAGE_ORIGIN)} />
     <${Section} title="Reported by sessions" count=${s ? rows.length : null}>

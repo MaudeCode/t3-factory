@@ -80,6 +80,12 @@ async function run() {
   const search = root.querySelector('[aria-label="Find a ticket"]');
   search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-41', 'search narrows the results');
+  search.value = 'sensitive'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'PIN-6', 'search matches a report row by its outcome');
+  root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Oldest first"]').click(); await pause();
+  search.value = 'pin-'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'PIN-1,PIN-2,PIN-3,PIN-5,PIN-6', 'oldest first reverses the results');
+  root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Newest first"]').click(); await pause();
   search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();

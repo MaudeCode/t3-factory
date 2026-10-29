@@ -1,8 +1,8 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, live, busy, clock, serverNow, actions, launchOperations, TRIAGE_ORIGIN as ORIGIN } from "../lib/store.js";
 import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, ticketKey, triageSummary } from "../lib/format.js";
-import { Button, Toggle, Field, Input, Slots, Select, Check, Tag, Icon, Empty, Link, Section, Page, Dialog } from "../ui/index.js";
-import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions } from "./Deck.js";
+import { Button, Toggle, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, Dialog } from "../ui/index.js";
+import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 
 const HINT = "Untrusted inbox reports are checked against each project's tickets and code in a read-only sandbox. Actionable reports that pass the promotion checks become ready tickets in the project, written by factory code without the report's text.";
@@ -42,6 +42,12 @@ function Settings({ open, onClose, rows }) {
   <//>`;
 }
 
+// The report's own title is untrusted, so a report row is titled with its journal outcome instead.
+const outcomeText = (event) => {
+  const key = event.data.ticket, raw = event.text.startsWith(`${key} `) ? event.text.slice(key.length + 1) : event.text;
+  return raw[0].toUpperCase() + raw.slice(1);
+};
+
 // A finished report as a list row: the promoted ticket, which can be started, or the report with its outcome.
 function Result({ row, now, selection, start, progress }) {
   const c = config.value, d = row.event.data;
@@ -57,12 +63,10 @@ function Result({ row, now, selection, start, progress }) {
       <span>from ${d.ticket}</span>${when}
     <//>`;
   }
-  // The report's own title is untrusted, so its row shows the outcome instead. A promoted result the scheduler
-  // could not read back links its tag to the promoted key in the inbox's project.
-  const raw = row.event.text.startsWith(`${d.ticket} `) ? row.event.text.slice(d.ticket.length + 1) : row.event.text, text = raw[0].toUpperCase() + raw.slice(1);
+  // A promoted result the scheduler could not read back links its tag to the promoted key in the inbox's project.
   const promoted = d.promoted && row.projectId && kanvil(c, "projects", d.projectId ?? row.projectId, "tickets", d.promotedId ?? d.promoted);
   const badge = promoted ? html`<${Tag} tone=${tone} href=${promoted} title=${`Open ${d.promoted} in Kanvil`}>${label}<//>` : tag;
-  return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: text }} project=${{ name: d.project }} badge=${badge} selection=${selection} plain>${when}<//>`;
+  return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} plain>${when}<//>`;
 }
 
 export function Triage() {
@@ -78,11 +82,11 @@ export function Triage() {
   const start = startOptions();
   const requests = launchOperations.value;
   const progress = (t) => requests.find((op) => ["queued", "running"].includes(op.state) && ticketKey(op.input.ticket) === ticketKey(t.key));
-  // A promoted ticket the scheduler read back is a startable row; every other result is its report.
+  // A promoted ticket the scheduler read back is a startable row; every other result is its report, titled with its outcome.
   const inboxProject = (id) => c.projects.find((p) => p.inbox?.kanvilId === id);
   const all = results.map((event) => {
     const t = event.promotedTicket, project = c.projects.find((p) => p.kanvilId === t?.projectId);
-    return t ? { ...t, id: t.taskId, promoted: true, project, event, createdAt: event.time } : { id: `report-${event.id}`, event, key: event.data.ticket, projectId: inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time };
+    return t ? { ...t, id: t.taskId, promoted: true, project, event, createdAt: event.time } : { id: `report-${event.id}`, event, key: event.data.ticket, title: outcomeText(event), projectId: inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time };
   });
   const starting = (row) => row.promoted && (!!progress(row) || openRun(row));
   const rows = all.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
@@ -99,7 +103,7 @@ export function Triage() {
   const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
   const narrowed = query.trim() || Object.values(filters).some((value) => Array.isArray(value) && value.length);
   return html`<${Page} title="Triage" hint=${HINT}
-    actions=${html`<${StartOptions} /><${Select} size="sm" class="creation-order" label="Result order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    actions=${html`<${StartOptions} /><${OrderChoice} label="Result order" value=${order} onChange=${setOrder} /><${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on in settings.</p>`}
       ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} />`) : html`<p class="muted">No project has an inbox.</p>`}
