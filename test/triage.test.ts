@@ -621,12 +621,21 @@ test('the Triage page gets each promoted ticket from the target projection, star
   assert.equal(found[6].taskId, created.id, 'an older entry with only the key is found by key');
 
   const events = [{ id: 7, time: '2026-01-01T00:00:00Z', kind: 'triage', jobId: null, text: 'TALIN-5 promoted to TAL-100', data }, { id: 5, time: '2026-01-01T00:00:00Z', kind: 'triage', jobId: null, text: 'TALIN-9 needs the owner', data: other }];
-  const store = { get: (key: string) => key === 'triagePromoted' ? JSON.stringify(found) : null, events: () => events };
-  const results = (c: typeof f.c) => triageResults(c, store as never) as (typeof events[number] & { promotedTicket?: { key: string; unavailable: string | null } })[];
-  assert.deepEqual(results(f.c).map(r => [r.id, r.promotedTicket?.key, r.promotedTicket?.unavailable]), [[7, 'TAL-100', null], [5, undefined, undefined]]);
+  let jobs: { taskId: string; state: string; reason?: string }[] = [];
+  const store = { get: (key: string) => key === 'triagePromoted' ? JSON.stringify(found) : null, events: () => events, jobSummaries: () => jobs };
+  const results = (c: typeof f.c) => triageResults(c, store as never) as (typeof events[number] & { promotedTicket?: { key: string; unavailable: string | null; listed: boolean } })[];
+  assert.deepEqual(results(f.c).map(r => [r.id, r.promotedTicket?.key, r.promotedTicket?.unavailable, r.promotedTicket?.listed]), [[7, 'TAL-100', null, true], [5, undefined, undefined, undefined]]);
+  jobs = [{ taskId: created.id, state: 'dispatching' }];
+  assert.equal(results(f.c)[0].promotedTicket?.listed, true, 'a dispatch T3 has not accepted keeps the ticket listed');
+  jobs = [{ taskId: created.id, state: 'running' }];
+  assert.equal(results(f.c)[0].promotedTicket?.listed, false, 'a launched run takes the ticket off the list');
+  jobs = [];
   const tal = f.c.projects.findIndex(p => p.kanvilId === 'TAL'), withProject = (changes: object) => ({ ...f.c, projects: f.c.projects.map((p, i) => i === tal ? { ...p, ...changes } : p) });
   assert.equal(results(withProject({ enabled: false }))[0].promotedTicket?.unavailable, 'Project disabled in Factory settings');
   assert.match(results(withProject({ readyStatuses: ['backlog'] }))[0].promotedTicket?.unavailable ?? '', /^Ticket is \w+; it must be in backlog$/);
+  assert.equal(results(withProject({ readyStatuses: ['backlog'] }))[0].promotedTicket?.listed, false, 'a ticket outside the ready statuses leaves the list');
+  events[0] = { ...events[0], data: { ...data, outcome: 'promotion-failed' } };
+  assert.equal(results(f.c)[0].promotedTicket?.listed, false, 'a failed promotion is activity only');
 });
 
 test('a readback mismatch marks promotion-failed, leaves the created ticket held, and is never retried', async t => {
