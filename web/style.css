@@ -2251,6 +2251,17 @@ h1 .crumb::after {
 .release-versions a {
   color: var(--ink);
 }
+.promotion-limit {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+.promotion-limit input {
+  width: 110px;
+}
 
 /* Mobile ------------------------------------------------------------------ */
 /* Theme picker */

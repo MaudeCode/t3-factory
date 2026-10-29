@@ -41,14 +41,15 @@ export const Field = ({ label, hint, children, group }) =>
 // Reads a bound config path, or an explicit value; writes through `set` or the given `onChange`.
 const bind = (path, value, onChange) => [path ? at(path) : value, onChange ?? ((v) => set(path, v))];
 
-// Text, number, or list input. `kind` decides how the value is stored.
+// Text, number, or list input. `kind` decides how the value is stored; a "limit" is a whole number, or null when empty.
 export function Input({ path, kind = "text", mono, value, onChange, ...props }) {
   const [current, change] = bind(path, value, onChange);
+  const numeric = ["number", "integer", "limit"].includes(kind);
   return html`<input
     class=${mono ? "mono" : undefined}
-    type=${kind === "number" || kind === "integer" ? "number" : "text"}
-    min=${kind === "number" || kind === "integer" ? 0 : undefined}
-    step=${kind === "integer" ? 1 : kind === "number" ? "any" : undefined}
+    type=${numeric ? "number" : "text"}
+    min=${numeric ? 0 : undefined}
+    step=${kind === "number" ? "any" : numeric ? 1 : undefined}
     value=${kind === "list" ? (current || []).join(", ") : (current ?? "")}
     onInput=${(e) => change(coerce(kind, e.target))}
     ...${props}

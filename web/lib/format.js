@@ -52,8 +52,12 @@ export const ago = (date, now = Date.now(), compact = false) => (date ? `${span(
 // One inbox queue row from status: waiting, failed, and the oldest waiting report's age.
 export const triageSummary = (row, now = Date.now()) => {
   if (!row.synchronized) return "not synchronized";
-  return [`${row.untriaged} waiting`, row.failed && `${row.failed} failed`, row.oldestUntriagedAt && `oldest ${ago(row.oldestUntriagedAt, now)}`, row.running && `triaging ${row.running}`].filter(Boolean).join(", ");
+  return [`${row.untriaged} waiting`, row.failed && `${row.failed} failed`, row.promoted && `${row.promoted} promoted`, row.queued && `${row.queued} queued`,
+    row.blocked && `${row.blocked} blocked`, row.needsOwner && `${row.needsOwner} need the owner`,
+    row.oldestUntriagedAt && `oldest ${ago(row.oldestUntriagedAt, now)}`, row.running && `triaging ${row.running}`].filter(Boolean).join(", ");
 };
+// An inbox's daily promotion limit: null is unlimited and 0 pauses promotion.
+export const promotionLimit = (limit) => (limit == null ? "Unlimited" : limit === 0 ? "Paused" : `${limit} per day`);
 export const until = (date, now = Date.now()) => {
   const s = (ms(date) - now) / 1000;
   return s > 0 ? `in ${span(s)}` : "now";
@@ -173,7 +177,9 @@ export const byNewest = (a, b) => String(b.createdAt).localeCompare(String(a.cre
 export const coerce = (kind, el) =>
   kind === "boolean"
     ? el.checked
-    : kind === "number" || kind === "integer"
+    : kind === "limit"
+      ? el.value === "" ? null : Number(el.value)
+      : kind === "number" || kind === "integer"
       ? Number(el.value)
       : kind === "list"
         ? el.value.split(",").map((s) => s.trim()).filter(Boolean)
