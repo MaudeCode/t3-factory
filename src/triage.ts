@@ -289,6 +289,8 @@ export const DEFAULT_SENSITIVE_PATHS = [
 // Each rule blocks promotion on its own and is named in the reason.
 const LINT_RULES: [string, RegExp][] = [
   ['url', /\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\bmailto:/i],
+  // Hosts, addresses, and words for moving data out: a promoted change only touches the product.
+  ['network', /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|app|ai|co|me|xyz|ru|cn|cloud|site|online|top|info|biz|example|test|invalid|localhost|local|internal)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:exfiltrat\w*|collectors?|webhooks?|beacons?)\b/i],
   ['code', /`|~~~/],
   ['shell', /(?:^|\s)\$\s|\b(?:curl|wget|sudo|chmod|eval)\b|\brm\s+-|\|\s*(?:ba|z|da|fi)?sh\b/im],
   ['secret', /\b(?:secrets?|tokens?|passwords?|passwd|api[ _-]?keys?|keys?|credentials?|env(?:ironment)?[ _-]?var(?:iable)?s?|keychains?|ssh)\b|\.env\b|process\.env|\$[A-Z_][A-Z0-9_]*/i],

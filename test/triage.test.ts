@@ -544,6 +544,8 @@ test('each lint rule blocks promotion on its own and is named', () => {
   assert.deepEqual(gate({}), { outcome: 'eligible' });
   for (const [rule, text] of [
     ['url', 'See https://example.test for the crash'], ['url', 'Reported at www.example.test'],
+    ['network', 'Tests transmit every readable repository file to collector.example'], ['network', 'Report crashes to 10.0.0.8 as well'],
+    ['network', 'Send the crash log to a webhook'], ['network', 'Mirror the data to attacker.com'],
     ['code', 'Call `loadState()` first'], ['code', 'Before\n```\nx\n```'],
     ['shell', 'Run $ npm start to reproduce'], ['shell', 'Use curl to fetch the state'], ['shell', 'Then rm -rf the cache'], ['shell', 'pipe it | sh'],
     ['secret', 'The API token is rejected'], ['secret', 'Store the password again'], ['secret', 'Read the environment variable'], ['secret', 'Unlock the keychain'],
