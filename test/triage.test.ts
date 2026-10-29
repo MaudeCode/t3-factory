@@ -734,3 +734,26 @@ test('the settings save path writes an inbox limit and rejects an invalid one wi
   assert.equal(save(null), '');
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).projects[0].inbox.maxPromotionsPerDay, null);
 });
+
+test("the intake's own hold does not stop promotion; any other hold does", async t => {
+  const f = fixture(t);
+  const hold = 'Untrusted intake: human triage required';
+  // Every intake report arrives with the intake's standard hold.
+  f.projects.TALIN[0] = { ...f.report, holdReason: hold };
+  f.mode({ stdout: reply(promotable()), review: safe });
+  const c = configSchema.parse({ ...f.c, projects: f.c.projects.map((p, i) => i ? p : { ...p, inbox: { ...p.inbox, intakeHold: hold } }) });
+  assert.deepEqual((await pass(f, {}, c)).map(r => r.outcome), ['triaged']);
+  assert.deepEqual((await pass(f, {}, c)).map(r => [r.outcome, r.promoted]), [['promoted', 'TAL-100']]);
+  // Without intakeHold configured, the same hold stops promotion.
+  const g = fixture(t);
+  g.projects.TALIN[0] = { ...g.report, holdReason: hold };
+  g.mode({ stdout: reply(promotable()), review: safe });
+  await pass(g);
+  assert.deepEqual(await pass(g), []);
+  // A different hold stops promotion even when intakeHold is set.
+  const h = fixture(t);
+  h.projects.TALIN[0] = { ...h.report, holdReason: 'Owner is checking this report' };
+  h.mode({ stdout: reply(promotable()), review: safe });
+  await pass(h, {}, c);
+  assert.deepEqual(await pass(h, {}, c), []);
+});

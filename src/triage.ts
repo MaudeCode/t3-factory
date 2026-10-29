@@ -75,8 +75,8 @@ const failed = (t: Task, inbox: Inbox['inbox']) => open(t, inbox) && names(t).in
 // Promotion outcomes on the inbox ticket. `promotion-queued` waits on the inbox's daily limit; the rest are final.
 const FINAL_PROMOTION_LABELS = ['promoted', 'promotion-blocked', 'needs-owner', 'promotion-failed'], PROMOTION_LABELS = [...FINAL_PROMOTION_LABELS, 'promotion-queued'];
 /** A triaged actionable report with no final promotion outcome, including ones triaged before proposals existed. */
-// An operator's hold on the report keeps it out of promotion.
-export const awaitingPromotion = (t: Task, inbox: Inbox['inbox']) => open(t, inbox) && !t.holdReason && names(t).includes('triaged') && names(t).includes('verdict:actionable')
+// An operator's hold on the report keeps it out of promotion; the intake's standard hold on every report does not.
+export const awaitingPromotion = (t: Task, inbox: Inbox['inbox']) => open(t, inbox) && (!t.holdReason || t.holdReason === inbox.intakeHold) && names(t).includes('triaged') && names(t).includes('verdict:actionable')
   && !names(t).includes('triage-failed') && !FINAL_PROMOTION_LABELS.some(label => names(t).includes(label));
 const oldestFirst = (a: Task, b: Task) => a.createdAt.localeCompare(b.createdAt) || (a.key ?? '').localeCompare(b.key ?? '');
 const isSpam = (t: Task) => t.status === 'cancelled' && names(t).includes('verdict:spam');
