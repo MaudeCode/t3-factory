@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # A pull request runs macOS only when it touches the menu app, the macOS-only tests, scripts or dependencies,
+  # A pull request runs macOS only when it touches the menu app or its icon, the macOS-only tests, scripts or dependencies,
   # or this workflow. Main pushes always run both, so BSD tool differences still surface on main.
   changes:
     name: Detect macOS changes
@@ -34,7 +34,7 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then echo macos=true >> "$GITHUB_OUTPUT"; exit 0; fi
           files=$(git diff --name-only "origin/$BASE_REF...$HEAD_SHA")
-          if grep -qE '^(macos/|scripts/|test/native-queue\.test\.ts$|test/fixtures/.*\.swift$|package(-lock)?\.json$|\.github/workflows/)' <<< "$files"; then
+          if grep -qE '^(macos/|scripts/|web/icon\.svg$|test/native-queue\.test\.ts$|test/fixtures/.*\.swift$|package(-lock)?\.json$|\.github/workflows/)' <<< "$files"; then
             echo macos=true >> "$GITHUB_OUTPUT"
           else
             echo macos=false >> "$GITHUB_OUTPUT"
