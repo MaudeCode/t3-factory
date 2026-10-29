@@ -56,7 +56,8 @@ function Result({ row, now, selection, start, progress }) {
   const report = kanvil(c, "projects", d.inboxId, "tickets", d.ticketId), when = html`<span class="muted" title=${new Date(row.event.time).toLocaleString()}>${ago(row.event.time, now)}</span>`;
   if (row.promoted) {
     const hold = startHold(row) ?? row.unavailable;
-    return html`<${TicketRow} ticket=${row} project=${row.project} badge=${tag} selection=${selection}
+    // Labels stay searchable and filterable but are not listed; the tag, priority and difficulty say enough.
+    return html`<${TicketRow} ticket=${{ ...row, labels: [] }} project=${row.project} badge=${tag} selection=${selection}
       actions=${html`<${RunNow} ticket=${row} hold=${hold} origin=${ORIGIN} ...${start} />`}
       secondaryActions=${html`<a class="btn btn-sm btn-icon next-run" href=${report} target="_blank" rel="noopener noreferrer" aria-label=${`Open the report ${d.ticket}`} title=${`Open the report ${d.ticket}`}><${Icon} name="arrowRight" /><span class="next-action-label">Open report</span></a>`}>
       ${progress && html`<span class="row-progress" role="status"><i class="spinner"></i>${operationText(progress)}</span>`}

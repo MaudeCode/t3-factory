@@ -67,7 +67,8 @@ async function run() {
   assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
   assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
   assert(visibleTag(ex40)?.textContent === 'promoted' && button('Run EX-40 now'), 'the promoted tag and Start show');
-  if (innerWidth > 900) assert(visibleTag(ex40).getBoundingClientRect().bottom <= button('Run EX-40 now').getBoundingClientRect().top, 'Start sits under the promoted tag');
+  assert(!root.querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
+  assert(visibleTag(ex40).closest('.meta') && !visibleTag(ex40).closest('.next-actions'), 'the outcome tag leads the facet line, beside Start rather than above it');
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
   assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
@@ -112,7 +113,9 @@ async function run() {
   // Layout: promoted rows are no taller than two lines plus Start, and nothing overflows.
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
-  if (innerWidth <= 900) assert(Math.abs(row('PIN-6').getBoundingClientRect().height - row('PIN-2').getBoundingClientRect().height) < 1 && visibleTag(row('PIN-6')).closest('.meta'), 'on a phone the outcome tag sits on the facet line');
+  const height = (key) => row(key).getBoundingClientRect().height, left = (key) => visibleTag(row(key)).getBoundingClientRect().left;
+  assert(['PIN-6', 'PIN-3', 'PIN-2', 'PIN-1'].every((key) => Math.abs(left(key) - left('EX-40')) < 1), 'outcome tags line up at the start of the facet line');
+  if (innerWidth > 900) assert(Math.abs(height('EX-40') - height('PIN-6')) < 1, 'a promoted row with Start is as tall as a report row');
   const toggles = posts.length, limits = await promotion();
   return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, dispatches: dispatches.length, ...limits };
 }
