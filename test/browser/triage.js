@@ -17,6 +17,7 @@ const state = {
     { id: 5, time: ago(2), kind: 'triage', text: 'PIN-6 needs the owner: sensitive: workType sec', data: { ticket: 'PIN-6', ticketId: 't6', inboxId: 'pin', project: 'Example', outcome: 'needs-owner', reason: 'sensitive: workType sec' } },
     { id: 4, time: ago(3), kind: 'triage', text: 'PIN-5 promotion queued: 2 promotions in the last 24 hours', data: { ticket: 'PIN-5', ticketId: 't5', inboxId: 'pin', project: 'Example', outcome: 'promotion-queued', reason: '2 promotions in the last 24 hours' } },
     { id: 3, time: ago(4), kind: 'triage', text: 'PIN-3 triaged: duplicate, duplicate of EX-12', data: { ticket: 'PIN-3', ticketId: 't3', inboxId: 'pin', project: 'Example', outcome: 'triaged', verdict: 'duplicate', duplicateOf: 'EX-12' } },
+    { id: 1, time: ago(90), kind: 'triage', text: 'PIN-1 promoted to EX-39', data: { ticket: 'PIN-1', ticketId: 't1', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-39' } },
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
   ] },
 };
@@ -52,7 +53,8 @@ async function run() {
   assert(ticket && ticket.href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a result links to its inbox ticket');
   assert(text().includes('duplicate of EX-12') && text().includes('Timed out twice'), 'results show the duplicate and the failure reason');
   const promoted = [...root.querySelectorAll('a.tag')];
-  assert(promoted.length === 1 && promoted[0].textContent === 'promoted' && promoted[0].href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the promoted tag links to the new ticket');
+  assert(promoted.length === 2 && promoted[0].textContent === 'promoted' && promoted[0].href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the promoted tag links to the new ticket');
+  assert(promoted[1].href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'an older entry without the ticket id links by key in the inbox project');
   const height = (row) => root.querySelectorAll('.release')[row].getBoundingClientRect().height;
   if (matchMedia('(pointer: coarse)').matches) { const r = promoted[0].getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top - 10); assert(hit === promoted[0], 'the promoted tag has a full touch target'); }
   assert(Math.abs(height(2) - height(3)) < 1, 'the promoted row is no taller than the others');
