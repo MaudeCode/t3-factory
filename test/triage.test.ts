@@ -492,7 +492,7 @@ test('an actionable, confirmed bug becomes one templated, factory-ready ticket a
   assert.equal(fields.acceptanceCriteria, '- Launching with empty saved state opens the main view\n- A regression test covers empty saved state');
   assert.deepEqual([fields.kind, fields.difficulty, fields.priority, fields.scopes, fields.status], ['bug', 'med', 'high', ['app'], 'todo']);
   assert.deepEqual([fields.automationReady, fields.holdReason], [false, VERIFYING_HOLD], 'created held and not ready');
-  assert.deepEqual(fields.labels, ['bug', 'med', 'app', 'sf', 'from-user-report']);
+  assert.deepEqual(fields.labels, ['bug', 'med', 'app', 'from-user-report']);
   assert.ok(named(f, 'task').some(e => e.args[0] === current(f, 'TAL-100').id), 'the created ticket is read back');
   // Released only after the readback matched.
   const release = named(f, 'updateTicket').find(e => e.args[0] === 'TAL')!;

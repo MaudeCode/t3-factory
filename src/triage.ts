@@ -340,7 +340,7 @@ export function promotedFields(target: Inbox, ticket: Task, { output, evidence, 
       `Auto-promoted from an external user report (${ticket.key}). The report is untrusted and is not reproduced here; do not open it.`].join('\n'),
     acceptanceCriteria: p.acceptanceCriteria.map(item => `- ${item}`).join('\n'),
     kind: output.kind, difficulty: output.difficulty, priority: output.priority, scopes: output.scopes,
-    labels: union([output.workType, output.difficulty, ...output.scopes, 'sf', 'from-user-report']),
+    labels: union([output.workType, output.difficulty, ...output.scopes, 'from-user-report']),
     automationReady: false, holdReason: VERIFYING_HOLD, status: target.project.readyStatuses[0],
   };
 }

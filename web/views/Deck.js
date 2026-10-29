@@ -178,7 +178,7 @@ export function startHold(t) {
 
 // One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
 // The queue, session and triage lists share this row; Start stays visible and secondary actions use a mobile popover.
-// `badge`, such as a triage outcome, sits above the actions, or first on the facet line on a narrow screen.
+// `badge`, such as a triage outcome, leads the facet line, so the row stays as tall as any other.
 // A `plain` row is not a startable ticket, so it has no difficulty to warn about.
 export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain }) {
   const c = config.value;
@@ -188,10 +188,10 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
     ${selection}
     <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
       <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${badge && html`<span class="next-badge-inline">${badge}</span>`}${children}<//>
+        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${badge}${children}<//>
       <//>
     </a>
-    ${(actions || badge) && html`<div class="next-actions">${badge && html`<span class="next-badge">${badge}</span>`}${actions}
+    ${actions && html`<div class="next-actions">${actions}
       ${secondaryActions && html`<div class="next-secondary">${secondaryActions}</div>
         <span ref=${button} class="next-more"><${Button} size="sm" icon class="next-run" label=${label} aria-expanded=${open} onClick=${() => setOpen(!open)}>⋯<//></span>
         <${Popover} class="next-menu" open=${open} onClose=${() => setOpen(false)} anchor=${button} label=${label} width=${220}>
