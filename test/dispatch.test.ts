@@ -13,6 +13,59 @@ import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { mockLaunchConnection, dispatchFixture, deferred } from './dispatch-fixture.ts';
 
+for (const overrideLimits of [false, ['idle', 'reserve', 'labels'], ['providers'], true] as const) test(`manual Auto respects provider limits unless selected: ${JSON.stringify(overrideLimits)}`, async t => {
+  const f = dispatchFixture(t);
+  f.c.concurrency = { claude: 0, codex: 10 };
+  f.c.models.unshift({ ...structuredClone(f.c.models[0]), id: 'claude', name: 'Claude', model: { instanceId: 'claudeAgent', model: 'fixture-claude', options: [] } });
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  t.mock.method(f.t3, 'providers', async () => [f.provider('claudeAgent'), f.provider('codex')]);
+  t.mock.method(f.t3, 'provider', async (id: string) => f.provider(id));
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: typeof overrideLimits === 'boolean' ? overrideLimits : [...overrideLimits] }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'dispatched');
+  const overridden = overrideLimits === true || Array.isArray(overrideLimits) && overrideLimits.includes('providers');
+  assert.equal((f.launches[0] as any).modelSelection.instanceId, overridden ? 'claudeAgent' : 'codex');
+});
+
+for (const overrideLimits of [false, ['providers'], true] as const) test(`explicit manual model respects zero capacity: ${JSON.stringify(overrideLimits)}`, async t => {
+  const f = dispatchFixture(t);
+  f.c.concurrency.codex = 0;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'sol', overrideLimits: typeof overrideLimits === 'boolean' ? overrideLimits : [...overrideLimits] }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, overrideLimits === false ? 'provider-disabled' : 'dispatched');
+  assert.equal(f.launches.length, overrideLimits === false ? 0 : 1);
+});
+
+for (const model of ['auto', 'sol']) test(`manual ${model} rechecks provider capacity before launch`, async t => {
+  const f = dispatchFixture(t);
+  let occupied = false;
+  f.hooks.quota = async refresh => {
+    if (!refresh || occupied) return;
+    occupied = true;
+    f.store.save({ id: 'other', kind: 'ticket', projectId: 'FIX', taskId: 'other-task', ticketKey: 'FIX-99', threadId: 'other-thread', messageId: 'message', createdAt: new Date().toISOString(), state: 'dispatching', reason: 'Another start', lastPersonalActivity: null, reportPath: join(f.dir, 'other-report'), command: {}, prUrls: [], completedAt: null, modelSelection: f.c.models[0].model, providerDriver: 'codex' });
+  };
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model, overrideLimits: ['idle', 'reserve', 'labels'] }, { t3: f.t3, kanvil: f.kanvil });
+  assert.ok(occupied, 'the last slot is taken during final reads');
+  assert.equal(f.launches.length, 0);
+  assert.equal(model === 'auto' ? (result as any).dispatches?.[0]?.reason : result.reason, 'job-resumed-before-dispatch');
+});
+
+for (const provider of ['codex', 'claudeAgent'] as const) test(`manual provider choice selects only ${provider} presets and preserves difficulty`, async t => {
+  const f = dispatchFixture(t);
+  f.c.concurrency = { claude: 0, codex: 0 };
+  f.c.models = [
+    { ...structuredClone(f.c.models[0]), id: 'too-small', maxDifficulty: 'low' },
+    { ...structuredClone(f.c.models[0]), automatic: false },
+    { ...structuredClone(f.c.models[0]), id: 'claude', automatic: false, model: { instanceId: 'claudeAgent', model: 'fixture-claude', options: [] } },
+  ];
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  t.mock.method(f.t3, 'providers', async () => [f.provider('claudeAgent'), f.provider('codex')]);
+  t.mock.method(f.t3, 'provider', async (id: string) => f.provider(id));
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'auto', provider, overrideLimits: true }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'dispatched');
+  assert.equal((f.launches[0] as any).modelSelection.instanceId, provider);
+  assert.equal(f.store.jobs()[0].modelSelection?.model, provider === 'codex' ? 'fixture-sol' : 'fixture-claude');
+});
+
 for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff', 'claude-tool-call', 'codex-exhausted', 'codex-offline', 'refresh-exhausted', 'ambiguous', 'unclassified', 'ceiling', 'discovery', 'parallel', 'parallel-partial', 'parallel-dry-run', 'parallel-quota', 'parallel-resumed', 'parallel-lowered', 'parallel-discovery', 'parallel-claude-zero', 'parallel-codex-zero', 'parallel-both-zero', 'parallel-label-limit', 'parallel-label-dry-run', 'manual-fable-empty', 'manual-five-hour-empty', 'manual-fable-refresh-empty', 'manual-fable-reserve', 'truncated-labels', 'native-ready-without-sf', 'label-ranked', 'label-blocked', 'label-ineligible', 'new-other-project-reference', 'new-project-reference', 'new-open-pr'] as const) {
   test(`provider streams: ${scenario}`, async t => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-streams-')), repo = join(dir, 'repo'); mkdirSync(repo);
@@ -170,6 +223,8 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
           }
           if (scenario === 'parallel-discovery') assert.equal(new Set(attempts.map(a => a.projectId)).size, attempts.length);
           if (scenario === 'parallel-label-limit') {
+            // Provider capacity stays available while this scenario exercises label holds.
+            c.concurrency.codex = 10; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
             const keys = attempts.map(a => a.initialMessage.text.match(/Deliver (FIX-\d+):/)?.[1]);
             assert.deepEqual(keys.filter(k => ['FIX-1', 'FIX-2', 'FIX-3', 'FIX-4'].includes(k!)).length, 2, 'only two app runs start at once');
             const next = await cycle(c, store);

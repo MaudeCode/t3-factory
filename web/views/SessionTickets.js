@@ -1,9 +1,9 @@
 // Tickets that T3 sessions reported creating: start one through the ordinary checks, or take it off the list.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN } from "../lib/store.js";
+import { config, status, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText } from "../lib/format.js";
-import { Button, Check, Select, Icon, Empty, Page, Section } from "../ui/index.js";
+import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, OVERRIDES, overrideText, PROVIDERS, providerIcon } from "../lib/format.js";
+import { Button, Check, Chips, Segmented, Select, Icon, Empty, Page, Section } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, Operations } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 
@@ -16,6 +16,9 @@ export function SessionTickets() {
   const [order, setOrder] = useState("newest");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState([]);
+  const overrides = sessionOverrides.value;
+  const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
+  const overrideLimits = provider ? true : overrides;
   const c = config.value,
     s = status.value.sessionTickets,
     now = serverNow();
@@ -37,14 +40,14 @@ export function SessionTickets() {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} title="Session tickets" hint=${HINT} actions=${html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: override all scheduler limits`])]} /><${Chips} label="Override limits" disabled=${!!provider} value=${provider ? OVERRIDES.map(([key]) => key) : overrides} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} /><${Select} size="sm" class="creation-order" label="Creation order" value=${order} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} onChange=${setOrder} /><${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN)} />
     <${Section} title="Reported by sessions" count=${s ? rows.length : null}>
       ${selecting && !!rows.length && html`<div class="selection-bar">
         <${Check} label="Select visible" aria-label="Select visible tickets" checked=${picked.length === rows.length} indeterminate=${picked.length > 0 && picked.length < rows.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === rows.length ? [] : rows.map(t => t.taskId))} />
         <span class="muted">${picked.length} selected</span>
-        <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? "Run selected tickets through the ordinary checks, overriding limits."} onClick=${() => { for (const t of picked) runNow({ ...t, id: t.taskId }, t.unavailable, SESSION_ORIGIN); setSelected([]); }} />
+        <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? `${overrideText(overrideLimits)} and start selected tickets.`} onClick=${() => { for (const t of picked) runNow({ ...t, id: t.taskId }, t.unavailable, SESSION_ORIGIN, { overrideLimits, provider }); setSelected([]); }} />
         <${Button} size="sm" icon="x" label="Remove selected tickets" disabled=${!picked.length || busy.value} onClick=${() => dismiss(picked)} />
       </div>`}
       ${!s
@@ -55,7 +58,7 @@ export function SessionTickets() {
               const ticket = { ...t, id: t.taskId }, hold = startHold(ticket) ?? t.unavailable, latest = t.sources.reduce((a, b) => (b.at > a.at ? b : a)), op = progress(t);
               return html`<${TicketRow} key=${t.taskId} ticket=${ticket} project=${project(t.projectId)}
                 selection=${selecting && html`<${Check} aria-label=${`Select ${t.key}`} checked=${selected.includes(t.taskId)} disabled=${busy.value} onChange=${e => setSelected(previous => e.target.checked ? [...previous, t.taskId] : previous.filter(id => id !== t.taskId))} />`}
-                actions=${html`<${RunNow} ticket=${ticket} hold=${hold} origin=${SESSION_ORIGIN} />`}
+                actions=${html`<${RunNow} ticket=${ticket} hold=${hold} origin=${SESSION_ORIGIN} overrideLimits=${overrideLimits} provider=${provider} />`}
                 secondaryActions=${html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(latest)} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${`Open in T3 Code: ${latest.title || "session"}, reported ${ago(latest.at, now)}${t.sources.length > 1 ? `; ${t.sources.length - 1} more ${t.sources.length === 2 ? "session" : "sessions"} reported it` : ""}`}><${Icon} name="commentDiscussion" /><span class="next-action-label">Open session</span></a>
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss([t])}><${Icon} name="x" /><span class="next-action-label">Remove</span><//>`}>
                 ${op && html`<span class="row-progress" role="status"><i class="spinner"></i>${operationText(op)}</span>`}

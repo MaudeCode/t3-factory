@@ -50,7 +50,10 @@ export function dispatchFixture(t: TestContext) {
   let shellReads = 0, labelReads = 0;
   let final = false;
   t.mock.method(t3, 'shell', async () => { const isFinal = ++shellReads > 1; if (isFinal) final = true; calls.push(`shell:${isFinal}`); await hooks.shell(isFinal); return { threads: [...threads], projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) }; });
-  const provider = () => ({ instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [{ slug: 'fixture-sol' }], usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: [{ id: 'primary', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() }] } });
+  const provider = (instanceId = 'codex') => ({ instanceId, driver: instanceId, status: 'ready', installed: true, enabled: true, models: [{ slug: instanceId === 'codex' ? 'fixture-sol' : 'fixture-claude' }], usageLimits: { checkedAt: new Date(Date.now() + 1000).toISOString(), windows: instanceId === 'codex' ? [{ id: 'primary', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() }] : [
+    { id: 'five_hour', usedPercent: 0, windowDurationMins: 300, resetsAt: new Date(Date.now() + 4 * 3600000).toISOString() },
+    { id: 'seven_day', usedPercent: 0, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
+  ] } });
   t.mock.method(t3, 'providers', async () => { calls.push('providers'); await hooks.providers(); return [provider()]; });
   t.mock.method(t3, 'provider', async (_id: string, refresh: boolean) => { calls.push(`quota:${refresh}`); await hooks.quota(refresh); return provider(); });
   t.mock.method(t3, 'launch', async (command: unknown) => { assert.equal(store.jobs().find(job => job.threadId === (command as { threadId: string }).threadId)?.state, 'dispatching', 'durable ownership precedes launch'); launches.push(command); return {}; });

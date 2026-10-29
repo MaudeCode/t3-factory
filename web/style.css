@@ -1633,6 +1633,19 @@ body:has(.save-bar) .deck {
 .page-head .segmented {
   margin: 0;
 }
+.page-head .chips,
+.page-head .slots {
+  flex-shrink: 0;
+}
+.page-head .chips button,
+.page-head .slots button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 7px;
+}
 h1 .crumb {
   color: var(--muted);
   font-weight: 500;
@@ -2176,6 +2189,10 @@ h1 .crumb::after {
   border-color: var(--accent);
   color: var(--accent-ink);
 }
+.chips button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .chips button b {
   display: inline-block;
   min-width: 16px;
@@ -2417,6 +2434,11 @@ h1 .crumb::after {
   }
   .page-head .creation-order {
     flex: 1 0 100%;
+  }
+  .page-head .chips button,
+  .page-head .slots button {
+    min-width: 44px;
+    min-height: 44px;
   }
   input.search {
     flex: 1;

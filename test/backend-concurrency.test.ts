@@ -14,6 +14,7 @@ import type { GitHub } from '../src/github-client.ts';
 
 for (const held of ['read', 'launch']) test(`independent manual dispatch completes while another ${held} is held`, async t => {
   const f = serviceFixture(t), { internal } = f;
+  f.c.concurrency.codex = 2; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   f.tasks.push(f.task('second', 3, 'todo'));
   const entered = deferred(), release = deferred();
   let first = true;
@@ -504,6 +505,7 @@ test('prepared selection rechecks selected-repository branches and moves to the 
 
 test('parallel warm requests prepare distinct hints without repeating the selected read', async t => {
   const f = serviceFixture(t), { inventory, upNext } = await import('../src/scheduler.ts'), first = deferred(), release = deferred(), second = deferred();
+  f.c.concurrency.codex = 2; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   f.tasks.push(f.task('parallel-hint', 3, 'todo'));
   const queue = await inventory(f.c, f.kanvil, [], [], f.store); f.store.set('upNext', JSON.stringify(upNext(f.c, f.store, queue))); f.calls.length = 0;
   const quote = f.provider(); quote.usageLimits.checkedAt = new Date(Date.now() - 5000).toISOString();
@@ -520,6 +522,7 @@ test('parallel warm requests prepare distinct hints without repeating the select
 
 test('parallel unnamed starts choose other eligible labels instead of colliding on the last app slot', async t => {
   const f = serviceFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.c.concurrency.codex = 2;
   f.c.projects[0].labelLimits = { app: 1 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   f.tasks[0].labels!.push({ name: 'app' });
   const app = f.task('another-app', 3, 'todo'); app.labels!.push({ name: 'app' }); f.tasks.push(app, f.task('web-work', 4, 'todo'));
@@ -544,6 +547,7 @@ test('a failed preparation releases its temporary label occupancy', async t => {
 
 test('an unnamed start skips a hint whose fresh labels hit an occupied slot', async t => {
   const f = dispatchFixture(t), { inventory, upNext } = await import('../src/scheduler.ts');
+  f.c.concurrency.codex = 2;
   f.c.projects[0].labelLimits = { app: 1 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   const app = f.task('occupied-app', 3, 'todo'); app.labels!.push({ name: 'app' }); f.tasks.push(app, f.task('other-web', 4, 'todo'));
   assert.equal((await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: 'FIX-3' }, { t3: f.t3, kanvil: f.kanvil })).reason, 'dispatched');

@@ -23,6 +23,10 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.deepEqual(commandFor(['doctor']), { type: 'once', options: { dryRun: false, doctor: true } });
     assert.throws(() => commandFor(['dispatch', '--chain', 'later']), /--chain requires first or all/);
     assert.deepEqual(commandFor(['dispatch', '--override', 'idle,labels']), { type: 'dispatch', options: { manual: true, overrideLimits: ['idle', 'labels'] } });
+    assert.deepEqual(commandFor(['dispatch', '--override', 'providers']), { type: 'dispatch', options: { manual: true, overrideLimits: ['providers'] } });
+    assert.deepEqual(commandFor(['dispatch', '--provider', 'codex', '--override-limits']), { type: 'dispatch', options: { manual: true, provider: 'codex', overrideLimits: true } });
+    assert.throws(() => commandFor(['dispatch', '--provider', 'other']), /Invalid option/);
+    assert.throws(() => commandFor(['dispatch', '--provider', 'codex', '--model', 'sol']), /requires automatic model selection/);
     for (const bad of [[], ['quota']]) assert.throws(() => commandFor(['dispatch', '--override', ...bad]), /--override requires/);
     assert.equal(commandFor(['model-catalog']), undefined);
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });

@@ -109,7 +109,7 @@ export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running 
 
 // Multi-select chips. `options` is a list of [value, name]; values not in it still show so nothing saved is hidden.
 // `ordered` numbers the picks in the order they were chosen; `custom` adds a box for values the catalog lacks.
-export function Chips({ path, value, onChange, options = [], ordered, custom, label }) {
+export function Chips({ path, value, onChange, options = [], ordered, custom, label, disabled }) {
   const [picked, change] = bind(path, value, onChange);
   const current = picked ?? [];
   const [draft, setDraft] = useState("");
@@ -125,9 +125,9 @@ export function Chips({ path, value, onChange, options = [], ordered, custom, la
   return html`<div class="chips" role="group" aria-label=${label}>
     ${all.map((v) => {
       const i = current.indexOf(v);
-      return html`<button key=${v} type="button" aria-pressed=${i >= 0} title=${titles.get(v)} aria-label=${titles.get(v)} onClick=${() => toggle(v)}>${ordered && i >= 0 && html`<b>${i + 1}</b>`}${names.get(v) ?? v}</button>`;
+      return html`<button key=${v} type="button" disabled=${disabled} aria-pressed=${i >= 0} title=${titles.get(v)} aria-label=${titles.get(v)} onClick=${() => toggle(v)}>${ordered && i >= 0 && html`<b>${i + 1}</b>`}${names.get(v) ?? v}</button>`;
     })}
-    ${custom && html`<input class="chip-input" placeholder=${custom} aria-label=${custom} value=${draft} onInput=${(e) => setDraft(e.target.value)} onBlur=${add} onKeyDown=${(e) => e.key === "Enter" && (e.preventDefault(), add())} />`}
+    ${custom && html`<input class="chip-input" disabled=${disabled} placeholder=${custom} aria-label=${custom} value=${draft} onInput=${(e) => setDraft(e.target.value)} onBlur=${add} onKeyDown=${(e) => e.key === "Enter" && (e.preventDefault(), add())} />`}
   </div>`;
 }
 
@@ -287,10 +287,22 @@ export const Check = ({ path, label, checked, onChange, hint, ...props }) =>
 // Exclusive filter chips. `options` is a list of [value, name, count?].
 export const Segmented = ({ path, options, value, onChange, label, icons }) => {
   const [current, change] = bind(path, value, onChange);
-  return html`<div class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label}>
+  const index = Math.max(0, options.findIndex(([v]) => v === current));
+  const keydown = (e) => {
+    let next;
+    if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = options.length - 1;
+    else if (['ArrowRight', 'ArrowDown'].includes(e.key)) next = (index + 1) % options.length;
+    else if (['ArrowLeft', 'ArrowUp'].includes(e.key)) next = (index + options.length - 1) % options.length;
+    if (next === undefined) return;
+    e.preventDefault();
+    change(options[next][0]);
+    e.currentTarget.querySelectorAll('button')[next].focus();
+  };
+  return html`<div class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label} onKeyDown=${keydown}>
     ${options.map(
-      ([v, name, count]) =>
-        html`<button key=${v} type="button" role="radio" aria-checked=${v === current} class=${icons && cls('slot', v === current && 'open busy')}
+      ([v, name, count], i) =>
+        html`<button key=${v} type="button" role="radio" aria-checked=${v === current} tabindex=${i === index ? 0 : -1} class=${icons && cls('slot', v === current && 'open busy')}
           aria-label=${icons ? name : undefined} title=${icons ? name : undefined} onClick=${() => change(v)}>
           ${icons ? html`<${Icon} name=${icons[v]} />` : name}${count != null && html`<small>${count}</small>`}
         </button>`,

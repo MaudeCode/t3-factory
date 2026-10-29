@@ -1,7 +1,7 @@
 // Synthetic session tickets, the actual page, store and dispatch path. No live sessions, tickets or dispatches.
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status, notice, blocked, serverNow } from "../../web/lib/store.js";
+import { applyState, operations, status, notice, blocked, serverNow, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { route, match } from "../../web/lib/router.js";
 
@@ -90,7 +90,7 @@ async function run() {
   assert(calls.filter((c) => c.url === "/api/dispatch").length === 1, "rapid clicks produce one request");
   release();
   for (let n = 0; n < 100 && operations.value.some((op) => op.state !== "done"); n++) await pause();
-  assert(JSON.stringify(calls[0].input) === JSON.stringify({ ticket: "APP-2", model: "auto", overrideLimits: true }), "Run passes the captured key with automatic model selection");
+  assert(JSON.stringify(calls[0].input) === JSON.stringify({ ticket: "APP-2", model: "auto", overrideLimits: sessionOverrides.value }), "Run passes the captured key with automatic model selection and the page overrides");
   assert(!root.querySelector(".operation") && keys().join() === "WEB-9,APP-2,APP-5,APP-1" && !root.querySelector(".next .spinner"), "a refused start returns the row to its place without a request row");
   assert(root.querySelector("button.conn .badge")?.textContent === "1" && !tray(), "a refused start adds a notification without opening the list");
   root.querySelector("button.conn").click(); await pause();
@@ -264,7 +264,7 @@ async function bulk() {
   for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
   assert(calls.filter(c => c.url === '/api/dispatch').length === 2, 'bulk Run does not duplicate requests');
   assert(root.querySelector('button.conn .badge')?.textContent === '2' && keys().join() === 'WEB-9,APP-2,APP-5,APP-1', 'each refused bulk start returns to the list and adds its own notification');
-  assert(calls.filter(c => c.url === '/api/dispatch').every(c => c.input.model === 'auto' && c.input.overrideLimits === true), 'bulk Run uses the single-row dispatch contract');
+  assert(calls.filter(c => c.url === '/api/dispatch').every(c => c.input.model === 'auto' && JSON.stringify(c.input.overrideLimits) === JSON.stringify(sessionOverrides.value)), 'bulk Run uses the single-row dispatch contract and page overrides');
   await show();
   await enter();
   pick('WEB-9').click(); await pause();
@@ -341,7 +341,79 @@ async function overflowEdges() {
   scrollTo(0, 0);
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.sessionTests = { unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
+async function overrides() {
+  calls = [];
+  setSessionOverrides(['idle', 'reserve', 'labels']);
+  setSessionProvider('auto');
+  await show();
+  const group = () => root.querySelector('[role="group"][aria-label="Override limits"]');
+  const toggle = key => group().querySelector(`[aria-label^="Override ${key}"]`);
+  assert(group()?.querySelectorAll('button').length === 4, 'four override toggles share the page header');
+  assert(toggle('provider limits').getAttribute('aria-pressed') === 'false', 'provider limits are respected by default');
+  for (const control of group().querySelectorAll('button')) {
+    assert(control.querySelector('svg') && !control.textContent.trim() && control.title === control.getAttribute('aria-label'), 'each icon has an accessible name, tooltip and pressed state');
+    if (innerWidth <= 900) assert(control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44, 'override toggles have touch targets');
+  }
+  toggle('quota reserve').click(); await pause();
+  button('Run APP-2 now').click(); await pause();
+  toggle('provider limits').click(); await pause();
+  assert(JSON.stringify(calls[0].input.overrideLimits) === JSON.stringify(['idle', 'labels']), 'an individual start captures only the selected overrides');
+  button('Select tickets').click(); await pause();
+  button('Select APP-5').click(); button('Select APP-1').click(); await pause();
+  button('Run selected tickets').click(); await pause();
+  for (const control of [...group().querySelectorAll('button[aria-pressed="true"]')]) { control.click(); await pause(); }
+  await pause();
+  assert(operations.value.filter(op => ['APP-5', 'APP-1'].includes(op.input.ticket)).every(op => JSON.stringify(op.input.overrideLimits) === JSON.stringify(['idle', 'labels', 'providers'])), 'bulk starts capture the selections before later changes');
+  release();
+  for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
+  assert(calls.filter(c => c.url === '/api/dispatch').length === 3, 'single and bulk starts use the same serialized dispatch path');
+  assert(calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).every(c => JSON.stringify(c.input.overrideLimits) === JSON.stringify(['idle', 'labels', 'providers'])), 'queued dispatches keep their captured overrides');
+  assert(localStorage.getItem('factorySessionOverrides') === '[]', 'respecting all limits is saved as an empty selection');
+  await show();
+  assert(!group().querySelector('button[aria-pressed="true"]'), 'the page retains choices when remounted');
+  calls = [];
+  button('Run APP-5 now').click(); await pause();
+  assert(JSON.stringify(calls[0].input.overrideLimits) === '[]', 'an empty selection respects all limits');
+  for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
+  assert(document.documentElement.scrollWidth <= innerWidth, 'header toggles fit the viewport');
+  setSessionOverrides(['idle', 'reserve', 'labels']);
+  setSessionProvider('auto');
+  await show();
+  return 'session override checks passed';
+}
+
+async function providerChoice() {
+  calls = [];
+  setSessionProvider('auto'); setSessionOverrides(['labels']);
+  await show();
+  const radios = () => root.querySelectorAll('[role="radiogroup"][aria-label="Start provider"] button');
+  const limits = () => [...root.querySelectorAll('[role="group"][aria-label="Override limits"] button')];
+  assert(radios().length === 3, 'Auto, Codex and Claude reuse the icon segmented control');
+  for (const control of radios()) {
+    assert(control.querySelector('svg') && !control.textContent.trim() && control.title === control.getAttribute('aria-label'), 'provider icons have accessible names and tooltips');
+    if (innerWidth <= 900) assert(control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44, 'provider icons have touch targets');
+  }
+  radios()[1].click(); await pause();
+  assert(limits().every(control => control.disabled && control.getAttribute('aria-pressed') === 'true'), 'an explicit provider overrides all limits and disables their controls');
+  button('Run APP-2 now').click(); await pause();
+  assert(calls[0].input.provider === 'codex' && calls[0].input.model === 'auto' && calls[0].input.overrideLimits === true, 'Codex captures its provider choice with all scheduler limits overridden');
+  radios()[2].click(); await pause();
+  button('Select tickets').click(); await pause();
+  button('Select APP-5').click(); button('Select APP-1').click(); await pause();
+  button('Run selected tickets').click(); await pause();
+  radios()[0].click(); await pause();
+  assert(limits().every(control => !control.disabled) && limits().filter(control => control.getAttribute('aria-pressed') === 'true').length === 1, 'returning to Auto restores its original overrides');
+  release();
+  for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
+  assert(calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).length === 2 && calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).every(c => c.input.provider === 'claudeAgent' && c.input.overrideLimits === true), 'bulk starts retain Claude after switching back to Auto');
+  setSessionProvider('claudeAgent'); await show();
+  assert(radios()[2].getAttribute('aria-checked') === 'true', 'provider choices survive remount');
+  assert(localStorage.getItem('factorySessionProvider') === 'claudeAgent', 'the provider choice is saved');
+  setSessionProvider('auto'); setSessionOverrides(['idle', 'reserve', 'labels']); await show();
+  return 'provider choice checks passed';
+}
+
+window.sessionTests = { overrides, providerChoice, unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, overflowEdges, showError, showEmpty };
 await show();
 
 async function unavailableProjects() {

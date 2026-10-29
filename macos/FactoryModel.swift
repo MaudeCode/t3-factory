@@ -181,7 +181,7 @@ struct RunRequest: Identifiable, Codable {
     var projects: [[String: Any]] { config["projects"] as? [[String: Any]] ?? [] }
     var selectedPreset: [String: Any]? { configuredModels.first { $0["id"] as? String == selectedModel } }
     // Thresholds a manual start may override, in the scheduler's names.
-    nonisolated static let overrideLimits = [("idle", "idle time"), ("reserve", "quota reserve"), ("labels", "label limits")]
+    nonisolated static let overrideLimits = [("idle", "idle time"), ("reserve", "quota reserve"), ("labels", "label limits"), ("providers", "provider limits")]
     // Overriding all of them is the plain flag; a subset names each one.
     nonisolated static func overrideArguments(_ picked: Set<String>) -> [String] {
         picked.count == overrideLimits.count ? ["--override-limits"] : picked.isEmpty ? [] : ["--override", overrideLimits.map(\.0).filter(picked.contains).joined(separator: ",")]

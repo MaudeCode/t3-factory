@@ -147,7 +147,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     assert.equal(dispatches.length, 2, 'invalid Codex readiness/quota never dispatches');
     exhaustOnRefresh = false;
     for (const [model, ticket] of [['sol', 'FIX-3'], ['astra', 'FIX-4']] as const) {
-      assert.equal((await cycle(c, store, { manual: true, model, ticket })).reason, 'dispatched', 'manual Codex does not require Claude quota or inactivity');
+      assert.equal((await cycle(c, store, { manual: true, model, ticket, overrideLimits: ['providers'] })).reason, 'dispatched', 'manual Codex does not require Claude quota or inactivity');
       const sent = dispatches.at(-1)!;
       assert.deepEqual(sent.modelSelection, c.models.find(p => p.id === model)!.model);
       assert.deepEqual(sent.modelSelection, c.models.find(p => p.id === model)!.model);
@@ -158,7 +158,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
     }
     assert.equal(new Set(dispatches.map(d => d.threadId)).size, 4);
     assert.ok(providerCalls.every(id => id === 'codex'), 'Codex dispatch only queries Codex quota');
-    assert.equal((await cycle(c, store, { manual: true, model: 'sol', ticket: 'FIX-3' })).reason, 'no-eligible-ticket', 'Codex retains duplicate guards');
+    assert.equal((await cycle(c, store, { manual: true, model: 'sol', ticket: 'FIX-3', overrideLimits: ['providers'] })).reason, 'no-eligible-ticket', 'Codex retains duplicate guards');
     claudeAvailable = true;
     const before = dispatches.length;
     await cycle({ ...c, enabled: true }, store);
@@ -166,7 +166,7 @@ test('manual override runs the specified ticket/model while paused, but retains 
 
     const custom = configSchema.parse({ ...c, models: [...c.models, { id: 'quick-review', name: 'Quick review', model: { ...configuredModel(c, 'sol').model, options: [{ id: 'reasoningEffort', value: 'low' }, { id: 'serviceTier', value: 'priority' }] } }] });
     writeFileSync(file, '// preserve this comment\n' + JSON.stringify(custom));
-    assert.equal((await cycle(custom, store, { manual: true, model: 'quick-review', ticket: 'FIX-5' })).reason, 'dispatched', 'user-created presets are dispatchable without hardcoded aliases');
+    assert.equal((await cycle(custom, store, { manual: true, model: 'quick-review', ticket: 'FIX-5', overrideLimits: ['providers'] })).reason, 'dispatched', 'user-created presets are dispatchable without hardcoded aliases');
     assert.deepEqual(dispatches.at(-1)!.modelSelection, custom.models.at(-1)!.model);
     await assert.rejects(cycle(custom, store, { model: 'quick-review' }), /manual dispatch/);
     await assert.rejects(cycle(c, store, { manual: true, model: 'removed-preset' }), /Unknown model/);

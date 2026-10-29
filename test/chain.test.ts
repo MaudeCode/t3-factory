@@ -115,6 +115,29 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
   }
 });
 
+test('a forced provider survives a saved chain and cannot override deferred capacity', async t => {
+  const f = dispatchFixture(t);
+  f.tasks[1].status = 'todo';
+  f.c.models[0].automatic = false;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'auto', provider: 'codex', overrideLimits: true, chain: 'all' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'plan-started');
+  const plan = f.store.plan(result.planId as string)!;
+  assert.equal(plan.provider, 'codex');
+  assert.equal(f.launches.length, 1, 'the manual-only Codex preset runs the first blocker');
+  const blocker = f.store.jobs()[0]; blocker.state = 'complete'; f.store.save(blocker); f.tasks[1].status = 'done';
+  f.c.concurrency.codex = 0;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const instances = new Map([['codex', 'codex']]);
+  await runPlans(f.c, f.store, f.t3, f.kanvil, instances, f.threads);
+  assert.equal(f.launches.length, 1, 'a saved provider override never bypasses capacity for a deferred chain');
+  f.c.concurrency.codex = 1;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  await runPlans(f.c, f.store, f.t3, f.kanvil, instances, f.threads);
+  assert.equal(f.launches.length, 2, 'the target resumes on its forced provider when a slot opens');
+  assert.equal((f.launches[1] as any).modelSelection.instanceId, 'codex');
+});
+
 test('shared dependency ancestors reuse reads without becoming cycles', async t => {
   const f = dispatchFixture(t);
   for (const [n, id] of ['left', 'right', 'shared'].entries()) f.tasks.push(f.task(id, n + 3));

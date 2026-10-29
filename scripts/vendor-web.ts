@@ -53,6 +53,10 @@ const icons = {
   checklist: octicon("checklist"),
   check: octicon("check"),
   x: octicon("x"),
+  clock: octicon("clock"),
+  meter: octicon("meter"),
+  tag: octicon("tag"),
+  versions: octicon("versions"),
   // Difficulty as one, two or three rising bars.
   bars1: { box: 16, d: "M2 10h3v4H2z" },
   bars2: { box: 16, d: "M2 10h3v4H2zM6.5 6h3v8h-3z" },

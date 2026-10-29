@@ -18,7 +18,7 @@ import {
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { oidcSchema, type createOidc } from "./oidc.ts";
-import { overrideLimitsSchema } from "./config.ts";
+import { overrideLimitsSchema, dispatchProviderSchema } from "./config.ts";
 import { spawn } from "node:child_process";
 import { z } from "zod";
 
@@ -64,12 +64,14 @@ const dispatchSchema = z
       .regex(/^[a-z][a-z0-9-]*$/)
       .default("auto"),
     overrideLimits: overrideLimitsSchema.default(true),
+    provider: dispatchProviderSchema.optional(),
     chain: z.enum(["first", "all"]).optional(),
     ticketKeyRevision: z.string().min(1).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
   })
   .strict()
-  .refine(input => !input.upstream || (!input.ticket && !input.chain), "An upstream review cannot include ticket options");
+  .refine(input => !input.upstream || (!input.ticket && !input.chain), "An upstream review cannot include ticket options")
+  .refine(input => !input.provider || input.model === "auto", "A provider choice requires automatic model selection");
 const requestId = z.string().uuid();
 // Toggle endpoints and the CLI commands for [off, on].
 const toggles: Record<string, [string, string]> = {
@@ -487,6 +489,7 @@ export function createFactoryWeb(options: {
             "--request-id", id,
             "--model",
             dispatch.model,
+            ...(dispatch.provider ? ["--provider", dispatch.provider] : []),
             ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
             ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
             ...(dispatch.overrideLimits === true ? ["--override-limits"] : dispatch.overrideLimits && dispatch.overrideLimits.length ? ["--override", dispatch.overrideLimits.join(",")] : []),
