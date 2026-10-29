@@ -254,7 +254,7 @@ export class Store {
   // Store a decision and journal it only when the outcome changes, so a quiet factory does not flood the log.
   decide(result: CheckDecision) {
     const key = result.origin?.workKind === 'upstream' ? 'upstreamDecision' : result.origin?.workKind === 'chains' ? 'chainDecision' : 'lastDecision';
-    const previous = this.get(key), before: CheckDecision | null = JSON.parse(previous ?? 'null');
+    let before: CheckDecision | null = JSON.parse(this.get(key) ?? 'null');
     if (result.origin) {
       // Old runtimes misplaced background preflight errors globally. A fresh successful preflight
       // proves that shared read recovered; arbitrary legacy errors retain their warning.
@@ -265,6 +265,7 @@ export class Store {
       const current: CheckDecision | null = JSON.parse(this.get(key) ?? 'null');
       const checks = { ...current?.checks ?? (current && key === 'lastDecision' && current.reason !== 'error' ? { legacy: current } : {}) };
       const lane = result.origin.manual ? 'manual' : result.origin.providerDriver ?? 'all';
+      before = checks[lane] ?? null;
       if ((checks[lane]?.origin?.sequence ?? 0) <= result.origin.sequence) {
         checks[lane] = result;
         const selected = selectDecision(Object.values(checks))!;

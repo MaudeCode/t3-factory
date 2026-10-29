@@ -53,6 +53,23 @@ test('decisions are journaled only when their outcome changes', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+for (const retained of ['manual', 'error'] as const) test(`unchanged lane outcomes do not flood the journal behind a retained ${retained} result`, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-journal-')), store = new Store(dir);
+  try {
+    store.decisionRecorder({ workKind: 'tickets', manual: retained === 'manual', providerDriver: 'claudeAgent' })({
+      reason: retained === 'manual' ? 'dispatched' : 'error', at: new Date().toISOString(), ticket: 'APP-1', message: 'Fixture offline',
+    });
+    for (const reason of ['waiting-for-idle', 'waiting-for-idle', 'quota-exhausted', 'quota-exhausted']) {
+      store.decisionRecorder({ workKind: 'tickets', providerDriver: 'codex' })({
+        reason: 'watching-streams', at: new Date().toISOString(), streams: [{ provider: 'Codex', reason }],
+      });
+    }
+    assert.deepEqual(store.events().filter(event => event.text.startsWith('Codex ')).toReversed().map(event => event.text), [
+      'Codex waiting for idle time', 'Codex allowance exhausted',
+    ], 'only changes in the incoming lane should add activity');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('paused checks update status without adding activity between dispatches, errors, or restarts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-journal-'));
   try {
