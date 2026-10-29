@@ -8,9 +8,9 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const ago = minutes => new Date(Date.now() - minutes * 60_000).toISOString();
 const state = {
-  config: { enabled: false, kanvil: { url: 'https://kanvil.example.test' }, triage: { enabled: true, promptFile: '/triage.md' }, models: [], projects: [{ enabled: true, kanvilId: 'p', name: 'Example', upstreams: [], scopes: ['app'], inbox: { kanvilId: 'pin', label: 'intake', maxPromotionsPerDay: 2 } }, { enabled: true, kanvilId: 'o', name: 'Other', upstreams: [], scopes: ['api'], inbox: { kanvilId: 'oin', label: 'report' } }] },
+  config: { enabled: false, kanvil: { url: 'https://kanvil.example.test' }, triage: { enabled: true, promptFile: '/triage.md' }, models: [], projects: [{ enabled: true, kanvilId: 'p', name: 'Example', upstreams: [], scopes: ['app'], inbox: { kanvilId: 'pin', label: 'intake', maxPromotionsPerDay: 10 } }, { enabled: true, kanvilId: 'o', name: 'Other', upstreams: [], scopes: ['api'], inbox: { kanvilId: 'oin', label: 'report' } }] },
   status: { jobs: [], triageEnabled: true, triageStreams: [
-    { project: 'Example', projectId: 'p', inboxId: 'pin', label: 'intake', synchronized: true, untriaged: 2, failed: 1, running: 'PIN-4', oldestUntriagedAt: ago(185), promoted: 3, queued: 1, blocked: 1, needsOwner: 1, limit: 2 },
+    { project: 'Example', projectId: 'p', inboxId: 'pin', label: 'intake', synchronized: true, untriaged: 2, failed: 1, running: 'PIN-4', oldestUntriagedAt: ago(185), promoted: 3, queued: 1, blocked: 1, needsOwner: 1, limit: 10 },
     { project: 'Other', projectId: 'o', inboxId: 'oin', label: 'report', synchronized: true, untriaged: 0, failed: 0, running: null, oldestUntriagedAt: null, promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: null },
   ], triageResults: [
     { id: 6, time: ago(1), kind: 'triage', text: 'PIN-7 promoted to EX-40', data: { ticket: 'PIN-7', ticketId: 't7', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-40' } },
@@ -39,7 +39,7 @@ window.fetch = async (url, init) => {
 };
 async function show() {
   render(null, root); posts = []; saves = [];
-  state.config.projects[0].inbox.maxPromotionsPerDay = 2;
+  state.config.projects[0].inbox.maxPromotionsPerDay = 10;
   state.config.triage.enabled = true; state.status.triageEnabled = true;
   applyState(state, true); render(html`<${Triage} />`, root); await pause();
 }
@@ -65,20 +65,21 @@ async function promotion() {
   await show();
   const text = () => root.textContent, rows = () => [...root.querySelectorAll('.release')].slice(0, 2);
   assert(/3 promoted, 1 queued, 1 blocked, 1 need the owner/.test(rows()[0].textContent), 'the first inbox shows its promotion counts');
-  assert(rows()[0].querySelector('.release-state').textContent.includes('2 per day') && rows()[1].querySelector('.release-state').textContent.includes('Unlimited'), 'each row shows its limit next to its status');
+  assert(rows()[0].querySelector('.release-state').textContent.includes('10 per day') && rows()[1].querySelector('.release-state').textContent.includes('Unlimited'), 'each row shows its limit next to its status');
   assert(text().includes('promoted to EX-40') && text().includes('needs owner') && text().includes('sensitive: workType sec') && text().includes('queued'), 'promotion outcomes are listed');
-  // The shared limit picker: Paused, 1 to 3, a box for more, and Unlimited.
+  // The shared limit picker: Paused, 5, 10, 20, 40, Other for any number, and Unlimited.
   const group = (row) => rows()[row].querySelector('[role="radiogroup"]');
   const choice = (row, name) => [...group(row).querySelectorAll('button')].find((b) => b.textContent === name || b.getAttribute('aria-label') === name);
   const checked = (row) => group(row).querySelector('[aria-checked="true"]')?.textContent;
   const state = (row) => rows()[row].querySelector('.release-state').textContent;
-  assert(group(0).getAttribute('aria-label') === 'Example promotions per day' && checked(0) === '2' && checked(1) === 'Unlimited', 'each inbox shows its saved limit in the picker');
+  assert(group(0).getAttribute('aria-label') === 'Example promotions per day' && checked(0) === '10' && group(1).querySelector('[aria-checked="true"]')?.getAttribute('aria-label') === 'Unlimited', 'each inbox shows its saved limit in the picker');
+  assert([...group(1).querySelectorAll('button')].map((b) => b.textContent).join(' ') === 'Paused 5 10 20 40 Other ∞', 'the quick picks');
   assert(!rows()[0].querySelector('input'), 'no bare number box');
   choice(0, 'Paused').click(); await pause();
   assert(config.value.projects[0].inbox.maxPromotionsPerDay === 0 && state(0).includes('Paused') && checked(0) === 'Paused', 'Paused stores 0');
   choice(0, 'Unlimited').click(); await pause();
   assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && state(0).includes('Unlimited'), 'Unlimited stores null');
-  choice(0, 'More than 3 per day').click(); await pause();
+  choice(0, 'Another number per day').click(); await pause();
   const box = group(0).querySelector('input.slot-custom'), enter = () => box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   box.value = '-1'; box.dispatchEvent(new Event('input', { bubbles: true })); enter(); await pause();
   assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && group(0).querySelector('input.slot-custom') && box.validationMessage, 'a negative limit is refused with the field error and the box stays open');
@@ -86,10 +87,11 @@ async function promotion() {
   assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && box.validationMessage, 'a fractional limit is refused with the field error');
   box.value = '12'; box.dispatchEvent(new Event('input', { bubbles: true })); enter(); await pause();
   assert(config.value.projects[0].inbox.maxPromotionsPerDay === 12 && checked(0) === '12' && state(0).includes('12 per day'), 'a custom limit is stored');
-  choice(0, '3 per day').click(); await pause();
+  choice(0, '20 per day').click(); await pause();
+  assert([...group(0).querySelectorAll('.slot.open')].map((b) => b.textContent).join(' ') === '5 10 20', 'picks up to the limit light up');
   await actions.save(); await pause();
-  assert(saves.length === 1 && saves[0].config.projects[0].inbox.maxPromotionsPerDay === 3 && saves[0].config.projects[1].inbox.maxPromotionsPerDay === undefined, 'saving writes only that inbox limit');
-  assert(checked(0) === '3' && state(0).includes('3 per day'), 'the saved limit shows');
+  assert(saves.length === 1 && saves[0].config.projects[0].inbox.maxPromotionsPerDay === 20 && saves[0].config.projects[1].inbox.maxPromotionsPerDay === undefined, 'saving writes only that inbox limit');
+  assert(checked(0) === '20' && state(0).includes('20 per day'), 'the saved limit shows');
   const one = (row) => new Set([...group(row).children].map((el) => Math.round(el.getBoundingClientRect().top))).size === 1;
   assert(one(0) && one(1), 'each picker stays on one line');
   // The server still answers an invalid config with its field error.

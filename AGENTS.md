@@ -13,7 +13,7 @@ Settings pages should read as designed controls, not a form of text boxes and dr
 - On or off: `Toggle` (labelled row) or `Switch`.
 - One of a few fixed options (up to five): `Segmented`.
 - Several values from a list: `Chips`.
-- A small count or limit: `Slots` (Off, quick picks, a box for higher values; `offLabel`, `unit` and `unlimited` cover Paused, "per day" and a null Unlimited).
+- A count or limit: `Slots` (Off, quick picks, a box for any other value). Pick sensible steps with `picks` (for example 5, 10, 20, 40) rather than 1, 2, 3; `offLabel`, `unit` and `unlimited` cover Paused, "per day" and a null ∞ choice.
 - A count with an unlimited end: `Stepper`. A duration or percentage: `Range`.
 - `Select` only for long or live catalogs, such as T3 or Kanvil projects, models and repositories. `Input` only for free text: names, paths, repositories, tags and search.
 

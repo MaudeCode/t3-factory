@@ -76,14 +76,15 @@ export function Stepper({ path, value, onChange, min = 0, max = 99, labels = {},
   </div>`;
 }
 
-// Limit picker: Off, quick picks up to `max`, and a last slot that opens a box for any higher limit.
-// `unit` words each slot ("at once", "per day"); `offLabel` names 0; `unlimited`, when given, names a last choice stored as null.
-export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running now', unit = "at once", offLabel = "Off", unlimited }) {
+// Limit picker: Off, quick picks (1 to `max`, or the given `picks`), and a slot that opens a box for any other limit.
+// `unit` words each slot ("at once", "per day"); `offLabel` names 0; `unlimited`, when given, names a last ∞ choice stored as null.
+export function Slots({ path, running = 0, max = 6, picks, label, busyLabel = 'running now', unit = "at once", offLabel = "Off", unlimited }) {
   const value = at(path), none = !!unlimited && value == null;
   const limit = none ? Infinity : value ?? 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const custom = !none && limit > max;
+  const quick = picks ?? Array.from({ length: max }, (_, i) => i + 1), top = quick.at(-1);
+  const custom = !none && limit !== 0 && !quick.includes(limit);
   const slot = (n, text = n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
     aria-label=${`${n} ${unit}`} title=${n <= running ? busyLabel : n <= limit && !none ? "free slot" : `allow ${n} ${unit}`} onClick=${() => set(path, n)}>${text}</button>`;
   // Invalid text never reaches the config: Enter shows the field's error and keeps the box open, leaving it restores the saved limit.
@@ -99,14 +100,15 @@ export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running 
   };
   return html`<div class="slots" role="radiogroup" aria-label=${label}>
     <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>${offLabel}</button>
-    ${Array.from({ length: max }, (_, i) => slot(i + 1))}
+    ${quick.map((n) => slot(n))}
     ${editing
       ? html`<input type="number" class="slot-custom" min="0" step="1" max=${Number.MAX_SAFE_INTEGER} required value=${draft} onInput=${(e) => setDraft(e.currentTarget.value)}
           aria-label=${`${label}, custom limit`} ref=${(el) => el && el !== document.activeElement && (el.focus(), el.select())}
           onKeyDown=${onKeyDown} onBlur=${(e) => commit(e.currentTarget)} />`
-      : html`<button type="button" role="radio" aria-checked=${custom} class=${cls("slot", custom && "open", custom && running > max && "busy")}
-          aria-label=${custom ? `${limit} ${unit}, change` : `More than ${max} ${unit}`} title=${custom ? "Change the limit" : "Set a higher limit"} onClick=${() => { setDraft(String(custom ? limit : max + 1)); setEditing(true); }}>${custom ? limit : `${max + 1}+`}</button>`}
-    ${unlimited && html`<button type="button" role="radio" aria-checked=${none} class="slot-off" onClick=${() => set(path, null)}>${unlimited}</button>`}
+      : html`<button type="button" role="radio" aria-checked=${custom} class=${cls("slot", custom && "open", custom && running > top && "busy")}
+          aria-label=${custom ? `${limit} ${unit}, change` : picks ? `Another number ${unit}` : `More than ${top} ${unit}`} title=${custom ? "Change the limit" : picks ? "Set another limit" : "Set a higher limit"}
+          onClick=${() => { setDraft(String(custom ? limit : top + 1)); setEditing(true); }}>${custom ? limit : picks ? "Other" : `${top + 1}+`}</button>`}
+    ${unlimited && html`<button type="button" role="radio" aria-checked=${none} class="slot-off" aria-label=${unlimited} title=${unlimited} onClick=${() => set(path, null)}>∞</button>`}
   </div>`;
 }
 

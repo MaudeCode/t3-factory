@@ -20,7 +20,7 @@ function Queue({ row, now }) {
     <span class="release-state">${row.running ? html`<${Tag} tone="on">triaging<//>` : row.untriaged ? html`<${Tag} tone="attention">${row.untriaged} waiting<//>` : row.synchronized ? html`<${Tag} tone="ok">clear<//>` : html`<${Tag}>not synchronized<//>`}${" "}<${Tag} tone=${limit === 0 ? "attention" : ""}>${promotionLimit(limit)}<//></span>
     <span class="release-versions"><span>${triageSummary(row, now)}</span></span>
     ${index >= 0 && html`<div class="promotion-limit"><${Field} group label="Promotions per day" hint="Paused stops promotion; eligible reports wait and promote oldest first once allowed.">
-      <${Slots} label=${`${row.project} promotions per day`} path=${["projects", index, "inbox", "maxPromotionsPerDay"]} max=${3} unit="per day" offLabel="Paused" unlimited="Unlimited" /><//></div>`}
+      <${Slots} label=${`${row.project} promotions per day`} path=${["projects", index, "inbox", "maxPromotionsPerDay"]} picks=${[5, 10, 20, 40]} unit="per day" offLabel="Paused" unlimited="Unlimited" /><//></div>`}
   </div>`;
 }
 
