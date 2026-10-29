@@ -93,7 +93,12 @@ export const configSchema = z.preprocess(input => {
     // Allowed native scopes, for example the triage output's scope allowlist.
     scopes: z.array(z.string().trim().min(1)).refine(scopes => new Set(scopes).size === scopes.length, 'Scopes must be unique').optional(),
     // A Kanvil project of untrusted reports about this project; triage targets this project and its repository.
-    inbox: z.object({ kanvilId: z.string().min(1), label: z.string().trim().min(1).default('intake') }).strict().optional(),
+    // Promotion: at most `maxPromotionsPerDay` reports per rolling 24 hours (null or absent is unlimited, 0 pauses);
+    // `sensitivePaths` globs replace the built-in list of paths whose change needs the owner.
+    inbox: z.object({
+      kanvilId: z.string().min(1), label: z.string().trim().min(1).default('intake'),
+      maxPromotionsPerDay: z.number().int().min(0).nullable().optional(), sensitivePaths: z.array(z.string().trim().min(1)).optional(),
+    }).strict().optional(),
     upstreams: z.array(z.object({
       // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
       name: z.string().min(1), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()),

@@ -21,6 +21,17 @@ The agent receives scoped ticket instructions, but its configured runtime still 
 - **Bounded cost.** One run at a time across all inboxes, a 300-second timeout, and the Claude quota budget. The budget is rechecked before each report, against a reading taken after the previous triage run, so a flood of reports cannot spend past the reserve.
 - **No cross-project dispatch.** An inbox project can never be a delivery project, and each inbox feeds exactly one project; config validation enforces both.
 
+### Promotion trust boundary
+
+[Promotion](docs/configuration.md#promotion) turns an actionable report into a ready ticket that an agent with full tools implements, so no report text crosses into it.
+
+- **Rendered by code.** The promoted ticket is a fixed template filled from the schema-bounded proposal, code-rendered evidence links, and the inbox key. The proposal is the triage model's own description of what it verified; the report itself is never copied.
+- **Deterministic lint.** URLs, code, shell-like text, secret and credential words, absolute or outside paths, and agent-aimed directives block promotion. Security work, `research`, and changes to CI, release, dependency, and auth paths need the owner.
+- **Independent review.** A second model run with no tools, no snapshot and the same minimal environment compares the rendered ticket with the raw report and must answer `safe`.
+- **Idempotent and verified.** One request ID per inbox ticket; the created ticket is read back and a mismatch stops promotion without retry.
+- **Bounded rate.** `inbox.maxPromotionsPerDay` caps each inbox; `0` pauses it.
+- **Delivery guard.** A `from-user-report` ticket's dispatch prompt limits the run to the acceptance criteria in source and test files, forbids opening the inbox ticket, fetching URLs, or running anything but the documented build and test commands, and stops for the owner before CI, release, dependency, credential, or auth edits.
+
 `doctor` runs the real CLI with the exact triage flags against a canary file outside a snapshot and a shell command. It fails unless both are refused. Run it after every Claude CLI upgrade.
 
 ## Private files
