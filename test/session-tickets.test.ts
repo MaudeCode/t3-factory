@@ -329,6 +329,7 @@ test('cached legacy origins backfill past known history and retain rows across r
   assert.equal(await f.collect({ reads: 1 }), true, 'an unchanged legacy scan still classifies its older origin');
   assert.deepEqual(f.keys(), ['FIX-7'], 'unknown origin preserves the last known list');
   f.failing.add('/api/orchestration/threads/legacy/history?cursor=origin&view=activity');
+  f.longOutage();
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'a failed origin read does not erase the last known row');
   assert.match(errorText(f.status().error), /Couldn't read 1 T3 session/);
@@ -562,6 +563,8 @@ function collectorFixture(t: test.TestContext) {
     collect: (budget?: { reads?: number; lookups?: number; refreshes?: number }) => collectSessionTickets(c, f.store, f.t3, f.kanvil, budget),
     status: () => sessionTicketStatus(c, f.store),
     keys: () => sessionTicketStatus(c, f.store).rows.map(r => r.key),
+    // An outage that began long ago has outlasted the notice's grace period.
+    longOutage: () => f.store.set('sessionTickets:outageSince', '1'),
     // Collect until no work remains, as the service does batch after batch.
     drain: async () => { for (let n = 0; n < 50; n++) if (!await f.collect()) return; throw new Error('collection did not settle'); },
   };
@@ -729,6 +732,7 @@ test('saved-ticket outages keep the last list and the collection error throughou
   const saved = f.store.sessionTicket('task-7')!;
   await httpTracker(t, f, () => { throw new Error('Kanvil request failed (HTTP 503, unavailable)'); });
   f.store.saveSessionTicket({ ...saved, refreshAfter: new Date(0).toISOString() });
+  f.longOutage();
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7']);
   assert.equal(f.store.sessionTicket('task-7')!.missing, undefined);
@@ -811,6 +815,7 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 10, AT.reported, 's1')], cursor: 'older-1', more: true });
   f.history.set('older-1', { items: [message('a0', 'assistant_message', 'Created FIX-8.', 1, AT.reported, 's1')], cursor: null, more: false });
   f.failing.add('ticketByKey');
+  f.longOutage();
   await f.collect();
   assert.deepEqual(f.keys(), [], 'a failed confirmation lists nothing');
   assert.match(errorText(f.status().error), /Couldn't confirm 1 reported ticket[\s\S]*FIX-7/);
@@ -820,6 +825,7 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   assert.match(errorText(f.status().error), /Couldn't confirm 1 reported ticket[\s\S]*FIX-7/, 'an unresolved lookup failure stays visible before its retry is due');
   pending[0].retryAfter = '2000-01-01T00:00:00.000Z'; f.store.saveSessionThread({ ...f.store.sessionThread('s1')!, pending });
   f.failing.add('/api/orchestration/threads/s1/history?cursor=older-1&view=activity');
+  f.longOutage();
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7'], 'the retried lookup succeeds while the page read fails');
   assert.match(errorText(f.status().error), /Couldn't read 1 T3 session/);
@@ -832,6 +838,7 @@ test('a failed read or lookup is retried without losing candidates, duplicating 
   assert.equal(f.status().error, null, 'a clean batch clears the failure');
   assert.equal(f.store.sessionTickets().length, 2);
   f.failing.add('/api/orchestration/shell');
+  f.longOutage();
   await f.collect();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'a failed session listing keeps the known list');
   assert.match(errorText(f.status().error), /Couldn't list T3 sessions/);
@@ -911,6 +918,26 @@ test('failed refreshes back off instead of looping, and rows behind them still g
   assert.ok(f.store.sessionTickets().every(r => r.refreshError && r.refreshedAt === '2000-01-01T00:00:00.000Z'), 'failed rows keep their honest last read and the error');
 });
 
+test('a tracker outage stops the batch at its first failure and stays quiet until it outlasts the grace period', async t => {
+  const f = collectorFixture(t);
+  const keys = Array.from({ length: 12 }, (_, i) => i + 1);
+  for (const n of keys) f.tasks.push(task(`task-${n}`, n));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', `Created ${keys.map(n => `FIX-${n}`).join(', ')}.`, 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.drain();
+  for (const row of f.store.sessionTickets()) f.store.saveSessionTicket({ ...row, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' });
+  mockTracker(t, f.kanvil, async (name: string) => { f.calls.push(name); if (name === 'ticket') throw new Error('kanvil.read failed after 62ms: [unclassified]: Kanvil request failed (HTTP 503, unclassified)'); if (name === 'labels') return []; throw new Error(name); });
+  const reads = () => f.calls.filter(x => x === 'ticket').length;
+  assert.equal(await f.collect(), false, 'an outage does not schedule another batch straight away');
+  assert.equal(reads(), 1, 'the remaining rows are not read into the same outage');
+  assert.equal(f.status().error, null, 'a fresh outage is not a notice');
+  assert.equal(f.store.sessionTickets().filter(r => r.refreshError).length, 1, 'only the attempted row records the failure');
+  f.longOutage();
+  await f.collect();
+  assert.equal(reads(), 2);
+  assert.match(errorText(f.status().error), /Couldn't refresh 1 listed ticket: .*HTTP 503/, 'an outage past the grace period is shown');
+});
+
 test('a collection batch that cannot start still records the failure for the page', { timeout: 20000 }, async t => {
   const f = serviceFixture(t);
   t.mock.method(Kanvil.prototype, 'connect', async () => { throw new Error('Kanvil MCP process exited'); });
@@ -945,6 +972,7 @@ test('a reference to a project the cached catalog does not know forces one fresh
 test('failed session reads back off before the batch continues, so an outage neither loops nor starves later sessions', async t => {
   const f = collectorFixture(t);
   for (let n = 1; n <= 9; n++) { f.sessions.push(f.session(`s${n}`)); f.down.add(`/api/orchestration/threads/s${n}/bounded`); }
+  f.longOutage();
   const reads = () => f.calls.filter(x => x.endsWith('/bounded')).length;
   assert.equal(await f.collect(), true, 'the ninth session is still unread after eight failed reads');
   assert.equal(reads(), 8);
