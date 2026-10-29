@@ -8,7 +8,7 @@ npm run check
 npm test
 ```
 
-GitHub Actions runs type checks and the suite on Linux and macOS for every PR head; macOS also builds the menu app. CI uses fixture-owned temporary state and never deploys or reads production credentials.
+GitHub Actions runs type checks and the suite on Linux for every PR head. macOS runs the suite and builds the menu app on every push to main, and on a PR only when it changes `macos/`, `scripts/`, the native Swift tests and fixtures, `package.json` or the lockfile, or a workflow. CI uses fixture-owned temporary state and never deploys or reads production credentials.
 
 Tests use fixtures and temporary state. They cover quota policy, provider routing, ownership, manual dispatch, monitoring, reopened tickets, merge approval, the journal, web authentication, the web app's live stream, and the Inbox triage sandbox. Triage tests use two inboxes feeding two projects with different scope allowlists, a fake `claude` executable that records its argv, environment, working directory, and snapshot and answers the no-tools safety review separately, a fake git remote, and a fake Kanvil client with seeded projections that applies writes and records created tickets; they never run a live model. Promotion tests cover the gate, each lint rule, the daily limit across two inboxes, idempotent creation, readback, and backfill. They do not require production credentials or prove compatibility with a live T3 build.
 

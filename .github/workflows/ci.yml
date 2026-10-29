@@ -13,12 +13,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A pull request runs macOS only when it touches the menu app, the macOS-only tests, scripts or dependencies,
+  # or this workflow. Main pushes always run both, so BSD tool differences still surface on main.
+  changes:
+    name: Detect macOS changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.filter.outputs.macos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - id: filter
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then echo macos=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(git diff --name-only "origin/$BASE_REF...$HEAD_SHA")
+          if grep -qE '^(macos/|scripts/|test/native-queue\.test\.ts$|test/fixtures/.*\.swift$|package(-lock)?\.json$|\.github/workflows/)' <<< "$files"; then
+            echo macos=true >> "$GITHUB_OUTPUT"
+          else
+            echo macos=false >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
     name: Checks (${{ matrix.os }})
+    needs: changes
+    # A failed classification runs both.
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.changes.outputs.macos == 'false' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
