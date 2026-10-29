@@ -11,7 +11,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | `enabled` | Allows new automatic ticket and discovery work; explicit manual runs remain available while paused. Upstream reviews have their own `upstream.enabled`. |
 | `pollSeconds` | Maintenance fallback cadence, at least 15 seconds. Kanvil inventory changes arrive through SSE. |
 | `idleMinutes` | Required inactivity for the relevant provider in T3 before ticket and discovery work. Upstream reviews do not wait for it. |
-| `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts; manual runs may exceed them. |
+| `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts and manual starts without a provider override; manual runs with `providers` selected may exceed them. |
 | `maxWaitingPRs` | Maximum parked jobs before further dispatches are held; `null` means unlimited. |
 | `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. |
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |

@@ -13,7 +13,7 @@ import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task }
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket } from './store.ts';
 import { promptFor } from './prompts.ts';
-import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project } from './config.ts';
+import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
 import { liveModelQuota, readModelQuota } from './models.ts';
 import { sessionTicketStatus } from './session-tickets.ts';
@@ -827,7 +827,7 @@ export async function refreshInventory(c: Config, store: Store, t3: T3, kanvil: 
 }
 
 export interface Skipped { key: string; reason: string; id?: string; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; model?: string; chain?: 'first' | 'all'; continuation?: boolean }
+export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean }
 // The thresholds this start skips; automatic work skips none.
 const skips = (options: CycleOptions) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
@@ -862,7 +862,8 @@ type Queue = Awaited<ReturnType<typeof inventory>>;
 const holdsSlot = (job: Pick<Job, 'state'>, thread: Thread | undefined, timeout: number) =>
   !['complete', 'dismissed'].includes(job.state) && (['running', 'dispatching'].includes(job.state) || !!(thread && executing(thread, timeout)));
 
-export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>()): Set<string> {
+export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>(), options: CycleOptions = {}): Set<string> {
+  if (options.manual && !options.continuation && skips(options).has('providers')) return new Set();
   const counts = new Map(planned);
   for (const job of jobs) {
     const thread = threads.find(t => t.id === job.threadId);
@@ -906,6 +907,7 @@ export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'pro
 }
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
+  if (options.provider && (!options.manual || options.model && options.model !== 'auto')) throw new Error('A provider choice requires manual automatic model selection');
   if (clients.github) githubClients.set(store, clients.github);
   if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
   if (options.manual && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
@@ -930,10 +932,10 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       if (clients.workKind === 'chains') return decision(dispatches.some(result => result.reason === 'dispatched') ? 'dispatched' : 'plans-checked', { dispatches });
     }
     const jobs = store.jobs();
-    const busy = options.manual ? new Set<string>() : busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
+    const busy = busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options);
     const streams = ['claudeAgent', 'codex'].map(driver => ({
       driver, provider: driver === 'codex' ? 'Codex' : 'Claude',
-      reason: !options.manual && c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : busy.has(driver) ? 'provider-running' : 'no-eligible-model',
+      reason: busy.has(driver) ? c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running' : 'no-eligible-model',
       active: jobs.filter(j => ['running', 'dispatching'].includes(j.state) && (j.providerDriver ?? instances.get(j.modelSelection?.instanceId ?? 'claudeAgent')) === driver).map(jobLabel),
       planned: [] as string[], models: [] as { id: string; name: string; reason: string }[], quota: undefined as Awaited<ReturnType<typeof readModelQuota>> | undefined, quotaError: undefined as string | undefined,
     }));
@@ -946,7 +948,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     // Blocked only by provider idle time: reviews may still use these, ticket and discovery work may not.
     const idleModels: typeof readyModels = [];
     const activityCache = new Map<string, Awaited<ReturnType<typeof personalActivity>>>();
-    for (const preset of c.models.filter(p => p.automatic && (!clients.providerDriver || instances.get(p.model.instanceId) === clients.providerDriver))) {
+    for (const preset of c.models.filter(p => (p.automatic || !!options.provider) && (!options.provider || instances.get(p.model.instanceId) === options.provider) && (!clients.providerDriver || instances.get(p.model.instanceId) === clients.providerDriver))) {
       await backgroundCheckpoint();
       const driver = instances.get(preset.model.instanceId);
       const stream = streams.find(s => s.driver === driver);
@@ -1087,7 +1089,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     saveStreams();
     // Operators run this after every Claude CLI upgrade: the sandbox must still refuse both probes.
     const triageSandbox = options.doctor && c.triage ? await triageCanary() : undefined;
-    if (options.manual && queue.ready.length && !readyModels.length && !results.length) return decision('no-ready-model', { streams, eligible: queue.ready.length, message: 'No configured model is ready. ' + streams.flatMap(stream => stream.models.map(model => `${model.name}: ${model.reason}`)).join('; ') });
+    if (options.manual && queue.ready.length && !readyModels.length && !results.length) return decision('no-ready-model', { streams, eligible: queue.ready.length, message: 'No configured model is ready. ' + streams.flatMap(stream => stream.models.length ? stream.models.map(model => `${model.name}: ${model.reason}`) : [`${stream.provider}: ${stream.reason === 'provider-disabled' ? 'provider limit is Off' : stream.reason === 'provider-running' ? 'provider limit is full' : 'no automatic model configured'}`]).join('; ') });
     return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length, ...triageSandbox ? { triageSandbox } : {} });
   } finally { if (ownsKanvil) await kanvil.close(); }
 }
@@ -1147,7 +1149,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const jobs = store.jobs();
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
-    if (plan && !options.manual && busyProviders(jobs, shell.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('provider-running', { driver: plan.driver });
+    const driver = plan?.driver ?? instances.get(preset.model.instanceId);
+    if (driver && busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(driver)) return decision(c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running', { driver });
     const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
     if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     // A review needs no ticket queue, so ticket-only reads cannot block it.
@@ -1174,7 +1177,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       return live ? Promise.resolve(live) : readModelQuota(t3, c, store.jobSummaries(), preset.id, manualPolicy, refresh);
     };
     const quota = await readSelectedQuota();
-    if (plan && quota.driver !== plan.driver) return decision('provider-mapping-changed');
+    if (plan && quota.driver !== plan.driver || options.provider && quota.driver !== options.provider) return decision('provider-mapping-changed');
     const isManualCodex = manualPolicy && quota.provider === 'Codex';
     // Reviews do not wait for idle time, so they never read (or fail on) personal activity.
     const readActivity = async (threads: Thread[]) => review || isManualCodex || skip.has('idle') ? { active: false, last: '', idleMinutes: Infinity }
@@ -1277,15 +1280,14 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         if (next && nextProject) { queue.selected = next; project = nextProject; continue; }
         return decision(refusal.reason, refusal);
       }
-      if (plan && currentQuota.driver !== plan.driver) return decision('provider-mapping-changed');
+      if (plan && currentQuota.driver !== plan.driver || options.provider && currentQuota.driver !== options.provider) return decision('provider-mapping-changed');
       const currentManualCodex = manualPolicy && currentQuota.provider === 'Codex';
       if (!currentQuota.hasAllowance) return decision(currentManualCodex ? 'codex-quota-exhausted' : 'quota-exhausted', { quota: currentQuota });
       if (c.maxWaitingPRs !== null && currentJobs.filter(job => job.state === 'waiting').length >= c.maxWaitingPRs) return decision('waiting-cap');
       // Reviews start as soon as a release is found, so only ticket and discovery work wait for idle time.
       if ((!skip.has('idle') && !currentManualCodex && idleBlocked(c, currentActivity)) || (!skip.has('reserve') && !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
-      // Automatic work and chain continuations re-check the run limit against the fresh shell: a run may have resumed since the slot was counted.
-      if (!options.manual && plan && busyProviders(currentJobs, fresh.threads, plan.instanceDrivers, c.monitoringTimeoutMinutes, c.concurrency).has(plan.driver)) return decision('job-resumed-before-dispatch');
-      if (options.continuation && busyProviders(currentJobs, fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
+      // Recheck capacity at reservation; only an explicit manual override can exceed it.
+      if (busyProviders(currentJobs, fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
       if (review) {
         const watched = project.upstreams.find(watched => watched.repo === review.upstream.repo);
         const state = watched && releaseState(project, watched, store, currentJobs);
@@ -1296,8 +1298,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       if (discovery && !discoveryAvailable(project, currentJobs, store, plan?.skipProjects)) return decision('discovery-changed-before-dispatch');
       if (options.dryRun) { prepared.check(); return decision('would-dispatch', { kind: review ? 'upstream' : discovery ? 'discovery' : 'ticket', project: project.name, projectId: project.kanvilId, ticket: queue.selected?.key, upstream: review?.upstream, model: currentQuota.factoryRouting.model, quota: currentQuota }); }
       const selectedModel = currentQuota.factoryRouting.model;
-      // Manual Codex runs never wait for idle time or reserve, so only a label override is news for them.
-      const waived = [...skip].filter(l => l === 'labels' || !currentManualCodex).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit' })[l]);
+      // Manual Codex runs already skip idle and reserve checks.
+      const waived = [...skip].filter(l => !currentManualCodex || !['idle', 'reserve'].includes(l)).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit', providers: 'provider-limit' })[l]);
       const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason;
       const now = new Date().toISOString(), id = randomUUID();
       const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: review ? 'upstream' : queue.selected ? 'ticket' : 'discovery', ...(review ? { upstream: review.upstream } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
@@ -1411,7 +1413,7 @@ async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, in
     const result = await run({ ...options, chain: undefined, ticket: pick.key });
     return { ...result, chain: { target: ticketKey, picked: pick.key } };
   }
-  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', overrideLimits: [...skip], state: 'active' };
+  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', ...(options.provider ? { provider: options.provider } : {}), overrideLimits: [...skip], state: 'active' };
   const context = readContext();
   if (context) context.own({ planId: plan.id }, () => store.savePlan(plan));
   else store.savePlan(plan);
@@ -1441,9 +1443,10 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     const jobs = store.jobSummaries();
     for (const t of chainReady(plan, jobs)) {
       if (store.plan(plan.id)?.state !== 'active') break;
+      if (providerDriver && plan.provider && providerDriver !== plan.provider) continue;
       if (!t.runnable) { t.note = 'Its project is not included in the factory'; continue; }
       const preset = plan.model !== 'auto' ? c.models.find(model => model.id === plan.model)
-        : c.models.find(model => model.automatic && acceptsDifficulty(model, t as Candidate) && (!providerDriver || instances.get(model.model.instanceId) === providerDriver));
+        : c.models.find(model => (model.automatic || !!plan.provider) && (!plan.provider || instances.get(model.model.instanceId) === plan.provider) && acceptsDifficulty(model, t as Candidate) && (!providerDriver || instances.get(model.model.instanceId) === providerDriver));
       if (!preset) {
         if (providerDriver && plan.model === 'auto' && c.models.some(model => model.automatic && acceptsDifficulty(model, t as Candidate))) continue;
         t.note = t.difficulty ? (plan.model === 'auto' ? 'No automatic model accepts this difficulty' : 'The chosen model is no longer configured') : 'Ticket needs a native difficulty before dispatch'; continue;
@@ -1455,7 +1458,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       planned.set(driver, (planned.get(driver) ?? 0) + 1);
       pending.push(independentOperation(() => store.exclusive([`ticket:${t.id}`], async () => {
         try {
-          const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig }, plan.id);
+          const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig }, plan.id);
           results.push(result);
           t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
         } catch (error) { t.note = safeError(error); results.push({ reason: 'error', at: new Date().toISOString(), ticket: t.key, message: t.note }); }

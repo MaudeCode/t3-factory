@@ -3,7 +3,7 @@
 // event stream, the poll fallback, and every action that reloads all feed the same path.
 import { signal, computed, batch } from "./h.js";
 import { api, post } from "./api.js";
-import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState, operationText } from "./format.js";
+import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState, operationText, OVERRIDES, PROVIDERS } from "./format.js";
 
 // State -----------------------------------------------------------------
 export const auth = signal({ mode: "pairing", loginUrl: "" });
@@ -322,6 +322,21 @@ export function setModelOption(index, id, value) {
 
 // Dispatch --------------------------------------------------------------
 const storage = globalThis.localStorage;
+const defaultSessionOverrides = OVERRIDES.map(([key]) => key).filter(key => key !== "providers");
+let savedSessionOverrides;
+try { savedSessionOverrides = JSON.parse(storage?.getItem("factorySessionOverrides") ?? "null"); } catch {}
+export const sessionOverrides = signal(Array.isArray(savedSessionOverrides) ? defaultSessionOverrides.concat("providers").filter(key => savedSessionOverrides.includes(key)) : defaultSessionOverrides);
+export function setSessionOverrides(value) {
+  sessionOverrides.value = [...value];
+  storage?.setItem("factorySessionOverrides", JSON.stringify(value));
+}
+let savedSessionProvider;
+try { savedSessionProvider = storage?.getItem("factorySessionProvider"); } catch {}
+export const sessionProvider = signal(PROVIDERS.some(p => p.driver === savedSessionProvider) ? savedSessionProvider : "auto");
+export function setSessionProvider(value) {
+  sessionProvider.value = value;
+  storage?.setItem("factorySessionProvider", value);
+}
 const saveOperations = () => storage?.setItem("factoryOperations", JSON.stringify(operations.value));
 const request = (id) => operations.value.find((op) => op.id === id);
 const needsOperation = (op) => !op.choiceHandled && !(op.state === "done" && ["dispatched", "plan-started"].includes(op.result?.data?.reason));

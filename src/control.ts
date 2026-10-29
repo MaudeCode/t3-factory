@@ -1,5 +1,5 @@
 import type { CleanupRequest } from './cleanup.ts';
-import { overridableLimits, type OverrideLimits } from './config.ts';
+import { overridableLimits, dispatchProviderSchema, type DispatchProvider, type OverrideLimits } from './config.ts';
 // The running scheduler answers commands over a Unix socket in its state directory, so the CLI and
 // the web server hand work to the process that already holds the clients and the store instead of
 // racing it for the SQLite claim. Without a running scheduler, callers fall back to doing the work.
@@ -75,7 +75,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; model?: string; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all' } {
+export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all' } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
@@ -88,6 +88,8 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
       const value = args[++i];
       if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
       options.model = value;
+    } else if (args[i] === '--provider') {
+      options.provider = dispatchProviderSchema.parse(args[++i]);
     } else if (args[i] === '--chain') {
       const value = args[++i];
       if (value !== 'first' && value !== 'all') throw new Error('--chain requires first or all');
@@ -102,5 +104,6 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
     else throw new Error(`Unknown dispatch argument: ${args[i]}`);
   }
   if (options.upstream && (options.ticket || options.chain)) throw new Error('--upstream cannot be combined with ticket options');
+  if (options.provider && options.model && options.model !== 'auto') throw new Error('--provider requires automatic model selection');
   return options;
 }

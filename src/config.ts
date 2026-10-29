@@ -144,7 +144,10 @@ export function loadConfig(path = process.env.T3_FACTORY_CONFIG ?? defaultConfig
 }
 
 // Thresholds a manual start may skip. `true` skips all of them; a list skips only those named.
-export const overridableLimits = ['idle', 'reserve', 'labels'] as const;
+export const overridableLimits = ['idle', 'reserve', 'labels', 'providers'] as const;
 export type OverridableLimit = typeof overridableLimits[number];
 export const overrideLimitsSchema = z.union([z.boolean(), z.array(z.enum(overridableLimits))]);
 export type OverrideLimits = z.infer<typeof overrideLimitsSchema>;
+// Manual provider routing is limited to the two supported Factory drivers.
+export const dispatchProviderSchema = z.enum(['codex', 'claudeAgent']);
+export type DispatchProvider = z.infer<typeof dispatchProviderSchema>;

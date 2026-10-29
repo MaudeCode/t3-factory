@@ -112,7 +112,7 @@ export const DIFFICULTIES = [
   ["high", "High"],
 ];
 // Thresholds a manual start may override; `true` (and older saved requests) means all of them.
-export const OVERRIDES = [["idle", "Idle time"], ["reserve", "Quota reserve"], ["labels", "Label limits"]];
+export const OVERRIDES = [["idle", "Idle time", "clock"], ["reserve", "Quota reserve", "meter"], ["labels", "Label limits", "tag"], ["providers", "Provider limits", "versions"]];
 // What a dispatch request is doing, or why it ended without starting.
 export function operationText(op) {
   const d = op.result?.data, p = op.progress;

@@ -89,7 +89,7 @@ function Machine({ provider }) {
 function Operation({ op }) {
   return html`<div class=${`operation ${op.state}`} role="status">
     ${op.state === "running" && html`<i class="spinner"></i>`}
-    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${operationText(op)}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.provider ? providerName(op.input.provider) : op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${operationText(op)}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     <${OperationActions} op=${op} />
   </div>`;
 }
@@ -200,10 +200,10 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
 }
 
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.
-export const runNow = (t, hold, origin) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits: true }, origin) : null;
-export const RunNow = ({ ticket: t, hold, origin }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
-  title=${hold ?? "Override limits and start this ticket now."}
-  onClick=${() => runNow(t, hold, origin)}><${Icon} name="play" /><//>`;
+export const runNow = (t, hold, origin, { overrideLimits = true, provider } = {}) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits, ...(provider ? { provider } : {}) }, origin) : null;
+export const RunNow = ({ ticket: t, hold, origin, overrideLimits = true, provider }) => html`<${Button} size="sm" icon class="next-run" aria-label=${`Run ${t.key} now`} disabled=${!!hold}
+  title=${hold ?? `${overrideText(overrideLimits)} and start this ticket now.`}
+  onClick=${() => runNow(t, hold, origin, { overrideLimits, provider })}><${Icon} name="play" /><//>`;
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "" }) {
