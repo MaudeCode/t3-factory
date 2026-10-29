@@ -11,6 +11,99 @@ import { dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts
 import { cycle } from '../src/scheduler.ts';
 import { ReadContext } from '../src/read-context.ts';
 import type { GitHub } from '../src/github-client.ts';
+import { Store } from '../src/store.ts';
+
+for (const workKind of ['upstream', 'chains', 'tickets'] as const) test(`${workKind} check failure recovers in its own persisted domain`, async t => {
+  const f = serviceFixture(t);
+  f.c.enabled = false; f.c.upstream = { enabled: true, promptFile: f.c.factorySkill, checkMinutes: 360 };
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const shell = f.t3.shell.bind(f.t3);
+  let refused = true;
+  t.mock.method(f.t3, 'shell', async () => {
+    if (refused) throw new Error('ECONNREFUSED fixture T3 shell');
+    return shell();
+  });
+  const key = workKind === 'upstream' ? 'upstreamDecision' : workKind === 'chains' ? 'chainDecision' : 'lastDecision';
+  await assert.rejects(f.internal.pass({}, 'fixture', 0, workKind, 'codex'), /ECONNREFUSED/);
+  assert.equal(writeStatus(f.c, f.store).decision?.reason, 'error');
+  refused = false;
+  const recovered = await f.internal.pass({}, 'fixture', 0, workKind, 'codex');
+  assert.notEqual(writeStatus(f.c, f.store).decision?.reason, 'error', 'a successful check must retire its recovered refusal');
+  assert.equal(JSON.parse(f.store.get(key)!).origin.workKind, workKind);
+  assert.equal(JSON.parse(f.store.get(key)!).reason, recovered.reason);
+  assert.ok(f.store.events().some(event => event.kind === 'decision' && /ECONNREFUSED/.test(event.text)), 'recovery retains historical evidence');
+  assert.equal(f.launches.length, 0);
+});
+
+test('unrelated workers cannot clear a failure or replace a manual outcome', async t => {
+  const f = serviceFixture(t);
+  const manual = await f.internal.pass({ manual: true, model: 'sol', ticket: 'FIX-1' }, 'fixture', 0);
+  assert.equal(manual.reason, 'dispatched');
+  const shell = f.t3.shell.bind(f.t3);
+  t.mock.method(f.t3, 'shell', async () => { throw new Error('fixture upstream offline'); });
+  await assert.rejects(f.internal.pass({}, 'fixture', 0, 'upstream', 'codex'), /offline/);
+  t.mock.method(f.t3, 'shell', shell);
+  for (const [kind, driver] of [['upstream', 'claudeAgent'], ['chains', 'codex'], ['tickets', 'codex']]) {
+    await f.internal.pass({}, 'fixture', 0, kind, driver);
+    assert.equal(writeStatus(f.c, f.store).decision?.message, 'fixture upstream offline');
+  }
+  await f.internal.pass({}, 'fixture', 0, 'upstream', 'codex');
+  assert.equal(writeStatus(f.c, f.store).decision?.ticket, manual.ticket);
+  assert.equal(writeStatus(f.c, f.store).decision?.reason, manual.reason);
+});
+
+test('a fresh manual check recovers a failed manual outcome', async t => {
+  const f = serviceFixture(t);
+  await assert.rejects(f.internal.pass({ manual: true, model: 'missing' }, 'fixture', 0), /Unknown model/);
+  assert.equal(writeStatus(f.c, f.store).decision?.reason, 'error');
+  const recovered = await f.internal.pass({ manual: true, model: 'sol', ticket: 'FIX-1' }, 'fixture', 0);
+  assert.equal(recovered.reason, 'dispatched');
+  assert.equal(writeStatus(f.c, f.store).decision?.reason, 'dispatched');
+});
+
+for (const olderFails of [true, false]) test(`stale upstream completion cannot overwrite a newer check: olderFails=${olderFails}`, async t => {
+  const f = serviceFixture(t), entered = deferred(), release = deferred();
+  const shell = f.t3.shell.bind(f.t3);
+  let reads = 0;
+  t.mock.method(f.t3, 'shell', async () => {
+    if (++reads === 1) {
+      entered.resolve(); await release.promise;
+      if (olderFails) throw new Error('older refused read');
+    } else if (!olderFails) throw new Error('newer refused read');
+    return shell();
+  });
+  const older = f.internal.pass({}, 'fixture', 0, 'upstream', 'codex');
+  const settled = olderFails ? assert.rejects(older, /older refused/) : older;
+  try {
+    await entered.promise;
+    const newer = f.internal.pass({}, 'fixture', 0, 'upstream', 'codex');
+    if (!olderFails) await assert.rejects(newer, /newer refused/);
+    else await newer;
+  } finally { release.resolve(); await settled; }
+  assert.equal(writeStatus(f.c, f.store).decision?.reason === 'error', !olderFails);
+  if (olderFails) assert.ok(f.store.events().some(event => /older refused/.test(event.text)));
+});
+
+for (const legacy of ['transport', 'unknown', 'manual']) test(`legacy ${legacy} decision stays truthful across restart and fresh checks`, async t => {
+  const f = serviceFixture(t);
+  const saved = legacy === 'manual'
+    ? { reason: 'dispatched', ticket: 'FIX-99', at: '2026-01-01T00:00:00.000Z' }
+    : { reason: 'error', message: legacy === 'transport' ? 't3.shell failed after 118ms: TypeError: fetch failed; caused by [ECONNREFUSED]: fixture offline' : 'fixture unknown failure', at: '2026-01-01T00:00:00.000Z' };
+  f.store.decide(saved);
+  f.store.close();
+  let restarted = new Store(f.c.stateDir); f.internal.store = restarted;
+  assert.deepEqual(writeStatus(f.c, restarted).decision, saved, 'restart and elapsed time alone prove no recovery');
+  t.mock.method(f.t3, 'shell', async () => { throw new Error('fixture still offline'); });
+  await assert.rejects(f.internal.pass({}, 'fixture', 0, 'upstream', 'codex'), /still offline/);
+  assert.equal(writeStatus(f.c, restarted).decision?.reason, 'error');
+  restarted.close(); restarted = new Store(f.c.stateDir); f.internal.store = restarted;
+  assert.equal(writeStatus(f.c, restarted).decision?.reason, 'error', 'scoped failures also survive restart');
+  t.mock.method(f.t3, 'shell', async () => ({ threads: [], projects: [] }));
+  const recovered = await f.internal.pass({}, 'fixture', 0, 'upstream', 'codex');
+  assert.equal(writeStatus(f.c, restarted).decision?.reason, legacy === 'transport' ? recovered.reason : saved.reason);
+  if (legacy === 'manual') assert.equal(writeStatus(f.c, restarted).decision?.ticket, 'FIX-99');
+  if (legacy === 'transport') assert.ok(restarted.events().some(event => /118ms/.test(event.text)));
+});
 
 for (const held of ['read', 'launch']) test(`independent manual dispatch completes while another ${held} is held`, async t => {
   const f = serviceFixture(t), { internal } = f;

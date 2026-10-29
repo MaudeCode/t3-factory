@@ -430,11 +430,12 @@ export class FactoryService {
 
   private async pass(options: CycleOptions, reason: string, queueWaitMs: number, workKind?: Clients['workKind'], providerDriver?: string) {
     const started = performance.now();
+    const decide = this.store.decisionRecorder({ workKind: workKind ?? 'tickets', providerDriver, manual: options.manual });
     let c: Config | undefined;
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, currentConfig: () => loadConfig(this.configPath) });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide, currentConfig: () => loadConfig(this.configPath) });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
@@ -446,7 +447,7 @@ export class FactoryService {
     } catch (error) {
       if (this.stopped && !options.manual) return { reason: 'stopped' };
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
-      this.store.decide({ reason: 'error', message, at: new Date().toISOString() });
+      decide({ reason: 'error', message, at: new Date().toISOString() });
       try { this.publishWork(); } catch { /* Invalid config is already logged. */ }
       throw error;
     } finally {

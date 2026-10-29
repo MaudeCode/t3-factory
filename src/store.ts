@@ -99,6 +99,16 @@ export function decisionText(result: { reason: string } & Record<string, unknown
   if (!streams?.length) return '';
   return streams.map(s => `${s.provider} ${STREAM_TEXT[s.reason] ?? s.reason.replaceAll('-', ' ')}`).join('; ');
 }
+export type Decision = { reason: string; at: string } & Record<string, unknown>;
+export type DecisionOrigin = { workKind: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; manual?: boolean };
+type CheckDecision = Decision & { origin?: DecisionOrigin & { sequence: number; startedAt: string }; checks?: Record<string, CheckDecision> };
+const decisionKeys = ['lastDecision', 'upstreamDecision', 'chainDecision'] as const;
+const newestDecision = (a: CheckDecision, b: CheckDecision) => (b.origin?.sequence ?? 0) - (a.origin?.sequence ?? 0) || b.at.localeCompare(a.at);
+function selectDecision(checks: CheckDecision[]): CheckDecision | undefined {
+  return checks.filter(check => check.reason === 'error').sort(newestDecision)[0]
+    ?? checks.filter(check => check.origin?.manual || !check.origin).sort(newestDecision)[0]
+    ?? checks.sort(newestDecision)[0];
+}
 export class Store {
   db: DatabaseSync;
   private closed = false;
@@ -226,13 +236,45 @@ export class Store {
       : this.statement('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit);
     return rows.map(r => ({ id: r.id as number, time: r.time as string, kind: r.kind as string, jobId: r.job_id as string | null, text: r.text as string, data: JSON.parse(r.data as string) }));
   }
+  // Capture order before any reads, and share this recorder with nested dispatches and the error path.
+  decisionRecorder(origin: DecisionOrigin = { workKind: 'tickets' }) {
+    const sequence = Number(this.get('decisionSequence') ?? 0) + 1;
+    this.set('decisionSequence', String(sequence));
+    const check = { ...origin, sequence, startedAt: new Date().toISOString() };
+    return (result: Decision): Decision => { this.decide({ ...result, origin: check }); return result; };
+  }
+  currentDecision(): Decision | null {
+    const decisions = decisionKeys.map(key => JSON.parse(this.get(key) ?? 'null') as CheckDecision | null);
+    const selected = decisions.filter((check): check is CheckDecision => !!check);
+    const result = selected.filter(check => check.reason === 'error').sort(newestDecision)[0] ?? decisions[0] ?? selected.sort(newestDecision)[0];
+    if (!result) return null;
+    const { checks, ...decision } = result;
+    return decision;
+  }
   // Store a decision and journal it only when the outcome changes, so a quiet factory does not flood the log.
-  decide(result: { reason: string; at: string } & Record<string, unknown>) {
-    const previous = this.get('lastDecision');
-    this.set('lastDecision', JSON.stringify(result));
+  decide(result: CheckDecision) {
+    const key = result.origin?.workKind === 'upstream' ? 'upstreamDecision' : result.origin?.workKind === 'chains' ? 'chainDecision' : 'lastDecision';
+    let before: CheckDecision | null = JSON.parse(this.get(key) ?? 'null');
+    if (result.origin) {
+      // Old runtimes misplaced background preflight errors globally. A fresh successful preflight
+      // proves that shared read recovered; arbitrary legacy errors retain their warning.
+      if (result.reason !== 'error') {
+        const global: CheckDecision | null = JSON.parse(this.get('lastDecision') ?? 'null');
+        if (global && !global.origin && !global.checks && global.reason === 'error' && /^t3\.(shell|providers) failed\b/.test(String(global.message)) && result.origin.startedAt >= global.at) this.set('lastDecision', 'null');
+      }
+      const current: CheckDecision | null = JSON.parse(this.get(key) ?? 'null');
+      const checks = { ...current?.checks ?? (current && key === 'lastDecision' && current.reason !== 'error' ? { legacy: current } : {}) };
+      const lane = result.origin.manual ? 'manual' : result.origin.providerDriver ?? 'all';
+      before = checks[lane] ?? null;
+      if ((checks[lane]?.origin?.sequence ?? 0) <= result.origin.sequence) {
+        checks[lane] = result;
+        const selected = selectDecision(Object.values(checks))!;
+        this.set(key, JSON.stringify({ ...selected, checks }));
+      }
+    } else this.set(key, JSON.stringify(result));
     const text = decisionText(result);
     // Dispatches have job events; routine paused checks are status, not activity.
-    if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !previous || decisionText(JSON.parse(previous)) !== text)) this.record('decision', text, { reason: result.reason, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
+    if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !before || decisionText(before) !== text)) this.record('decision', text, { reason: result.reason, origin: result.origin, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
   }
   get(key: string): string | null { return this.statement('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
   set(key: string, value: string) { this.statement('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value != excluded.value').run(key, value); }

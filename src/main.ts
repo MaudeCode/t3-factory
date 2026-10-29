@@ -197,6 +197,7 @@ if (command === 'web') {
   process.once('SIGTERM', () => { stop = true; });
   process.once('SIGINT', () => { stop = true; });
   let store: Store | undefined;
+  let decide: ReturnType<Store['decisionRecorder']> | undefined;
   try {
     const c = loadConfig(configPath);
     store = new Store(c.stateDir);
@@ -205,9 +206,10 @@ if (command === 'web') {
       await delay(500); claimed = store.claim();
     }
     if (!claimed) { store.close(); store = undefined; throw new Error('The scheduler is busy and not answering on its control socket. Try again shortly.'); }
+    decide = store.decisionRecorder({ workKind: 'tickets', manual: options.manual });
     const result = options.manual
-      ? (await runManualRequest(c, store, options, async (work, _foreground, meta) => { await meta.context.run(() => work(0)); }, opts => cycle(c, store!, opts))).data
-      : await cycle(c, store, options);
+      ? (await runManualRequest(c, store, options, async (work, _foreground, meta) => { await meta.context.run(() => work(0)); }, opts => cycle(c, store!, opts, { decide }))).data
+      : await cycle(c, store, options, { decide });
     if (options.doctor && (result as { triageSandbox?: { ok: boolean } }).triageSandbox?.ok === false) process.exitCode = 1;
     if (options.manual) {
       log('decision', result as Record<string, unknown>);
@@ -217,7 +219,7 @@ if (command === 'web') {
   } catch (e) {
     const message = safeError(e); log('error', { message });
     if (store) {
-      store.decide({ reason: 'error', message, at: new Date().toISOString() });
+      (decide ?? store.decisionRecorder({ workKind: 'tickets', manual: options.manual }))({ reason: 'error', message, at: new Date().toISOString() });
       try { writeStatus(loadConfig(configPath), store); } catch { /* Invalid config is already logged. */ }
     }
     process.exitCode = 1;
