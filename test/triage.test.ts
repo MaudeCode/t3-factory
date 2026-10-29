@@ -521,6 +521,9 @@ test('a promotion resumed after a failed write creates no second ticket', async 
   let failures = 1;
   f.kanvil.addRelation = async (...args) => { if (failures-- > 0) throw new Error('Kanvil connection failed'); return relation(...args); };
   assert.equal((await pass(f))[0].outcome, 'error');
+  // Someone edits the inbox ticket in between: a new version, same report text.
+  const at = f.projects.TALIN.findIndex(t => t.key === 'TALIN-5');
+  f.projects.TALIN[at] = { ...f.projects.TALIN[at], labels: [...f.projects.TALIN[at].labels!, { name: 'seen' }], version: ++version };
   assert.equal((await pass(f))[0].outcome, 'promoted');
   const creates = named(f, 'createTicket');
   assert.equal(creates.length, 2);
