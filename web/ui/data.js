@@ -2,7 +2,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { clockTime, dayLabel, stateLabel, toneOf, formatBytes } from "../lib/format.js";
 import { Help } from "./controls.js";
-import { ICONS } from "../vendor/icons.js?v=fcd660533910";
+import { ICONS } from "../vendor/icons.js?v=01004a0192a3";
 
 const pct = (value) => Math.max(0, Math.min(100, Number(value) || 0));
 
@@ -74,9 +74,9 @@ export const Section = ({ title, hint, count, aside, children, class: extra, col
   </section>`;
 
 // Page frame: title, optional explanation, actions on the title line.
-export const Page = ({ title, hint, lead, actions, narrow, class: extra, children }) =>
+export const Page = ({ title, count, hint, lead, actions, narrow, class: extra, children }) =>
   html`<div class=${`page ${narrow ? "narrow" : ""} ${extra ?? ""}`}>
-    ${title && html`<div class="page-head"><div><h1>${title}<${Help} text=${hint} /></h1>${lead && html`<p>${lead}</p>`}</div>${actions}</div>`}
+    ${title && html`<div class="page-head"><div><h1>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h1>${lead && html`<p>${lead}</p>`}</div>${actions}</div>`}
     ${children}
   </div>`;
 

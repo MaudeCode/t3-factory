@@ -29,11 +29,13 @@ import {
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Link, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, UpNext, Chains, Operations } from "./Deck.js";
 
-// Search box, Filter button and its popover for any ticket or run list. `rows` are everything the list could
+// Search and Filter popovers for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
 export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false, children, searchLabel = "Find a ticket", filterLabel = "Filter runs", activeCount }) {
   const [open, setOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const button = useRef();
+  const searchButton = useRef(), searchInput = useRef();
   const change = (key, value) => onFilters({ ...filters, [key]: value });
   const active = activeCount ?? ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
   const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
@@ -46,7 +48,11 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
   const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
   const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
-  return html`<input class="mono search" value=${query} onInput=${(e) => onQuery(e.target.value)} placeholder=${searchLabel} aria-label=${searchLabel} />
+  return html`<span ref=${searchButton}><${Button} size="sm" icon="search" label="Search" title=${query ? `${searchLabel}: ${query}` : searchLabel} aria-expanded=${searchOpen} aria-pressed=${!!query.trim()} onClick=${() => setSearchOpen(v => !v)} /></span>
+    <${Popover} class="search-panel" open=${searchOpen} onClose=${() => setSearchOpen(false)} anchor=${searchButton} label=${searchLabel} width=${380}>
+      <input ref=${searchInput} autofocus class="mono search" value=${query} onInput=${e => onQuery(e.target.value)} onKeyDown=${e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); setSearchOpen(false); searchButton.current.querySelector("button").focus(); } }} placeholder=${searchLabel} aria-label=${searchLabel} />
+      <${Button} size="sm" variant="ghost" icon="x" label="Clear search" disabled=${!query} onClick=${() => { onQuery(""); searchInput.current.focus(); }} />
+    <//>
     <span ref=${button}><${Button} size="sm" icon="filter" label=${`${filterLabel}${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>
     <${Popover} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
       ${children ?? html`

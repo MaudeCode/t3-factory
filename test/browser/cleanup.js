@@ -1,4 +1,5 @@
 // Real application views and saved operation queue; synthetic inventory and mutation boundaries only.
+import { openSearch } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, operations } from '../../web/lib/store.js';
@@ -58,7 +59,7 @@ async function run() {
   assert(document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Delete 2 worktrees?', 'bulk removal has one bounded consequence confirmation');
   assert(document.querySelector('dialog[open]').textContent.includes('Ignored files are deleted'), 'bulk confirmation includes the approved ignored-file policy');
   click('Cancel'); click('Done selecting worktrees'); await pause();
-  const search = document.querySelector('[aria-label="Find a branch or folder"]'); search.value = 'FIX-1'; search.dispatchEvent(new Event('input', { bubbles: true })); await until(() => !document.querySelector('[aria-label="Details /workspace/worktrees/example-6"]'));
+  const search = await openSearch(); search.value = 'FIX-1'; search.dispatchEvent(new Event('input', { bubbles: true })); await until(() => !document.querySelector('[aria-label="Details /workspace/worktrees/example-6"]'));
   assert(!document.querySelector('[aria-label="Details /workspace/worktrees/example-6"]'), 'search narrows worktrees');
   document.querySelector('[aria-label="Details /workspace/worktrees/fix-FIX-1"]').click(); await until(() => document.querySelector('.cleanup-inspector'));
   assert(document.querySelector('.cleanup-inspector'), 'row details expand inline');

@@ -32,6 +32,8 @@
   --space-5: 20px;
   --space-6: 28px;
   --gutter: var(--space-5);
+  --gutter-left: calc(var(--gutter) + env(safe-area-inset-left, 0px));
+  --gutter-right: calc(var(--gutter) + env(safe-area-inset-right, 0px));
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --spring: cubic-bezier(0.3, 1.5, 0.5, 1);
   --fast: 0.18s;
@@ -143,12 +145,14 @@ main {
   opacity: 0.5;
   cursor: default;
 }
-.btn-primary {
+.btn-primary,
+.btn[aria-pressed="true"] {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
 }
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover:not(:disabled),
+.btn[aria-pressed="true"]:hover:not(:disabled) {
   background: var(--accent);
   filter: brightness(1.06);
 }
@@ -925,10 +929,18 @@ dialog::backdrop {
   background: var(--surface-2);
   border: 1px solid var(--line);
   z-index: 19;
-  white-space: nowrap;
+  width: max-content;
+  max-width: calc(100% - 2 * var(--space-4) - 2 * max(env(safe-area-inset-left), env(safe-area-inset-right)));
+}
+.save-bar > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.save-bar > .btn {
+  flex: none;
 }
 .save-bar + .toast {
-  --toast-bottom: calc(var(--space-4) + 60px + env(safe-area-inset-bottom));
+  --toast-bottom: calc(var(--space-4) + var(--save-bar-height, 60px) + var(--space-2) + env(safe-area-inset-bottom));
 }
 @keyframes rise {
   from {
@@ -942,7 +954,7 @@ dialog::backdrop {
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: var(--space-5);
+  padding: calc(var(--space-5) + env(safe-area-inset-top)) var(--gutter-right) calc(var(--space-5) + env(safe-area-inset-bottom)) var(--gutter-left);
 }
 .login > div {
   width: min(380px, 100%);
@@ -977,7 +989,7 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--gutter) var(--space-2);
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--gutter-right) var(--space-2) var(--gutter-left);
   position: sticky;
   top: 0;
   background: var(--bg);
@@ -989,6 +1001,14 @@ dialog::backdrop {
   font-size: 15px;
   letter-spacing: 0.08em;
   color: var(--ink);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+.wordmark img {
+  display: none;
 }
 .wordmark:hover {
   text-decoration: none;
@@ -996,12 +1016,17 @@ dialog::backdrop {
 .top nav {
   display: flex;
   gap: var(--space-1);
+  position: relative;
+  min-width: 0;
 }
 .top nav a {
   color: var(--muted);
   padding: 4px 9px;
   border-radius: var(--radius);
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
   transition:
     color var(--fast),
     background var(--fast);
@@ -1019,6 +1044,7 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  flex: none;
 }
 .conn {
   display: inline-flex;
@@ -1100,7 +1126,7 @@ button.conn[aria-expanded="true"] {
   display: flex;
   align-items: flex-start;
   gap: var(--space-4);
-  padding: var(--space-3) var(--gutter);
+  padding: var(--space-3) var(--gutter-right) var(--space-3) var(--gutter-left);
 }
 .status .status-meta {
   margin-left: auto;
@@ -1143,6 +1169,8 @@ button.conn[aria-expanded="true"] {
   grid-template-columns: 1fr 1fr;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 .machine {
   padding: var(--space-3) var(--gutter);
@@ -1197,7 +1225,7 @@ button.conn[aria-expanded="true"] {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(280px, 1.2fr);
   gap: 0 var(--space-6);
-  padding: var(--space-2) var(--gutter) calc(var(--space-4) + env(safe-area-inset-bottom));
+  padding: var(--space-2) var(--gutter-right) calc(var(--space-4) + env(safe-area-inset-bottom)) var(--gutter-left);
 }
 /* One joined bar: ticket, model, override, start. The play button is the only label it needs. */
 .composer {
@@ -1605,13 +1633,13 @@ dialog .chain {
 
 /* Pages ------------------------------------------------------------------- */
 .page {
-  padding: var(--space-4) var(--gutter) calc(var(--space-5) + env(safe-area-inset-bottom));
+  padding: var(--space-4) var(--gutter-right) calc(var(--space-5) + env(safe-area-inset-bottom)) var(--gutter-left);
   max-width: 1280px;
 }
 /* Room under the content only while the floating save bar is up. */
 body:has(.save-bar) .page,
 body:has(.save-bar) .deck {
-  padding-bottom: calc(80px + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--save-bar-height, 60px) + var(--space-5) + env(safe-area-inset-bottom));
 }
 .page.narrow {
   max-width: 760px;
@@ -1736,7 +1764,8 @@ h1 .crumb::after {
   border-radius: 2px;
   background: var(--accent);
 }
-.section h2 small {
+.section h2 small,
+.page-head h1 small {
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
@@ -1745,6 +1774,13 @@ h1 .crumb::after {
   padding: 1px 7px;
   margin-left: 8px;
   vertical-align: 2px;
+}
+.section.list {
+  padding-top: 0;
+  border-top: 0;
+}
+.page-head h1 small {
+  margin-left: 0;
 }
 .section .hint {
   margin-top: var(--space-1);
@@ -2032,7 +2068,7 @@ h1 .crumb::after {
 /* Run slots */
 .slots {
   display: flex;
-  gap: var(--space-1);
+  gap: 3px;
   flex-wrap: wrap;
 }
 .slots button {
@@ -2120,6 +2156,20 @@ h1 .crumb::after {
   overscroll-behavior: contain;
   animation: pop 0.16s var(--ease);
   transform-origin: top;
+}
+.search-panel:popover-open {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.search-panel input.search {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.popover.search-panel > .btn {
+  flex: none;
+  margin-top: 0;
 }
 .popover .field:last-of-type {
   margin-bottom: var(--space-2);
@@ -2358,6 +2408,47 @@ h1 .crumb::after {
   font-size: 11px;
 }
 
+/* Navigation needs more room than the content columns do. */
+@media (max-width: 1199px) {
+  .top {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .wordmark img {
+    display: block;
+  }
+  .top > nav {
+    order: 3;
+    flex-basis: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+}
+@media (max-width: 600px) {
+  .conn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .top .right {
+    gap: var(--space-1);
+  }
+  .strip {
+    grid-template-columns: 1fr;
+  }
+  .machine + .machine {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
 @media (max-width: 900px) {
   .next-secondary {
     display: none;
@@ -2369,24 +2460,8 @@ h1 .crumb::after {
     padding-top: var(--space-1);
     padding-bottom: var(--space-1);
   }
-  /* The title takes the whole row; the actions sit beside the facet lines below it, so the row stays as tall. */
-  .next {
-    --next-run-size: 32px;
-    --next-actions-width: var(--next-run-size);
-    position: relative;
-  }
-  .next:has(.next-more) {
-    --next-actions-width: calc(2 * var(--next-run-size) + var(--space-1));
-  }
   .next-actions {
-    position: absolute;
-    right: 0;
-    bottom: var(--space-1);
     gap: var(--space-1);
-  }
-  .next:has(.next-actions) .row-body > small {
-    min-height: var(--next-run-size);
-    padding-right: calc(var(--next-actions-width) + var(--space-2));
   }
   :root {
     --gutter: var(--space-4);
@@ -2395,24 +2470,11 @@ h1 .crumb::after {
   .help::after {
     position: fixed;
     top: auto;
-    left: var(--gutter);
-    right: var(--gutter);
+    left: var(--gutter-left);
+    right: var(--gutter-right);
     bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
     width: auto;
     max-width: none;
-  }
-  .top {
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-3);
-  }
-  .top nav {
-    order: 3;
-    flex-basis: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-    margin: 0 calc(var(--gutter) * -1);
-    padding: 0 var(--gutter);
-    mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
   }
   .status {
     flex-wrap: wrap;
@@ -2433,17 +2495,12 @@ h1 .crumb::after {
     gap: var(--space-1) var(--space-4);
     padding-left: 0;
   }
-  .strip,
   .cols,
   .split,
   .grid-2,
   .deck,
   .facts {
     grid-template-columns: 1fr;
-  }
-  .machine + .machine {
-    border-left: 0;
-    border-top: 1px solid var(--line);
   }
   .composer {
     flex-wrap: wrap;
@@ -2467,18 +2524,16 @@ h1 .crumb::after {
   }
   .page-head {
     flex-wrap: wrap;
+    gap: var(--space-1);
   }
   .page-head > div:first-child {
-    flex: 1 0 100%;
+    flex: 1 0 auto;
+    max-width: 100%;
   }
   .page-head .chips button,
   .page-head .slots button {
     min-width: 44px;
     min-height: 44px;
-  }
-  input.search {
-    flex: 1;
-    width: auto;
   }
   .run-grid {
     grid-template-columns: 1fr;
@@ -2510,6 +2565,26 @@ h1 .crumb::after {
 }
 /* iOS zooms into any input under 16px when it takes focus, and the page stays zoomed. */
 @media (pointer: coarse) {
+  :root {
+    --control: 44px;
+  }
+  .btn-sm,
+  .top nav a,
+  .wordmark,
+  .segmented button,
+  .chips button,
+  .popover .chips button,
+  .slot,
+  .select li {
+    min-height: 44px;
+  }
+  .btn-icon.btn-sm,
+  .wordmark,
+  .segmented button,
+  .chips button,
+  .popover .chips button {
+    min-width: 44px;
+  }
   input,
   input.mono {
     font-size: 16px;
@@ -2523,9 +2598,6 @@ h1 .crumb::after {
     content: "";
     position: absolute;
     inset: -12px -6px;
-  }
-  .next {
-    --next-run-size: 44px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

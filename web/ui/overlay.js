@@ -28,6 +28,8 @@ export function Popover({ open, onClose, anchor, label, width = 300, children, c
     panel.addEventListener("toggle", position, true); // an opened <details> grows the panel
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
+    window.visualViewport?.addEventListener("resize", position);
+    window.visualViewport?.addEventListener("scroll", position);
     return () => {
       panel.hidePopover();
       document.removeEventListener("pointerdown", outside);
@@ -35,6 +37,8 @@ export function Popover({ open, onClose, anchor, label, width = 300, children, c
       panel.removeEventListener("toggle", position, true);
       window.removeEventListener("resize", position);
       window.removeEventListener("scroll", position, true);
+      window.visualViewport?.removeEventListener("resize", position);
+      window.visualViewport?.removeEventListener("scroll", position);
     };
   }, [open]);
   return open && html`<div ref=${ref} class=${`popover ${extra}`} popover="manual" role="group" aria-label=${label}>${children}</div>`;

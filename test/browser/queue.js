@@ -1,4 +1,5 @@
 // Synthetic data, actual queue component and dispatch store. No live dispatches.
+import { openSearch } from "./search.js";
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import { applyState, operations, status, history } from "../../web/lib/store.js";
@@ -205,7 +206,7 @@ async function runProjects() {
     status.value = { ...status.value, upNext: { ...status.value.upNext, tickets: [...filterState.status.upNext.tickets, { ...filterState.status.upNext.tickets[0], id: "t6", key: "APP-6" }] } };
     await pause();
     assert(queueKeys() === "APP-1,APP-6", "live updates retain filters and order");
-    const search = root.querySelector('[aria-label="Find a ticket"]');
+    const search = await openSearch();
     search.value = "uploads"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
     assert(queueKeys() === "APP-1,APP-6", "queue search matches titles");
     search.value = "APP-6"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();

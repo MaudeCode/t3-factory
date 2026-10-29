@@ -146,7 +146,40 @@ async function labelModes() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'Projects has no horizontal overflow');
   return { passed: true, viewport: [innerWidth, innerHeight], writes: writes.length };
 }
-window.capacityTests = { run, liveEdit, show, mount, showLabels, labelModes };
+async function settingsLayout() {
+  const check = title => {
+    assert(root.querySelector('h1')?.textContent.includes(title), `${title} renders its real settings view`);
+    assert(document.documentElement.scrollWidth <= innerWidth, `${title} fits the viewport`);
+    for (const el of root.querySelectorAll('.detail input, .detail .select, .detail .slots, .detail .segmented')) {
+      const r = el.getBoundingClientRect();
+      assert(r.left >= 0 && r.right <= innerWidth + 1, `${title} editor controls stay in bounds`);
+    }
+    if (matchMedia('(pointer: coarse)').matches) {
+      for (const el of root.querySelectorAll('.detail .btn, .detail .select > button, .detail .segmented button')) {
+        // The entrance animation translates by fractional pixels; check the exact layout size, without rounding transformed bounds.
+        assert(el.offsetHeight >= 44 && parseFloat(getComputedStyle(el).height) >= 44, `${title} main buttons retain 44px touch targets: ${el.getAttribute('aria-label') || el.textContent}`);
+      }
+    }
+  };
+  await showLabels(); scrollTo(0, 0); await pause();
+  check('Projects');
+  const projectName = root.querySelector('.detail input[type="text"]');
+  projectName.value = 'Updated project'; projectName.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(store.config.value.projects[0].name === 'Updated project', 'Projects keeps its ordinary edit binding on touch screens');
+  await store.actions.revert();
+  saved = { ...saved, models: [{ id: 'example-model', name: 'Example model', automatic: true, maxDifficulty: 'high', model: { instanceId: 'codex', model: 'example' } }] };
+  store.providers.value = [{ instanceId: 'codex', driver: 'codex', status: 'ready', models: [{ slug: 'example', name: 'Example' }] }];
+  await mount('/models');
+  check('Models');
+  const modelName = root.querySelector('.detail input[type="text"]');
+  modelName.value = 'Updated model'; modelName.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(store.config.value.models[0].name === 'Updated model', 'Models keeps its ordinary edit binding on touch screens');
+  root.querySelector('[role="radiogroup"][aria-label="Hardest ticket"] button').click(); await pause();
+  assert(store.config.value.models[0].maxDifficulty === 'low', 'Models difficulty choices still change the selected model');
+  await store.actions.revert();
+  return { passed: true, views: ['Projects', 'Models'], viewport: [innerWidth, innerHeight] };
+}
+window.capacityTests = { run, liveEdit, show, mount, showLabels, labelModes, settingsLayout };
 const labelFixture = new URLSearchParams(location.search).get('labels');
 if (labelFixture === 'run') {
   try { await labelModes(); document.body.dataset.result = 'passed'; }

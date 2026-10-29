@@ -210,7 +210,9 @@ export function Select({ path, value, options, onChange, label, size, multiple, 
     };
     list.showPopover();
     position();
-    const observer = new ResizeObserver(position);
+    // Positioning can resize the list itself; run after observer delivery to avoid a feedback loop.
+    let frame;
+    const observer = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(position); });
     observer.observe(trigger);
     observer.observe(list);
     document.addEventListener("pointerdown", outside);
@@ -224,6 +226,7 @@ export function Select({ path, value, options, onChange, label, size, multiple, 
     return () => {
       list.hidePopover();
       observer.disconnect();
+      cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", escape, true);
