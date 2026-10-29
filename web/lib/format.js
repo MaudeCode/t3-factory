@@ -177,9 +177,7 @@ export const byNewest = (a, b) => String(b.createdAt).localeCompare(String(a.cre
 export const coerce = (kind, el) =>
   kind === "boolean"
     ? el.checked
-    : kind === "limit"
-      ? el.value === "" ? null : Number(el.value)
-      : kind === "number" || kind === "integer"
+    : kind === "number" || kind === "integer"
       ? Number(el.value)
       : kind === "list"
         ? el.value.split(",").map((s) => s.trim()).filter(Boolean)

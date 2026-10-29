@@ -1,7 +1,7 @@
 import { html } from "../lib/h.js";
 import { config, status, live, busy, clock, serverNow, actions } from "../lib/store.js";
 import { ago, kanvil, projectLink, promotionLimit, triageSummary } from "../lib/format.js";
-import { Switch, Field, Input, Help, Tag, Empty, Link, Section, Page, RowBody } from "../ui/index.js";
+import { Switch, Field, Input, Slots, Tag, Empty, Link, Section, Page, RowBody } from "../ui/index.js";
 
 const verdictTone = { actionable: "on", "needs-info": "attention", duplicate: "ok", "already-exists": "ok", spam: "label" };
 // Tags for the outcomes other than a triage verdict.
@@ -19,8 +19,8 @@ function Queue({ row, now }) {
     <span><${RowBody} title=${html`<b>${row.project}</b>`}><${Link} href=${projectLink(c, row.inboxId)}>Inbox<//>, ${row.label} label<//></span>
     <span class="release-state">${row.running ? html`<${Tag} tone="on">triaging<//>` : row.untriaged ? html`<${Tag} tone="attention">${row.untriaged} waiting<//>` : row.synchronized ? html`<${Tag} tone="ok">clear<//>` : html`<${Tag}>not synchronized<//>`}${" "}<${Tag} tone=${limit === 0 ? "attention" : ""}>${promotionLimit(limit)}<//></span>
     <span class="release-versions"><span>${triageSummary(row, now)}</span></span>
-    ${index >= 0 && html`<label class="promotion-limit"><span>Promotions per day<${Help} text="Empty is unlimited. 0 pauses promotion; eligible reports wait and promote oldest first once allowed." /></span>
-      <${Input} kind="limit" path=${["projects", index, "inbox", "maxPromotionsPerDay"]} placeholder="Unlimited" aria-label=${`Promotions per day, ${row.project}`} /></label>`}
+    ${index >= 0 && html`<div class="promotion-limit"><${Field} group label="Promotions per day" hint="Paused stops promotion; eligible reports wait and promote oldest first once allowed.">
+      <${Slots} label=${`${row.project} promotions per day`} path=${["projects", index, "inbox", "maxPromotionsPerDay"]} max=${3} unit="per day" offLabel="Paused" unlimited="Unlimited" /><//></div>`}
   </div>`;
 }
 

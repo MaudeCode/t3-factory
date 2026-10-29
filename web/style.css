@@ -2060,6 +2060,9 @@ h1 .crumb::after {
   height: 34px;
   font-weight: 600;
 }
+.slots .slot-custom:invalid {
+  border-color: var(--danger);
+}
 .slots .slot-off[aria-checked="true"] {
   background: var(--surface-2);
   color: var(--ink);
@@ -2253,14 +2256,10 @@ h1 .crumb::after {
 }
 .promotion-limit {
   grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 12px;
-  color: var(--muted);
+  margin-top: var(--space-1);
 }
-.promotion-limit input {
-  width: 110px;
+.promotion-limit .field {
+  margin-bottom: 0;
 }
 
 /* Mobile ------------------------------------------------------------------ */

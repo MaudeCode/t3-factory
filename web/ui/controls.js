@@ -41,15 +41,14 @@ export const Field = ({ label, hint, children, group }) =>
 // Reads a bound config path, or an explicit value; writes through `set` or the given `onChange`.
 const bind = (path, value, onChange) => [path ? at(path) : value, onChange ?? ((v) => set(path, v))];
 
-// Text, number, or list input. `kind` decides how the value is stored; a "limit" is a whole number, or null when empty.
+// Text, number, or list input. `kind` decides how the value is stored.
 export function Input({ path, kind = "text", mono, value, onChange, ...props }) {
   const [current, change] = bind(path, value, onChange);
-  const numeric = ["number", "integer", "limit"].includes(kind);
   return html`<input
     class=${mono ? "mono" : undefined}
-    type=${numeric ? "number" : "text"}
-    min=${numeric ? 0 : undefined}
-    step=${kind === "number" ? "any" : numeric ? 1 : undefined}
+    type=${kind === "number" || kind === "integer" ? "number" : "text"}
+    min=${kind === "number" || kind === "integer" ? 0 : undefined}
+    step=${kind === "integer" ? 1 : kind === "number" ? "any" : undefined}
     value=${kind === "list" ? (current || []).join(", ") : (current ?? "")}
     onInput=${(e) => change(coerce(kind, e.target))}
     ...${props}
@@ -77,15 +76,17 @@ export function Stepper({ path, value, onChange, min = 0, max = 99, labels = {},
   </div>`;
 }
 
-// Run limit picker: Off, quick picks up to `max`, and a last slot that opens a box for any higher limit.
-export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running now' }) {
-  const limit = at(path) ?? 0;
+// Limit picker: Off, quick picks up to `max`, and a last slot that opens a box for any higher limit.
+// `unit` words each slot ("at once", "per day"); `offLabel` names 0; `unlimited`, when given, names a last choice stored as null.
+export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running now', unit = "at once", offLabel = "Off", unlimited }) {
+  const value = at(path), none = !!unlimited && value == null;
+  const limit = none ? Infinity : value ?? 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  const custom = limit > max;
+  const custom = !none && limit > max;
   const slot = (n, text = n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
-    aria-label=${`${n} at once`} title=${n <= running ? busyLabel : n <= limit ? "free slot" : `allow ${n} at once`} onClick=${() => set(path, n)}>${text}</button>`;
-  // Invalid text never reaches the config; Enter keeps the box open so it can be fixed, leaving it restores the saved limit.
+    aria-label=${`${n} ${unit}`} title=${n <= running ? busyLabel : n <= limit && !none ? "free slot" : `allow ${n} ${unit}`} onClick=${() => set(path, n)}>${text}</button>`;
+  // Invalid text never reaches the config: Enter shows the field's error and keeps the box open, leaving it restores the saved limit.
   const commit = (el) => {
     if (el.dataset.cancel) return;
     if (el.value !== "" && el.validity.valid) set(path, el.valueAsNumber);
@@ -93,18 +94,19 @@ export function Slots({ path, running = 0, max = 6, label, busyLabel = 'running 
   };
   const onKeyDown = (e) => {
     const el = e.currentTarget;
-    if (e.key === "Enter" && el.value !== "" && el.validity.valid) commit(el);
+    if (e.key === "Enter") { if (el.value !== "" && el.validity.valid) commit(el); else el.reportValidity(); }
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); el.dataset.cancel = "1"; setEditing(false); }
   };
   return html`<div class="slots" role="radiogroup" aria-label=${label}>
-    <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>Off</button>
+    <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>${offLabel}</button>
     ${Array.from({ length: max }, (_, i) => slot(i + 1))}
     ${editing
       ? html`<input type="number" class="slot-custom" min="0" step="1" max=${Number.MAX_SAFE_INTEGER} required value=${draft} onInput=${(e) => setDraft(e.currentTarget.value)}
           aria-label=${`${label}, custom limit`} ref=${(el) => el && el !== document.activeElement && (el.focus(), el.select())}
           onKeyDown=${onKeyDown} onBlur=${(e) => commit(e.currentTarget)} />`
       : html`<button type="button" role="radio" aria-checked=${custom} class=${cls("slot", custom && "open", custom && running > max && "busy")}
-          aria-label=${custom ? `${limit} at once, change` : `More than ${max} at once`} title=${custom ? "Change the limit" : "Set a higher limit"} onClick=${() => { setDraft(String(custom ? limit : max + 1)); setEditing(true); }}>${custom ? limit : `${max + 1}+`}</button>`}
+          aria-label=${custom ? `${limit} ${unit}, change` : `More than ${max} ${unit}`} title=${custom ? "Change the limit" : "Set a higher limit"} onClick=${() => { setDraft(String(custom ? limit : max + 1)); setEditing(true); }}>${custom ? limit : `${max + 1}+`}</button>`}
+    ${unlimited && html`<button type="button" role="radio" aria-checked=${none} class="slot-off" onClick=${() => set(path, null)}>${unlimited}</button>`}
   </div>`;
 }
 

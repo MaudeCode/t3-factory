@@ -67,20 +67,35 @@ async function promotion() {
   assert(/3 promoted, 1 queued, 1 blocked, 1 need the owner/.test(rows()[0].textContent), 'the first inbox shows its promotion counts');
   assert(rows()[0].querySelector('.release-state').textContent.includes('2 per day') && rows()[1].querySelector('.release-state').textContent.includes('Unlimited'), 'each row shows its limit next to its status');
   assert(text().includes('promoted to EX-40') && text().includes('needs owner') && text().includes('sensitive: workType sec') && text().includes('queued'), 'promotion outcomes are listed');
-  const input = (row) => rows()[row].querySelector('input[type="number"]');
-  const type = async (row, value) => { const el = input(row); el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); await pause(); };
-  assert(input(0).value === '2' && input(1).value === '' && input(1).placeholder === 'Unlimited', 'the inputs hold the saved limits');
-  await type(0, '0');
-  assert(config.value.projects[0].inbox.maxPromotionsPerDay === 0 && rows()[0].querySelector('.release-state').textContent.includes('Paused'), '0 pauses');
-  await type(0, '');
-  assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && rows()[0].querySelector('.release-state').textContent.includes('Unlimited'), 'empty is unlimited');
-  await type(0, '-1');
+  // The shared limit picker: Paused, 1 to 3, a box for more, and Unlimited.
+  const group = (row) => rows()[row].querySelector('[role="radiogroup"]');
+  const choice = (row, name) => [...group(row).querySelectorAll('button')].find((b) => b.textContent === name || b.getAttribute('aria-label') === name);
+  const checked = (row) => group(row).querySelector('[aria-checked="true"]')?.textContent;
+  const state = (row) => rows()[row].querySelector('.release-state').textContent;
+  assert(group(0).getAttribute('aria-label') === 'Example promotions per day' && checked(0) === '2' && checked(1) === 'Unlimited', 'each inbox shows its saved limit in the picker');
+  assert(!rows()[0].querySelector('input'), 'no bare number box');
+  choice(0, 'Paused').click(); await pause();
+  assert(config.value.projects[0].inbox.maxPromotionsPerDay === 0 && state(0).includes('Paused') && checked(0) === 'Paused', 'Paused stores 0');
+  choice(0, 'Unlimited').click(); await pause();
+  assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && state(0).includes('Unlimited'), 'Unlimited stores null');
+  choice(0, 'More than 3 per day').click(); await pause();
+  const box = group(0).querySelector('input.slot-custom'), enter = () => box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  box.value = '-1'; box.dispatchEvent(new Event('input', { bubbles: true })); enter(); await pause();
+  assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && group(0).querySelector('input.slot-custom') && box.validationMessage, 'a negative limit is refused with the field error and the box stays open');
+  box.value = '1.5'; box.dispatchEvent(new Event('input', { bubbles: true })); enter(); await pause();
+  assert(config.value.projects[0].inbox.maxPromotionsPerDay === null && box.validationMessage, 'a fractional limit is refused with the field error');
+  box.value = '12'; box.dispatchEvent(new Event('input', { bubbles: true })); enter(); await pause();
+  assert(config.value.projects[0].inbox.maxPromotionsPerDay === 12 && checked(0) === '12' && state(0).includes('12 per day'), 'a custom limit is stored');
+  choice(0, '3 per day').click(); await pause();
   await actions.save(); await pause();
-  assert(saves.length === 1 && notice.value?.error && notice.value.text.startsWith('projects.0.inbox.maxPromotionsPerDay:'), 'an invalid limit is rejected with its field error');
-  await type(0, '5');
+  assert(saves.length === 1 && saves[0].config.projects[0].inbox.maxPromotionsPerDay === 3 && saves[0].config.projects[1].inbox.maxPromotionsPerDay === undefined, 'saving writes only that inbox limit');
+  assert(checked(0) === '3' && state(0).includes('3 per day'), 'the saved limit shows');
+  const one = (row) => new Set([...group(row).children].map((el) => Math.round(el.getBoundingClientRect().top))).size === 1;
+  assert(one(0) && one(1), 'each picker stays on one line');
+  // The server still answers an invalid config with its field error.
+  config.value = { ...config.value, projects: [{ ...config.value.projects[0], inbox: { ...config.value.projects[0].inbox, maxPromotionsPerDay: -1 } }, config.value.projects[1]] };
   await actions.save(); await pause();
-  assert(saves.length === 2 && saves[1].config.projects[0].inbox.maxPromotionsPerDay === 5 && saves[1].config.projects[1].inbox.maxPromotionsPerDay === undefined, 'saving writes only that inbox limit');
-  assert(input(0).value === '5' && rows()[0].querySelector('.release-state').textContent.includes('5 per day'), 'the saved limit shows');
+  assert(saves.length === 2 && notice.value?.error && notice.value.text.startsWith('projects.0.inbox.maxPromotionsPerDay:'), 'the save path rejects an invalid limit with its field error');
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   return { saves: saves.length };
 }
