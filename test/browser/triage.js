@@ -57,7 +57,7 @@ async function show() {
 }
 // Section 0 is Inboxes; Tickets and Activity follow.
 const section = (title) => [...root.querySelectorAll('section.section')].find((s) => s.querySelector('h2')?.textContent.startsWith(title));
-const rows = (title) => [...(title ? section(title) : root).querySelectorAll('.next')];
+const rows = (title) => [...((title ? section(title) : root)?.querySelectorAll('.next') ?? [])];
 const keys = (title) => rows(title).map((r) => r.querySelector('.key').textContent).join();
 const row = (key, title = key.startsWith('EX-') ? 'Tickets' : 'Activity') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
