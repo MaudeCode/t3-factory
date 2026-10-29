@@ -79,6 +79,8 @@
       // "inbox": { "kanvilId": "YOUR_INBOX_KANVIL_PROJECT_ID", "label": "intake" },
       // Optional inbox promotion limit: omit or null for unlimited, 0 to pause, N per rolling 24 hours.
       // "inbox": { "kanvilId": "YOUR_INBOX_KANVIL_PROJECT_ID", "label": "intake", "maxPromotionsPerDay": 5 },
+      // When the intake holds every new report, name that hold so promotion can ignore it:
+      // "inbox": { "kanvilId": "YOUR_INBOX_KANVIL_PROJECT_ID", "label": "intake", "intakeHold": "Untrusted intake: human triage required" },
       "upstreams": [
         { "name": "Example library", "repo": "OWNER/LIBRARY", "prereleases": false, "firstBase": "v1.0.0" }
       ]

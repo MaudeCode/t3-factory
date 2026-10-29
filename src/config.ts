@@ -94,10 +94,12 @@ export const configSchema = z.preprocess(input => {
     scopes: z.array(z.string().trim().min(1)).refine(scopes => new Set(scopes).size === scopes.length, 'Scopes must be unique').optional(),
     // A Kanvil project of untrusted reports about this project; triage targets this project and its repository.
     // Promotion: at most `maxPromotionsPerDay` reports per rolling 24 hours (null or absent is unlimited, 0 pauses);
-    // `sensitivePaths` globs replace the built-in list of paths whose change needs the owner.
+    // `sensitivePaths` globs replace the built-in list of paths whose change needs the owner. `intakeHold` is the holdReason the
+    // intake puts on every report; promotion ignores exactly that one, and any other hold stops it.
     inbox: z.object({
       kanvilId: z.string().min(1), label: z.string().trim().min(1).default('intake'),
       maxPromotionsPerDay: z.number().int().min(0).nullable().optional(), sensitivePaths: z.array(z.string().trim().min(1)).optional(),
+      intakeHold: z.string().trim().min(1).optional(),
     }).strict().optional(),
     upstreams: z.array(z.object({
       // GitHub names are case-insensitive, so the lowercase name is the repository's identity everywhere.
