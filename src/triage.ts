@@ -59,7 +59,7 @@ export interface TriageOptions { command?: string; timeoutMs?: number; budget?: 
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
 type Store = { get(key: string): string | null; set(key: string, value: string): void; record?(kind: string, text: string, data?: Record<string, unknown>): void };
-type Result = { ticket?: string; outcome: string; verdict?: string; duplicateOf?: string | null; reason?: string; promoted?: string };
+type Result = { ticket?: string; outcome: string; verdict?: string; duplicateOf?: string | null; reason?: string; promoted?: string; promotedId?: string };
 // One journal entry per finished report, so the Triage and Activity pages can show what happened.
 const outcomeTexts: Record<string, (r: Result) => string> = {
   triaged: r => `triaged: ${r.verdict}${r.duplicateOf ? `, duplicate of ${r.duplicateOf}` : ''}`, 'triage-failed': r => `triage failed: ${r.reason}`,
@@ -434,13 +434,13 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
   store.set(promotionsKey(target), JSON.stringify({ ...recent, [ticket.id]: recent[ticket.id] ?? now }));
   const readback = await kanvil.task(created.id, target.project.kanvilId);
   const mismatch = readbackMismatch(fields, target.project.kanvilId, readback);
-  if (mismatch) { await settle('promotion-failed'); return result('promotion-failed', { reason: `readback mismatch: ${mismatch}`, promoted: readback.key }); }
+  if (mismatch) { await settle('promotion-failed'); return result('promotion-failed', { reason: `readback mismatch: ${mismatch}`, promoted: readback.key, promotedId: readback.id }); }
   if (!readback.automationReady) await kanvil.updateTicket(target.project.kanvilId, readback.id, readback.version!, { automationReady: true, holdReason: null }, requestId(readback, 'release'));
   // The inbox ticket then shows the vetted title, not the reporter's, wherever it is listed or related.
   await kanvil.addRelation(ticket.projectId, ticket.id, readback.id, 'duplicate', requestId(ticket, 'promoted-relation', false));
   await kanvil.addComment(ticket.projectId, ticket.id, `Promoted to ${readback.key}.`, requestId(ticket, 'promoted-comment', false));
   await settle('promoted', { title: fields.title, status: 'done' });
-  return result('promoted', { promoted: readback.key });
+  return result('promoted', { promoted: readback.key, promotedId: readback.id });
 }
 
 /**
@@ -474,7 +474,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
       catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
     }
     results.push(result);
-    if (result.outcome !== 'waiting') store.record?.('triage', outcomeText(result), { ...result, ticketId: ticket.id, inboxId: ticket.projectId, project: target.project.name });
+    if (result.outcome !== 'waiting') store.record?.('triage', outcomeText(result), { ...result, ticketId: ticket.id, inboxId: ticket.projectId, projectId: target.project.kanvilId, project: target.project.name });
   }
   options.onRun?.();
   return results;

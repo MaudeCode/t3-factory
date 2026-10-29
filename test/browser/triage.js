@@ -13,7 +13,7 @@ const state = {
     { project: 'Example', projectId: 'p', inboxId: 'pin', label: 'intake', synchronized: true, untriaged: 2, failed: 1, running: 'PIN-4', oldestUntriagedAt: ago(185), promoted: 3, queued: 1, blocked: 1, needsOwner: 1, limit: 10 },
     { project: 'Other', projectId: 'o', inboxId: 'oin', label: 'report', synchronized: true, untriaged: 0, failed: 0, running: null, oldestUntriagedAt: null, promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: null },
   ], triageResults: [
-    { id: 6, time: ago(1), kind: 'triage', text: 'PIN-7 promoted to EX-40', data: { ticket: 'PIN-7', ticketId: 't7', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-40' } },
+    { id: 6, time: ago(1), kind: 'triage', text: 'PIN-7 promoted to EX-40', data: { ticket: 'PIN-7', ticketId: 't7', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-40', promotedId: 't40' } },
     { id: 5, time: ago(2), kind: 'triage', text: 'PIN-6 needs the owner: sensitive: workType sec', data: { ticket: 'PIN-6', ticketId: 't6', inboxId: 'pin', project: 'Example', outcome: 'needs-owner', reason: 'sensitive: workType sec' } },
     { id: 4, time: ago(3), kind: 'triage', text: 'PIN-5 promotion queued: 2 promotions in the last 24 hours', data: { ticket: 'PIN-5', ticketId: 't5', inboxId: 'pin', project: 'Example', outcome: 'promotion-queued', reason: '2 promotions in the last 24 hours' } },
     { id: 3, time: ago(4), kind: 'triage', text: 'PIN-3 triaged: duplicate, duplicate of EX-12', data: { ticket: 'PIN-3', ticketId: 't3', inboxId: 'pin', project: 'Example', outcome: 'triaged', verdict: 'duplicate', duplicateOf: 'EX-12' } },
@@ -51,6 +51,14 @@ async function run() {
   const ticket = [...root.querySelectorAll('a')].find(a => a.textContent === 'PIN-3');
   assert(ticket && ticket.href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a result links to its inbox ticket');
   assert(text().includes('duplicate of EX-12') && text().includes('Timed out twice'), 'results show the duplicate and the failure reason');
+  const promoted = [...root.querySelectorAll('a.tag')];
+  assert(promoted.length === 1 && promoted[0].textContent === 'promoted' && promoted[0].href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the promoted tag links to the new ticket');
+  const height = (row) => root.querySelectorAll('.release')[row].getBoundingClientRect().height;
+  if (matchMedia('(pointer: coarse)').matches) { const r = promoted[0].getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top - 10); assert(hit === promoted[0], 'the promoted tag has a full touch target'); }
+  assert(Math.abs(height(2) - height(3)) < 1, 'the promoted row is no taller than the others');
+  const tagTop = (row) => root.querySelectorAll('.release')[row].querySelector('.tag').getBoundingClientRect().top - root.querySelectorAll('.release')[row].getBoundingClientRect().top;
+  const tagRight = (row) => root.querySelectorAll('.release')[row].querySelector('.tag').getBoundingClientRect().right;
+  assert(Math.abs(tagTop(2) - tagTop(3)) < 1 && Math.abs(tagRight(2) - tagRight(3)) < 1, 'the promoted tag lines up with the other tags');
   const toggle = root.querySelector('input[role="switch"][aria-label="Inbox triage"]');
   assert(toggle && toggle.checked, 'the triage switch is on the Triage page');
   toggle.click(); await pause(); await pause();
