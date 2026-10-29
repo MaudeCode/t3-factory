@@ -1531,9 +1531,12 @@ export function upstreamRows(c: Config, store: Store) {
 // The lane publishes each inbox's queue from the live projections; rows follow the current config.
 export function triageRows(c: Config, store: Store, now = Date.now()) {
   const rows = JSON.parse(store.get('triageStreams') || '[]') as TriageRow[];
-  return inboxes(c).map(({ project, inbox }): TriageRow => rows.find(row => row.inboxId === inbox.kanvilId && row.projectId === project.kanvilId)
-    ?? { project: project.name, projectId: project.kanvilId, inboxId: inbox.kanvilId, label: inbox.label, synchronized: false, untriaged: null, failed: null, running: null, oldestUntriagedAt: null })
-    .map(row => ({ ...row, oldestAgeSeconds: row.oldestUntriagedAt ? Math.max(0, Math.round((now - Date.parse(row.oldestUntriagedAt)) / 1000)) : null }));
+  return inboxes(c).map(({ project, inbox }) => {
+    const row: TriageRow = rows.find(row => row.inboxId === inbox.kanvilId && row.projectId === project.kanvilId)
+      ?? { project: project.name, projectId: project.kanvilId, inboxId: inbox.kanvilId, label: inbox.label, synchronized: false, untriaged: null, failed: null, running: null, oldestUntriagedAt: null, promoted: null, queued: null, blocked: null, needsOwner: null, limit: null };
+    // The limit is the current config's, so an edit shows before the next pass.
+    return { ...row, limit: inbox.maxPromotionsPerDay ?? null, oldestAgeSeconds: row.oldestUntriagedAt ? Math.max(0, Math.round((now - Date.parse(row.oldestUntriagedAt)) / 1000)) : null };
+  });
 }
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 export function writeStatus(c: Config, store: Store) {

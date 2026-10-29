@@ -485,6 +485,10 @@ export class Kanvil {
     if (!response.ok) await this.failure(response);
     return response.json().catch(() => null);
   }
+  async createTicket(projectId: string, fields: Record<string, unknown>, requestId: string) {
+    const body = await this.send('POST', `/projects/${encodeURIComponent(projectId)}/tickets`, { ...fields, requestId }) as { ticket?: unknown } | null;
+    return z.object({ id: z.string() }).passthrough().parse(body?.ticket ?? body);
+  }
   async updateTicket(projectId: string, ticketId: string, expectedVersion: number, changes: Record<string, unknown>, requestId: string) {
     return this.send('PATCH', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}`, { expectedVersion, changes, requestId });
   }

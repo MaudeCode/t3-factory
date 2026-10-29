@@ -74,6 +74,8 @@ The `inbox-triage` work kind checks untrusted public reports against a project's
 
 - `projects[].inbox`: `{ kanvilId, label }` names the Kanvil project of untrusted reports about this project, and the label that marks a report for triage (default `intake`). The project is the inbox's target. Its `repoPath`, `githubRepo` and `baseBranch` provide the code and evidence links. A project has at most one inbox. An inbox may feed only one project, and it cannot itself be listed in `projects`, so inbox tickets are never dispatched for implementation.
 - `projects[].scopes`: the project's native scope names. Required with `inbox`; the triage output may only choose scopes from this list.
+- `projects[].inbox.maxPromotionsPerDay`: the most reports this inbox promotes in a rolling 24 hours. Absent or `null` is unlimited (the default). `0` pauses promotion for this inbox: triage keeps running and eligible reports wait with `promotion-queued`. Reports over the limit wait the same way and promote oldest first, with no human step, once the window or a raised limit allows. The web Triage page sets it in each inbox row with Paused, 5, 10, 20, 40, Other for any number, and Unlimited; the scheduler uses a saved value without a restart.
+- `projects[].inbox.sensitivePaths`: globs, relative to the repository root, whose change needs the owner instead of promotion. Setting it replaces the built-in list: `.github/**`, `releases/**`, release, deploy and signing scripts, dependency manifests and lockfiles, and auth, credential, crypto, keychain and secret modules (`DEFAULT_SENSITIVE_PATHS` in [`src/triage.ts`](../src/triage.ts)).
 - `triage.enabled` (default `false`) allows new triage runs, independently of the top-level `enabled`. `triage.promptFile` is the triage invocation, required once any project has an inbox. The scheduler replaces `{{project}}`, `{{scopes}}`, `{{key}}`, `{{nonce}}` and `{{report}}` in it. [`prompts/inbox-triage.md`](../prompts/inbox-triage.md) is a starting point.
 
 The service reacts to Kanvil events. A report is waiting when it is open and unarchived, carries its inbox label, and has neither `triaged` nor `triage-failed`. Waiting reports from every inbox run oldest first, one at a time overall. Runs are held by the Claude quota budget like other jobs. They do not occupy a T3 run slot, so `concurrency.claude` does not gate them: triage runs even while Claude T3 jobs are off. The first configured Claude model is checked against that budget, and the run passes it to the CLI with `--model`, so the allowance that was checked is the one spent. A triage run creates no job, so each admission is recorded as Claude consumption: the next report needs a quota reading taken after it, which forces a refresh. Public reports cannot run past the reserve on one reading. The switch and the budget are rechecked before each report, so pausing triage stops the next run. Each run:
@@ -94,12 +96,34 @@ The service reacts to Kanvil events. A report is waiting when it is open and una
 
    `automationReady`, `holdReason`, the project, and other statuses are never changed, and target tickets are never edited or commented on.
 
-Invalid output, a CLI error, or a second timeout labels the report `triage-failed` and changes nothing else. Evidence locations missing from the snapshot are dropped. The snapshot is deleted after every run. Promoting a report into the project stays a human `relocate_ticket` action.
+Invalid output, a CLI error, or a second timeout labels the report `triage-failed` and changes nothing else. Evidence locations missing from the snapshot are dropped. The snapshot is deleted after every run.
+
+#### Promotion
+
+An `actionable` verdict also returns a `proposal`: a title (at most 120 characters), problem (1,500), expected behavior (800), and 1 to 8 acceptance criteria (200 each), written by the model from what it verified in the code. Factory code keeps that output with a hash of the report text. On a later pass, a triaged `verdict:actionable` report without a final promotion label or a `holdReason` goes through these checks in order:
+
+1. **Gate.** Not `injectionSuspected`, not a duplicate, and a proposal is present. `research` needs the owner. A `bug` needs `confirmed-in-code`, a `feature` `confirmed-in-code` or `plausible`, and each needs at least one evidence location that exists in the snapshot (`validity`). Every proposal field must pass the lint rules `url`, `network` (host names, IP addresses, and words such as webhook or exfiltrate), `code`, `shell`, `secret`, `path` (absolute or outside the repository) and `directive` (agent-aimed phrases such as "ignore" or "system prompt"). `workType: sec`, or an evidence or proposal path matching `sensitivePaths`, needs the owner.
+2. **Daily limit.** Over `maxPromotionsPerDay`, the report is labelled `promotion-queued` and waits.
+3. **Safety review.** A second run with no tools at all (`--tools ""`) in an empty directory sees only the rendered ticket and the report in nonce tags, and returns `{ safe, reason }`. It is admitted against the Claude budget like a triage run.
+4. **Create.** One ticket in the target project, created with a request ID derived from the inbox ticket so a retry cannot create a second. The title is the proposal title. The description has Problem, Expected, Evidence links at the snapshot commit, and an origin line naming the inbox key; it carries no report text. The acceptance criteria are the proposal items. Native kind, difficulty, priority and scopes are set, with labels for the work type, difficulty and scopes plus `sf` and `from-user-report`, and the project's first ready status. The inbox ticket is reread first, so a hold placed since the pass started stops the create. The ticket is created with `automationReady: false` and a verification `holdReason`, read back and checked field by field, and only then released to `automationReady: true` with no hold.
+5. **Close the report.** The inbox ticket is retitled with the vetted title, related `duplicate` to the new ticket, labelled `promoted`, commented with the new key, and moved to `done`.
+
+Outcomes on the inbox ticket:
+
+| Label | Cause | Next step |
+| --- | --- | --- |
+| `promoted` | Created and verified | Factory delivers the new ticket |
+| `promotion-queued` | Daily limit reached, or `0` | Promotes automatically when allowed |
+| `promotion-blocked` | Gate, lint or validity failure, or an unsafe review; a comment names the reason | None; the report stays in the inbox |
+| `needs-owner` | `research`, `sec`, or a sensitive path; `holdReason` names the check | The owner decides |
+| `promotion-failed` | The readback did not match; the created ticket keeps its verification hold and is not ready | Never retried automatically |
+
+An actionable report triaged before proposals existed, or whose report text has changed since, has no usable saved output, so it is triaged again first, replacing its earlier `verdict:` and `validation:` labels. Promotion runs in the triage passes, so the triage switch pauses it for every inbox.
 
 Status reports a triage stream beside upstream reviews: `triageEnabled`, `triageDecision`, `triageResults`, and `triageStreams` with one row per inbox.
-- Each `triageStreams` row holds the waiting count, `triage-failed` count, the running report, the oldest waiting report and its age. Rows come from the same live projections, with no extra requests, and show `synchronized: false` with null counts until a projection is current.
-- Every finished report is recorded in the journal as a `triage` event: verdict, duplicate, or failure reason. `triageResults` holds the 30 most recent.
+- Each `triageStreams` row holds the waiting count, `triage-failed` count, the running report, the oldest waiting report and its age, the `promoted`, `queued`, `blocked` and `needsOwner` counts, and the inbox's `limit` from the current config (`null` for unlimited). Rows come from the same live projections, with no extra requests, and show `synchronized: false` with null counts until a projection is current.
+- Every finished report is recorded in the journal as a `triage` event: verdict, duplicate, promotion outcome, or failure reason. `triageResults` holds the 30 most recent.
 
-The web Triage page has the triage switch (also `triage-pause` / `triage-resume`), each inbox's queue, recent results linked to their inbox tickets, and the prompt file setting. The Activity page can filter to triage events, and the menu bar app shows the queue rows.
+The web Triage page has the triage switch (also `triage-pause` / `triage-resume`), each inbox's queue and promotion counts, its limit (Unlimited, Paused, or N per day) with a picker to change it, recent results linked to their inbox tickets, and the prompt file setting. The Activity page can filter to triage events, and the menu bar app shows the queue rows.
 
 Keep actual skill paths and deployment-specific prompt variants in your private configuration. These skills are not downloaded by the installer.

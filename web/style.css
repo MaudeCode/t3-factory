@@ -2073,6 +2073,9 @@ h1 .crumb::after {
   height: 34px;
   font-weight: 600;
 }
+.slots .slot-custom:invalid {
+  border-color: var(--danger);
+}
 .slots .slot-off[aria-checked="true"] {
   background: var(--surface-2);
   color: var(--ink);
@@ -2267,6 +2270,13 @@ h1 .crumb::after {
 }
 .release-versions a {
   color: var(--ink);
+}
+.promotion-limit {
+  grid-column: 1 / -1;
+  margin-top: var(--space-1);
+}
+.promotion-limit .field {
+  margin-bottom: 0;
 }
 
 /* Mobile ------------------------------------------------------------------ */
