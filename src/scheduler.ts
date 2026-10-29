@@ -16,7 +16,7 @@ import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
 import { liveModelQuota, readModelQuota } from './models.ts';
-import { projectUnavailable, sessionTicketStatus } from './session-tickets.ts';
+import { launched, projectUnavailable, sessionTicketStatus } from './session-tickets.ts';
 import { pullRequestsSchema, type GitHub } from './github-client.ts';
 
 const exec = promisify(execFile);
@@ -1541,14 +1541,17 @@ export function triageRows(c: Config, store: Store, now = Date.now()) {
 /** How many triage results the status file and the Triage page carry. */
 export const TRIAGE_RESULTS = 30;
 // Recent triage results, each promoted one with its ticket as the triage lane last read it and why it cannot start now.
+// `listed` keeps a promoted ticket on the page's ticket list until a run launches or it leaves the ready statuses.
 export function triageResults(c: Config, store: Store) {
-  const promoted = JSON.parse(store.get('triagePromoted') || '{}') as Record<number, { projectId: string; status: string }>;
+  const promoted = JSON.parse(store.get('triagePromoted') || '{}') as Record<number, { taskId: string; projectId: string; status: string }>;
+  const jobs = store.jobSummaries();
   return store.events(TRIAGE_RESULTS, undefined, 'triage').map(event => {
     const t = promoted[event.id];
     if (!t) return event;
-    const project = c.projects.find(p => p.kanvilId === t.projectId);
-    const unavailable = projectUnavailable(project) ?? (project!.readyStatuses.includes(t.status) ? null : `Ticket is ${t.status}; it must be in ${project!.readyStatuses.join(' or ')}`);
-    return { ...event, promotedTicket: { ...t, unavailable } };
+    const project = c.projects.find(p => p.kanvilId === t.projectId), ready = !project || project.readyStatuses.includes(t.status);
+    const unavailable = projectUnavailable(project) ?? (ready ? null : `Ticket is ${t.status}; it must be in ${project!.readyStatuses.join(' or ')}`);
+    const listed = event.data.outcome === 'promoted' && ready && !jobs.some(j => j.taskId === t.taskId && launched(j));
+    return { ...event, promotedTicket: { ...t, unavailable, listed } };
   });
 }
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);

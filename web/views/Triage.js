@@ -83,16 +83,19 @@ export function Triage() {
   const start = startOptions();
   const requests = launchOperations.value;
   const progress = (t) => requests.find((op) => ["queued", "running"].includes(op.state) && ticketKey(op.input.ticket) === ticketKey(t.key));
-  // A promoted ticket the scheduler read back is a startable row; every other result is its report, titled with its outcome.
-  // A report row keeps the project its journal entry recorded; older entries use the inbox's current project.
+  // Tickets: each promoted ticket the scheduler still lists, until a run launches or it leaves the ready statuses.
+  // Activity: every result as its report, titled with its outcome. A report row keeps the project its journal entry
+  // recorded; older entries use the inbox's current project.
   const inboxProject = (id) => c.projects.find((p) => p.inbox?.kanvilId === id);
-  const all = results.map((event) => {
-    const t = event.promotedTicket, project = c.projects.find((p) => p.kanvilId === t?.projectId);
-    return t ? { ...t, id: t.taskId, promoted: true, project, event, createdAt: event.time } : { id: `report-${event.id}`, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time };
-  });
+  const tickets = [...new Map(results.filter((event) => event.promotedTicket?.listed).map((event) => {
+    const t = event.promotedTicket;
+    return [t.taskId, { ...t, id: t.taskId, promoted: true, project: c.projects.find((p) => p.kanvilId === t.projectId), event, createdAt: event.time }];
+  })).values()];
+  const activity = results.map((event) => ({ id: `report-${event.id}`, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time }));
   const starting = (row) => row.promoted && (!!progress(row) || openRun(row));
-  const rows = all.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
-  const visibleIds = JSON.stringify(rows.filter((r) => r.promoted).map((r) => r.id).toSorted());
+  const shown = (list) => list.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
+  const rows = shown(tickets), history = shown(activity);
+  const visibleIds = JSON.stringify(rows.map((r) => r.id).toSorted());
   useEffect(() => {
     const visible = new Set(JSON.parse(visibleIds));
     setSelected((previous) => previous.every((id) => visible.has(id)) ? previous : previous.filter((id) => visible.has(id)));
@@ -101,25 +104,30 @@ export function Triage() {
     return html`<${Page} narrow title="Triage">
       <${Empty}>No inboxes. Add <code>inbox</code> and <code>scopes</code> to a project and a <code>triage</code> section to the config file to turn triage on.<//>
     <//>`;
-  const startable = rows.filter((r) => r.promoted), picked = startable.filter((r) => selected.includes(r.id));
+  const startable = rows, picked = startable.filter((r) => selected.includes(r.id));
   const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
   const narrowed = query.trim() || Object.values(filters).some((value) => Array.isArray(value) && value.length);
   return html`<${Page} title="Triage" hint=${HINT}
-    actions=${html`<${StartOptions} /><${OrderChoice} label="Result order" value=${order} onChange=${setOrder} /><${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    actions=${html`<${StartOptions} /><${OrderChoice} label="Result order" value=${order} onChange=${setOrder} /><${RunFilters} rows=${[...tickets, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on in settings.</p>`}
       ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} />`) : html`<p class="muted">No project has an inbox.</p>`}
     <//>
-    <${Section} title="Results" count=${rows.length || null}>
+    <${Section} title="Tickets" count=${rows.length || null}>
       ${selecting && !!startable.length && html`<div class="selection-bar">
         <${Check} label="Select visible" aria-label="Select visible promoted tickets" checked=${picked.length === startable.length} indeterminate=${picked.length > 0 && picked.length < startable.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === startable.length ? [] : startable.map((r) => r.id))} />
         <span class="muted">${picked.length} selected</span>
         <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? `${overrideText(start.overrideLimits)} and start selected tickets.`} onClick=${() => { for (const r of picked) runNow(r, r.unavailable, ORIGIN, start); setSelected([]); }} />
       </div>`}
       ${rows.length
-        ? rows.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} start=${start} progress=${row.promoted && progress(row)}
-            selection=${selecting && row.promoted && html`<${Check} aria-label=${`Select ${row.key}`} checked=${selected.includes(row.id)} disabled=${busy.value} onChange=${(e) => setSelected((previous) => e.target.checked ? [...previous, row.id] : previous.filter((id) => id !== row.id))} />`} />`)
-        : html`<${Empty}>${narrowed ? "No results match." : "No reports triaged yet."}<//>`}
+        ? rows.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} start=${start} progress=${progress(row)}
+            selection=${selecting && html`<${Check} aria-label=${`Select ${row.key}`} checked=${selected.includes(row.id)} disabled=${busy.value} onChange=${(e) => setSelected((previous) => e.target.checked ? [...previous, row.id] : previous.filter((id) => id !== row.id))} />`} />`)
+        : html`<${Empty}>${narrowed ? "No tickets match." : "No promoted tickets waiting to start."}<//>`}
+    <//>
+    <${Section} title="Activity" count=${history.length || null}>
+      ${history.length
+        ? history.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} />`)
+        : html`<${Empty}>${narrowed ? "No activity matches." : "No reports triaged yet."}<//>`}
     <//>
     <${Settings} open=${settings} onClose=${() => setSettings(false)} rows=${streams} />
   <//>`;

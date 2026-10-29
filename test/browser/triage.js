@@ -14,12 +14,14 @@ const state = {
     { project: 'Other', projectId: 'o', inboxId: 'oin', label: 'report', synchronized: true, untriaged: 0, failed: 0, running: null, oldestUntriagedAt: null, promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: null },
   ], triageResults: [
     { id: 6, time: ago(1), kind: 'triage', text: 'PIN-7 promoted to EX-40', data: { ticket: 'PIN-7', ticketId: 't7', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-40', promotedId: 't40' },
-      promotedTicket: { taskId: 't40', projectId: 'p', key: 'EX-40', title: 'Launch crash with empty saved state', status: 'todo', priority: 'high', difficulty: 'med', labels: ['bug', 'med', 'app', 'from-user-report'], automationReady: true, unavailable: null } },
+      promotedTicket: { taskId: 't40', projectId: 'p', key: 'EX-40', title: 'Launch crash with empty saved state', status: 'todo', priority: 'high', difficulty: 'med', labels: ['bug', 'med', 'app', 'from-user-report'], automationReady: true, unavailable: null, listed: true } },
     { id: 8, time: ago(12), kind: 'triage', text: 'PIN-8 promoted to EX-41', data: { ticket: 'PIN-8', ticketId: 't8', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-41', promotedId: 't41' },
-      promotedTicket: { taskId: 't41', projectId: 'p', key: 'EX-41', title: 'Settings sheet forgets the chosen theme after relaunch', status: 'todo', priority: 'medium', difficulty: 'low', labels: ['ux', 'low', 'web', 'from-user-report'], automationReady: true, unavailable: null } },
+      promotedTicket: { taskId: 't41', projectId: 'p', key: 'EX-41', title: 'Settings sheet forgets the chosen theme after relaunch', status: 'todo', priority: 'medium', difficulty: 'low', labels: ['ux', 'low', 'web', 'from-user-report'], automationReady: true, unavailable: null, listed: true } },
     { id: 5, time: ago(2), kind: 'triage', text: 'PIN-6 needs the owner: sensitive: workType sec', data: { ticket: 'PIN-6', ticketId: 't6', inboxId: 'pin', project: 'Example', outcome: 'needs-owner', reason: 'sensitive: workType sec' } },
     { id: 4, time: ago(3), kind: 'triage', text: 'PIN-5 promotion queued: 2 promotions in the last 24 hours', data: { ticket: 'PIN-5', ticketId: 't5', inboxId: 'pin', project: 'Example', outcome: 'promotion-queued', reason: '2 promotions in the last 24 hours' } },
     { id: 3, time: ago(4), kind: 'triage', text: 'PIN-3 triaged: duplicate, duplicate of EX-12', data: { ticket: 'PIN-3', ticketId: 't3', inboxId: 'pin', project: 'Example', outcome: 'triaged', verdict: 'duplicate', duplicateOf: 'EX-12' } },
+    { id: 10, time: ago(40), kind: 'triage', text: 'PIN-10 promoted to EX-42', data: { ticket: 'PIN-10', ticketId: 't10', inboxId: 'pin', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-42', promotedId: 't42' },
+      promotedTicket: { taskId: 't42', projectId: 'p', key: 'EX-42', title: 'Already running', status: 'in_progress', priority: 'low', difficulty: 'low', labels: [], automationReady: true, unavailable: 'Ticket is in_progress; it must be in todo', listed: false } },
     { id: 9, time: ago(200), kind: 'triage', text: 'GONE-1 promoted to EX-38', data: { ticket: 'GONE-1', ticketId: 'g1', inboxId: 'gone', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-38', promotedId: 't38' } },
     { id: 1, time: ago(90), kind: 'triage', text: 'PIN-1 promoted to EX-39', data: { ticket: 'PIN-1', ticketId: 't1', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-39' } },
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
@@ -53,8 +55,11 @@ async function show() {
   state.config.triage.enabled = true; state.status.triageEnabled = true;
   applyState(state, true); render(html`<${Triage} />`, root); await pause();
 }
-const rows = () => [...root.querySelectorAll('.next')];
-const row = (key) => rows().find((r) => r.querySelector('.key')?.textContent === key);
+// Section 0 is Inboxes; Tickets and Activity follow.
+const section = (title) => [...root.querySelectorAll('section.section')].find((s) => s.querySelector('h2')?.textContent.startsWith(title));
+const rows = (title) => [...(title ? section(title) : root).querySelectorAll('.next')];
+const keys = (title) => rows(title).map((r) => r.querySelector('.key').textContent).join();
+const row = (key, title = key.startsWith('EX-') ? 'Tickets' : 'Activity') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
 const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|queued|duplicate|failed/.test(el.textContent));
 async function settings() { button('Triage settings').click(); await pause(); return document.querySelector('dialog[open]'); }
@@ -62,12 +67,15 @@ async function run() {
   await show();
   const text = () => root.textContent;
   assert(/2 waiting, 1 failed, 3 promoted, 1 queued, 1 blocked, 1 need the owner, oldest 3 h \d+ min ago, triaging PIN-4/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear'), 'each inbox shows its queue on one line');
-  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-40,PIN-6,PIN-5,PIN-3,EX-41,PIN-2,PIN-1,GONE-1', 'results list newest first, promoted ones as their new ticket');
+  assert(keys('Tickets') === 'EX-40,EX-41', 'Tickets lists the promoted tickets still to start, newest first');
+  assert(keys('Activity') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-2,PIN-10,PIN-1,GONE-1', 'Activity lists every result as its report, newest first');
+  assert(!row('EX-42') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'a ticket that has run leaves Tickets and stays in Activity');
+  assert(row('PIN-7').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t40' && !row('PIN-7').querySelector('[aria-label^="Run "]'), 'a promoted result in Activity links its ticket and has no Start');
   const ex40 = row('EX-40');
   assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
   assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
   assert(visibleTag(ex40)?.textContent === 'promoted' && button('Run EX-40 now'), 'the promoted tag and Start show');
-  assert(!root.querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
+  assert(!section('Tickets').querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
   assert(visibleTag(ex40).closest('.meta') && !visibleTag(ex40).closest('.next-actions'), 'the outcome tag leads the facet line, beside Start rather than above it');
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
@@ -82,17 +90,18 @@ async function run() {
   // Search, filters and selection, as on Session tickets.
   const search = root.querySelector('[aria-label="Find a ticket"]');
   search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-41', 'search narrows the results');
+  assert(keys('Tickets') === 'EX-41' && keys('Activity') === 'PIN-8', 'search narrows both lists');
   search.value = 'sensitive'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'PIN-6', 'search matches a report row by its outcome');
+  assert(keys('Tickets') === '' && keys('Activity') === 'PIN-6', 'search matches a report row by its outcome');
+  assert(section('Tickets').textContent.includes('No tickets match.'), 'an empty ticket list says the search matched nothing');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Oldest first"]').click(); await pause();
   search.value = 'pin-'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'PIN-1,PIN-2,PIN-3,PIN-5,PIN-6', 'oldest first reverses the results');
+  assert(keys('Activity') === 'PIN-1,PIN-10,PIN-2,PIN-8,PIN-3,PIN-5,PIN-6,PIN-7', 'oldest first reverses the results');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Newest first"]').click(); await pause();
   search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();
-  assert(rows().map((r) => r.querySelector('.key').textContent).join() === 'EX-40', 'filters narrow the results');
+  assert(keys('Tickets') === 'EX-40', 'filters narrow the tickets');
   [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.textContent.trim() === 'Clear all').click(); await pause();
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
   button('Select tickets').click(); await pause();
@@ -114,7 +123,7 @@ async function run() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
   const height = (key) => row(key).getBoundingClientRect().height, left = (key) => visibleTag(row(key)).getBoundingClientRect().left;
-  assert(['PIN-6', 'PIN-3', 'PIN-2', 'PIN-1'].every((key) => Math.abs(left(key) - left('EX-40')) < 1), 'outcome tags line up at the start of the facet line');
+  assert(['PIN-6', 'PIN-3', 'PIN-2', 'PIN-1', 'EX-41'].every((key) => Math.abs(left(key) - left('EX-40')) < 1), 'outcome tags line up at the start of the facet line');
   if (innerWidth > 900) assert(Math.abs(height('EX-40') - height('PIN-6')) < 1, 'a promoted row with Start is as tall as a report row');
   const toggles = posts.length, limits = await promotion();
   return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, dispatches: dispatches.length, ...limits };
