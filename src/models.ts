@@ -8,7 +8,7 @@ type ModelConfig = Pick<Config, 'models' | 'quota'>;
 class QuotaRefreshError extends Error {}
 
 // One evaluator serves network reads and the synchronous reservation boundary.
-function modelQuota(c: ModelConfig, jobs: Job[], id: string, provider: Awaited<ReturnType<T3['provider']>>, manual: boolean, requireFreshAfter?: number) {
+export function modelQuota(c: ModelConfig, jobs: Job[], id: string, provider: Awaited<ReturnType<T3['provider']>>, manual: boolean, requireFreshAfter?: number) {
   const preset = configuredModel(c, id);
   const consumedAfter = jobs.filter(job => (job.modelSelection?.instanceId ?? 'claudeAgent') === preset.model.instanceId).reduce((latest, job) => Math.max(latest, Date.parse(job.createdAt)), 0);
   const name = provider.driver === 'codex' ? 'Codex' : 'Claude';
@@ -69,20 +69,43 @@ export function liveModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, 
 }
 
 export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false, refresh = false) {
-  const live = liveModelQuota(t3, c, jobs, id, manual);
-  if (live) return live;
-  const preset = configuredModel(c, id);
-  const read = async (force: boolean) => {
-    const requestedAt = Date.now(), provider = await t3.provider(preset.model.instanceId, force);
-    return modelQuota(c, jobs, id, provider, manual, force ? requestedAt : undefined);
-  };
+  const result = (await readModelQuotas(t3, c, jobs, [id], manual, refresh))[0];
+  if ('error' in result) throw result.error;
+  return result.quota!;
+}
+
+// Evaluate every preset on an instance from one authoritative allowance snapshot.
+export async function readModelQuotas(t3: T3, c: ModelConfig, jobs: Job[], ids: string[], manual = false, refresh = false) {
+  const preset = configuredModel(c, ids[0]);
+  if (ids.some(id => configuredModel(c, id).model.instanceId !== preset.model.instanceId)) throw new Error('Quota models must share a provider instance');
+  type Result = ({ id: string; quota: ReturnType<typeof modelQuota>; error?: never } | { id: string; error: unknown; quota?: never }) & { snapshot?: Awaited<ReturnType<T3['provider']>> };
+  const live = t3.peekProvider(preset.model.instanceId);
+  if (live) {
+    const results: Result[] = ids.map(id => {
+      try { return { id, quota: modelQuota(c, jobs, id, live, manual), snapshot: live }; }
+      catch (error) { return { id, error, snapshot: live }; }
+    });
+    if (!results.some(result => result.error instanceof QuotaRefreshError)) return results;
+  }
   for (let attempt = 0; ; attempt++) {
     const force = refresh || attempt > 0;
-    try { return await read(force); }
-    catch (error) {
-      if (attempt < (refresh ? 1 : 2) && (!force || error instanceof QuotaRefreshError)) continue;
-      if (error instanceof QuotaRefreshError) throw new Error(`Quota automatic refresh failed: ${error.message}. No run was started.`, { cause: error });
-      throw error;
+    const requestedAt = Date.now(), before = t3.peekProvider(preset.model.instanceId);
+    let results: Result[];
+    try {
+      let provider = await t3.provider(preset.model.instanceId, force);
+      const current = t3.peekProvider(preset.model.instanceId);
+      if (before && !current) throw new Error('Provider identity changed during quota refresh');
+      if (current && JSON.stringify(current) !== JSON.stringify(before)) provider = current;
+      results = ids.map(id => {
+        try { return { id, quota: modelQuota(c, jobs, id, provider, manual, force ? requestedAt : undefined), snapshot: provider }; }
+        catch (error) { return { id, error, snapshot: provider }; }
+      });
+    } catch (error) {
+      results = ids.map(id => ({ id, error }));
     }
+    if (attempt < (refresh ? 1 : 2) && results.some(result => 'error' in result && (!force || result.error instanceof QuotaRefreshError))) continue;
+    return results.map(result => result.error instanceof QuotaRefreshError
+      ? { ...result, error: new Error(`Quota automatic refresh failed: ${result.error.message}. No run was started.`, { cause: result.error }) }
+      : result);
   }
 }
