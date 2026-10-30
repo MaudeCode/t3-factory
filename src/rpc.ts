@@ -18,7 +18,7 @@ const group = RpcGroup.make(
   Rpc.make('subscribeServerConfig', { payload: Schema.Struct({ workspaceSnapshotsOnDemand: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown, stream: true }),
   Rpc.make('server.probe', { payload: Schema.Struct({}), success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('server.getConfig', { payload: Schema.Struct({}), success: Schema.Unknown, error: Schema.Unknown }),
-  Rpc.make('server.refreshProviders', { payload: Schema.Struct({ instanceId: Schema.String, workspaceSnapshotsOnDemand: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
+  Rpc.make('server.refreshProviders', { payload: Schema.Struct({ instanceId: Schema.String, workspaceSnapshotsOnDemand: Schema.Boolean, refreshModels: Schema.optional(Schema.Boolean) }), success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('orchestration.dispatchCommand', { payload: Schema.Unknown, success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('orchestration.launchThread', { payload: Schema.Unknown, success: Schema.Unknown, error: Schema.Unknown }),
   Rpc.make('vcs.removeWorktree', { payload: Schema.Struct({ cwd: Schema.String, path: Schema.String, force: Schema.Boolean }), success: Schema.Unknown, error: Schema.Unknown }),
@@ -55,7 +55,7 @@ export async function subscribeT3Shell(socketUrl: () => Promise<string>, onItem:
     });
   }
 }
-export type RpcAction = { type: 'provider'; refreshInstance?: string } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string; force?: boolean } | { type: 'turn-item'; threadId: string; itemId: string } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string };
+export type RpcAction = { type: 'provider'; refreshInstance?: string; invalidate?: boolean } | { type: 'dispatch'; command: unknown } | { type: 'launch'; input: unknown } | { type: 'remove-worktree'; cwd: string; path: string; force?: boolean } | { type: 'turn-item'; threadId: string; itemId: string } | { type: 'terminals' } | { type: 'close-terminal'; threadId: string; terminalId: string };
 const makeClient = () => RpcClient.make(group);
 type Client = Effect.Success<ReturnType<typeof makeClient>>;
 function rpcPhase<T>(action: RpcAction, work: (signal?: AbortSignal) => Promise<T>) {
@@ -71,7 +71,8 @@ function request(client: Client, action: RpcAction) {
     if (action.type === 'remove-worktree') return yield* client['vcs.removeWorktree']({ cwd: action.cwd, path: action.path, force: action.force ?? false });
     if (action.type === 'terminals') return Option.getOrNull(yield* Stream.runHead(client['subscribeTerminalMetadata']({})));
     if (action.type === 'close-terminal') return yield* client['terminal.close']({ threadId: action.threadId, terminalId: action.terminalId, deleteHistory: false });
-    if (action.refreshInstance) return yield* client['server.refreshProviders']({ instanceId: action.refreshInstance, workspaceSnapshotsOnDemand: true });
+    // T3 invalidates the selected instance's cached capability and usage probe only for refreshModels.
+    if (action.refreshInstance) return yield* client['server.refreshProviders']({ instanceId: action.refreshInstance, workspaceSnapshotsOnDemand: true, ...(action.invalidate ? { refreshModels: true } : {}) });
     return yield* client['server.getConfig']({});
   });
 }
