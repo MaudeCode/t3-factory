@@ -15,7 +15,7 @@ import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTi
 import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
-import { liveModelQuota, readModelQuota } from './models.ts';
+import { modelQuota, liveModelQuota, readModelQuota, readModelQuotas } from './models.ts';
 import { launched, projectUnavailable, sessionTicketStatus } from './session-tickets.ts';
 import { pullRequestsSchema, type GitHub } from './github-client.ts';
 
@@ -906,6 +906,26 @@ export function fullLabel(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'pro
   return labelCapacity(c, jobs, threads)(ticket);
 }
 
+type ProviderStream = {
+  driver: string; provider: string; reason: string; active: string[]; planned: string[];
+  models: { id: string; name: string; reason: string }[];
+  quota?: Awaited<ReturnType<typeof readModelQuota>>; quotaError?: string;
+};
+
+// Admission and quota refreshes share publication ownership, independently per provider.
+function streamUpdate(store: Store, key: string, drivers = ['claudeAgent', 'codex']) {
+  const revisions = new Map(drivers.map(id => {
+    const name = `${key}Revision:${id}`, revision = Number(store.get(name) ?? 0) + 1;
+    store.set(name, String(revision)); return [id, revision] as const;
+  }));
+  return <T extends { driver: string }>(streams: T[]) => {
+    const previous = JSON.parse(store.get(key) ?? '[]') as T[];
+    const rows = new Map(previous.map(row => [row.driver, row]));
+    for (const stream of streams) if (revisions.get(stream.driver) === Number(store.get(`${key}Revision:${stream.driver}`))) rows.set(stream.driver, stream);
+    store.set(key, JSON.stringify([...rows.values()]));
+  };
+}
+
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
   clients = { ...clients, decide: clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual }) };
   if (options.provider && (!options.manual || options.model && options.model !== 'auto')) throw new Error('A provider choice requires manual automatic model selection');
@@ -920,6 +940,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   };
   const skip = skips(options);
   const t3 = clients.t3 ?? new T3(c.t3), kanvil = clients.kanvil ?? new Kanvil(c.kanvil), ownsKanvil = !clients.kanvil;
+  const publishStreams = streamUpdate(store, clients.workKind === 'upstream' ? 'upstreamStreams' : 'streams', clients.providerDriver ? [clients.providerDriver] : undefined);
   let [shell, providers] = await backgroundRead(() => { return readAll([t3.shell(), t3.providers()]); });
   await backgroundCheckpoint();
   const instances = new Map(providers.map(p => [p.instanceId, p.driver]));
@@ -933,17 +954,13 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     }
     const jobs = store.jobs();
     const busy = busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options);
-    const streams = ['claudeAgent', 'codex'].map(driver => ({
+    const streams: ProviderStream[] = ['claudeAgent', 'codex'].map(driver => ({
       driver, provider: driver === 'codex' ? 'Codex' : 'Claude',
       reason: busy.has(driver) ? c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running' : 'no-eligible-model',
       active: jobs.filter(j => ['running', 'dispatching'].includes(j.state) && (j.providerDriver ?? instances.get(j.modelSelection?.instanceId ?? 'claudeAgent')) === driver).map(jobLabel),
-      planned: [] as string[], models: [] as { id: string; name: string; reason: string }[], quota: undefined as Awaited<ReturnType<typeof readModelQuota>> | undefined, quotaError: undefined as string | undefined,
+      planned: [], models: [],
     }));
-    const saveStreams = () => {
-      const key = clients.workKind === 'upstream' ? 'upstreamStreams' : 'streams';
-      const previous = JSON.parse(store.get(key) ?? '[]') as typeof streams;
-      store.set(key, JSON.stringify(streams.map(stream => !clients.providerDriver || stream.driver === clients.providerDriver ? stream : previous.find(row => row.driver === stream.driver) ?? stream)));
-    };
+    const saveStreams = () => publishStreams(streams);
     const readyModels: { preset: Config['models'][number]; driver: string }[] = [];
     // Blocked only by provider idle time: reviews may still use these, ticket and discovery work may not.
     const idleModels: typeof readyModels = [];
@@ -1506,17 +1523,64 @@ export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'sk
 }
 
 // Re-read each provider's allowance without a full pass; a reading older than quota.maxAgeSeconds is refreshed.
-export async function refreshQuota(c: Config, store: Store, t3: T3) {
-  const streams = JSON.parse(store.get('streams') ?? '[]') as { driver: string; quota?: unknown; quotaError?: string }[];
+export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfig = () => c) {
+  const streams = JSON.parse(store.get('streams') ?? '[]') as ProviderStream[];
+  const publish = streamUpdate(store, 'streams', streams.map(stream => stream.driver));
+  const identity = (config: Config) => JSON.stringify([config.t3, config.models, config.quota, config.enabled, config.concurrency, config.idleMinutes, config.monitoringTimeoutMinutes]);
+  const startedWith = identity(c);
   const instances = new Map((await backgroundRead(() => { return t3.providers(); })).map(p => [p.instanceId, p.driver]));
-  const jobs = store.jobs();
+  let threads: Thread[] = [], shellError: string | undefined;
+  try { threads = (await backgroundRead(() => t3.shell())).threads; }
+  catch (error) { shellError = safeError(error); }
   for (const stream of streams) {
-    const preset = c.models.find(p => instances.get(p.model.instanceId) === stream.driver);
-    if (!preset) continue;
-    try { stream.quota = await backgroundRead(() => readModelQuota(t3, c, jobs, preset.id, false, true)); stream.quotaError = undefined; }
-    catch (error) { stream.quotaError = safeError(error); }
+    const presets = c.models.filter(p => instances.get(p.model.instanceId) === stream.driver);
+    const previousReasons = stream.models?.map(model => model.reason) ?? [];
+    // A dispatch/queue refusal belongs to admission, rather than the model evaluator.
+    const admission = !previousReasons.includes(stream.reason) && stream.reason !== stream.quotaError && !['ready', 'disabled', 'provider-disabled', 'provider-running', 'no-eligible-model', 'quota-exhausted', 'quota-budget'].includes(stream.reason) ? stream.reason : undefined;
+    let results: Awaited<ReturnType<typeof readModelQuotas>> = [];
+    const evaluatedProviders = new Map<string, ReturnType<T3['peekProvider']>>();
+    for (const instance of new Set(presets.map(preset => preset.model.instanceId))) {
+      results.push(...await backgroundRead(() => readModelQuotas(t3, c, store.jobs(), presets.filter(preset => preset.model.instanceId === instance).map(preset => preset.id), false, true)));
+      evaluatedProviders.set(instance, t3.peekProvider(instance));
+    }
+    const jobs = store.jobs();
+    const providerConstraint = () => {
+      const busy = busyProviders(store.jobs(), threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
+      return c.concurrency[stream.driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : busy.has(stream.driver) ? 'provider-running' : !c.enabled ? 'disabled' : undefined;
+    };
+    let constraint = providerConstraint();
+    let activity = shellError;
+    if (!constraint && presets.some(preset => preset.automatic)) {
+      try { if (!shellError && idleBlocked(c, await personalActivity(t3, threads, jobs, store, c.monitoringTimeoutMinutes, stream.driver, instances))) activity = 'waiting-for-idle'; }
+      catch (error) { activity = safeError(error); }
+    }
+    constraint = providerConstraint();
+    // Events received during another model/activity read remain authoritative at publication.
+    results = results.map(result => {
+      const preset = presets.find(preset => preset.id === result.id)!, current = t3.peekProvider(preset.model.instanceId);
+      const changed = JSON.stringify(current) !== JSON.stringify(evaluatedProviders.get(preset.model.instanceId));
+      if (!changed && 'error' in result) return result;
+      const snapshot = changed ? current : result.snapshot;
+      try {
+        if (!snapshot || snapshot.driver !== stream.driver) throw new Error('Provider identity changed during quota refresh');
+        return { id: result.id, quota: modelQuota(c, store.jobs(), result.id, snapshot, false) };
+      } catch (error) { return { id: result.id, error }; }
+    });
+    stream.models = presets.map(preset => {
+      const result = results.find(result => result.id === preset.id)!;
+      const reason = 'error' in result ? safeError(result.error) : !result.quota!.hasAllowance ? 'quota-exhausted' : !result.quota!.allowed ? 'quota-budget' : constraint ?? (!preset.automatic ? 'no-eligible-model' : activity ?? 'ready');
+      return { id: preset.id, name: preset.name, reason };
+    });
+    const quota = results.find(result => result.quota)?.quota;
+    if (quota) stream.quota = quota;
+    if (!presets.length) stream.quota = undefined;
+    const failed = results.find(result => 'error' in result);
+    stream.quotaError = failed ? safeError(failed.error) : presets.length ? undefined : 'No model is configured for this provider';
+    // A quota-only check never proves that a ticket can start.
+    const reasons = stream.models.map(model => model.reason);
+    stream.reason = constraint ?? (reasons.includes('ready') ? admission ?? 'no-eligible-ticket' : reasons[0] ?? 'no-eligible-model');
+    if (identity(currentConfig()) === startedWith) publish([stream]);
   }
-  store.set('streams', JSON.stringify(streams));
 }
 
 // One row per watched repository: the release reviewed through, the newest release seen, and whether a review runs or is due.
