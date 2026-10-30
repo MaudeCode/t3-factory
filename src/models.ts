@@ -59,6 +59,18 @@ export function modelQuota(c: ModelConfig, jobs: Job[], id: string, provider: Aw
   };
 }
 
+type Provider = Awaited<ReturnType<T3['provider']>>;
+// A stale or failed reading falls back to the newest retained reading of the same account, judged by the
+// same checks: it never authorizes a start once expired, before a reservation, or exhausted. Only a
+// failed probe is replaced; an authoritative unavailable reason, a not-ready provider or another account is not.
+function retainedModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, provider: Provider, manual: boolean) {
+  const unavailable = provider.usageLimits?.unavailable as { reason?: unknown } | undefined, kept = t3.retainedQuota?.(provider);
+  if (!kept || unavailable && unavailable.reason !== 'probeFailed') return;
+  const snapshot = { ...provider, usageLimits: kept.usageLimits };
+  try { return { quota: { ...modelQuota(c, jobs, id, snapshot, manual), retained: true as const }, snapshot }; }
+  catch { return; }
+}
+
 export function liveModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false) {
   const preset = configuredModel(c, id), provider = t3.peekProvider?.(preset.model.instanceId);
   if (!provider) return;
@@ -66,6 +78,10 @@ export function liveModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, 
   // updates are reevaluated synchronously immediately before reservation.
   try { return modelQuota(c, jobs, id, provider, manual); }
   catch (error) { if (!(error instanceof QuotaRefreshError)) throw error; }
+  // Serving a retained reading skips the caller's probe, so the recovery owner probes instead.
+  const retained = retainedModelQuota(t3, c, jobs, id, provider, manual)?.quota;
+  if (retained) t3.onQuota?.(provider.instanceId, false);
+  return retained;
 }
 
 export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false, refresh = false) {
@@ -78,14 +94,22 @@ export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: st
 export async function readModelQuotas(t3: T3, c: ModelConfig, jobs: Job[], ids: string[], manual = false, refresh = false) {
   const preset = configuredModel(c, ids[0]);
   if (ids.some(id => configuredModel(c, id).model.instanceId !== preset.model.instanceId)) throw new Error('Quota models must share a provider instance');
-  type Result = ({ id: string; quota: ReturnType<typeof modelQuota>; error?: never } | { id: string; error: unknown; quota?: never }) & { snapshot?: Awaited<ReturnType<T3['provider']>> };
+  type Result = ({ id: string; quota: ReturnType<typeof modelQuota> & { retained?: true }; error?: never } | { id: string; error: unknown; quota?: never }) & { snapshot?: Provider };
+  // Replace a stale or failed reading with the retained one where it still passes.
+  const fallback = (results: Result[], provider: Provider) => results.map(result => result.error instanceof QuotaRefreshError ? { id: result.id, ...retainedModelQuota(t3, c, jobs, result.id, provider, manual) ?? result } as Result : result);
   const live = t3.peekProvider(preset.model.instanceId);
   if (live) {
-    const results: Result[] = ids.map(id => {
+    const evaluated: Result[] = ids.map(id => {
       try { return { id, quota: modelQuota(c, jobs, id, live, manual), snapshot: live }; }
       catch (error) { return { id, error, snapshot: live }; }
     });
-    if (!results.some(result => result.error instanceof QuotaRefreshError)) return results;
+    // A forced read must reach T3: a retained fallback cannot stand in for the probe recovery needs.
+    const results = refresh ? evaluated : fallback(evaluated, live);
+    if (!results.some(result => result.error instanceof QuotaRefreshError)) {
+      // Serving a retained reading skips the probe, so the recovery owner probes instead.
+      if (results.some(result => result.quota?.retained)) t3.onQuota?.(live.instanceId, false);
+      return results;
+    }
   }
   for (let attempt = 0; ; attempt++) {
     const force = refresh || attempt > 0;
@@ -104,6 +128,9 @@ export async function readModelQuotas(t3: T3, c: ModelConfig, jobs: Job[], ids: 
       results = ids.map(id => ({ id, error }));
     }
     if (attempt < (refresh ? 1 : 2) && results.some(result => 'error' in result && (!force || result.error instanceof QuotaRefreshError))) continue;
+    const latest = results.find(result => result.snapshot)?.snapshot;
+    if (latest && force) t3.onQuota?.(latest.instanceId, !results.some(result => result.error instanceof QuotaRefreshError));
+    if (latest) results = fallback(results, latest);
     return results.map(result => result.error instanceof QuotaRefreshError
       ? { ...result, error: new Error(`Quota automatic refresh failed: ${result.error.message}. No run was started.`, { cause: result.error }) }
       : result);

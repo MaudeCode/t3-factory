@@ -17,6 +17,8 @@ import { GitHub } from './github-client.ts';
 import { admitTriage, inboxes, promotedTickets, triagePass, triageQueue } from './triage.ts';
 
 const EVENT_SETTLE_MS = 25;
+/** Quota recovery retries after these delays, then every 30 seconds until a fresh reading arrives. */
+const QUOTA_RETRY_SECONDS = [1, 2, 5, 10, 30];
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
 
 export class FactoryService {
@@ -33,6 +35,7 @@ export class FactoryService {
   private timer?: NodeJS.Timeout;
   private settle?: NodeJS.Timeout;
   private quotaTimer?: NodeJS.Timeout;
+  private readonly quotaRecovery = new Map<string, { attempt: number; timer?: NodeJS.Timeout }>();
   private cleanupTimer?: NodeJS.Timeout;
   private cleanupQueued = false;
   private inventoryTimer?: NodeJS.Timeout;
@@ -104,6 +107,7 @@ export class FactoryService {
       void Promise.allSettled([...this.operations.values()].map(item => item.done)).then(() => previous.close()).finally(() => this.retiredClients.delete(previous));
     }
     this.t3 = new T3(c.t3, { persistent: true }); this.t3Settings = JSON.stringify(c.t3);
+    this.watchQuota(this.t3);
     if (this.stopped) return;
     const stream = new AbortController(); this.stream = stream;
     this.abort.signal.addEventListener('abort', () => stream.abort(), { once: true });
@@ -116,6 +120,7 @@ export class FactoryService {
     this.abort.abort();
     this.github?.close();
     for (const item of this.operations.values()) if (!item.foreground) item.context.stopBackground();
+    this.resetQuotaRecovery();
     clearTimeout(this.timer); clearTimeout(this.settle); clearTimeout(this.quotaTimer); clearTimeout(this.cleanupTimer); clearTimeout(this.collectionTimer); clearTimeout(this.inventoryTimer);
     this.watcher?.close();
     await new Promise<void>(resolve => this.control ? this.control.close(() => resolve()) : resolve());
@@ -391,6 +396,47 @@ export class FactoryService {
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
       finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
     }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
+  }
+
+  // One recovery lifecycle per provider instance. Failure reports from timers, streams and foreground
+  // reads join the running lifecycle; only its own retry advances the backoff. A fresh reading ends it
+  // and wakes admission through the normal lanes, which keep their current pauses and limits.
+  private watchQuota(t3: T3) {
+    this.resetQuotaRecovery();
+    t3.onQuota = (instanceId, healthy) => {
+      if (this.stopped || t3 !== this.t3) return;
+      if (healthy) this.recoverQuota(instanceId);
+      else if (!this.quotaRecovery.has(instanceId)) { log('quota-recovery-started', { instanceId }); this.retryQuota(instanceId, { attempt: 0 }); }
+    };
+  }
+  private resetQuotaRecovery() {
+    for (const entry of this.quotaRecovery.values()) clearTimeout(entry.timer);
+    this.quotaRecovery.clear();
+  }
+  private recoverQuota(instanceId: string) {
+    const entry = this.quotaRecovery.get(instanceId);
+    if (!entry) return;
+    clearTimeout(entry.timer); this.quotaRecovery.delete(instanceId);
+    log('quota-recovered', { instanceId, attempts: entry.attempt });
+    for (const workKind of ['tickets', 'chains', 'upstream'] as const) this.scheduleAdmissions('quota-recovered', workKind);
+  }
+  private retryQuota(instanceId: string, entry: { attempt: number; timer?: NodeJS.Timeout }) {
+    this.quotaRecovery.set(instanceId, entry);
+    const t3 = this.t3, delay = QUOTA_RETRY_SECONDS[Math.min(entry.attempt, QUOTA_RETRY_SECONDS.length - 1)] * 1000;
+    entry.timer = setTimeout(() => void this.enqueue(async () => {
+      entry.timer = undefined;
+      const current = () => !this.stopped && this.t3 === t3 && this.quotaRecovery.get(instanceId) === entry;
+      if (!current()) return;
+      let fresh = false;
+      try {
+        const c = loadConfig(this.configPath);
+        fresh = !c.models.some(p => p.model.instanceId === instanceId) || await refreshQuota(c, this.store, t3, () => loadConfig(this.configPath), instanceId);
+        this.publishWork();
+      } catch (error) { log('quota-refresh-failed', { instanceId, message: safeError(error) }); }
+      if (!current()) return;
+      if (fresh) this.recoverQuota(instanceId);
+      else { entry.attempt++; this.retryQuota(instanceId, entry); }
+    }, false, { reason: 'quota-recovery' }), delay);
   }
 
   private ensureKanvil(c: Config): Promise<Kanvil> {

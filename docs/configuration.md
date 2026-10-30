@@ -40,7 +40,7 @@ Available quota must be greater than the larger of those thresholds. For example
 
 General Claude models use the five-hour and weekly pools. A Claude model with a dedicated allowance uses the five-hour pool and its dedicated pool. Codex models use the Codex weekly budget settings for each window reported by T3. The providers have independent budgets and execution slots.
 
-`quota.maxAgeSeconds` limits the age of a reading. Missing, stale, or expired quota data causes a targeted refresh. If that fails, affected models are unavailable; another provider can still proceed. These checks use T3's provider metadata, not a model prompt.
+`quota.maxAgeSeconds` limits the age of a reading. Missing, stale, or expired quota data causes a targeted refresh. If that fails, the last good reading for the same account keeps serving until it is older than `maxAgeSeconds` or predates a newer start, and Factory retries the provider after 1, 2, 5 and 10 seconds, then every 30 seconds, until a fresh reading arrives. Without a usable reading the affected models are unavailable; another provider can still proceed. These checks use T3's provider metadata, not a model prompt.
 
 Manual overrides are described in [operations](operations.md#manual-runs). Existing jobs are allowed to finish when a reserve is reached.
 

@@ -1523,7 +1523,8 @@ export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'sk
 }
 
 // Re-read each provider's allowance without a full pass; a reading older than quota.maxAgeSeconds is refreshed.
-export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfig = () => c) {
+// Resolves false when a read failed or only a retained reading served. `instanceId` limits it to one provider.
+export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfig = () => c, instanceId?: string) {
   const streams = JSON.parse(store.get('streams') ?? '[]') as ProviderStream[];
   const publish = streamUpdate(store, 'streams', streams.map(stream => stream.driver));
   const identity = (config: Config) => JSON.stringify([config.t3, config.models, config.quota, config.enabled, config.concurrency, config.idleMinutes, config.monitoringTimeoutMinutes]);
@@ -1532,15 +1533,23 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
   let threads: Thread[] = [], shellError: string | undefined;
   try { threads = (await backgroundRead(() => t3.shell())).threads; }
   catch (error) { shellError = safeError(error); }
+  let fresh = true, covered = !instanceId;
+  const read = async (instance: string, ids: string[]) => {
+    const results = await backgroundRead(() => readModelQuotas(t3, c, store.jobs(), ids, false, true));
+    if (!instanceId || instance === instanceId) fresh &&= results.every(result => result.quota && !result.quota.retained);
+    return results;
+  };
   for (const stream of streams) {
     const presets = c.models.filter(p => instances.get(p.model.instanceId) === stream.driver);
+    if (instanceId && !presets.some(preset => preset.model.instanceId === instanceId)) continue;
+    covered = true;
     const previousReasons = stream.models?.map(model => model.reason) ?? [];
     // A dispatch/queue refusal belongs to admission, rather than the model evaluator.
     const admission = !previousReasons.includes(stream.reason) && stream.reason !== stream.quotaError && !['ready', 'disabled', 'provider-disabled', 'provider-running', 'no-eligible-model', 'quota-exhausted', 'quota-budget'].includes(stream.reason) ? stream.reason : undefined;
     let results: Awaited<ReturnType<typeof readModelQuotas>> = [];
     const evaluatedProviders = new Map<string, ReturnType<T3['peekProvider']>>();
     for (const instance of new Set(presets.map(preset => preset.model.instanceId))) {
-      results.push(...await backgroundRead(() => readModelQuotas(t3, c, store.jobs(), presets.filter(preset => preset.model.instanceId === instance).map(preset => preset.id), false, true)));
+      results.push(...await read(instance, presets.filter(preset => preset.model.instanceId === instance).map(preset => preset.id)));
       evaluatedProviders.set(instance, t3.peekProvider(instance));
     }
     const jobs = store.jobs();
@@ -1581,6 +1590,10 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
     stream.reason = constraint ?? (reasons.includes('ready') ? admission ?? 'no-eligible-ticket' : reasons[0] ?? 'no-eligible-model');
     if (identity(currentConfig()) === startedWith) publish([stream]);
   }
+  // A provider without a displayed row still gets its read.
+  const unlisted = c.models.filter(p => !covered && p.model.instanceId === instanceId).map(p => p.id);
+  if (unlisted.length) await read(instanceId!, unlisted);
+  return fresh;
 }
 
 // One row per watched repository: the release reviewed through, the newest release seen, and whether a review runs or is due.

@@ -39,6 +39,8 @@ function immutableProjection<T>(value: T): T {
   }
   return value;
 }
+type Provider = z.infer<typeof providerPayloadSchema>['providers'][number];
+const account = (p: Provider) => { const auth = (p as { auth?: { email?: unknown; workspaceId?: unknown } }).auth; return JSON.stringify([typeof auth?.email === 'string' ? auth.email.toLowerCase() : null, auth?.workspaceId ?? null]); };
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
@@ -56,6 +58,10 @@ export class T3 {
   private orphanProbe?: Promise<void>;
   private projectionChanged?: (item: unknown) => void;
   private shellRead?: { at: number; epoch: number; fresh: boolean; settled: boolean; pending: ReturnType<T3['readShell']> };
+  private readonly drivers = new Map<string, string>();
+  private readonly quotaReadings = new Map<string, { generation: number; provider: Provider }>();
+  /** The service's quota recovery owner: false when a refresh failed or a retained reading served, true after a fresh forced read. */
+  onQuota?: (instanceId: string, healthy: boolean) => void;
   constructor(config: Config['t3'], options: { persistent?: boolean } = {}) {
     this.config = config; this.persistent = !!options.persistent; this.rpc = new T3Rpc(() => this.socketUrl());
   }
@@ -372,6 +378,7 @@ export class T3 {
         const event = z.object({ type: z.string() }).passthrough().parse(item);
         const providers = event.type === 'snapshot' ? providerPayloadSchema.parse(event.config).providers : event.type === 'providerStatuses' ? providerPayloadSchema.parse(event.payload).providers : undefined;
         if (providers) {
+          this.observeProviders(providers);
           const changed = JSON.stringify(this.providerView?.value) !== JSON.stringify(providers);
           this.providerView = { epoch, value: providers };
           if (changed) onItem({ kind: 'providers.updated' });
@@ -382,9 +389,34 @@ export class T3 {
   }
   private async readProviders(refreshInstance?: string) {
     const view = this.providerView;
-    const data = providerPayloadSchema.parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance } : {}) }));
+    // Only Claude caches its usage probe; Codex and an instance not seen yet skip the model rediscovery this costs.
+    const invalidate = !!refreshInstance && this.drivers.get(refreshInstance) === 'claudeAgent';
+    const data = providerPayloadSchema.parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance, invalidate } : {}) }));
+    this.observeProviders(data.providers);
     if (refreshInstance && view && this.providerView === view && this.rpc.isLive(view.epoch)) this.providerView = { epoch: view.epoch, value: data.providers };
     return data.providers;
+  }
+  private observeProviders(providers: Provider[]) {
+    for (const provider of providers) { this.drivers.set(provider.instanceId, provider.driver); this.retainQuota(provider); }
+  }
+  // Keep the newest well-formed reading per instance and account. Absent, unavailable, malformed,
+  // future-dated or older readings never replace it; a newer restrictive one does.
+  private retainQuota(provider: Provider) {
+    const limits = provider.usageLimits, checked = Date.parse(limits?.checkedAt ?? '');
+    if (!limits || limits.unavailable || !limits.windows.length || limits.windows.some(w => !(w.usedPercent >= 0 && w.usedPercent <= 100)) || !Number.isFinite(checked) || checked > Date.now() + 60_000) return;
+    const kept = this.keptQuota(provider);
+    if (kept && Date.parse(kept.usageLimits!.checkedAt) > checked) return;
+    this.quotaReadings.set(provider.instanceId, { generation: this.credentialGeneration, provider: structuredClone(provider) });
+  }
+  /** The newest retained reading for this provider's current credential and account, keeping its original capture time. */
+  retainedQuota(current: Provider): Provider | undefined {
+    this.retainQuota(current);
+    const kept = this.keptQuota(current);
+    return kept && structuredClone(kept);
+  }
+  private keptQuota(current: Provider) {
+    const kept = this.quotaReadings.get(current.instanceId);
+    return kept && kept.generation === this.credentialGeneration && account(kept.provider) === account(current) ? kept.provider : undefined;
   }
   async provider(instanceId: string, refresh = false) {
     const provider = (await this.providers(refresh ? instanceId : undefined)).find(p => p.instanceId === instanceId);

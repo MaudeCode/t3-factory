@@ -6,7 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { writeStatus, log } from '../src/scheduler.ts';
+import { writeStatus, log, refreshQuota } from '../src/scheduler.ts';
+import { readModelQuota } from '../src/models.ts';
 import { dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts';
 import { cycle } from '../src/scheduler.ts';
 import { ReadContext } from '../src/read-context.ts';
@@ -649,4 +650,76 @@ test('an unnamed start skips a hint whose fresh labels hit an occupied slot', as
   const result = await cycle(f.c, f.store, { manual: true, model: 'sol', ticket: '' }, { t3: f.t3, kanvil: f.kanvil, backgroundInventory: true });
   assert.equal(result.reason, 'dispatched'); assert.equal(result.ticket, 'FIX-4');
   assert.equal(f.store.jobs().filter(job => job.labels?.includes('app')).length, 1);
+});
+
+test('quota recovery runs one bounded backoff per provider, ends on a fresh reading and wakes admission', async t => {
+  const f = serviceFixture(t);
+  f.c.models.push({ ...f.c.models[0], id: 'opus', name: 'Opus', automatic: false, model: { ...f.c.models[0].model, instanceId: 'claudeAgent', model: 'fixture-claude' } });
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const failing = new Set(['codex', 'claudeAgent']), probes: string[] = [], admissions: string[] = [];
+  let gate: Promise<void> | undefined;
+  t.mock.method(f.t3, 'provider', async (id: string, refresh: boolean) => {
+    if (refresh) probes.push(id);
+    await gate;
+    const p = f.provider(id); if (failing.has(id)) p.usageLimits.checkedAt = new Date(0).toISOString();
+    return p;
+  });
+  t.mock.method(f.internal, 'scheduleAdmissions', (reason: string, kind: string) => { admissions.push(`${reason}:${kind}`); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  f.internal.watchQuota?.(f.t3);
+  const step = async (ms: number) => { t.mock.timers.tick(ms); await f.internal.idle; };
+  const rounds = (id: string) => probes.filter(probe => probe === id).length / 2; // each bounded read makes two forced attempts
+
+  // A per-stream failure caught by refreshQuota reaches the owner; the event storm joins its lifecycle.
+  assert.equal(await refreshQuota(f.c, f.store, f.t3, () => f.c, 'codex'), false);
+  assert.equal(rounds('codex'), 1);
+  for (let n = 0; n < 50; n++) f.t3.onQuota!('codex', false);
+  for (const seconds of [1, 2, 5, 10, 30, 30]) {
+    const seen = rounds('codex');
+    await step(seconds * 1000 - 1); assert.equal(rounds('codex'), seen, `no retry before ${seconds}s`);
+    await step(1); assert.equal(rounds('codex'), seen + 1, `one retry after ${seconds}s`);
+    f.t3.onQuota!('codex', false);
+  }
+
+  // A slow probe is never overlapped by timers or failure reports.
+  const release = deferred(); gate = release.promise; f.beforeClose.unshift(() => release.resolve());
+  await step(29_999); t.mock.timers.tick(1);
+  for (let n = 0; n < 10; n++) { await new Promise(resolve => setImmediate(resolve)); f.t3.onQuota!('codex', false); t.mock.timers.tick(30_000); }
+  assert.equal(probes.filter(id => id === 'codex').length % 2, 1, 'the single in-flight retry is still waiting');
+  gate = undefined; release.resolve(); await f.internal.idle;
+  const capped = rounds('codex');
+  assert.equal(Number.isInteger(capped), true);
+
+  // Another provider recovers independently while the first is still backing off.
+  await readModelQuota(f.t3, f.c, [], 'opus').catch(() => {});
+  assert.equal(rounds('claudeAgent'), 1);
+  await step(1000); assert.equal(rounds('claudeAgent'), 2, 'the first retry is within 2 seconds');
+  failing.delete('claudeAgent');
+  await step(2000);
+  assert.deepEqual(admissions, ['quota-recovered:tickets', 'quota-recovered:chains', 'quota-recovered:upstream'], 'recovery wakes admission through the normal lanes');
+  const recovered = probes.filter(id => id === 'claudeAgent').length;
+  assert.equal(rounds('codex'), capped, 'the other provider did not wait on this one');
+  await step(26_999); assert.equal(rounds('codex'), capped);
+  await step(1); assert.equal(rounds('codex'), capped + 1);
+  failing.delete('codex'); await step(30_000);
+  assert.equal(admissions.length, 6);
+  const settled = probes.length;
+  await step(120_000);
+  assert.equal(probes.length, settled, 'fresh readings return both providers to the ordinary cadence');
+  assert.equal(probes.filter(id => id === 'claudeAgent').length, recovered);
+
+  // A new failure starts again from the first delay.
+  failing.add('codex'); f.t3.onQuota!('codex', false);
+  await step(1000); assert.equal(probes.length, settled + 2, 'backoff resets after recovery');
+  assert.equal(f.launches.length, 0, 'recovery never submits work directly');
+
+  // Replacing the T3 connection disposes the old lifecycle and ignores its client.
+  t.mock.method(T3.prototype, 'subscribe', async () => {});
+  const old = f.t3; f.internal.connectT3(f.c);
+  assert.equal(f.internal.quotaRecovery.size, 0);
+  old.onQuota!('codex', false); assert.equal(f.internal.quotaRecovery.size, 0, 'a retired client cannot start recovery');
+  await step(60_000); assert.equal(probes.length, settled + 2);
+  f.internal.t3.onQuota('codex', false); assert.equal(f.internal.quotaRecovery.size, 1);
+  await f.service.stop();
+  assert.equal(f.internal.quotaRecovery.size, 0, 'shutdown disposes recovery timers');
 });
