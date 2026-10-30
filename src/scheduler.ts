@@ -921,7 +921,7 @@ function streamUpdate(store: Store, key: string, drivers = ['claudeAgent', 'code
   return <T extends { driver: string }>(streams: T[]) => {
     const previous = JSON.parse(store.get(key) ?? '[]') as T[];
     const rows = new Map(previous.map(row => [row.driver, row]));
-    for (const stream of streams) if (revisions.get(stream.driver) === Number(store.get(`${key}Revision:${stream.driver}`))) rows.set(stream.driver, stream);
+    for (const stream of streams) if (!rows.has(stream.driver) || revisions.get(stream.driver) === Number(store.get(`${key}Revision:${stream.driver}`))) rows.set(stream.driver, stream);
     store.set(key, JSON.stringify([...rows.values()]));
   };
 }

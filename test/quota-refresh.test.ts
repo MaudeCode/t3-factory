@@ -243,6 +243,21 @@ test('an empty quota refresh cannot suppress the first admission publication', a
   assert.equal(f.status().streams.length, 2);
 });
 
+test('scoped admission initializes an Off provider for background quota recovery', async t => {
+  const f = quotaFixture(t);
+  f.c.enabled = false; f.c.concurrency.claude = 0; f.store.set('streams', '[]');
+  const scoped = () => cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets', providerDriver: 'codex' });
+  await scoped();
+  assert.equal(f.status().streams.length, 2, 'scoped publication must initialize both provider rows on fresh state');
+  assert.equal(f.stream().reason, 'provider-disabled');
+  await f.refresh();
+  assert.equal(f.stream().quota.hasAllowance, true, 'the Off provider remains visible to background refresh');
+  const sibling = f.stream();
+  await scoped();
+  assert.deepEqual(f.stream(), sibling, 'scoped admission cannot replace existing sibling status');
+  assert.equal(f.launches.length, 0);
+});
+
 test('background quota recovery retires stale live reasons while paused and capacity is Off', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const f = dispatchFixture(t);
