@@ -667,8 +667,92 @@ test('an unsafe safety review blocks promotion; a weakly validated bug is blocke
   const g = fixture(t);
   g.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
   await pass(g);
+  assert.deepEqual((await pass(g)).map(r => r.outcome), ['triaged'], 'plausible bugs get one source follow-up');
   assert.deepEqual(await pass(g), [{ ticket: 'TALIN-5', outcome: 'promotion-blocked', reason: 'validity: bug with plausible and 1 valid evidence' }]);
-  assert.equal(g.calls().length, 1);
+  assert.equal(g.calls().length, 2);
+});
+
+test('a plausible bug gets a budgeted source follow-up before confirmed promotion', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
+  await pass(f);
+  assert.deepEqual(await pass(f, { budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
+  assert.equal(f.calls().length, 1);
+  const customPrompt = join(f.dir, 'custom-triage.md');
+  writeFileSync(customPrompt, 'Existing operator triage instructions\n{{report}}');
+  f.c.triage!.promptFile = customPrompt;
+  f.mode({ stdout: reply(promotable()), review: safe });
+  assert.deepEqual((await pass(f)).map(r => r.outcome), ['triaged'], 'resolve confidence instead of permanently blocking the report');
+  const followUp = f.calls()[1];
+  assert.match(followUp.stdin, /^Existing operator triage instructions/);
+  assert.match(followUp.stdin, /Source validation follow-up/);
+  assert.match(followUp.stdin, /runtime reproduction is not required/);
+  assert.equal(followUp.argv[followUp.argv.indexOf('--tools') + 1], 'Read,Grep,Glob');
+  assert.equal(named(f, 'createTicket').length, 0);
+  assert.ok(labelsOf(current(f, 'TALIN-5')).includes('validation:confirmed-in-code'));
+  assert.deepEqual((await pass(f)).map(r => r.outcome), ['promoted']);
+  assert.equal(f.calls().length, 3, 'initial inspection, source follow-up, independent safety review');
+});
+
+test('an unresolved source follow-up is persisted and blocks without another run after restart', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
+  await pass(f);
+  assert.deepEqual((await pass(f)).map(r => r.outcome), ['triaged']);
+  const saved = JSON.parse(f.store.get(`triageOutput:${f.report.id}`)!);
+  assert.equal(saved.validationReviewed, true);
+  const values = new Map([[`triageOutput:${f.report.id}`, JSON.stringify(saved)]]);
+  const store = { get: (key: string) => values.get(key) ?? null, set: (key: string, value: string) => { values.set(key, value); }, record: f.store.record };
+  assert.equal((await pass({ ...f, store }))[0].outcome, 'promotion-blocked');
+  assert.deepEqual(await pass({ ...f, store }), []);
+  assert.equal(f.calls().length, 2);
+  assert.equal(named(f, 'createTicket').length, 0);
+});
+
+test('source follow-up respects pause and operator holds, and refreshes duplicate coverage', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
+  await pass(f);
+  assert.deepEqual(await pass(f, {}, { ...f.c, triage: { ...f.c.triage!, enabled: false } }), []);
+  f.projects.TALIN[0] = { ...current(f, 'TALIN-5'), holdReason: 'Owner is investigating' };
+  assert.deepEqual(await pass(f), []);
+  assert.equal(f.calls().length, 1);
+  f.projects.TALIN[0] = { ...current(f, 'TALIN-5'), holdReason: null };
+  assert.deepEqual(await pass(f, { budget: async () => {
+    f.projects.TALIN[0] = { ...current(f, 'TALIN-5'), holdReason: 'New owner hold' };
+    return {};
+  } }), [], 'a hold added after the queue read also stops the follow-up');
+  assert.equal(f.calls().length, 1);
+  f.projects.TALIN[0] = { ...current(f, 'TALIN-5'), holdReason: null };
+  f.mode({ stdout: reply(promotable({ verdict: 'duplicate', duplicateOf: 'TAL-10', proposal: null })) });
+  assert.deepEqual((await pass(f)).map(r => r.outcome), ['triaged']);
+  assert.deepEqual(named(f, 'addRelation').map(e => e.args.slice(0, 4)), [['TALIN', f.report.id, current(f, 'TAL-10').id, 'duplicate']]);
+  assert.deepEqual(await pass(f), []);
+  assert.equal(named(f, 'createTicket').length, 0);
+});
+
+test('a source follow-up resumes its saved write plan without rerunning the model', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
+  await pass(f);
+  const update = f.kanvil.updateTicket;
+  f.kanvil.updateTicket = async () => { throw new Error('tracker unavailable'); };
+  assert.equal((await pass(f))[0].outcome, 'error');
+  assert.equal(JSON.parse(f.store.get(`triagePlan:${f.report.id}`)!).validationReviewed, true);
+  f.kanvil.updateTicket = update;
+  assert.equal((await pass(f))[0].outcome, 'triaged');
+  assert.equal((await pass(f))[0].outcome, 'promotion-blocked');
+  assert.equal(f.calls().length, 2, 'apply recovery does not spend another model run');
+});
+
+test('source follow-up confirmation still requires the independent safety review', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
+  await pass(f);
+  f.mode({ stdout: reply(promotable()), review: reply({ safe: false, reason: 'Unsafe ticket.' }) });
+  assert.equal((await pass(f))[0].outcome, 'triaged');
+  assert.deepEqual(await pass(f), [{ ticket: 'TALIN-5', outcome: 'promotion-blocked', reason: 'safety review: Unsafe ticket.' }]);
+  assert.equal(named(f, 'createTicket').length, 0);
 });
 
 test('the Triage page gets each promoted ticket from the target projection, startable only while its project and status allow', async t => {
