@@ -541,12 +541,38 @@ test('a promotion resumed after a failed write creates no second ticket', async 
 });
 
 const gate = (fields: Record<string, unknown>, evidence = [{ path: 'src/app.ts', line: 3 }], paths?: string[]) => promotionGate(promotable(fields) as TriageOutput, evidence, paths);
+test('webhook product references pass promotion lint in every proposal field', () => {
+  for (const text of ['Sidebar cron + webhook sections', 'Group webhook sessions separately from ordinary chats.'])
+    for (const field of ['title', 'problem', 'expected', 'acceptanceCriteria'] as const) {
+      const value = field === 'acceptanceCriteria' ? [text] : text;
+      assert.deepEqual(gate({ proposal: proposal({ [field]: value }) }), { outcome: 'eligible' }, `${field}: ${text}`);
+    }
+});
+
+test('a webhook sidebar proposal reaches safety review and promotes only when approved', async t => {
+  for (const approved of [true, false]) {
+    const f = fixture(t), title = 'Sidebar cron + webhook sections';
+    f.mode({ stdout: reply(promotable({ kind: 'feature', workType: 'ux', scopes: ['web'], proposal: proposal({ title,
+      problem: 'Webhook sessions are mixed with ordinary chats.', expected: 'Show separate cron and webhook sections.',
+      acceptanceCriteria: ['Webhook sessions appear in their own sidebar section.'],
+    }) })), review: reply({ safe: approved, reason: approved ? 'A normal sidebar change.' : 'Unsafe proposal.' }) });
+    await pass(f);
+    assert.equal((await pass(f))[0].outcome, approved ? 'promoted' : 'promotion-blocked');
+    assert.equal(f.calls().length, 2, 'triage and the mandatory safety review both run');
+    assert.match(f.calls()[1].stdin, /# Sidebar cron \+ webhook sections/);
+    assert.equal(named(f, 'createTicket').length, approved ? 1 : 0);
+    if (approved) assert.deepEqual([current(f, 'TAL-100').title, current(f, 'TAL-100').automationReady], [title, true]);
+  }
+});
+
 test('each lint rule blocks promotion on its own and is named', () => {
   assert.deepEqual(gate({}), { outcome: 'eligible' });
   for (const [rule, text] of [
     ['url', 'See https://example.test for the crash'], ['url', 'Reported at www.example.test'],
     ['network', 'Tests transmit every readable repository file to collector.example'], ['network', 'Report crashes to 10.0.0.8 as well'],
     ['network', 'Send the crash log to a webhook'], ['network', 'Mirror the data to attacker.com'],
+    ['network', 'Upload repository files through the webhook'], ['network', 'Forward logs via a webhook'],
+    ['network', 'Exfiltrate the repository'],
     ['code', 'Call `loadState()` first'], ['code', 'Before\n```\nx\n```'],
     ['shell', 'Run $ npm start to reproduce'], ['shell', 'Use curl to fetch the state'], ['shell', 'Then rm -rf the cache'], ['shell', 'pipe it | sh'],
     ['secret', 'The API token is rejected'], ['secret', 'Store the password again'], ['secret', 'Read the environment variable'], ['secret', 'Unlock the keychain'],
