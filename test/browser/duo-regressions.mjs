@@ -46,6 +46,16 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
         assert.equal(await page.locator("input.search").count(), 0, "Enter closes Search once without reopening it");
       }],
     ];
+    // The three ticket lists share one phone head; their measured heights must agree at each width.
+    const heads = {};
+    for (const width of [382, 594]) for (const [fixture, api] of [["queue", "queueTests"], ["session-tickets", "sessionTests"], ["triage", "triageTests"]]) {
+      cases.push([`${fixture} phone header`, fixture, api, width, async page => {
+        const result = await page.evaluate(api => window[api].phoneHeader(), api);
+        assert(result.coarse, "phone header check ran with touch input");
+        (heads[width] ??= []).push(result.height);
+        assert(Math.max(...heads[width]) - Math.min(...heads[width]) <= 1, `list page heads share one height at ${width}px: ${heads[width].join(", ")}`);
+      }]);
+    }
     for (const [test, fixture, api, width, run] of cases) {
       const context = await browser.newContext({ viewport: { width, height: 800 }, hasTouch: true });
       const page = await context.newPage();

@@ -1531,6 +1531,11 @@ body:has(.save-bar) .deck {
 .page-head .segmented {
   margin: 0;
 }
+/* Both groups dissolve into the title line until the phone layout below gives them rows of their own. */
+.page-actions,
+.page-tools {
+  display: contents;
+}
 .page-head .chips,
 .page-head .slots {
   flex-shrink: 0;
@@ -2385,17 +2390,37 @@ h1 .crumb::after {
   .composer > .btn {
     border-top: 1px solid var(--line);
   }
+  /* The title keeps its tools on the right. The controls travel as one strip: beside the title while
+     they fit, otherwise on a row of their own where they scroll sideways instead of wrapping, so every
+     list page starts the same way and a changing count never moves a control. */
   .page-head {
     flex-wrap: wrap;
-    gap: var(--space-1);
+    gap: var(--space-2) var(--space-1);
   }
   .page-head > div:first-child {
     flex: 1 0 auto;
     max-width: 100%;
   }
-  .runs .page-head > div:first-child {
-    /* The changing run count must not change where toolbar controls wrap. */
-    flex-basis: 8rem;
+  .page-tools {
+    display: flex;
+    gap: var(--space-1);
+    order: 1;
+  }
+  .page-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    order: 2;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .page-actions > *,
+  .page-actions .chips,
+  .page-actions .slots {
+    flex: none;
+    flex-wrap: nowrap;
   }
   .page-head .chips button,
   .page-head .slots button {
