@@ -453,7 +453,8 @@ async function providerChoice() {
   return 'provider choice checks passed';
 }
 
-async function phoneHeader() { await show(); return checkPageHead(); }
+// A three-digit count makes the title as wide as it gets on a real list.
+async function phoneHeader() { await show({ sessionTickets: { at, error: null, rows: Array.from({ length: 149 }, (_, i) => row(`t${i}`, `APP-${i}`, 'high')) } }); return checkPageHead(); }
 window.sessionTests = { phoneHeader, overrides, providerChoice, unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, density, overflowEdges, showError, showEmpty };
 await show();
 

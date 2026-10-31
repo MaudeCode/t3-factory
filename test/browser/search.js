@@ -11,7 +11,7 @@ export async function openSearch() {
 // The list pages share one head: the title with its tools on the right, and the controls as one strip
 // that stays beside the title while it fits and otherwise takes a row of its own, scrolling sideways
 // instead of wrapping. Desktop always shares the title row.
-export function checkPageHead() {
+export async function checkPageHead() {
   const assert = (ok, message) => { if (!ok) throw new Error(message); };
   const head = document.querySelector('.page-head'), r = el => el.getBoundingClientRect();
   const title = head?.querySelector('h1'), tools = head?.querySelector('.page-tools'), strip = head?.querySelector('.page-actions');
@@ -30,6 +30,15 @@ export function checkPageHead() {
     strip.scrollLeft = strip.scrollWidth;
     assert(r(strip.lastElementChild).right <= s.right + 1, 'scrolling the strip reveals its last control');
     strip.scrollLeft = 0;
+    if (strip.scrollWidth > strip.clientWidth + 1 && CSS.supports('animation-timeline: scroll()')) {
+      // The scroll timeline settles on the next frame.
+      const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const fade = () => [getComputedStyle(strip).getPropertyValue('--strip-fade-start'), getComputedStyle(strip).getPropertyValue('--strip-fade-end')];
+      assert(fade()[0] === '0px' && fade()[1] !== '0px', 'an overflowing strip fades its trailing edge at rest instead of slicing a control');
+      strip.scrollLeft = strip.scrollWidth; await frame();
+      assert(fade()[0] !== '0px' && fade()[1] === '0px', 'a strip scrolled to its end fades its leading edge only');
+      strip.scrollLeft = 0; await frame();
+    }
     const wrapped = s.top >= toolRow.bottom - 1;
     assert(wrapped ? Math.abs(h.bottom - s.bottom) <= 1 && s.top - h.top <= 56 : h.height <= 44.5, 'the head is the title row plus at most one strip row');
   } else {
