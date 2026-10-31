@@ -324,13 +324,13 @@ const sensitiveMatch = (path: string, globs: string[]) => globs.find(glob => mat
 
 export type Gate = { outcome: 'eligible' } | { outcome: 'promotion-blocked' | 'needs-owner'; reason: string };
 /** The deterministic checks, in order. The daily limit and the safety review come after. */
-export function promotionGate(output: TriageOutput, evidence: Evidence, sensitivePaths = DEFAULT_SENSITIVE_PATHS): Gate {
+export function promotionGate(output: TriageOutput, evidence: Evidence, sensitivePaths = DEFAULT_SENSITIVE_PATHS, validationReviewed = false): Gate {
   const blocked = (reason: string): Gate => ({ outcome: 'promotion-blocked', reason }), owner = (reason: string): Gate => ({ outcome: 'needs-owner', reason });
   if (output.verdict !== 'actionable') return blocked(`verdict ${output.verdict}`);
   if (output.injectionSuspected) return blocked('injection suspected');
   if (output.duplicateOf) return blocked(`duplicate of ${output.duplicateOf}`);
   if (output.kind === 'research') return owner('research is never auto-promoted');
-  const valid = output.kind === 'bug' ? output.validation === 'confirmed-in-code' : ['confirmed-in-code', 'plausible'].includes(output.validation);
+  const valid = output.validation === 'confirmed-in-code' || output.validation === 'plausible' && (output.kind === 'feature' || validationReviewed);
   if (!valid || !evidence.length) return blocked(`validity: ${output.kind} with ${output.validation} and ${evidence.length} valid evidence`);
   if (!output.proposal) return blocked('no proposal');
   const lint = lintProposal(output.proposal);
@@ -424,7 +424,7 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
     await settle('promotion-blocked');
     return result('promotion-blocked', { reason });
   };
-  const gate = promotionGate(saved.output, saved.evidence, target.inbox.sensitivePaths);
+  const gate = promotionGate(saved.output, saved.evidence, target.inbox.sensitivePaths, saved.validationReviewed === true);
   if (gate.outcome === 'needs-owner') { await settle('needs-owner', { holdReason: `Promotion needs the owner: ${gate.reason}` }); return result('needs-owner', { reason: gate.reason }); }
   if (gate.outcome === 'promotion-blocked') return block(gate.reason);
   const now = (options.now ?? Date.now)(), recent = recentPromotions(store, target, now), limit = target.inbox.maxPromotionsPerDay ?? null;
