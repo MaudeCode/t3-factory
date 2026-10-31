@@ -165,7 +165,12 @@ export function Chains() {
 }
 
 // A ticket that already has an open run or is the target of an active chain.
-export const openRun = (t) => jobs.value.some((j) => j.taskId === t.id && isOpen(j)) || (status.value.plans ?? []).some((p) => p.state === "active" && p.target.id === t.id);
+export const openRun = (t) => {
+  const key = ticketKey(t.key);
+  // Held queue rows carry a key without a tracker ID.
+  const matches = (id, otherKey) => (t.id && id === t.id) || (key && ticketKey(otherKey) === key);
+  return jobs.value.some(j => matches(j.taskId, j.ticketKey) && isOpen(j)) || (status.value.plans ?? []).some(p => p.state === "active" && matches(p.target.id, p.target.key));
+};
 
 // Why a ticket cannot be started from here right now, or null when it can.
 export function startHold(t) {
@@ -211,7 +216,7 @@ export function StartOptions() {
 }
 
 // Newest or oldest first, for ticket and run lists.
-export const OrderChoice = ({ label, value, onChange }) => html`<${Segmented} label=${label} value=${value} onChange=${onChange} icons=${{ newest: "arrowDown", oldest: "arrowUp" }} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} />`;
+export const OrderChoice = ({ label, value, onChange, disabled }) => html`<${Segmented} label=${label} value=${value} onChange=${onChange} disabled=${disabled} icons=${{ newest: "arrowDown", oldest: "arrowUp" }} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} />`;
 
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.
 export const runNow = (t, hold, origin, { overrideLimits = true, provider } = {}) => !startHold(t) && !hold ? startRun({ ticket: t.key, model: "auto", overrideLimits, ...(provider ? { provider } : {}) }, origin) : null;
@@ -224,8 +229,9 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
   clock.value;
   const c = config.value,
     q = status.value.upNext,
-    tickets = (q?.tickets ?? []).filter(t => matchesRunFilters(t, filters, query)),
-    held = (q?.held ?? []).filter(t => matchesRunFilters(t, filters, query)),
+    visible = t => !startHold(t) && matchesRunFilters(t, filters, query),
+    tickets = (q?.tickets ?? []).filter(visible),
+    held = (q?.held ?? []).filter(visible),
     all = limit === Infinity;
   const project = (id) => c.projects.find((p) => p.kanvilId === id);
   return html`<${Section} title="Up next" count=${q ? tickets.length : null} aside=${children}>

@@ -2393,6 +2393,10 @@ h1 .crumb::after {
     flex: 1 0 auto;
     max-width: 100%;
   }
+  .runs .page-head > div:first-child {
+    /* The changing run count must not change where toolbar controls wrap. */
+    flex-basis: 8rem;
+  }
   .page-head .chips button,
   .page-head .slots button {
     min-width: 44px;

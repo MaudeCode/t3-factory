@@ -38,11 +38,13 @@ async function run() {
     assert(button(1).textContent.trim() === "" && button(1).querySelector(".icon-play"), "Run now is an icon-only play button");
     assert(!button(1).closest("a"), "Run now is separate from the tracker link");
     const href = location.href;
+    const first = button(1);
     try {
-      button(1).click();
+      first.click();
       await pause();
-      assert(button(1).disabled, "pending request disables its row");
-      button(1).click();
+      assert(!button(1), "starting request replaces the clicked queue row");
+      assert(root.querySelectorAll('.operation').length === 1, "one request row represents the starting ticket");
+      first.click();
       assert(!button(2).disabled, "other tickets remain usable");
       button(2).click();
       await pause();
@@ -67,14 +69,14 @@ async function run() {
     assert(calls[3]?.input.ticket === "APP-2" && calls[3].input.model === "auto", "stale model metadata is never pinned to a request");
     operations.value = [{ id: "unknown", input: { ticket: "app-1" }, state: "uncertain" }];
     await pause();
-    assert(button(1).disabled, "uncertain request blocks a duplicate regardless of key casing");
+    assert(!button(1), "uncertain request replaces its queue row regardless of key casing");
     operations.value = [];
     status.value = { ...state.status, jobs: [{ taskId: "t1", state: "running" }] };
     await pause();
-    assert(button(1).disabled, "an open run disables a stale queue row");
+    assert(!button(1), "an open run replaces a stale queue row");
     status.value = { ...state.status, plans: [{ state: "active", target: { id: "t1" } }] };
     await pause();
-    assert(button(1).disabled, "an active chain disables its target before the target has a job");
+    assert(!button(1), "an active chain replaces its target before the target has a job");
     assert(!button(2).disabled, "an active chain leaves other tickets available");
     status.value = { ...state.status, plans: [{ state: "cancelled", target: { id: "t1" } }] };
     await pause();
@@ -292,8 +294,8 @@ async function runsControls() {
   root.querySelector('[aria-label="Run WEB-2 now"]').click(); await pause();
   assert(calls[1]?.provider === "codex" && calls[1]?.overrideLimits === true, "provider choice reaches queue dispatch");
   operations.value = [{ id: "pending", input: { ticket: "APP-1" }, state: "uncertain" }]; await pause();
-  assert(button(1).disabled, "pending duplicate remains held with header choices");
-  assert(queueKeys() === "APP-1,WEB-2,APP-3", "header choices preserve scheduler order");
+  assert(!button(1), "pending duplicate leaves the queue with header choices");
+  assert(queueKeys() === "WEB-2,APP-3", "remaining tickets preserve scheduler order");
   assert(heldKeys() === "APP-4,WEB-5", "held rows remain visible");
   assert(document.documentElement.scrollWidth <= innerWidth, "Runs controls fit viewport");
   operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]);
@@ -335,7 +337,56 @@ async function runsHistory() {
   assert(document.documentElement.scrollWidth <= innerWidth, "run history fits viewport");
   return { passed: true };
 }
-window.queueTests = { readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory };
+async function runsHeader() {
+  await showProjects();
+  const bounds = () => [...root.querySelectorAll('.page-head h1, .page-head [aria-label="Start provider"], .page-head [aria-label="Override limits"], .page-head [aria-label="Search"], .page-head [aria-label^="Filter runs"], [aria-label="State"]')].map(el => {
+    const { x, y, height } = el.getBoundingClientRect();
+    return [x, y, height];
+  });
+  const before = bounds();
+  const tabs = [...root.querySelector('[aria-label="State"]').querySelectorAll('button')];
+  for (const tab of [...tabs.slice(1), tabs[0]]) {
+    tab.click(); await pause();
+    assert(JSON.stringify(bounds()) === JSON.stringify(before), `Runs header stays in place on ${tab.textContent}`);
+  }
+  const order = root.querySelector('[aria-label="Start order"]');
+  assert(order && [...order.querySelectorAll('button')].every(b => b.disabled), "queue retains disabled history order controls");
+  const keys = queueKeys();
+  order.querySelector('[aria-label="Oldest first"]').click();
+  order.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+  await pause();
+  assert(queueKeys() === keys && order.querySelector('[aria-label="Newest first"]').getAttribute('aria-checked') === 'true', "queue order ignores disabled pointer and keyboard sorting");
+  assert(document.documentElement.scrollWidth <= innerWidth, "stable toolbar fits the viewport");
+  return { passed: true };
+}
+async function queueTransitions() {
+  await showProjects();
+  const op = { id: 'transition', input: { ticket: 'app-1', model: 'auto' }, state: 'queued' };
+  for (const state of ['queued', 'running', 'uncertain']) {
+    operations.value = [{ ...op, state }]; await pause();
+    assert(queueKeys() === 'WEB-2,APP-3', `${state} request replaces only its queue ticket`);
+    assert(root.querySelectorAll('.operation').length === 1, `${state} request remains visible`);
+    assert(root.querySelector('h2 small').textContent === '2', 'visible queue count follows removed ticket');
+  }
+  for (const state of ['done', 'error']) {
+    operations.value = [{ ...op, state, result: { data: { reason: 'quota-exhausted' } } }]; await pause();
+    assert(button(1) && !button(1).disabled, `${state} refusal restores retry availability`);
+    assert(root.querySelector('.operation').textContent.includes('quota-exhausted'), 'terminal feedback remains visible');
+  }
+  operations.value = [];
+  for (const state of ['dispatching', 'running', 'waiting']) {
+    status.value = { ...filterState.status, jobs: [{ taskId: 't1', ticketKey: 'APP-1', state }, { taskId: 'held-id', ticketKey: 'APP-4', state }, { kind: 'upstream', taskId: null, state }] };
+    await pause();
+    assert(queueKeys() === 'WEB-2,APP-3' && heldKeys() === 'WEB-5', `${state} job replaces stale ready and held rows without hiding unrelated tickets`);
+  }
+  const plan = { id: 'plan', tickets: [], target: { id: 'held-id', key: 'APP-4', title: 'Held upload', blockedBy: [] } };
+  status.value = { ...filterState.status, plans: [{ ...plan, state: 'active' }] }; await pause();
+  assert(heldKeys() === 'WEB-5', 'active target chain replaces a stale held row by ticket key');
+  status.value = { ...filterState.status, plans: [{ ...plan, state: 'cancelled' }] }; await pause();
+  assert(queueKeys() === 'APP-1,WEB-2,APP-3' && heldKeys() === 'APP-4,WEB-5', 'settled jobs and cancelled chains restore queue snapshot');
+  return { passed: true };
+}
+window.queueTests = { readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 
