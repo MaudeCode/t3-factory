@@ -9,8 +9,8 @@ const initial = {
   enabled: false, concurrency: { claude: 2, codex: 6 }, models: [], projects: [], pollSeconds: 60, idleMinutes: 30, monitoringTimeoutMinutes: 30, maxWaitingPRs: null,
   quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
 };
-let saved = structuredClone(initial), writes = [], fixtureJobs = [];
-const state = () => ({ config: saved, status: { jobs: fixtureJobs, journal: [] } });
+let saved = structuredClone(initial), writes = [], fixtureJobs = [], quotaStatus = {};
+const state = () => ({ config: saved, status: { jobs: fixtureJobs, journal: [], ...quotaStatus } });
 window.fetch = async (url, init) => {
   if (url === '/api/config' && init?.method === 'POST') { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
   if (url === '/api/sources') return Response.json({ t3: [], kanvil: { projects: [], columns: {}, labels: ['app', 'web', 'test'] } });
@@ -22,7 +22,36 @@ const assert = (ok, message) => { if (!ok) throw new Error(message); };
 async function mount(route = '/capacity') {
   render(null, root); store.history.value = null; store.applyState(state(), true); navigate(route, true); render(html`<${App} />`, root); await pause();
 }
-async function show() { saved = structuredClone(initial); writes = []; fixtureJobs = []; await mount(); }
+async function show() { saved = structuredClone(initial); writes = []; fixtureJobs = []; quotaStatus = {}; await mount(); }
+const allowance = (fiveHour, capturedAt) => ({ driver: 'claudeAgent', capturedAt, windows: [...fiveHour ? [{ name: 'fiveHour', remaining: 88 }] : [], { name: 'weekly', remaining: 55 }], factoryRouting: { fableRemainingPercent: 74 } });
+async function showAllowance(fiveHour = false, historicalFiveHour = true) {
+  await show();
+  quotaStatus = { decision: { quota: allowance(historicalFiveHour, '2026-10-31T10:00:00Z') }, streams: [{ driver: 'claudeAgent', quota: allowance(fiveHour, '2026-10-31T12:00:00Z') }] };
+  await mount();
+}
+async function allowances() {
+  await show();
+  assert(root.textContent.includes('Five-hour'), 'unknown quota retains the existing no-reading controls');
+  await showAllowance(false, false);
+  assert(!root.textContent.includes('Five-hour'), 'weekly-only Capacity omits the five-hour meter and controls');
+  const configBefore = JSON.stringify(store.config.value);
+  await showAllowance(false, true);
+  assert(!root.textContent.includes('Five-hour'), 'an older decision cannot restore an absent five-hour window');
+  assert(root.textContent.includes('Weekly') && root.textContent.includes('Fable'), 'weekly and dedicated allowance controls remain');
+  await mount('/');
+  assert(!root.textContent.includes('Five-hour'), 'the dashboard also uses the newer weekly-only snapshot');
+  quotaStatus.streams[0].quota = allowance(true, '2026-10-31T13:00:00Z');
+  store.applyState(state()); await pause();
+  assert(root.textContent.includes('Five-hour'), 'a newly reported window appears on the dashboard');
+  await mount();
+  assert(root.textContent.includes('Five-hour'), 'a reported five-hour window retains its controls');
+  quotaStatus.decision.quota = allowance(false, '2026-10-31T14:00:00Z');
+  store.applyState(state()); await pause();
+  assert(!root.textContent.includes('Five-hour'), 'a newer decision can remove an older stream window');
+  assert(JSON.stringify(store.config.value) === configBefore && !store.dirty.value, 'live window switching never changes stored reserve settings');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'allowance controls fit the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
 const group = provider => root.querySelector(`[role="radiogroup"][aria-label="${provider} runs at once"]`);
 const field = provider => root.querySelector(`[aria-label="${provider} runs at once, custom limit"]`);
 const more = provider => group(provider).lastElementChild;
@@ -179,7 +208,7 @@ async function settingsLayout() {
   await store.actions.revert();
   return { passed: true, views: ['Projects', 'Models'], viewport: [innerWidth, innerHeight] };
 }
-window.capacityTests = { run, liveEdit, show, mount, showLabels, labelModes, settingsLayout };
+window.capacityTests = { run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance };
 const labelFixture = new URLSearchParams(location.search).get('labels');
 if (labelFixture === 'run') {
   try { await labelModes(); document.body.dataset.result = 'passed'; }

@@ -28,6 +28,20 @@ import SwiftUI
             try! JSONSerialization.data(withJSONObject: ["state": "done", "result": ["code": 0, "data": object]]).write(to: URL(fileURLWithPath: dir).appendingPathComponent("web-requests/\(id).json"), options: .atomic)
             return CommandResult(text: String(decoding: try! JSONSerialization.data(withJSONObject: object), as: UTF8.self), code: 0)
         }
+        let oldQuota: [String: Any] = ["driver": "claudeAgent", "capturedAt": "2026-10-31T10:00:00Z", "windows": [["name": "fiveHour", "remaining": 88.0], ["name": "weekly", "remaining": 55.0]]]
+        let newQuota: [String: Any] = ["driver": "claudeAgent", "capturedAt": "2026-10-31T12:00:00Z", "windows": [["name": "weekly", "remaining": 55.0]], "factoryRouting": ["fableRemainingPercent": 74.0]]
+        model.status = ["decision": ["quota": oldQuota], "streams": [["driver": "claudeAgent", "quota": newQuota]]]
+        if let artifacts = ProcessInfo.processInfo.environment["T3_FACTORY_TEST_ARTIFACTS"] {
+            let config: [String: Any] = ["stateDir": dir, "models": [], "projects": [], "quota": ["claude": ["fiveHour": ["reservePercent": 40], "weekly": ["reservePercent": 70], "fable": ["reservePercent": 0]]]]
+            let text = String(decoding: try! JSONSerialization.data(withJSONObject: config), as: UTF8.self)
+            let rendering = FactoryModel(start: false) { args, _ in CommandResult(text: args.first == "config-get" ? text : "{}", code: 0) }
+            await rendering.reload(); rendering.status = model.status
+            FactoryRender.write(FactorySettingsView(model: rendering, page: "capacity"), size: NSSize(width: 1180, height: 1000), to: "\(artifacts)/native-capacity.png")
+        }
+        precondition((model.quota("claudeAgent")?["windows"] as? [[String: Any]])?.contains { $0["name"] as? String == "fiveHour" } == false, "An older decision must not restore the five-hour window")
+        model.status = ["decision": ["quota": newQuota], "streams": [["driver": "claudeAgent", "quota": oldQuota]]]
+        precondition(model.quota("claudeAgent")?["capturedAt"] as? String == newQuota["capturedAt"] as? String, "A newer decision still wins")
+        model.status = [:]
         model.config = ["stateDir": dir, "models": ["auto", "sol", "opus", "changed"].map { ["id": $0, "name": $0 == "changed" ? "Sol" : $0.capitalized] }]
         model.ticketProject = "APP"; model.ticketNumber = "1"; model.selectedModel = "sol"; model.overrides = []
         let first = Task { await model.dispatch() }
