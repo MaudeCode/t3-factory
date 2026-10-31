@@ -2438,8 +2438,6 @@ h1 .crumb::after {
     gap: var(--space-1);
     order: 1;
   }
-  /* The strip fades the edge that hides more controls. The scroll timeline is inactive when nothing
-     overflows, so a strip that fits shows no fade; engines without scroll timelines show plain edges. */
   .page-actions {
     display: flex;
     align-items: center;
@@ -2449,9 +2447,16 @@ h1 .crumb::after {
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: none;
-    mask-image: linear-gradient(to right, transparent, #000 var(--strip-fade-start), #000 calc(100% - var(--strip-fade-end)), transparent);
-    animation: strip-fade linear both;
-    animation-timeline: scroll(self inline);
+  }
+  /* The strip fades the edge that hides more controls. The scroll timeline is inactive when nothing
+     overflows, so a strip that fits shows no fade. Engines without scroll timelines keep plain edges:
+     unguarded, the zero-length animation would hold its last keyframe and fade the leading edge for good. */
+  @supports (animation-timeline: scroll(self inline)) {
+    .page-actions {
+      mask-image: linear-gradient(to right, transparent, #000 var(--strip-fade-start), #000 calc(100% - var(--strip-fade-end)), transparent);
+      animation: strip-fade linear both;
+      animation-timeline: scroll(self inline);
+    }
   }
   .page-actions > *,
   .page-actions .chips,
