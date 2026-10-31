@@ -97,7 +97,7 @@ export function Runs() {
       (!filters.providers?.length || filters.providers.includes(providerOf(j))),
   ).toSorted((a, b) => order === "oldest" ? byNewest(b, a) : byNewest(a, b));
   const rows = [...all, ...(status.value.upNext?.tickets ?? []), ...(status.value.upNext?.held ?? [])];
-  return html`<${Page} title="Runs" count=${next ? null : list.length} actions=${html`<${StartOptions} />${!next && html`<${OrderChoice} label="Start order" value=${order} onChange=${setOrder} />`}<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers=${!next} />`}>
+  return html`<${Page} class="runs" title="Runs" count=${next ? null : list.length} actions=${html`<${StartOptions} /><${OrderChoice} label="Start order" value=${order} onChange=${setOrder} disabled=${next} /><${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers=${!next} />`}>
     <${Segmented}
       label="State"
       value=${state}

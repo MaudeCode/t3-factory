@@ -293,10 +293,11 @@ export const Check = ({ path, label, checked, onChange, hint, ...props }) =>
   </label>`;
 
 // Exclusive filter chips. `options` is a list of [value, name, count?].
-export const Segmented = ({ path, options, value, onChange, label, icons }) => {
+export const Segmented = ({ path, options, value, onChange, label, icons, disabled }) => {
   const [current, change] = bind(path, value, onChange);
   const index = Math.max(0, options.findIndex(([v]) => v === current));
   const keydown = (e) => {
+    if (disabled) return;
     let next;
     if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = options.length - 1;
@@ -310,7 +311,7 @@ export const Segmented = ({ path, options, value, onChange, label, icons }) => {
   return html`<div class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label} onKeyDown=${keydown}>
     ${options.map(
       ([v, name, count], i) =>
-        html`<button key=${v} type="button" role="radio" aria-checked=${v === current} tabindex=${i === index ? 0 : -1} class=${icons && cls('slot', v === current && 'open busy')}
+        html`<button key=${v} type="button" role="radio" disabled=${disabled} aria-checked=${v === current} tabindex=${i === index ? 0 : -1} class=${icons && cls('slot', v === current && 'open busy')}
           aria-label=${icons ? name : undefined} title=${icons ? name : undefined} onClick=${() => change(v)}>
           ${icons ? html`<${Icon} name=${icons[v]} />` : name}${count != null && html`<small>${count}</small>`}
         </button>`,
