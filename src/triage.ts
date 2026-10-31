@@ -290,9 +290,7 @@ export const DEFAULT_SENSITIVE_PATHS = [
 const LINT_RULES: [string, RegExp][] = [
   ['url', /\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\bmailto:/i],
   // Hosts, addresses, and words for moving data out: a promoted change only touches the product.
-  ['network', /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|app|ai|co|me|xyz|ru|cn|cloud|site|online|top|info|biz|example|test|invalid|localhost|local|internal)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:exfiltrat\w*|collectors?|beacons?)\b/i],
-  // Webhooks are also a product feature; block transfers to them, not ordinary sidebar references.
-  ['network', /\b(?:send|post|upload|forward|transmit|export|mirror|copy|transfer|deliver|leak)\b[^.!?]*\b(?:to|via|through)\s+(?:(?:an?|the)\s+)?webhooks?\b/i],
+  ['network', /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|app|ai|co|me|xyz|ru|cn|cloud|site|online|top|info|biz|example|test|invalid|localhost|local|internal)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:exfiltrat\w*|collectors?|webhooks?|beacons?)\b/i],
   ['code', /`|~~~/],
   ['shell', /(?:^|\s)\$\s|\b(?:curl|wget|sudo|chmod|eval)\b|\brm\s+-|\|\s*(?:ba|z|da|fi)?sh\b/im],
   ['secret', /\b(?:secrets?|tokens?|passwords?|passwd|api[ _-]?keys?|keys?|credentials?|env(?:ironment)?[ _-]?var(?:iable)?s?|keychains?|ssh)\b|\.env\b|process\.env|\$[A-Z_][A-Z0-9_]*/i],
@@ -300,9 +298,17 @@ const LINT_RULES: [string, RegExp][] = [
   ['directive', /\b(?:ignore|disregard)\b|\byou must\b|\bas an ai\b|\bsystem prompt\b/i],
 ];
 const proposalFields = (p: Proposal): [string, string][] => [['title', p.title], ['problem', p.problem], ['expected', p.expected], ...p.acceptanceCriteria.map((item, i): [string, string] => [`acceptanceCriteria ${i + 1}`, item])];
+// A webhook exception admits only presentation vocabulary throughout the proposal, never arbitrary surrounding prose.
+const WEBHOOK_DISPLAY_WORDS = new Set(`a an and are as at be because between both by can do does each existing few for from has have ideally in is it its like not of on only or out own same s should so still than that the their them then these they this those through to two under was when whether which while with without
+  add all also app appear appears archive archived based behave chat chats classify client clients collapsed collapsible control count counts cron current date dates differ disclosure disclosures display displays expand expanded filtered filtering group grouped grouping groups hide hidden limited list lists match matches matching menu mix mixed mobile navigation non number ordinary panel pinned planned preview previews recent recents row rows scheduled searchable section sections select selected selection separate separately server session sessions sessionlistpanel settings show shows shown sidebar sidebars sourced starts stay supplies today unchanged view visible web webhook webhooks yesterday show_cron_sessions show_webhook_sessions`.split(/\s+/));
 export function lintProposal(p: Proposal) {
+  const fields = proposalFields(p);
+  // Response and destination are allowed only in these local list/navigation phrases.
+  const webhookDisplay = fields.every(([, text]) => (text.replace(/\bserver(?:'s)? session list response\b|\bview all destination\b/gi, '').match(/[\p{L}\p{N}_]+(?:-\d+)?/gu) ?? [])
+    .every(word => WEBHOOK_DISPLAY_WORDS.has(word.toLowerCase()) || /^\d+$|^[A-Z][A-Z0-9]*-\d+$/.test(word)));
   for (const [rule, pattern] of LINT_RULES) {
-    const field = proposalFields(p).find(([, text]) => pattern.test(text));
+    const field = fields.find(([, text]) => pattern.test(rule === 'network' && webhookDisplay
+      ? text.replace(/\bwebhooks?(?=[ -]+(?:sourced[ -]+)?(?:sessions?|sections?|groups?|disclosures?|lists?|rows?)\b)/gi, '') : text));
     if (field) return `lint: ${rule} in ${field[0]}`;
   }
   return null;
