@@ -100,7 +100,9 @@ const windowSchema = z.object({
 }).passthrough();
 export function providerQuotaSnapshot(checkedAt: string, windows: { id: string; usedPercent: number; resetsAt?: string; windowDurationMins?: number }[], now = Date.now()) {
   const map = (id: string) => {
-    const w = windows.find(w => w.id === id);
+    const found = windows.filter(w => w.id === id);
+    if (found.length > 1) throw new Error(`Claude ${id} quota window is ambiguous; refresh required`);
+    const w = found[0];
     if (!w) return undefined;
     // An explicitly unused, inactive window has no reset until its first request.
     // Protect its full starting reserve. Never infer zero from a missing window.
@@ -113,12 +115,13 @@ export function quotaDecision(raw: unknown, c: { maxAgeSeconds: number; fiveHour
   const snapshot = z.object({ entries: z.array(z.object({ provider: z.string() }).passthrough()) }).parse(raw);
   const entries = snapshot.entries.filter(e => e.provider === 'claude');
   if (entries.length !== 1) throw new Error('Expected exactly one Claude quota account');
-  const entry = z.object({ updatedAt: z.iso.datetime({ offset: true }), primary: windowSchema, secondary: z.unknown().optional() }).passthrough().parse(entries[0]);
+  const entry = z.object({ updatedAt: z.iso.datetime({ offset: true }), primary: windowSchema.optional(), secondary: windowSchema }).passthrough().parse(entries[0]);
   const age = now - Date.parse(entry.updatedAt);
   if (age < -60_000 || age > c.maxAgeSeconds * 1000) throw new Error('Claude quota snapshot is stale or future-dated');
   const windows = [
-    { name: 'fiveHour', w: entry.primary, minutes: 300, start: c.fiveHourReservePercent },
-    { name: 'weekly', w: windowSchema.parse(entry.secondary), minutes: 10080, start: ignoreWeeklyReserve ? 0 : c.weeklyReservePercent },
+    // Some subscriptions report only weekly limits. An absent five-hour limit adds no constraint.
+    ...entry.primary ? [{ name: 'fiveHour', w: entry.primary, minutes: 300, start: c.fiveHourReservePercent }] : [],
+    { name: 'weekly', w: entry.secondary, minutes: 10080, start: ignoreWeeklyReserve ? 0 : c.weeklyReservePercent },
   ].map(({ name, w, minutes, start }) => {
     const reset = Date.parse(w.resetsAt);
     if (w.windowMinutes !== minutes || reset <= now || reset > now + minutes * 60_000 + 60_000) throw new Error(`Invalid or expired ${name} quota window; wait for a fresh snapshot`);

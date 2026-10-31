@@ -75,6 +75,29 @@ test('explicit zero-use inactive windows keep full reserves; absent windows neve
   assert.equal(q.allowed, true); assert.deepEqual(q.windows.map(w => w.reserved), [40, 70]);
   assert.throws(() => quotaDecision(providerQuotaSnapshot(new Date(now).toISOString(), [], now), quota, now));
 });
+test('Claude weekly-only accounts omit the five-hour constraint and retain weekly validation', () => {
+  const weekly = { id: 'seven_day', usedPercent: 10, windowDurationMins: 10080, resetsAt: new Date(now + 10080 * 60_000).toISOString() };
+  const evaluate = (windows: Parameters<typeof providerQuotaSnapshot>[1], checkedAt = new Date(now).toISOString()) => quotaDecision(providerQuotaSnapshot(checkedAt, windows, now), quota, now);
+  assert.doesNotThrow(() => evaluate([weekly]), 'a fresh weekly-only account must have a usable quota decision');
+  const result = evaluate([weekly]);
+  assert.equal(result.allowed, true);
+  assert.deepEqual(result.windows.map(w => [w.name, w.remaining, w.reserved]), [['weekly', 90, 70]]);
+  assert.equal(evaluate([{ ...weekly, usedPercent: 40 }]).allowed, false);
+  assert.equal(evaluate([{ ...weekly, usedPercent: 100 }]).allowed, false);
+  assert.throws(() => evaluate([], new Date(now).toISOString()));
+  assert.throws(() => evaluate([weekly], new Date(now - 601_000).toISOString()), /stale/);
+  for (const invalid of [{ usedPercent: 101 }, { windowDurationMins: 300 }, { resetsAt: new Date(now).toISOString() }, { resetsAt: undefined }]) {
+    assert.throws(() => evaluate([{ ...weekly, ...invalid }]));
+  }
+  const five = { id: 'five_hour', usedPercent: 90, windowDurationMins: 300, resetsAt: new Date(now + 300 * 60_000).toISOString() };
+  assert.equal(evaluate([weekly, five]).allowed, false, 'a reported five-hour limit still constrains admission');
+  for (const invalid of [{ usedPercent: 101 }, { windowDurationMins: 10080 }, { resetsAt: new Date(now).toISOString() }, { resetsAt: undefined }]) {
+    assert.throws(() => evaluate([weekly, { ...five, ...invalid }]));
+  }
+  assert.throws(() => evaluate([five]), 'a five-hour window cannot replace the weekly reading');
+  assert.throws(() => evaluate([weekly, weekly]), /ambiguous/);
+  assert.throws(() => evaluate([weekly, five, five]), /ambiguous/);
+});
 test('global priority wins, then largest eligible project, then rotation and oldest', () => {
   const task = (id: string, p: string, priority: string) => ({ id, key: id, projectId: p, priority, createdAt: '2026-01-01' });
   const tasks = [task('A-1', 'A', 'high'), task('A-2', 'A', 'high'), task('B-1', 'B', 'urgent')];

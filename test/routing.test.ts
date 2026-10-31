@@ -1,9 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { selectAssignment, acceptsDifficulty, ticketDifficulty, quotaDecision, providerQuotaSnapshot } from '../src/policy.ts';
-import { readModelQuota } from '../src/models.ts';
+import { readModelQuota, liveModelQuota } from '../src/models.ts';
 import { T3 } from '../src/clients.ts';
 import type { Config } from '../src/config.ts';
+
+test('weekly-only Claude accounts work in reads and live admission while retaining every applicable budget', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const budget = (reservePercent = 0, minRemainingPercent = 0) => ({ reservePercent, minRemainingPercent });
+  const c: Pick<Config, 'models' | 'quota'> = {
+    models: ['opus', 'fable'].map(id => ({ id, name: id, automatic: true, maxDifficulty: 'high', model: { instanceId: 'claudeAgent', model: id, options: [] }, ...(id === 'fable' ? { quotaWindowId: 'seven_day_fable' } : {}) })),
+    quota: { maxAgeSeconds: 300, claude: { fiveHour: budget(40, 15), weekly: budget(70, 20), fable: budget(0, 15) }, codex: { weekly: budget() } },
+  };
+  const t3 = new T3({ url: 'http://localhost', credentialFile: '/unused' });
+  const window = (id: string, usedPercent: number, minutes = 10080) => ({ id, usedPercent, windowDurationMins: minutes, resetsAt: new Date(Date.now() + minutes * 60_000).toISOString() });
+  const p = { instanceId: 'claudeAgent', driver: 'claudeAgent', enabled: true, installed: true, status: 'ready', models: c.models.map(m => ({ slug: m.id })), usageLimits: { checkedAt: new Date().toISOString(), windows: [window('seven_day', 10), window('seven_day_fable', 20)] } };
+  t.mock.method(t3, 'peekProvider', () => p);
+  t.mock.method(t3, 'provider', async () => p);
+  await assert.doesNotReject(readModelQuota(t3, c, [], 'opus'), 'a fresh weekly-only account must pass the production quota read');
+  for (const manual of [false, true]) for (const id of ['opus', 'fable']) {
+    const result = await readModelQuota(t3, c, [], id, manual);
+    assert.equal(result.allowed, true);
+    assert.equal(result.hasAllowance, true);
+    assert.deepEqual(result.windows.map(w => w.name), ['weekly']);
+    assert.deepEqual(liveModelQuota(t3, c, [], id, manual), result);
+  }
+  p.usageLimits.windows[0].usedPercent = 90;
+  assert.equal((await readModelQuota(t3, c, [], 'opus')).allowed, false);
+  assert.equal((await readModelQuota(t3, c, [], 'fable')).allowed, true);
+  p.usageLimits.windows[0].usedPercent = 100;
+  assert.equal((await readModelQuota(t3, c, [], 'opus', true)).hasAllowance, false);
+  assert.equal((await readModelQuota(t3, c, [], 'fable', true)).hasAllowance, true);
+  p.usageLimits.windows[1].usedPercent = 90;
+  assert.equal((await readModelQuota(t3, c, [], 'fable')).allowed, false);
+  p.usageLimits.windows[1].usedPercent = 100;
+  assert.equal((await readModelQuota(t3, c, [], 'fable', true)).hasAllowance, false);
+  p.usageLimits.windows.forEach(w => { w.usedPercent = 0; });
+  p.usageLimits.windows.push(window('five_hour', 100, 300));
+  for (const id of ['opus', 'fable']) assert.equal(liveModelQuota(t3, c, [], id, true)!.hasAllowance, false);
+  p.usageLimits.windows.pop();
+  assert.equal(liveModelQuota(t3, c, [], 'opus')!.allowed, true, 'removing the window leaves no phantom constraint');
+  p.usageLimits.checkedAt = new Date(0).toISOString();
+  assert.equal(liveModelQuota(t3, c, [], 'opus'), undefined);
+  await assert.rejects(readModelQuota(t3, c, [], 'opus'), /stale/);
+});
 
 test('budgets are independent pools shared by every model that uses them', async t => {
   const selection = (instanceId: string, model: string) => ({ instanceId, model, options: [] });
