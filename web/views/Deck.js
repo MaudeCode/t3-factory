@@ -1,6 +1,6 @@
 // Home: what the factory is doing right now, why, and what needs you.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, actions, startRun, pendingRun, retryRequest, showBlockedChoice, loadHistory, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
+import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, loadHistory, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -62,8 +62,7 @@ function Machine({ provider }) {
   const stream = (status.value.streams || []).find((s) => s.driver === provider.driver) || {};
   const active = jobs.value.filter((j) => providerOf(j) === provider.driver && isActive(j)).length;
   const limit = live.value.concurrency?.[provider.concurrency] ?? 1;
-  const direct = status.value.decision?.quota;
-  const quota = direct?.driver === provider.driver ? direct : stream.quota;
+  const quota = quotaFor(provider.driver);
   const windows = (quota?.windows || []).map((w) => ({ label: WINDOW_NAMES[w.name] || w.name, value: w.remaining, marker: w.reserved, reset: w.resetsAt }));
   const fable = quota?.factoryRouting?.fableRemainingPercent;
   if (fable != null) windows.push({ label: "Fable", value: fable, marker: config.value.quota?.claude?.fable?.minRemainingPercent });

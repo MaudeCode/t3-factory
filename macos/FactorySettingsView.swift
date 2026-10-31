@@ -321,7 +321,7 @@ struct FactorySettingsView: View {
             SectionTitle(title, help: "The dashed line is what is held back right now; the reserve relaxes as the window nears its reset, the floor never does.") {
                 Text(quota?["capturedAt"] != nil ? "read " + Words.ago(quota?["capturedAt"] as? String, now: model.now) : "no reading yet").font(.system(size: 11)).foregroundStyle(Theme.muted)
             }
-            ForEach(windows, id: \.0) { key, label in
+            ForEach(windows.filter { $0.0 != "fiveHour" || quota?["windows"] as? [[String: Any]] == nil || live[$0.0] != nil }, id: \.0) { key, label in
                 let w = live[key], remaining = key == "fable" ? fable : w?["remaining"] as? Double
                 VStack(alignment: .leading, spacing: 6) {
                     AllowanceBar(label: label, remaining: remaining ?? 0, reserved: w?["reserved"] as? Double, note: (w?["resetsAt"] as? String).flatMap { $0.isEmpty ? nil : "resets " + Words.until($0, now: model.now) } ?? (remaining == nil ? "no reading" : ""))

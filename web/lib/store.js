@@ -13,6 +13,12 @@ export const connection = signal("connecting"); // connecting | live | retrying 
 export const config = signal(null);
 export const base = signal(null);
 export const status = signal({});
+// A decision is historical; a later provider reading owns the current allowance display.
+export function quotaFor(driver) {
+  const direct = status.value.decision?.quota;
+  return [(status.value.streams || []).find(s => s.driver === driver)?.quota, direct?.driver === driver ? direct : null]
+    .filter(Boolean).sort((a, b) => (Date.parse(b.capturedAt) || 0) - (Date.parse(a.capturedAt) || 0))[0];
+}
 export const journal = signal([]);
 export const history = signal(null); // every job, newest first, loaded on demand
 export const providers = signal([]);

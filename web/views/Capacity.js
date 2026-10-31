@@ -1,17 +1,10 @@
 import { html } from "../lib/h.js";
-import { config, status, jobs, clock, serverNow } from "../lib/store.js";
+import { config, jobs, clock, serverNow, quotaFor } from "../lib/store.js";
 import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span } from "../lib/format.js";
 import { Field, Range, Stepper, Slots, Budget, Section, useReady, Page, Icon } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
-
-// Live allowance for a provider, from the latest scheduler reading.
-function quotaFor(driver) {
-  const direct = status.value.decision?.quota;
-  if (direct?.driver === driver) return direct;
-  return (status.value.streams || []).find((s) => s.driver === driver)?.quota;
-}
 
 function Allowance({ provider, title, windows }) {
   const ready = useReady();
@@ -20,7 +13,7 @@ function Allowance({ provider, title, windows }) {
   const live = Object.fromEntries((quota?.windows || []).map((w) => [w.name, w]));
   if (quota?.factoryRouting?.fableRemainingPercent != null) live.fable = { remaining: quota.factoryRouting.fableRemainingPercent };
   return html`<${Section} title=${html`<${Icon} name=${providerIcon(provider.driver)} /> ${title}`} hint="The dashed line is what is held back right now; the reserve relaxes as the window nears its reset, the floor never does." aside=${html`<small class="muted">${quota?.capturedAt ? `read ${ago(quota.capturedAt, now)}` : "no reading yet"}</small>`}>
-    ${windows.map(([key, label]) => {
+    ${windows.filter(([key]) => key !== "fiveHour" || !Array.isArray(quota?.windows) || live[key]).map(([key, label]) => {
       const w = live[key];
       return html`<${Budget} key=${key} ready=${ready} label=${label} remaining=${w?.remaining} reserved=${w?.reserved}
         note=${w?.resetsAt ? `resets ${until(w.resetsAt, now)}` : ""}

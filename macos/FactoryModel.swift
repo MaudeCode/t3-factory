@@ -231,8 +231,8 @@ struct RunRequest: Identifiable, Codable {
     func stream(_ driver: String) -> [String: Any] { streams.first { $0["driver"] as? String == driver } ?? [:] }
     func quota(_ driver: String) -> [String: Any]? {
         let direct = decision["quota"] as? [String: Any]
-        if direct?["driver"] as? String == driver { return direct }
-        return stream(driver)["quota"] as? [String: Any]
+        return [stream(driver)["quota"] as? [String: Any], direct?["driver"] as? String == driver ? direct : nil]
+            .compactMap { $0 }.max { (Words.date($0["capturedAt"] as? String ?? "") ?? .distantPast) < (Words.date($1["capturedAt"] as? String ?? "") ?? .distantPast) }
     }
     func jobsForProvider(_ driver: String) -> [[String: Any]] {
         jobs.filter { job in

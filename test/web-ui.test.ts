@@ -25,6 +25,21 @@ const fixture = () => ({
 });
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+test('provider quota displays use the newest matching snapshot and prefer the live stream on ties', () => {
+  const old = { driver: 'claudeAgent', capturedAt: '2026-10-31T10:00:00Z', windows: [{ name: 'fiveHour' }] };
+  const fresh = { driver: 'claudeAgent', capturedAt: '2026-10-31T12:00:00Z', windows: [{ name: 'weekly' }] };
+  try {
+    for (const [direct, streamed, expected] of [[old, fresh, fresh], [fresh, old, fresh], [fresh, { ...old, capturedAt: fresh.capturedAt }, null], [{ ...old, capturedAt: 'invalid' }, fresh, fresh]]) {
+      store.status.value = { decision: { quota: direct }, streams: [{ driver: 'claudeAgent', quota: streamed }] };
+      assert.equal(store.quotaFor('claudeAgent'), expected ?? streamed);
+      assert.equal(store.quotaFor('codex'), undefined, 'another provider cannot supply this allowance');
+    }
+    store.status.value = { decision: { quota: fresh } };
+    assert.equal(store.quotaFor('claudeAgent'), fresh, 'a decision remains usable before a stream reading');
+    store.status.value = {};
+    assert.equal(store.quotaFor('claudeAgent'), undefined);
+  } finally { store.status.value = {}; }
+});
 test('run filters combine categories, support tag AND/OR, and preserve missing metadata', async () => {
   const { matchesRunFilters } = await import('../web/lib/format.js');
   assert.equal(typeof matchesRunFilters, 'function', 'one shared matcher owns queue and run filtering');
