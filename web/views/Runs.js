@@ -25,9 +25,10 @@ import {
   difficultyLabel,
   PENDING_KINDS,
   matchesRunFilters,
+  byNewest,
 } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Link, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
-import { RunList, UpNext, Chains, Operations } from "./Deck.js";
+import { RunList, UpNext, Chains, Operations, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
@@ -81,6 +82,8 @@ export function Runs() {
   const [state, setState] = useState(new URLSearchParams(location.search).get("state") ?? "open");
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
+  const [order, setOrder] = useState("newest");
+  const start = startOptions();
   const next = state === "next";
   // Live jobs win over the history snapshot for anything still open.
   const liveById = new Map(jobs.value.map((j) => [j.id, j]));
@@ -92,9 +95,9 @@ export function Runs() {
       (state === "all" || (state === "open" ? isOpen(j) : j.state === state)) &&
       matchesRunFilters(j, filters, query) &&
       (!filters.providers?.length || filters.providers.includes(providerOf(j))),
-  );
+  ).toSorted((a, b) => order === "oldest" ? byNewest(b, a) : byNewest(a, b));
   const rows = [...all, ...(status.value.upNext?.tickets ?? []), ...(status.value.upNext?.held ?? [])];
-  return html`<${Page} title="Runs" actions=${html`<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers=${!next} />`}>
+  return html`<${Page} title="Runs" count=${next ? null : list.length} actions=${html`<${StartOptions} />${!next && html`<${OrderChoice} label="Start order" value=${order} onChange=${setOrder} />`}<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers=${!next} />`}>
     <${Segmented}
       label="State"
       value=${state}
@@ -102,7 +105,7 @@ export function Runs() {
       options=${[["next", "Up next", status.value.upNext?.tickets.length ?? 0], ["open", "Open", all.filter(isOpen).length], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
     ${state === "next"
-      ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} />`
+      ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} start=${start} />`
       : history.value === null && !jobs.value.length
         ? html`<${Empty}>Loading runs.<//>`
         : list.length

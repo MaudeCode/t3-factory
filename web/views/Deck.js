@@ -31,13 +31,11 @@ import {
   byFinished,
   isFinished,
   isOpen,
-  STOPS,
-  stopOf,
   OVERRIDES,
   overrideText,
   operationText,
 } from "../lib/format.js";
-import { Button, Switch, Select, Segmented, Chips, Meter, Stops, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
+import { Button, Switch, Select, Segmented, Chips, Meter, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
 // Top bar: the automation switch, the start bar, and when the scheduler last looked.
 function Status({ initialTicket }) {
@@ -180,15 +178,15 @@ export function startHold(t) {
 // The queue, session and triage lists share this row; Start stays visible and secondary actions use a mobile popover.
 // `badge`, such as a triage outcome, leads the facet line, so the row stays as tall as any other.
 // A `plain` row is not a startable ticket, so it has no difficulty to warn about.
-export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain }) {
+export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain, link, meta }) {
   const c = config.value;
   const [open, setOpen] = useState(false), button = useRef();
   const label = `More actions for ${t.key}`;
   return html`<div class="next" key=${t.id}>
     ${selection}
-    <a class="next-ticket" href=${ticketLink(c, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer">
+    <a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer" }}>
       <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []}>${badge}${children}<//>
+        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []} ...${meta}>${badge}${children}<//>
       <//>
     </a>
     ${actions && html`<div class="next-actions">${actions}
@@ -202,7 +200,7 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
 }
 
 // How tickets started by hand run: a provider that overrides every limit, or Auto with the chosen overrides.
-// Session tickets and Triage share the choice.
+// Ticket lists share the choice.
 export const startOptions = () => {
   const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
   return { provider, overrideLimits: provider ? true : sessionOverrides.value };
@@ -212,7 +210,7 @@ export function StartOptions() {
   return html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: override all scheduler limits`])]} /><${Chips} label="Override limits" disabled=${!!provider} value=${provider ? OVERRIDES.map(([key]) => key) : sessionOverrides.value} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
 }
 
-// Newest or oldest first, for the Session tickets and Triage lists.
+// Newest or oldest first, for ticket and run lists.
 export const OrderChoice = ({ label, value, onChange }) => html`<${Segmented} label=${label} value=${value} onChange=${onChange} icons=${{ newest: "arrowDown", oldest: "arrowUp" }} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} />`;
 
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.
@@ -222,7 +220,7 @@ export const RunNow = ({ ticket: t, hold, origin, overrideLimits = true, provide
   onClick=${() => runNow(t, hold, origin, { overrideLimits, provider })}><${Icon} name="play" /><//>`;
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
-export function UpNext({ limit = 5, children, filters, query = "" }) {
+export function UpNext({ limit = 5, children, filters, query = "", start }) {
   clock.value;
   const c = config.value,
     q = status.value.upNext,
@@ -234,7 +232,7 @@ export function UpNext({ limit = 5, children, filters, query = "" }) {
     ${!q
       ? html`<${Empty}>The queue has not been read yet.<//>`
       : tickets.length
-        ? tickets.slice(0, limit).map((t) => html`<${TicketRow} key=${t.id} ticket=${t} project=${project(t.projectId)} actions=${html`<${RunNow} ticket=${t} hold=${startHold(t)} />`}>
+        ? tickets.slice(0, limit).map((t) => html`<${TicketRow} key=${t.id} ticket=${t} project=${project(t.projectId)} actions=${html`<${RunNow} ticket=${t} hold=${startHold(t)} ...${start} />`}>
             ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
           <//>`)
         : html`<${Empty}>${query.trim() || ["projects", "tags", "difficulties", "priorities"].some(key => filters?.[key]?.length) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
@@ -263,31 +261,23 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
           : [ago(job.createdAt, now), `Started ${ago(job.createdAt, now)}`];
   // Settling in T3 is the ordinary way a run ends, so only an unusual reason is worth a line.
   const note = waiting ? (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason) : job.state === "dismissed" && !/^Dismissed by settling/.test(job.reason ?? "") ? job.reason : "";
-  return html`<a class=${`run ${job.state}`} href=${`/runs/${job.id}`} onClick=${follow}>
-    <span class="run-key">
-      ${ticket ? html`<span onClick=${(e) => e.stopPropagation()}><${Link} href=${ticket} class="key">${job.label}<//></span>` : html`<b class="key">${job.label}</b>`}
-      ${note && html`<span onClick=${(e) => e.stopPropagation()}><${Help} text=${note} glyph=${waiting ? "!" : "i"} tone=${waiting ? "attention" : ""} /></span>`}
-    </span>
-    <${Meta} class="run-meta" project=${showProject && project?.name} kind=${job.kind && job.kind !== "ticket" && (job.kind === "upstream" ? "review" : "discovery")}
-      model=${html`<span title=${`Model: ${providerName(providerOf(job))} ${modelName(c, job)}`}><${Icon} name=${providerIcon(providerOf(job))} /> ${modelName(c, job)}</span>`}
-      priority=${job.priority} difficulty=${job.difficulty} labels=${job.labels ?? []} highlight=${project?.priorityLabels ?? []} />
-    <${Stops} n=${stopOf(job.state)} tone=${toneOf(job.state)} label=${stateLabel(job.state)} />
-    <span class="run-state muted" title=${timingTitle}><b class="run-stop">${stateLabel(job.state)}</b>${timing}</span>
-    <span class="run-links" onClick=${(e) => e.stopPropagation()}>
-      ${prs.map((href) => html`<${Link} key=${href} href=${href} class="run-pr" title=${prLabel(href)}><${Icon} name="pullRequest" label=${prLabel(href)} /><//>`)}
-    </span>
-  </a>`;
+  return html`<${TicketRow} ticket=${{ ...job, id: job.taskId, key: job.label, title: job.thread?.title }} project=${project} plain
+    link=${{ href: `/runs/${job.id}`, onClick: follow }}
+    meta=${{ project: showProject ? project?.name : undefined, difficulty: job.difficulty, kind: job.kind && job.kind !== "ticket" && (job.kind === "upstream" ? "review" : "discovery"), model: html`<span title=${`Model: ${providerName(providerOf(job))} ${modelName(c, job)}`}><${Icon} name=${providerIcon(providerOf(job))} /> ${modelName(c, job)}</span>` }}
+    badge=${html`<${Tag} state=${job.state} title=${note || stateLabel(job.state)} />`}
+    actions=${html`<a class="btn btn-sm btn-icon next-run" href=${`/runs/${job.id}`} onClick=${follow} aria-label=${`Open run ${job.label}`} title=${`Open run ${job.label}`}><${Icon} name="arrowRight" /><//>`}
+    secondaryActions=${(ticket || prs.length > 0 || job.threadId) && html`${ticket && html`<a class="btn btn-sm btn-icon next-run" href=${ticket} target="_blank" rel="noopener noreferrer" aria-label=${`Open ticket ${job.label}`} title=${`Open ticket ${job.label}`}><${Icon} name="tag" /><span class="next-action-label">Open ticket</span></a>`}
+      ${prs.map(href => html`<a key=${href} class="btn btn-sm btn-icon next-run" href=${href} target="_blank" rel="noopener noreferrer" aria-label=${prLabel(href)} title=${prLabel(href)}><${Icon} name="pullRequest" /><span class="next-action-label">${prLabel(href)}</span></a>`)}
+      ${job.threadId && html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(job)} aria-label=${`Open ${job.label} in T3 Code`} title=${`Open ${job.label} in T3 Code`}><${Icon} name="commentDiscussion" /><span class="next-action-label">Open session</span></a>`}`}>
+    <span class="muted" title=${timingTitle}>${timing}</span>
+    ${note && html`<span class="tone-attention">${note}</span>`}
+  <//>`;
 }
 
-// Rows share one grid so the track column lines up under its legend. The pane around the grid is the
-// size container, since a container query cannot read the queried element's own width.
-// With a title the heading is the grid's first row, so the stop legend sits on the title line above its column.
 export function RunList({ list, title, count, aside, now = serverNow() }) {
-  return html`<div class="runs-pane"><div class="runs">
-    ${title ? html`<header class="run-head"><h2>${title}${count != null && html`<small>${count}</small>`}</h2><div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>${aside && html`<span class="run-aside">${aside}</span>`}</header>`
-      : html`<div class="run-legend" aria-hidden="true">${STOPS.map((s) => html`<span key=${s}>${s}</span>`)}</div>`}
+  return html`<${Section} class="list" title=${title} count=${count} aside=${aside}>
     ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} />`)}
-  </div></div>`;
+  <//>`;
 }
 
 export function RunGroup({ title, list, limit = 8, empty, children }) {

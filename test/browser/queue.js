@@ -2,7 +2,7 @@
 import { openSearch } from "./search.js";
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status, history } from "../../web/lib/store.js";
+import { applyState, operations, status, history, setSessionProvider, setSessionOverrides } from "../../web/lib/store.js";
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
 
@@ -159,6 +159,7 @@ async function pickFilter(group, name) {
 async function closeFilters() { if (dialog()) { filterButton().click(); await pause(); } assert(!dialog(), "the filter popover closes"); }
 async function clearFilters() { byText("button", "Clear all", dialog()).click(); await pause(); }
 async function runProjects() {
+  setSessionProvider("auto"); setSessionOverrides(["labels"]);
   const oldFetch = window.fetch, oldUrl = location.href;
   const dispatches = [];
   window.fetch = async (url, init) => {
@@ -212,23 +213,23 @@ async function runProjects() {
     search.value = "APP-6"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
     assert(queueKeys() === "APP-6", "queue search matches ticket keys");
     button(6).click(); await pause();
-    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: "APP-6", model: "auto", overrideLimits: true }), "filtered Run now retains the original dispatch input");
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: "APP-6", model: "auto", overrideLimits: ["labels"] }), "filtered Run now captures header overrides");
     search.value = "APP-4"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
     assert(queueKeys() === "" && heldKeys() === "APP-4", "search can match only a held ticket");
     assert(!root.textContent.includes("No tickets match."), "matching held tickets must not be described as no matches");
     search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
     byText('[role="radio"]', "Open3").click(); await pause();
-    assert(root.querySelectorAll(".run").length === 1, "ordinary runs use the same metadata filters");
-    assert([...root.querySelectorAll(".run .tag-label")].map(e => e.textContent).join() === "bug,web", "run rows show their tracker labels");
+    assert(root.querySelectorAll(".next").length === 1, "ordinary runs use the same metadata filters");
+    assert([...root.querySelectorAll(".next .tag-label")].map(e => e.textContent).join() === "bug,web", "run rows show their tracker labels");
     await openFilters();
     assert(dialog().querySelector('[role="group"][aria-label="Provider"] .icon'), "recorded runs filter by provider with icon buttons");
     await clearFilters();
     await closeFilters();
-    assert(root.querySelectorAll(".run").length === 3, "legacy runs stay visible with no metadata filters");
+    assert(root.querySelectorAll(".next").length === 3, "legacy runs stay visible with no metadata filters");
     await openFilters();
     await pickFilter("Provider", "Claude");
     await closeFilters();
-    assert(root.querySelectorAll(".run").length === 1, "provider filters actual recorded runs");
+    assert(root.querySelectorAll(".next").length === 1, "provider filters actual recorded runs");
     byText('[role="radio"]', "Up next4").click(); await pause();
     await openFilters();
     await pickFilter("Project", "Empty");
@@ -267,7 +268,74 @@ async function progress() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'request states fit the viewport');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.queueTests = { readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress };
+async function runsControls() {
+  calls = [];
+  setSessionProvider("auto"); setSessionOverrides(["labels"]);
+  window.fetch = async (url, init) => {
+    if (url === "/api/history") return Response.json(filterJobs);
+    if (url === "/api/dispatch") {
+      const input = JSON.parse(init.body), id = init.headers["Idempotency-Key"];
+      calls.push(input);
+      return Response.json({ id, input, state: "done", result: { data: { reason: "quota-exhausted" } } });
+    }
+    return Response.json({ ...filterState, status: status.value });
+  };
+  await showProjects();
+  const providers = () => root.querySelector('[role="radiogroup"][aria-label="Start provider"]');
+  const limits = () => [...root.querySelectorAll('[role="group"][aria-label="Override limits"] button')];
+  assert(providers(), "Runs exposes the shared Start provider header");
+  assert(limits().length === 4, "Runs exposes all shared override choices");
+  button(1).click(); await pause();
+  assert(JSON.stringify(calls[0]) === JSON.stringify({ ticket: "APP-1", model: "auto", overrideLimits: ["labels"] }), "Auto captures selected overrides");
+  providers().querySelector('[aria-label="Codex: override all scheduler limits"]').click(); await pause();
+  assert(limits().every(b => b.disabled), "explicit provider disables override editing");
+  root.querySelector('[aria-label="Run WEB-2 now"]').click(); await pause();
+  assert(calls[1]?.provider === "codex" && calls[1]?.overrideLimits === true, "provider choice reaches queue dispatch");
+  operations.value = [{ id: "pending", input: { ticket: "APP-1" }, state: "uncertain" }]; await pause();
+  assert(button(1).disabled, "pending duplicate remains held with header choices");
+  assert(queueKeys() === "APP-1,WEB-2,APP-3", "header choices preserve scheduler order");
+  assert(heldKeys() === "APP-4,WEB-5", "held rows remain visible");
+  assert(document.documentElement.scrollWidth <= innerWidth, "Runs controls fit viewport");
+  operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]);
+  return { passed: true };
+}
+async function showRuns() {
+  await showProjects();
+  byText('[role="radio"]', "Open3").click(); await pause();
+}
+async function runsHistory() {
+  await showRuns();
+  const rows = () => [...root.querySelectorAll('.next')];
+  assert(rows().length === 3, "run history uses the shared ticket-list rows");
+  assert(!root.querySelector('a a'), "run rows never nest links");
+  assert(rows()[0].querySelector('.next-ticket').getAttribute('href') === '/runs/1', "primary row opens run details");
+  assert(rows()[0].textContent.includes('Running'), "run state remains visible");
+  const group = root.querySelector('[role="radiogroup"][aria-label="Start order"]');
+  assert(group, "history reuses the shared order control");
+  const old = { ...filterJobs[0], id: "archive", state: "complete", createdAt: "2020-01-01T00:00:00Z" };
+  history.value = [old, ...filterJobs];
+  status.value = { ...status.value, jobs: filterJobs.map((j, i) => ({ ...j, createdAt: `2026-01-0${i + 1}T00:00:00Z`, threadId: `thread-${j.id}`, thread: { title: `Work for ${j.label}` }, prUrls: i === 0 ? ['https://github.com/example/repo/pull/1'] : [] })) };
+  await pause();
+  assert(rows()[0].querySelector('.key').textContent === 'APP-old', "newest run starts first");
+  group.querySelector('[aria-label="Oldest first"]').click(); await pause();
+  assert(rows()[0].querySelector('.key').textContent === 'APP-1', "oldest order uses live timestamps over history");
+  assert(rows()[0].textContent.includes('Work for APP-1'), "thread title identifies run work");
+  assert(root.querySelector('[href="https://github.com/example/repo/pull/1"]'), "PR link is retained");
+  assert(root.querySelector('[href="/api/threads/thread-1/open"]'), "T3 session link is available");
+  if (innerWidth <= 900) {
+    root.querySelector('[aria-label="More actions for APP-1"]').click(); await pause();
+    const menu = document.querySelector('.popover[aria-label="More actions for APP-1"]');
+    assert(menu?.querySelector('[aria-label="Open APP-1 in T3 Code"]'), "phone menu exposes the session link");
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
+    assert(!document.querySelector('.popover[aria-label="More actions for APP-1"]'), "phone menu closes with Escape");
+  }
+  status.value = { ...status.value, jobs: Array.from({ length: 40 }, (_, i) => ({ ...filterJobs[0], id: `live-${i}`, label: `APP-${i + 10}`, state: i === 0 ? 'waiting' : 'running', reason: i === 0 ? 'Review the implementation result before continuing' : '', threadId: `thread-${i}`, thread: { title: 'A realistic run title with enough detail to wrap on a phone' } })) };
+  await pause();
+  assert(rows().length === 43 && root.textContent.includes('Review the implementation result before continuing'), "live additions and waiting reasons remain visible alongside history");
+  assert(document.documentElement.scrollWidth <= innerWidth, "run history fits viewport");
+  return { passed: true };
+}
+window.queueTests = { readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory };
 await show();
 
 
