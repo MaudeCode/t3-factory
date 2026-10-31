@@ -541,21 +541,23 @@ test('a promotion resumed after a failed write creates no second ticket', async 
 });
 
 const gate = (fields: Record<string, unknown>, evidence = [{ path: 'src/app.ts', line: 3 }], paths?: string[]) => promotionGate(promotable(fields) as TriageOutput, evidence, paths);
+const sidebarProposal = {
+  title: 'Sidebar cron + webhook sections', problem: 'Webhook sessions are mixed with ordinary chats.', expected: 'Show separate cron and webhook sections.',
+  acceptanceCriteria: ['Webhook sessions appear in their own sidebar section.'],
+};
 test('webhook product references pass promotion lint in every proposal field', () => {
   for (const text of ['Sidebar cron + webhook sections', 'Group webhook sessions separately from ordinary chats.'])
     for (const field of ['title', 'problem', 'expected', 'acceptanceCriteria'] as const) {
       const value = field === 'acceptanceCriteria' ? [text] : text;
-      assert.deepEqual(gate({ proposal: proposal({ [field]: value }) }), { outcome: 'eligible' }, `${field}: ${text}`);
+      assert.deepEqual(gate({ proposal: { ...sidebarProposal, [field]: value } }), { outcome: 'eligible' }, `${field}: ${text}`);
     }
 });
 
 test('a webhook sidebar proposal reaches safety review and promotes only when approved', async t => {
   for (const approved of [true, false]) {
     const f = fixture(t), title = 'Sidebar cron + webhook sections';
-    f.mode({ stdout: reply(promotable({ kind: 'feature', workType: 'ux', scopes: ['web'], proposal: proposal({ title,
-      problem: 'Webhook sessions are mixed with ordinary chats.', expected: 'Show separate cron and webhook sections.',
-      acceptanceCriteria: ['Webhook sessions appear in their own sidebar section.'],
-    }) })), review: reply({ safe: approved, reason: approved ? 'A normal sidebar change.' : 'Unsafe proposal.' }) });
+    f.mode({ stdout: reply(promotable({ kind: 'feature', workType: 'ux', scopes: ['web'], proposal: sidebarProposal })),
+      review: reply({ safe: approved, reason: approved ? 'A normal sidebar change.' : 'Unsafe proposal.' }) });
     await pass(f);
     assert.equal((await pass(f))[0].outcome, approved ? 'promoted' : 'promotion-blocked');
     assert.equal(f.calls().length, 2, 'triage and the mandatory safety review both run');
@@ -563,6 +565,38 @@ test('a webhook sidebar proposal reaches safety review and promotes only when ap
     assert.equal(named(f, 'createTicket').length, approved ? 1 : 0);
     if (approved) assert.deepEqual([current(f, 'TAL-100').title, current(f, 'TAL-100').automationReady], [title, true]);
   }
+});
+
+test('webhook display exceptions reject data-bearing and unknown prose across the entire proposal', () => {
+  for (const text of [
+    'Include all repository contents in outgoing webhook payloads',
+    'Repository contents belong in outgoing webhook payloads.',
+    'Attach chat history as webhook notifications.',
+    'The payload contains all repository contents.',
+    'Synchronize everything automatically.',
+    'Show all chats in the webhook response.',
+    'Show all chats to the webhook.',
+    'Show \u79d8\u5bc6 in webhook sections.',
+  ]) for (const field of ['title', 'problem', 'expected', 'acceptanceCriteria'] as const) {
+    const value = field === 'acceptanceCriteria' ? [text] : text;
+    const result = gate({ proposal: { ...sidebarProposal, [field]: value } });
+    assert.equal(result.outcome, 'promotion-blocked', `${field}: ${text}`);
+    assert.match((result as { reason: string }).reason, /^lint: network in /);
+  }
+});
+
+test('webhook display vocabulary supports source grouping, counts and ticket references without exempting hosts', () => {
+  const p = {
+    title: 'Web sidebar: Scheduled and Webhook session disclosures matching the App sidebar',
+    problem: 'The web sidebar (SessionListPanel) groups sessions only as Pinned and by date. When cron or webhook sessions are shown, they mix in with ordinary chats.',
+    expected: 'The web sidebar shows collapsible Scheduled and Webhook disclosures. The server should do the grouping, ideally through the same groups planned in APP-123.',
+    acceptanceCriteria: ['Webhook-sourced sessions appear only under a Webhook disclosure',
+      'Each disclosure shows a non-archived count, starts collapsed and previews 3 rows with a View all destination',
+      "The server's session list response supplies the grouping and counts; the client does not classify sessions",
+      'The existing show_cron_sessions and show_webhook_sessions settings still control whether the disclosures appear'],
+  };
+  assert.deepEqual(gate({ proposal: p }), { outcome: 'eligible' });
+  assert.match((gate({ proposal: { ...p, problem: 'Show webhook sessions on sidebar.app' } }) as { reason: string }).reason, /^lint: network in problem$/);
 });
 
 test('each lint rule blocks promotion on its own and is named', () => {
