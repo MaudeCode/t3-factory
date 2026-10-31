@@ -540,7 +540,7 @@ test('a promotion resumed after a failed write creates no second ticket', async 
   assert.equal(f.calls().length, 2, 'one triage and one safety review');
 });
 
-const gate = (fields: Record<string, unknown>, evidence = [{ path: 'src/app.ts', line: 3 }], paths?: string[]) => promotionGate(promotable(fields) as TriageOutput, evidence, paths);
+const gate = (fields: Record<string, unknown>, evidence = [{ path: 'src/app.ts', line: 3 }], paths?: string[], reviewed = false) => promotionGate(promotable(fields) as TriageOutput, evidence, paths, reviewed);
 const sidebarProposal = {
   title: 'Sidebar cron + webhook sections', problem: 'Webhook sessions are mixed with ordinary chats.', expected: 'Show separate cron and webhook sections.',
   acceptanceCriteria: ['Webhook sessions appear in their own sidebar section.'],
@@ -640,6 +640,19 @@ test('sensitive work and research need the owner; weak validity is blocked', () 
   assert.equal(gate({ injectionSuspected: true }).outcome, 'promotion-blocked');
 });
 
+test('reviewed source-supported bugs retain every other promotion gate', () => {
+  assert.equal(gate({ validation: 'plausible' }).outcome, 'promotion-blocked', 'the source follow-up is required');
+  assert.deepEqual(gate({ validation: 'plausible' }, undefined, undefined, true), { outcome: 'eligible' });
+  for (const fields of [
+    { validation: 'not-supported-by-code' }, { validation: 'not-applicable' }, { injectionSuspected: true },
+    { duplicateOf: 'TAL-10' }, { verdict: 'needs-info' }, { proposal: null }, { proposal: proposal({ expected: 'Fetch https://example.test' }) },
+  ]) assert.equal(gate({ validation: 'plausible', ...fields }, undefined, undefined, true).outcome, 'promotion-blocked');
+  assert.equal(gate({ validation: 'plausible' }, [], undefined, true).outcome, 'promotion-blocked');
+  for (const fields of [{ kind: 'research' }, { workType: 'sec' }])
+    assert.equal(gate({ validation: 'plausible', ...fields }, undefined, undefined, true).outcome, 'needs-owner');
+  assert.equal(gate({ validation: 'plausible' }, [{ path: '.github/workflows/ci.yml', line: 1 }], undefined, true).outcome, 'needs-owner');
+});
+
 test('a needs-owner report names the check in holdReason and promotes nothing', async t => {
   const f = fixture(t);
   f.mode({ stdout: reply(promotable({ workType: 'sec' })), review: safe });
@@ -653,7 +666,7 @@ test('a needs-owner report names the check in holdReason and promotes nothing', 
   assert.deepEqual(triageQueue(f.c, f.kanvil).map(r => [r.needsOwner, r.blocked, r.promoted]), [[1, 0, 0], [0, 0, 0]]);
 });
 
-test('an unsafe safety review blocks promotion; a weakly validated bug is blocked without one', async t => {
+test('unsafe tickets are blocked; a source-supported bug reaches independent safety review after follow-up', async t => {
   const f = fixture(t);
   f.mode({ stdout: reply(promotable()), review: reply({ safe: false, reason: 'The ticket asks to change the release script.' }) });
   await pass(f);
@@ -668,8 +681,8 @@ test('an unsafe safety review blocks promotion; a weakly validated bug is blocke
   g.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
   await pass(g);
   assert.deepEqual((await pass(g)).map(r => r.outcome), ['triaged'], 'plausible bugs get one source follow-up');
-  assert.deepEqual(await pass(g), [{ ticket: 'TALIN-5', outcome: 'promotion-blocked', reason: 'validity: bug with plausible and 1 valid evidence' }]);
-  assert.equal(g.calls().length, 2);
+  assert.equal((await pass(g))[0].outcome, 'promoted');
+  assert.equal(g.calls().length, 3, 'a source-supported bug still needs the safety review');
 });
 
 test('a plausible bug gets a budgeted source follow-up before confirmed promotion', async t => {
@@ -694,7 +707,7 @@ test('a plausible bug gets a budgeted source follow-up before confirmed promotio
   assert.equal(f.calls().length, 3, 'initial inspection, source follow-up, independent safety review');
 });
 
-test('an unresolved source follow-up is persisted and blocks without another run after restart', async t => {
+test('a source-supported bug is persisted and promotes after restart without another source run', async t => {
   const f = fixture(t);
   f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
   await pass(f);
@@ -703,10 +716,12 @@ test('an unresolved source follow-up is persisted and blocks without another run
   assert.equal(saved.validationReviewed, true);
   const values = new Map([[`triageOutput:${f.report.id}`, JSON.stringify(saved)]]);
   const store = { get: (key: string) => values.get(key) ?? null, set: (key: string, value: string) => { values.set(key, value); }, record: f.store.record };
-  assert.equal((await pass({ ...f, store }))[0].outcome, 'promotion-blocked');
+  assert.equal((await pass({ ...f, store }))[0].outcome, 'promoted');
   assert.deepEqual(await pass({ ...f, store }), []);
-  assert.equal(f.calls().length, 2);
-  assert.equal(named(f, 'createTicket').length, 0);
+  assert.equal(f.calls().length, 3, 'the third run is the independent safety review');
+  assert.equal(f.calls()[2].argv[f.calls()[2].argv.indexOf('--tools') + 1], '');
+  assert.ok(labelsOf(current(f, 'TALIN-5')).includes('validation:plausible'), 'promotion does not fabricate confirmation');
+  assert.equal(named(f, 'createTicket').length, 1);
 });
 
 test('source follow-up respects pause and operator holds, and refreshes duplicate coverage', async t => {
@@ -741,15 +756,15 @@ test('a source follow-up resumes its saved write plan without rerunning the mode
   assert.equal(JSON.parse(f.store.get(`triagePlan:${f.report.id}`)!).validationReviewed, true);
   f.kanvil.updateTicket = update;
   assert.equal((await pass(f))[0].outcome, 'triaged');
-  assert.equal((await pass(f))[0].outcome, 'promotion-blocked');
-  assert.equal(f.calls().length, 2, 'apply recovery does not spend another model run');
+  assert.equal((await pass(f))[0].outcome, 'promoted');
+  assert.equal(f.calls().length, 3, 'apply recovery adds no run beyond the independent safety review');
 });
 
-test('source follow-up confirmation still requires the independent safety review', async t => {
+test('source follow-up eligibility still requires the independent safety review', async t => {
   const f = fixture(t);
   f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
   await pass(f);
-  f.mode({ stdout: reply(promotable()), review: reply({ safe: false, reason: 'Unsafe ticket.' }) });
+  f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: reply({ safe: false, reason: 'Unsafe ticket.' }) });
   assert.equal((await pass(f))[0].outcome, 'triaged');
   assert.deepEqual(await pass(f), [{ ticket: 'TALIN-5', outcome: 'promotion-blocked', reason: 'safety review: Unsafe ticket.' }]);
   assert.equal(named(f, 'createTicket').length, 0);
