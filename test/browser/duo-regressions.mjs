@@ -48,7 +48,7 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
     ];
     // The three ticket lists share one phone head; their measured heights must agree at each width.
     const heads = {};
-    for (const width of [382, 594]) for (const [fixture, api] of [["queue", "queueTests"], ["session-tickets", "sessionTests"], ["triage", "triageTests"]]) {
+    for (const width of [360, 382, 594]) for (const [fixture, api] of [["queue", "queueTests"], ["session-tickets", "sessionTests"], ["triage", "triageTests"]]) {
       cases.push([`${fixture} phone header`, fixture, api, width, async page => {
         const result = await page.evaluate(api => window[api].phoneHeader(), api);
         assert(result.coarse, "phone header check ran with touch input");

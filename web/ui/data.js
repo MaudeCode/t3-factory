@@ -78,7 +78,7 @@ export const Section = ({ title, hint, count, aside, children, class: extra, col
 // the tools beside the title and give the actions one scrolling strip underneath.
 export const Page = ({ title, count, hint, lead, actions, tools, narrow, class: extra, children }) =>
   html`<div class=${`page ${narrow ? "narrow" : ""} ${extra ?? ""}`}>
-    ${title && html`<div class="page-head"><div><h1>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h1>${lead && html`<p>${lead}</p>`}</div>${actions && html`<div class="page-actions">${actions}</div>`}${tools && html`<div class="page-tools">${tools}</div>`}</div>`}
+    ${title && html`<div class="page-head"><div><h1>${title}${(count != null || hint) && html`<span class="title-meta">${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></span>`}</h1>${lead && html`<p>${lead}</p>`}</div>${actions && html`<div class="page-actions">${actions}</div>`}${tools && html`<div class="page-tools">${tools}</div>`}</div>`}
     ${children}
   </div>`;
 

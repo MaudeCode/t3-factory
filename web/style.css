@@ -1528,6 +1528,12 @@ body:has(.save-bar) .deck {
   color: var(--muted);
   font-size: 12.5px;
 }
+/* Count and help travel together, so a title that must wrap drops them as one unit. */
+.title-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .page-head .segmented {
   margin: 0;
 }
@@ -2317,6 +2323,26 @@ h1 .crumb::after {
     border-top: 1px solid var(--line);
   }
 }
+@property --strip-fade-start {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --strip-fade-end {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes strip-fade {
+  from {
+    --strip-fade-start: 0px;
+    --strip-fade-end: 36px;
+  }
+  to {
+    --strip-fade-start: 36px;
+    --strip-fade-end: 0px;
+  }
+}
 @media (max-width: 900px) {
   .next-secondary {
     display: none;
@@ -2397,15 +2423,23 @@ h1 .crumb::after {
     flex-wrap: wrap;
     gap: var(--space-2) var(--space-1);
   }
+  /* A zero basis keeps the tools on the title row however long the title is; the title wraps instead. */
   .page-head > div:first-child {
-    flex: 1 0 auto;
+    flex: 1 1 0%;
+    min-width: 0;
     max-width: 100%;
+  }
+  .page-head h1 {
+    flex-wrap: wrap;
+    row-gap: 0;
   }
   .page-tools {
     display: flex;
     gap: var(--space-1);
     order: 1;
   }
+  /* The strip fades the edge that hides more controls. The scroll timeline is inactive when nothing
+     overflows, so a strip that fits shows no fade; engines without scroll timelines show plain edges. */
   .page-actions {
     display: flex;
     align-items: center;
@@ -2415,6 +2449,9 @@ h1 .crumb::after {
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: none;
+    mask-image: linear-gradient(to right, transparent, #000 var(--strip-fade-start), #000 calc(100% - var(--strip-fade-end)), transparent);
+    animation: strip-fade linear both;
+    animation-timeline: scroll(self inline);
   }
   .page-actions > *,
   .page-actions .chips,
@@ -2476,6 +2513,13 @@ h1 .crumb::after {
   .chips button,
   .popover .chips button {
     min-width: 44px;
+  }
+  /* The page head sizes these at 32px for pointers; touch keeps its targets at every width. */
+  .page-head .chips button,
+  .page-head .slots button,
+  .page-head .segmented button {
+    min-width: 44px;
+    min-height: 44px;
   }
   input,
   input.mono {
