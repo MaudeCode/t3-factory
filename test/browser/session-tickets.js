@@ -4,7 +4,7 @@ import "../../web/lib/theme.js";
 import { applyState, operations, status, notice, blocked, serverNow, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { route, match } from "../../web/lib/router.js";
-import { openSearch } from "./search.js";
+import { openSearch, checkPageHead } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = () => new Promise((resolve) => setTimeout(resolve, 60));
@@ -453,7 +453,8 @@ async function providerChoice() {
   return 'provider choice checks passed';
 }
 
-window.sessionTests = { overrides, providerChoice, unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, density, overflowEdges, showError, showEmpty };
+async function phoneHeader() { await show(); return checkPageHead(); }
+window.sessionTests = { phoneHeader, overrides, providerChoice, unavailableProjects, readiness, run, startNotices, show, showControls, controls, bulk, compactRows, rowHeight, density, overflowEdges, showError, showEmpty };
 await show();
 
 async function unavailableProjects() {

@@ -1,5 +1,5 @@
 // Real Triage view, settings dialog and start path; synthetic state, toggle, config and dispatch endpoints only.
-import { openSearch } from "./search.js";
+import { openSearch, checkPageHead } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
@@ -173,5 +173,6 @@ async function promotion() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   return { saves: saves.length, promotionPickersOnOneLine: true, viewport: [innerWidth, innerHeight] };
 }
-window.triageTests = { show, run, promotion };
+async function phoneHeader() { await show(); return checkPageHead(); }
+window.triageTests = { phoneHeader, show, run, promotion };
 await show();

@@ -73,10 +73,12 @@ export const Section = ({ title, hint, count, aside, children, class: extra, col
     ${children}
   </section>`;
 
-// Page frame: title, optional explanation, actions on the title line.
-export const Page = ({ title, count, hint, lead, actions, narrow, class: extra, children }) =>
+// Page frame: title, optional explanation, then the controls that set how the page behaves (`actions`)
+// and the icon buttons that act on it (`tools`). Desktop shows all of them on the title line; phones keep
+// the tools beside the title and give the actions one scrolling strip underneath.
+export const Page = ({ title, count, hint, lead, actions, tools, narrow, class: extra, children }) =>
   html`<div class=${`page ${narrow ? "narrow" : ""} ${extra ?? ""}`}>
-    ${title && html`<div class="page-head"><div><h1>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h1>${lead && html`<p>${lead}</p>`}</div>${actions}</div>`}
+    ${title && html`<div class="page-head"><div><h1>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h1>${lead && html`<p>${lead}</p>`}</div>${actions && html`<div class="page-actions">${actions}</div>`}${tools && html`<div class="page-tools">${tools}</div>`}</div>`}
     ${children}
   </div>`;
 

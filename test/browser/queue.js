@@ -1,5 +1,5 @@
 // Synthetic data, actual queue component and dispatch store. No live dispatches.
-import { openSearch } from "./search.js";
+import { openSearch, checkPageHead } from "./search.js";
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import { applyState, operations, status, history, setSessionProvider, setSessionOverrides } from "../../web/lib/store.js";
@@ -396,7 +396,8 @@ async function queueTransitions() {
   assert(queueKeys() === 'APP-1,WEB-2,APP-3' && heldKeys() === 'APP-4,WEB-5', 'settled jobs and cancelled chains restore queue snapshot');
   return { passed: true };
 }
-window.queueTests = { readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+async function phoneHeader() { await showRuns(); return checkPageHead(); }
+window.queueTests = { phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 
