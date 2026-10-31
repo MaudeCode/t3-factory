@@ -50,6 +50,10 @@ test('run filters combine categories, support tag AND/OR, and preserve missing m
   assert.equal(matchesRunFilters(row, { tags: ['web', 'bug'], tagMode: 'and' }), true);
   for (const filters of [{ projects: ['q'] }, { difficulties: ['low'] }, { priorities: ['urgent'] }, { tags: ['absent'] }]) assert.equal(matchesRunFilters(row, filters), false);
   assert.equal(matchesRunFilters(row, {}, 'app-1'), true);
+  assert.equal(matchesRunFilters(row, { tagsNot: ['bug'] }), false, 'an excluded tag hides the row');
+  assert.equal(matchesRunFilters(row, { tagsNot: ['absent'] }), true, 'excluding a tag the row lacks keeps it');
+  assert.equal(matchesRunFilters(row, { tags: ['web'], tagsNot: ['bug'] }), false, 'exclusion wins over an include match');
+  assert.equal(matchesRunFilters({ key: 'APP-2' }, { tagsNot: ['bug'] }), true, 'rows without labels stay visible');
   assert.equal(matchesRunFilters(row, {}, 'other'), false);
   assert.equal(matchesRunFilters({ label: 'APP-1' }, {}, 'app-1'), true);
   assert.equal(matchesRunFilters({}), true);

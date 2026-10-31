@@ -11,6 +11,7 @@ export function matchesRunFilters(row, filters = {}, query = "") {
     includes(filters.priorities, row.priority) &&
     (!filters.sessions?.length || (row.sources ?? []).some(source => filters.sessions.includes(source.threadId))) &&
     (!tags.length || (filters.tagMode === "and" ? tags.every(tag => labels.includes(tag)) : tags.some(tag => labels.includes(tag)))) &&
+    !(filters.tagsNot ?? []).some(tag => labels.includes(tag)) &&
     (!text || [row.key, row.label, row.title].some(value => value?.toLowerCase().includes(text)));
 }
 

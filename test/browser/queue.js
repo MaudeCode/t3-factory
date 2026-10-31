@@ -202,6 +202,16 @@ async function runProjects() {
     assert(dialog().querySelectorAll('[aria-pressed="true"]').length === 2, "difficulty and priority buttons show their state");
     byText("button", "×", dialog()).click(); await pause();
     assert(picker("Tags").textContent === "Any" && dialog().querySelectorAll('[aria-pressed="true"]').length === 2, "the tag clear button empties only tags");
+    assert(await choicesOf("Without") === "bug,web", "excluded tags offer the same catalog as tags");
+    await pickFilter("Without", "web");
+    assert(queueKeys() === "" && heldKeys() === "", "an excluded tag hides queue and held rows that carry it");
+    assert(filterButton().textContent.trim() === "4", "excluded tags count as their own active category");
+    await pickFilter("Without", "web"); await pickFilter("Without", "bug");
+    assert(queueKeys() === "" && heldKeys() === "", "any excluded tag hides a row");
+    await pickFilter("Tags", "web");
+    assert(queueKeys() === "" && picker("Tags").textContent === "web", "exclusion wins over an include match");
+    byText("button", "×", dialog()).click(); await pause();
+    assert(picker("Tags").textContent === "Any" && picker("Without").textContent === "None" && queueKeys() === "APP-1" && heldKeys() === "APP-4", "the tag clear button empties both tag pickers and nothing else");
     await pickFilter("Tags", "bug"); await pickFilter("Tags", "web");
     byText('[role="radio"]', "ALL", dialog()).click(); await pause();
     await closeFilters();
@@ -250,7 +260,7 @@ async function runProjects() {
     assert(menu.right <= innerWidth && menu.bottom <= innerHeight, "a large tag catalog scrolls inside its menu");
     await clearFilters();
     await closeFilters();
-    return { passed: true, viewport: [innerWidth, innerHeight], filters: ["project", "tags OR/AND", "difficulty", "priority", "search", "provider on runs"] };
+    return { passed: true, viewport: [innerWidth, innerHeight], filters: ["project", "tags OR/AND", "without tags", "difficulty", "priority", "search", "provider on runs"] };
   } finally { window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); }
 }
 async function progress() {

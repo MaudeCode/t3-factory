@@ -32,20 +32,22 @@ import { RunList, UpNext, Chains, Operations, StartOptions, startOptions, OrderC
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
+// Tags are picked twice: the ones a row must carry, and the ones that hide a row.
 export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false, children, searchLabel = "Find a ticket", filterLabel = "Filter runs", activeCount }) {
   const [open, setOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const button = useRef();
   const searchButton = useRef(), searchInput = useRef();
   const change = (key, value) => onFilters({ ...filters, [key]: value });
-  const active = activeCount ?? ["projects", "tags", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
+  const active = activeCount ?? ["projects", "tags", "tagsNot", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
   const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
   for (const id of sessions ? filters.sessions ?? [] : []) if (!sessionNames.has(id)) sessionNames.set(id, "Session no longer listed");
   const sessionOptions = [...sessionNames].sort((a, b) => a[1].localeCompare(b[1]));
   // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
   const picked = (key) => filters[key] ?? [];
-  const tags = [...new Set([...picked("tags"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
-  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kanvilId) || rows.some(row => row.projectId === p.kanvilId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode })));
+  const tags = [...new Set([...picked("tags"), ...picked("tagsNot"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
+  const tagOptions = tags.map(tag => [tag, tag]), anyTags = picked("tags").length + picked("tagsNot").length > 0;
+  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kanvilId) || rows.some(row => row.projectId === p.kanvilId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode, tagsNot: picked("tagsNot") })));
   // Few options get a row of icon buttons; projects and tags, which grow, get a multi-pick dropdown.
   const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} />`, title];
   const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
@@ -61,9 +63,13 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
       <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kanvilId, p.name])} onChange=${value => change("projects", value)} /><//>
       <${Field} group label="Tags">
         <div class="tags-pick">
-          <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tags.map(tag => [tag, tag])} onChange=${value => change("tags", value)} />
+          <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tagOptions} onChange=${value => change("tags", value)} />
           ${(filters.tags?.length ?? 0) > 1 && html`<${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "ANY"], ["and", "ALL"]]} />`}
-          ${(filters.tags?.length ?? 0) > 0 && html`<${Button} variant="ghost" size="sm" icon label="Clear tags" onClick=${() => change("tags", [])}>×<//>`}
+          ${anyTags && html`<${Button} variant="ghost" size="sm" icon label="Clear tags" onClick=${() => onFilters({ ...filters, tags: [], tagsNot: [] })}>×<//>`}
+        </div>
+        <div class="tags-pick">
+          <span class="muted small" aria-hidden="true">Without</span>
+          <${Select} multiple placeholder="None" label="Without" value=${filters.tagsNot ?? []} options=${tagOptions} onChange=${value => change("tagsNot", value)} />
         </div>
       <//>
       ${chips("difficulties", "Difficulty", [glyph("low", "bars1", "Low"), glyph("med", "bars2", "Medium"), glyph("high", "bars3", "High")])}
