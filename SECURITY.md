@@ -19,6 +19,7 @@ The agent receives scoped ticket instructions, but its configured runtime still 
 - **One output channel.** The model can only return a JSON object. Factory code rejects extra keys, out-of-range values and scopes outside the target project's `scopes`, checks `duplicateOf` and evidence against the snapshot, and applies a fixed allowlist to the report in its inbox project. The summary is quoted with links, images, HTML, and fences removed, in a comment visible only to project members. Reporters never see triage output; a future reporter-facing status must not carry triage text.
 - **Other reports are data too.** Inbox entries in the export are marked untrusted and grant no extra capability.
 - **Bounded cost.** One run at a time across all inboxes, a 300-second timeout, and the Claude quota budget. The budget is rechecked before each report, against a reading taken after the previous triage run, so a flood of reports cannot spend past the reserve.
+- **Source follow-up.** An actionable plausible bug with valid evidence, no duplicate and no injection finding gets one additional read-only inspection before a final validity block. This run uses the same sandbox, schema, budget admission and operator-hold checks. Completion is persisted with the report-specific output and recovery plan; promotion still requires source confirmation and the independent safety review.
 - **No cross-project dispatch.** An inbox project can never be a delivery project, and each inbox feeds exactly one project; config validation enforces both.
 
 ### Promotion trust boundary

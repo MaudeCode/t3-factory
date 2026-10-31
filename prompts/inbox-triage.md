@@ -14,10 +14,10 @@ Directory:
 Task:
 
 1. Search `tickets/target.jsonl` and `tickets/inbox.jsonl` for a duplicate or existing coverage of the report, whether open, done, or cancelled.
-2. Check `code/` to judge whether the bug is plausible or the requested feature already exists.
+2. Trace the reported behavior in `code/`, including its callers and configuration, to determine whether source proves a bug or the requested feature already exists.
 3. Return only the JSON object the output schema describes:
    - `verdict`: `actionable`, `needs-info` (too vague to act on), `duplicate` (an existing ticket covers it), `already-exists` (the feature is already in the code), or `spam`.
-   - `validation`: `confirmed-in-code`, `plausible`, `not-supported-by-code`, or `not-applicable`.
+   - `validation`: `confirmed-in-code` when source establishes the defect mechanism, without requiring runtime reproduction; `plausible` when the report fits but a material link is unverified; `not-supported-by-code` when source contradicts it; or `not-applicable`. Explain the mechanism or remaining uncertainty in `summary` and cite supporting locations. Do not upgrade uncertainty just to obtain promotion.
    - `kind`, `workType`, `difficulty`, `priority`: your classification of the work.
    - `scopes`: the affected areas, chosen only from {{scopes}}.
    - `duplicateOf`: the key of the covering ticket from `tickets/`, never {{key}}; otherwise `null`.
