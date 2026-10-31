@@ -575,6 +575,8 @@ test('webhook display exceptions reject data-bearing and unknown prose across th
     'The payload contains all repository contents.',
     'Synchronize everything automatically.',
     'Show all chats in the webhook response.',
+    'All chat sessions are shown in the webhook session response.',
+    'Show all chats through the webhook session destination.',
     'Show all chats to the webhook.',
     'Show \u79d8\u5bc6 in webhook sections.',
   ]) for (const field of ['title', 'problem', 'expected', 'acceptanceCriteria'] as const) {
