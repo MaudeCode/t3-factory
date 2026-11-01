@@ -25,6 +25,7 @@ const state = {
       promotedTicket: { taskId: 't42', projectId: 'p', key: 'EX-42', title: 'Already running', status: 'in_progress', priority: 'low', difficulty: 'low', labels: [], automationReady: true, unavailable: 'Ticket is in_progress; it must be in todo', listed: false } },
     { id: 9, time: ago(200), kind: 'triage', text: 'GONE-1 promoted to EX-38', data: { ticket: 'GONE-1', ticketId: 'g1', inboxId: 'gone', projectId: 'p', project: 'Example', outcome: 'promoted', promoted: 'EX-38', promotedId: 't38' } },
     { id: 1, time: ago(90), kind: 'triage', text: 'PIN-1 promoted to EX-39', data: { ticket: 'PIN-1', ticketId: 't1', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-39' } },
+    { id: 11, time: ago(20), kind: 'triage', text: 'PIN-9 closed during triage', data: { ticket: 'PIN-9', ticketId: 't9', inboxId: 'pin', project: 'Example', outcome: 'closed', reason: 'closed during triage' } },
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
   ] },
 };
@@ -62,14 +63,14 @@ const rows = (title) => [...((title ? section(title) : root)?.querySelectorAll('
 const keys = (title) => rows(title).map((r) => r.querySelector('.key').textContent).join();
 const row = (key, title = key.startsWith('EX-') ? 'Tickets' : 'Activity') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
-const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|queued|duplicate|failed/.test(el.textContent));
+const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|queued|duplicate|failed|closed/.test(el.textContent));
 async function settings() { button('Triage settings').click(); await pause(); return document.querySelector('dialog[open]'); }
 async function run() {
   await show();
   const text = () => root.textContent;
   assert(/2 waiting, 1 failed, 3 promoted, 1 queued, 1 blocked, 1 need the owner, oldest 3 h \d+ min ago, triaging PIN-4/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear'), 'each inbox shows its queue on one line');
   assert(keys('Tickets') === 'EX-40,EX-41', 'Tickets lists the promoted tickets still to start, newest first');
-  assert(keys('Activity') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-2,PIN-10,PIN-1,GONE-1', 'Activity lists every result as its report, newest first');
+  assert(keys('Activity') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-9,PIN-2,PIN-10,PIN-1,GONE-1', 'Activity lists every result as its report, newest first');
   assert(!row('EX-42') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'a ticket that has run leaves Tickets and stays in Activity');
   assert(row('PIN-7').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t40' && !row('PIN-7').querySelector('[aria-label^="Run "]'), 'a promoted result in Activity links its ticket and has no Start');
   const ex40 = row('EX-40');
@@ -79,6 +80,7 @@ async function run() {
   assert(!section('Tickets').querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
   assert(visibleTag(ex40).closest('.meta') && !visibleTag(ex40).closest('.next-actions'), 'the outcome tag leads the facet line, beside Start rather than above it');
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
+  assert(visibleTag(row('PIN-9'))?.textContent === 'closed' && visibleTag(row('PIN-9')).classList.contains('tag-label') && row('PIN-9').textContent.includes('Closed during triage'), 'a report closed during triage shows a neutral closed tag, not an error');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
   assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
   assert(row('GONE-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t38', 'a result from an inbox no longer configured keeps its recorded project');
@@ -97,7 +99,7 @@ async function run() {
   assert(section('Tickets').textContent.includes('No tickets match.'), 'an empty ticket list says the search matched nothing');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Oldest first"]').click(); await pause();
   search.value = 'pin-'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(keys('Activity') === 'PIN-1,PIN-10,PIN-2,PIN-8,PIN-3,PIN-5,PIN-6,PIN-7', 'oldest first reverses the results');
+  assert(keys('Activity') === 'PIN-1,PIN-10,PIN-2,PIN-9,PIN-8,PIN-3,PIN-5,PIN-6,PIN-7', 'oldest first reverses the results');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Newest first"]').click(); await pause();
   search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
@@ -124,7 +126,7 @@ async function run() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
   const height = (key) => row(key).getBoundingClientRect().height, left = (key) => visibleTag(row(key)).getBoundingClientRect().left;
-  assert(['PIN-6', 'PIN-3', 'PIN-2', 'PIN-1', 'EX-41'].every((key) => Math.abs(left(key) - left('EX-40')) < 1), 'outcome tags line up at the start of the facet line');
+  assert(['PIN-6', 'PIN-3', 'PIN-9', 'PIN-2', 'PIN-1', 'EX-41'].every((key) => Math.abs(left(key) - left('EX-40')) < 1), 'outcome tags line up at the start of the facet line');
   if (innerWidth > 900) assert(Math.abs(height('EX-40') - height('PIN-6')) < 1, 'a promoted row with Start is as tall as a report row');
   const toggles = posts.length, limits = await promotion();
   return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, dispatches: dispatches.length, ...limits };
