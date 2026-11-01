@@ -637,3 +637,15 @@ test('cancelled automatic maintenance leaves the candidate untouched and the nex
     assert.equal(f.calls[0], 1); assert.ok(!existsSync(f.path));
   } finally { f.close(); }
 });
+
+test('automatic maintenance enforces its idle retention on the executor\'s fresh reading, not the preliminary one', async () => {
+  const f = fixture(); try {
+    const [owner] = f.owners(); age(f.path); await refreshCleanupCatalog(f.c, f.store, f.t3);
+    let reads = 0;
+    // The session takes a turn and settles while the preliminary inspection is still finishing.
+    f.race(() => { if (++reads === 2) owner.latestUserMessageAt = owner.updatedAt = owner.latestRunCompletedAt = new Date().toISOString(); });
+    await sweep(f);
+    assert.ok(existsSync(f.path), 'a just-used worktree is retained'); assert.deepEqual(f.calls, [0, 0], 'no detach or removal');
+    assert.equal(automatic(f.store)[0]?.state, 'failed'); assert.match(automatic(f.store)[0].outcomes[0].message, /used recently/);
+  } finally { f.close(); }
+});

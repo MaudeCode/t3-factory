@@ -29,7 +29,8 @@ export interface CleanupAction {
   outcomes: { path: string; state: string; message: string; physicalRemoval?: boolean; freeSpaceChange?: number | null }[];
   overridden?: string[]; identity?: string;
 }
-type Boundary = { processes?: typeof processWorkspaces; signal?: AbortSignal };
+// `idleMs` is automatic maintenance's retention: the executor enforces it on its own fresh readings.
+type Boundary = { processes?: typeof processWorkspaces; signal?: AbortSignal; idleMs?: number };
 // T3 leaves idle setup shells open in worktrees; removal closes them and looks again.
 const onlyIdleShells = (detail: { terminals: { status: string; hasRunningSubprocess: boolean }[]; checks: { name: string; state: string }[] }) =>
   detail.terminals.length > 0 && detail.terminals.every(t => t.status === 'running' && !t.hasRunningSubprocess) &&
@@ -452,6 +453,9 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
             fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
           }
           if (forced && (!fresh.forceAllowed || fresh.fingerprint !== review.fingerprint)) throw new Error('Reviewed identity, content or activity changed; review again');
+          // Detached owners are then pinned by verifyDetachedOwners, so later activity also refuses removal.
+          const recent = async (bindings: typeof fresh.bindings) => { if (boundary.idleMs && await recentlyActive(fresh.path, bindings, boundary.idleMs)) throw new Error('Worktree was used recently; automatic maintenance keeps it'); };
+          await recent(fresh.bindings);
           if (!forced && blocked(fresh)) throw new Error(fresh.checks.filter(check => check.state !== 'pass').map(check => check.detail).join('; '));
           for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanup = { path: fresh.path, branch: fresh.workspace!.branch, head: fresh.workspace!.head }; store.save(job); }
           const ownedIdentity = digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity));
@@ -477,6 +481,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
             const evidence = await inspectCleanup(c, store, t3, kanvil, recheck, boundary);
             if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
             await verifyDetachedOwners(t3, fresh.bindings);
+            await recent([]);
             if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
           }, () => { mutated = true; });
           action.outcomes.push({ path: target.path, state: 'confirmed', message: result.outcome, physicalRemoval: result.physicalRemoval,
@@ -512,10 +517,10 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
 const RECLAIM_IDLE_MS = 24 * 3_600_000;
 // Matches the Factory job retry cooldown: a refused candidate waits for something outside maintenance to change.
 const RECLAIM_RETRY_MS = 15 * 60_000;
-async function recentlyActive(path: string, bindings: { updatedAt: string; latestUserMessageAt?: string | null; latestRunCompletedAt?: string | null }[]) {
+async function recentlyActive(path: string, bindings: { updatedAt: string; latestUserMessageAt?: string | null; latestRunCompletedAt?: string | null }[], idleMs = RECLAIM_IDLE_MS) {
   const directory = await lstat(path).catch(() => null);
   const last = Math.max(directory?.mtimeMs ?? Infinity, ...bindings.flatMap(b => [b.updatedAt, b.latestUserMessageAt, b.latestRunCompletedAt]).map(at => Date.parse(at ?? '')).filter(Number.isFinite));
-  return Date.now() - last < RECLAIM_IDLE_MS;
+  return Date.now() - last < idleMs;
 }
 
 // Background maintenance over the persisted catalog: worktrees with no unfinished Factory cleanup, removed by the
@@ -537,7 +542,7 @@ export async function reclaimUnusedWorkspace(c: Config, store: Store, t3: T3, ka
     // Factory completion verification keeps owning its workspace until it records the cleanup.
     if (detail.ownership === 'shared' || detail.jobs.some(job => !job.workspaceCleanedAt) || await recentlyActive(detail.path, detail.bindings)) return true;
     if (detail.state !== 'eligible' && !(detail.workspace?.present && onlyIdleShells(detail))) return true;
-    await manageCleanup(c, store, t3, kanvil, { type: 'remove', id: randomUUID(), targets: [target], reason: 'Automatic maintenance: merged, clean, unused worktree' }, 'automatic maintenance', boundary);
+    await manageCleanup(c, store, t3, kanvil, { type: 'remove', id: randomUUID(), targets: [target], reason: 'Automatic maintenance: merged, clean, unused worktree' }, 'automatic maintenance', { ...boundary, idleMs: RECLAIM_IDLE_MS });
     return true;
   }
   return false;
