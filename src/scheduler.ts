@@ -1,7 +1,10 @@
 import { ReadContext, independentOperation, waitFor, readAll, readContext, readPhase, readFailure, backgroundCheckpoint, backgroundRead } from './read-context.ts';
 export { readAll } from './read-context.ts';
 import { inboxes, triageCanary, type TriageRow } from './triage.ts';
-import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees } from './workspace.ts';
+import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees, availableBytes } from './workspace.ts';
+// Cleanup builds on this module; the cycle is safe because neither module calls the other while loading.
+import { reclaimUnusedWorkspace } from './cleanup.ts';
+import { formatBytes } from '../web/lib/format.js';
 import { readFileSync, existsSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join, sep } from 'node:path';
@@ -277,10 +280,11 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
 }
 
 // One existing cleanup step per job per sweep. Re-read durable state after every queued command;
-// intermediate steps resume on the next pass, even after a service restart.
-export async function cleanupNextWorkspace(c: Config, store: Store, t3: T3, kanvil: Kanvil, visited: Set<string>): Promise<boolean> {
+// intermediate steps resume on the next pass, even after a service restart. Factory jobs go first;
+// then the catalog's merged unused worktrees, one removal per step.
+export async function cleanupNextWorkspace(c: Config, store: Store, t3: T3, kanvil: Kanvil, visited: Set<string>, boundary: Parameters<typeof reclaimUnusedWorkspace>[5] = {}): Promise<boolean> {
   const job = store.jobs().find(job => !visited.has(job.id) && cleanupPending(job));
-  if (!job) return false;
+  if (!job) return reclaimUnusedWorkspace(c, store, t3, kanvil, visited, boundary);
   visited.add(job.id);
   const path = job.workspaceCleanup?.path ?? job.thread?.worktreePath ?? job.dismissedWorktreePath;
   await store.exclusive([`job:${job.id}`, ...path ? [`path:${canonicalPath(path)}`] : []], async () => {
@@ -1240,8 +1244,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const quotaGeneration = reservationIds(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId), streamingShell = !!t3.peekShell?.();
       const trackerRevision = kanvil.generations();
       // Each final phase owns fresh snapshots; only independent reads overlap. Artifact cache writes stay after the reads.
-      let { fresh, currentQuota, checked, currentActivity, artifacts } = await backgroundRead(async () => {
-        const [fresh, currentQuota, checked] = await readAll([
+      let { fresh, currentQuota, checked, currentActivity, artifacts, space } = await backgroundRead(async () => {
+        const [fresh, currentQuota, checked, space] = await readAll([
           t3.shell(false, true),
           readSelectedQuota(true),
           (async () => {
@@ -1254,12 +1258,14 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
             ]);
             return { task, labels: task.labels ?? [], blockers, children, prs, refs, projects: reader.projects, tickets: new Set([...watched, ...reader.ids]) };
           })(),
+          // Read with the other final snapshots; the verdict below stays inside the synchronous admission checks.
+          c.minFreeSpaceBytes ? availableBytes(project!.repoPath).then(bytes => ({ bytes }), (error: unknown) => ({ error })) : Promise.resolve(undefined),
         ]);
         const [artifacts, currentActivity] = await readAll([
           checked && queue.selected ? ticketArtifacts(project!, queue.selected.key, checked.task.id, fresh.threads, store.jobs(), store, Promise.resolve(checked.prs)) : Promise.resolve(undefined),
           readActivity(fresh.threads),
         ]);
-        return { fresh, currentQuota, checked, artifacts, currentActivity };
+        return { fresh, currentQuota, checked, artifacts, currentActivity, space };
       });
       const currentJobs = store.jobSummaries();
       const latestShell = t3.peekShell?.();
@@ -1314,6 +1320,12 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       if (JSON.stringify((clients.currentConfig ?? plan?.currentConfig ?? loadConfig)()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
       if (activePlanId && store.plan(activePlanId)?.state !== 'active') return decision('plan-cancelled-before-dispatch');
       if (discovery && !discoveryAvailable(project, currentJobs, store, plan?.skipProjects)) return decision('discovery-changed-before-dispatch');
+      // Admission only: a later run can still fill the volume, and a foreground start never deletes worktrees to make room.
+      if (space) {
+        const at = { path: project.repoPath, requiredBytes: c.minFreeSpaceBytes };
+        if ('error' in space) return decision('disk-space-check-failed', { ...at, message: `Not launched: free space on ${project.repoPath} could not be read (${safeError(space.error)}). Check the volume, or set minFreeSpaceBytes to 0 to skip this check.` });
+        if (space.bytes < c.minFreeSpaceBytes) return decision('disk-space-low', { ...at, availableBytes: space.bytes, message: `Not launched: ${project.repoPath} has ${formatBytes(space.bytes)} free; ${formatBytes(c.minFreeSpaceBytes)} required. Open Cleanup to delete unused worktrees.` });
+      }
       if (options.dryRun) { prepared.check(); return decision('would-dispatch', { kind: review ? 'upstream' : discovery ? 'discovery' : 'ticket', project: project.name, projectId: project.kanvilId, ticket: queue.selected?.key, upstream: review?.upstream, model: currentQuota.factoryRouting.model, quota: currentQuota }); }
       const selectedModel = currentQuota.factoryRouting.model;
       // Manual Codex runs already skip idle and reserve checks.
