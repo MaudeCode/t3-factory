@@ -948,3 +948,115 @@ test("the intake's own hold does not stop promotion; any other hold does", async
   await pass(h, {}, c);
   assert.deepEqual(await pass(h, {}, c), []);
 });
+
+// Version conflicts ------------------------------------------------------------
+// Kanvil's 409: someone wrote the inbox ticket while triage ran, so the run's version is stale.
+const conflict = () => Object.assign(new Error('Kanvil request failed (HTTP 409, version_conflict)'), { status: 409, code: 'version_conflict' });
+/** The next `count` inbox updates find the ticket edited by `edit` since it was read, and fail with a 409 (or `error`). */
+const conflictOn = (f: ReturnType<typeof fixture>, key: string, edit: (t: Task) => Partial<Task>, count = 1, error: () => Error = conflict) => {
+  const update = f.kanvil.updateTicket;
+  f.kanvil.updateTicket = async (...args) => {
+    const [projectId, id, expected] = args, at = f.projects[projectId]?.findIndex(t => t.id === id) ?? -1;
+    if (at >= 0 && f.projects[projectId][at].key === key && count-- > 0) {
+      f.log.push({ name: 'updateTicket', args });
+      f.projects[projectId][at] = { ...f.projects[projectId][at], ...edit(f.projects[projectId][at]), version: ++version };
+      assert.notEqual(expected, f.projects[projectId][at].version);
+      throw error();
+    }
+    return update(...args);
+  };
+};
+const seen = (t: Task) => ({ labels: [...t.labels!, { name: 'seen' }] });
+
+test('a report closed while triage ran is left closed, with no failure and no saved plan', async t => {
+  const f = fixture(t);
+  conflictOn(f, 'TALIN-5', () => ({ status: 'cancelled' }));
+  const result = await f.run().catch(error => ({ outcome: 'error', reason: String(error) }));
+  assert.deepEqual(result, { ticket: 'TALIN-5', outcome: 'closed', reason: 'closed during triage' });
+  const updates = named(f, 'updateTicket');
+  assert.equal(updates.length, 1, 'no retry onto a closed ticket');
+  assert.ok(!updates.some(e => ((e.args[3] as { labels?: string[] }).labels ?? []).includes('triage-failed')));
+  assert.equal(current(f, 'TALIN-5').status, 'cancelled');
+  assert.equal(f.store.get(`triagePlan:${f.report.id}`), '');
+});
+
+test('a report edited while triage ran is written once more on its fresh version, keeping the edit', async t => {
+  const f = fixture(t);
+  conflictOn(f, 'TALIN-5', seen);
+  const result = await f.run().catch(error => ({ outcome: 'error', reason: String(error) }));
+  assert.equal(result.outcome, 'triaged');
+  const updates = named(f, 'updateTicket'), [first, retry] = updates;
+  assert.equal(updates.length, 2);
+  assert.equal(first.args[2], f.report.version);
+  assert.equal(retry.args[2], current(f, 'TALIN-5').version! - 1, 'the retry sends the refetched version');
+  assert.notEqual(retry.args[4], first.args[4], 'the retry has a request ID of its own');
+  const changes = retry.args[3] as Record<string, unknown>;
+  assert.deepEqual(changes.labels, ['intake', 'seen', 'bug', 'med', 'app', 'triaged', 'verdict:actionable', 'validation:plausible']);
+  assert.deepEqual([changes.kind, changes.difficulty, changes.priority, changes.scopes], ['bug', 'med', 'high', ['app']]);
+  assert.ok(labelsOf(current(f, 'TALIN-5')).includes('seen'));
+  assert.equal(f.calls().length, 1);
+});
+
+test('a saved plan survives a version change: the next pass applies it without a new session or duplicate comment', async t => {
+  const f = fixture(t);
+  // The apply fails for another reason after someone edited the report, so the next pass reads a new version.
+  conflictOn(f, 'TALIN-5', seen, 1, () => new Error('Kanvil connection failed'));
+  await assert.rejects(f.run(), /Kanvil connection failed/);
+  f.mode({ stdout: reply(output({ summary: 'A different answer.' })) });
+  const result = await f.run(current(f, 'TALIN-5'));
+  assert.equal(result.outcome, 'triaged');
+  assert.equal(f.calls().length, 1, 'the saved plan is reused');
+  const comments = named(f, 'addComment');
+  assert.equal(comments.length, 2);
+  assert.deepEqual(comments[1].args, comments[0].args, 'the comment request repeats exactly, so Kanvil keeps one comment');
+  assert.ok(labelsOf(current(f, 'TALIN-5')).includes('seen'));
+});
+
+test('a failure label written over a concurrent edit is retried on the fresh version', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply({ verdict: 'nonsense' }) });
+  conflictOn(f, 'TALIN-5', seen);
+  const result = await f.run().catch(error => ({ outcome: 'error', reason: String(error) }));
+  assert.equal(result.outcome, 'triage-failed');
+  const retry = named(f, 'updateTicket').at(-1)!;
+  assert.deepEqual(retry.args[3], { labels: ['intake', 'seen', 'triage-failed'] });
+  assert.deepEqual(labelsOf(current(f, 'TALIN-5')), ['intake', 'seen', 'triage-failed']);
+});
+
+test('a promotion outcome written over a concurrent edit is retried on the fresh version', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable()), review: safe });
+  await pass(f);
+  conflictOn(f, 'TALIN-5', seen);
+  const [result] = await pass(f);
+  assert.equal(result.outcome, 'promoted');
+  const inbox = current(f, 'TALIN-5');
+  assert.equal(inbox.status, 'done');
+  assert.ok(labelsOf(inbox).includes('promoted') && labelsOf(inbox).includes('seen'));
+  assert.equal(f.created.size, 1);
+});
+
+test('a report whose text changed while triage ran keeps no stale verdict and is triaged again', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(output({ verdict: 'spam', validation: 'not-applicable', scopes: [] })) });
+  conflictOn(f, 'TALIN-5', () => ({ description: 'It crashes on launch, corrected with steps.' }));
+  const result = await f.run().catch(error => ({ outcome: 'error', reason: String(error) }));
+  assert.deepEqual(result, { ticket: 'TALIN-5', outcome: 'waiting', reason: 'report changed during triage' });
+  assert.equal(named(f, 'updateTicket').length, 1, 'the old verdict is not written onto the changed report');
+  assert.deepEqual([current(f, 'TALIN-5').status, labelsOf(current(f, 'TALIN-5'))], ['todo', ['intake']]);
+  assert.equal(f.store.get(`triagePlan:${f.report.id}`), '');
+  f.mode({ stdout: reply(output()) });
+  assert.equal((await f.run(current(f, 'TALIN-5'))).outcome, 'triaged');
+  assert.equal(f.calls().length, 2, 'the changed report gets its own session');
+});
+
+test('a promotion outcome is not written onto a report whose text changed meanwhile', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable()), review: reply({ safe: false, reason: 'Unclear change.' }) });
+  await pass(f);
+  conflictOn(f, 'TALIN-5', () => ({ title: 'App crashes on launch after update' }));
+  const [result] = await pass(f);
+  assert.deepEqual(result, { ticket: 'TALIN-5', outcome: 'waiting', reason: 'report changed during triage' });
+  assert.ok(!labelsOf(current(f, 'TALIN-5')).includes('promotion-blocked'));
+  assert.equal(f.store.get(`triageOutput:${f.report.id}`), '', 'the old output is dropped, so the report is triaged again');
+});

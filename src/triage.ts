@@ -64,7 +64,7 @@ type Result = { ticket?: string; outcome: string; verdict?: string; duplicateOf?
 const outcomeTexts: Record<string, (r: Result) => string> = {
   triaged: r => `triaged: ${r.verdict}${r.duplicateOf ? `, duplicate of ${r.duplicateOf}` : ''}`, 'triage-failed': r => `triage failed: ${r.reason}`,
   promoted: r => `promoted to ${r.promoted}`, 'promotion-blocked': r => `promotion blocked: ${r.reason}`, 'needs-owner': r => `needs the owner: ${r.reason}`,
-  'promotion-queued': r => `promotion queued: ${r.reason}`, 'promotion-failed': r => `promotion failed: ${r.reason}`,
+  'promotion-queued': r => `promotion queued: ${r.reason}`, 'promotion-failed': r => `promotion failed: ${r.reason}`, closed: r => r.reason!,
 };
 const outcomeText = (r: Result) => `${r.ticket} ${(outcomeTexts[r.outcome] ?? (r => `triage error: ${r.reason}`))(r)}`;
 
@@ -203,23 +203,51 @@ const requestId = (ticket: Task, step: string, versioned = true) => {
 };
 const union = (...lists: string[][]) => [...new Set(lists.flat())];
 
-type Plan = { version: number; output: TriageOutput; evidence: Evidence; commit: string; duplicateId: string | null; attempts?: number; validationReviewed?: boolean };
-const APPLY_ATTEMPTS = 3;
-async function apply(target: Inbox, kanvil: TriageKanvil, ticket: Task, plan: Plan) {
-  const { output } = plan;
-  if (plan.duplicateId) await kanvil.addRelation(ticket.projectId, ticket.id, plan.duplicateId, 'duplicate', requestId(ticket, 'relation'));
-  await kanvil.addComment(ticket.projectId, ticket.id, commentBody(output, plan.evidence, plan.commit, target.project.githubRepo), requestId(ticket, 'comment'));
-  // A re-triage replaces the earlier verdict and validation.
-  const labels = union(names(ticket).filter(name => !/^(verdict|validation):/.test(name)), [output.workType, output.difficulty, ...output.scopes, 'triaged', `verdict:${output.verdict}`, `validation:${output.validation}`], output.injectionSuspected ? ['injection-suspected'] : []);
-  await kanvil.updateTicket(ticket.projectId, ticket.id, ticket.version!, {
-    kind: output.kind, difficulty: output.difficulty, priority: output.priority, labels, scopes: output.scopes,
-    ...(output.verdict === 'spam' ? { status: 'cancelled' } : {}),
-  }, requestId(ticket, 'update'));
+// Kanvil's 409 when another write moved the ticket's version after it was read.
+const versionConflict = (error: unknown) => error instanceof Error && 'code' in error && error.code === 'version_conflict';
+/**
+ * Writes `changes(ticket)` at the ticket's version. When someone wrote the ticket meanwhile, refetches it and writes
+ * the same intent once more on the fresh ticket, so its labels merge with the edit. Writes nothing when the ticket
+ * was closed meanwhile, since that closure is the newer decision, or, with `sameReport`, when its report text changed,
+ * since the intent was judged on the old text.
+ */
+async function updateWithReconcile(kanvil: TriageKanvil, ticket: Task, step: string, changes: (ticket: Task) => Record<string, unknown>, sameReport = true) {
+  try { await kanvil.updateTicket(ticket.projectId, ticket.id, ticket.version!, changes(ticket), requestId(ticket, step)); }
+  catch (error) {
+    if (!versionConflict(error)) throw error;
+    const fresh = await kanvil.task(ticket.id, ticket.projectId);
+    if (CLOSED.includes(fresh.status)) return 'closed';
+    if (sameReport && reportHash(fresh) !== reportHash(ticket)) return 'changed';
+    await kanvil.updateTicket(fresh.projectId, fresh.id, fresh.version!, changes(fresh), requestId(fresh, step));
+  }
+  return 'written';
 }
-async function fail(kanvil: TriageKanvil, ticket: Task, reason: string) {
+type Unwritten = Exclude<Awaited<ReturnType<typeof updateWithReconcile>>, 'written'>;
+// A closed report is final; a changed one waits for the next pass to triage its new text.
+const unwritten = (ticket: Task, state: Unwritten): Result => state === 'closed'
+  ? { ticket: ticket.key, outcome: 'closed', reason: 'closed during triage' }
+  : { ticket: ticket.key, outcome: 'waiting', reason: 'report changed during triage' };
+
+// `version` is the ticket version the plan was made at; its comment and relation request IDs stay on it, so a plan
+// reused after the ticket moved repeats them exactly. `report` ties the plan to the report text it judged.
+type Plan = { version: number; report?: string; output: TriageOutput; evidence: Evidence; commit: string; duplicateId: string | null; attempts?: number; validationReviewed?: boolean };
+const APPLY_ATTEMPTS = 3;
+/** Applies the plan; anything but `written` when the report was closed or changed while triage ran. */
+async function apply(target: Inbox, kanvil: TriageKanvil, ticket: Task, plan: Plan) {
+  const { output } = plan, planned = { ...ticket, version: plan.version };
+  if (plan.duplicateId) await kanvil.addRelation(ticket.projectId, ticket.id, plan.duplicateId, 'duplicate', requestId(planned, 'relation'));
+  await kanvil.addComment(ticket.projectId, ticket.id, commentBody(output, plan.evidence, plan.commit, target.project.githubRepo), requestId(planned, 'comment'));
+  return updateWithReconcile(kanvil, ticket, 'update', current => ({
+    kind: output.kind, difficulty: output.difficulty, priority: output.priority, scopes: output.scopes,
+    // A re-triage replaces the earlier verdict and validation.
+    labels: union(names(current).filter(name => !/^(verdict|validation):/.test(name)), [output.workType, output.difficulty, ...output.scopes, 'triaged', `verdict:${output.verdict}`, `validation:${output.validation}`], output.injectionSuspected ? ['injection-suspected'] : []),
+    ...(output.verdict === 'spam' ? { status: 'cancelled' } : {}),
+  }));
+}
+async function fail(kanvil: TriageKanvil, ticket: Task, reason: string): Promise<Result> {
   log('triage-failed', { ticket: ticket.key, reason });
-  await kanvil.updateTicket(ticket.projectId, ticket.id, ticket.version!, { labels: union(names(ticket), ['triage-failed']) }, requestId(ticket, 'failed'));
-  return { ticket: ticket.key, outcome: 'triage-failed', reason };
+  const state = await updateWithReconcile(kanvil, ticket, 'failed', current => ({ labels: union(names(current), ['triage-failed']) }));
+  return state === 'written' ? { ticket: ticket.key, outcome: 'triage-failed', reason } : unwritten(ticket, state);
 }
 
 /** One report: export from cached projections, sandboxed run, validated apply to the inbox ticket. */
@@ -228,7 +256,8 @@ export async function triageTicket(c: Config, store: Store, kanvil: TriageKanvil
   const saved = JSON.parse(store.get(planKey) || 'null') as Plan | null;
   // A saved plan keeps retried writes identical, so their request IDs stay idempotent.
   const applyPlan = async (plan: Plan) => {
-    try { await apply(target, kanvil, ticket, plan); }
+    let state: Awaited<ReturnType<typeof apply>>;
+    try { state = await apply(target, kanvil, ticket, plan); }
     catch (error) {
       plan.attempts = (plan.attempts ?? 0) + 1;
       if (plan.attempts < APPLY_ATTEMPTS) { store.set(planKey, JSON.stringify(plan)); throw error; }
@@ -236,11 +265,13 @@ export async function triageTicket(c: Config, store: Store, kanvil: TriageKanvil
       return fail(kanvil, ticket, `Applying triage failed: ${safeError(error)}`);
     }
     store.set(planKey, '');
+    if (state !== 'written') return unwritten(ticket, state);
     // Promotion reads this output in a later pass, while the report text is unchanged.
     rememberTriage(store, ticket, plan.output.verdict === 'actionable' ? plan : null);
     return { ticket: ticket.key, outcome: 'triaged', verdict: plan.output.verdict, duplicateOf: plan.output.duplicateOf };
   };
-  if (saved && saved.version === ticket.version) return applyPlan(saved);
+  // Another write moves only the version; the plan stays valid while the report text is unchanged.
+  if (saved && saved.report === reportHash(ticket)) return applyPlan(saved);
   const targetTickets = kanvil.cachedTickets(target.project.kanvilId), inbox = kanvil.cachedTickets(target.inbox.kanvilId);
   if (!targetTickets || !inbox) return { ticket: ticket.key, outcome: 'waiting', reason: 'Ticket snapshots are not current' };
   const exported = ticketExport(ticket, targetTickets, inbox);
@@ -263,7 +294,7 @@ Return the same JSON schema, including the proposal for an actionable verdict. T
     if (!parsed.success) return await fail(kanvil, ticket, `Invalid output: ${parsed.error.issues.slice(0, 3).map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
     const output = parsed.data, duplicate = output.duplicateOf ? exported.keys.get(output.duplicateOf) : undefined;
     if (output.duplicateOf && (!duplicate || output.duplicateOf === ticket.key)) return await fail(kanvil, ticket, 'duplicateOf is not a ticket in the export');
-    const plan: Plan = { version: ticket.version!, output, evidence: validEvidence(dir, output.evidence), commit, duplicateId: duplicate?.id ?? null, validationReviewed };
+    const plan: Plan = { version: ticket.version!, report: reportHash(ticket), output, evidence: validEvidence(dir, output.evidence), commit, duplicateId: duplicate?.id ?? null, validationReviewed };
     store.set(planKey, JSON.stringify(plan));
     return await applyPlan(plan);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -415,23 +446,24 @@ const withOutcome = (ticket: Task, label: string) => union(names(ticket).filter(
 /** One actionable report: the gate, the inbox's daily limit, the safety review, then an idempotent create and readback. */
 async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, ticket: Task, saved: Triaged, options: TriageOptions): Promise<Result | undefined> {
   const result = (outcome: string, fields: Partial<Result> = {}): Result => ({ ticket: ticket.key, outcome, ...fields });
-  const settle = async (label: string, changes: Record<string, unknown> = {}) => {
-    await kanvil.updateTicket(ticket.projectId, ticket.id, ticket.version!, { labels: withOutcome(ticket, label), ...changes }, requestId(ticket, label));
-    if (label !== 'promotion-queued') store.set(triagedKey(ticket), '');
+  // Labels the report with `done`'s outcome and returns it. A report closed or changed meanwhile keeps no saved output:
+  // closed is final, and changed text is triaged again. A created ticket stays promoted whatever the report says now.
+  const settle = async (done: Result, changes: Record<string, unknown> = {}) => {
+    const label = done.outcome, state = await updateWithReconcile(kanvil, ticket, label, current => ({ labels: withOutcome(current, label), ...changes }), label !== 'promoted');
+    if (label !== 'promotion-queued' || state !== 'written') store.set(triagedKey(ticket), '');
+    return state === 'written' || label === 'promoted' ? done : unwritten(ticket, state);
   };
   const block = async (reason: string) => {
     await kanvil.addComment(ticket.projectId, ticket.id, `Not promoted:\n\n${quoteSummary(reason)}`, requestId(ticket, 'blocked-comment'));
-    await settle('promotion-blocked');
-    return result('promotion-blocked', { reason });
+    return settle(result('promotion-blocked', { reason }));
   };
   const gate = promotionGate(saved.output, saved.evidence, target.inbox.sensitivePaths, saved.validationReviewed === true);
-  if (gate.outcome === 'needs-owner') { await settle('needs-owner', { holdReason: `Promotion needs the owner: ${gate.reason}` }); return result('needs-owner', { reason: gate.reason }); }
+  if (gate.outcome === 'needs-owner') return settle(result('needs-owner', { reason: gate.reason }), { holdReason: `Promotion needs the owner: ${gate.reason}` });
   if (gate.outcome === 'promotion-blocked') return block(gate.reason);
   const now = (options.now ?? Date.now)(), recent = recentPromotions(store, target, now), limit = target.inbox.maxPromotionsPerDay ?? null;
   if (!(ticket.id in recent) && limit !== null && Object.keys(recent).length >= limit) {
     if (names(ticket).includes('promotion-queued')) return undefined;
-    await settle('promotion-queued');
-    return result('promotion-queued', { reason: limitText(limit) });
+    return settle(result('promotion-queued', { reason: limitText(limit) }));
   }
   const fields = promotedFields(target, ticket, saved);
   if (!saved.review) {
@@ -448,13 +480,12 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
   store.set(promotionsKey(target), JSON.stringify({ ...recent, [ticket.id]: recent[ticket.id] ?? now }));
   const readback = await kanvil.task(created.id, target.project.kanvilId);
   const mismatch = readbackMismatch(fields, target.project.kanvilId, readback);
-  if (mismatch) { await settle('promotion-failed'); return result('promotion-failed', { reason: `readback mismatch: ${mismatch}`, promoted: readback.key, promotedId: readback.id }); }
+  if (mismatch) return settle(result('promotion-failed', { reason: `readback mismatch: ${mismatch}`, promoted: readback.key, promotedId: readback.id }));
   if (!readback.automationReady) await kanvil.updateTicket(target.project.kanvilId, readback.id, readback.version!, { automationReady: true, holdReason: null }, requestId(readback, 'release'));
   // The inbox ticket then shows the vetted title, not the reporter's, wherever it is listed or related.
   await kanvil.addRelation(ticket.projectId, ticket.id, readback.id, 'duplicate', requestId(ticket, 'promoted-relation', false));
   await kanvil.addComment(ticket.projectId, ticket.id, `Promoted to ${readback.key}.`, requestId(ticket, 'promoted-comment', false));
-  await settle('promoted', { title: fields.title, status: 'done' });
-  return result('promoted', { promoted: readback.key, promotedId: readback.id });
+  return settle(result('promoted', { promoted: readback.key, promotedId: readback.id }), { title: fields.title, status: 'done' });
 }
 
 /**

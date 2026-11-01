@@ -11,6 +11,7 @@ const verdictTone = { actionable: "on", "needs-info": "attention", duplicate: "o
 const outcomeTag = {
   "triage-failed": ["attention", "failed"], promoted: ["on", "promoted"], "promotion-queued": ["", "queued"],
   "promotion-blocked": ["label", "blocked"], "needs-owner": ["attention", "needs owner"], "promotion-failed": ["attention", "promotion failed"],
+  closed: ["label", "closed"],
 };
 
 // One inbox's queue on one line: its project, label, state and daily limit.

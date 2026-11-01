@@ -99,6 +99,8 @@ The service reacts to Kanvil events. A report is waiting when it is open and una
 
 Invalid output, a CLI error, or a second timeout labels the report `triage-failed` and changes nothing else. Evidence locations missing from the snapshot are dropped. The snapshot is deleted after every run.
 
+A run lasts long enough for someone to write the report meanwhile, so its version may be stale when the result is applied. On a Kanvil `version_conflict`, factory code rereads the report. If it was cancelled or completed in the meantime, nothing more is written and the journal records `closed during triage`. If its title, description or acceptance criteria changed, nothing more is written either: the result judged the old text, so the next pass triages the report again. Otherwise the same labels are merged into the fresh labels and written once more on the fresh version. A saved result stays valid while the report text is unchanged, so a failed apply resumes on the next pass without a new run. Its comment and relation keep their original request IDs, so a resumed apply does not post them twice. `triage-failed` and promotion outcome labels use the same reread and retry; a report already promoted is still marked `promoted` and done after its text changes, because its ticket exists.
+
 #### Promotion
 
 An `actionable` verdict also returns a `proposal`: a title (at most 120 characters), problem (1,500), expected behavior (800), and 1 to 8 acceptance criteria (200 each), written by the model from what it verified in the code. Factory code keeps that output with a hash of the report text. On a later pass, a triaged `verdict:actionable` report without a final promotion label or a `holdReason` other than `intakeHold` follows the process below.
