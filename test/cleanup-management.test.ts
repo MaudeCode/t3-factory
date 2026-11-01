@@ -562,3 +562,78 @@ test('automatic maintenance finalizes a finished job whose worktree is gone inst
     assert.match(f.store.job('kept')!.workspaceCleanupError!, /no longer configured/); assert.notEqual(JSON.parse(f.store.get('cleanupMaintenance')!).state, 'blocked', 'an unconfigured project does not alarm maintenance');
   } finally { f.close(); }
 });
+
+// Automatic catalog maintenance: the same unused-removal executor, never a force override.
+const automatic = (store: Store) => store.cleanupActions().filter(action => action.operator === 'automatic maintenance');
+const age = (path: string) => { const old = Date.now() / 1000 - 2 * 86_400; fs.utimesSync(path, old, old); };
+const sweep = async (f: ReturnType<typeof fixture>, signal?: AbortSignal) => { const visited = new Set<string>(); while (await cleanupNextWorkspace(f.c, f.store, f.t3, f.kanvil, visited, { ...f.boundary, signal })); };
+const removedScenarios = ['orphan', 't3-only', 'ignored', 'idle-terminal', 'cleaned-job'];
+for (const scenario of [...removedScenarios, 'shared', 'active', 'queued', 'busy-terminal', 'process', 'tracked', 'untracked', 'unmerged', 'recent', 'factory-hold', 'unfinished-job', 'uncertain'] as const) test(`automatic maintenance reclaims only merged, clean, unused catalog worktrees: ${scenario}`, async () => {
+  const f = fixture(); try {
+    const owners = ['t3-only', 'active', 'queued', 'busy-terminal', 'idle-terminal', 'recent', 'factory-hold', 'unfinished-job'].includes(scenario) ? f.owners() : scenario === 'shared' ? f.owners(2) : [];
+    if (scenario === 'active') { owners[0].activeRunId = 'active'; owners[0].status = 'running'; }
+    if (scenario === 'queued') f.queued();
+    if (scenario === 'busy-terminal' || scenario === 'idle-terminal') f.terminal(scenario === 'busy-terminal');
+    if (scenario === 'process') f.boundary.processes = async () => [f.path];
+    if (scenario === 'ignored') writeFileSync(join(f.path, 'ignored'), 'disposable build cache');
+    if (scenario === 'tracked') writeFileSync(join(f.path, 'file'), 'preserve tracked work');
+    if (scenario === 'untracked') writeFileSync(join(f.path, 'untracked'), 'preserve new work');
+    if (scenario === 'unmerged') { writeFileSync(join(f.path, 'file'), 'unmerged work'); execFileSync('git', ['-C', f.path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qam', 'unmerged']); }
+    if (scenario === 'recent') owners[0].latestUserMessageAt = new Date().toISOString();
+    if (scenario === 'factory-hold') f.store.save({ ...f.job(), workspaceCleanupBlockedAt: new Date().toISOString(), workspaceCleanupError: 'Ticket is no longer Done' });
+    if (scenario === 'unfinished-job') f.store.save({ ...f.job(), state: 'running', completedAt: null });
+    if (scenario === 'cleaned-job') f.store.save({ ...f.job(), thread: undefined, workspaceCleanup: { path: f.path, branch: 'feat/FIX-1', head: f.git('rev-parse', 'HEAD') }, workspaceCleanedAt: '2026-01-03T00:00:00Z' });
+    if (scenario === 'uncertain') { const at = new Date().toISOString(); f.store.saveCleanupAction({ id: randomUUID(), input: {}, operator: 'fixture', requestedAt: at, updatedAt: at, state: 'uncertain', targets: [f.target], reason: 'Earlier response lost', outcomes: [{ path: f.path, state: 'uncertain', message: 'RPC response lost' }] }); }
+    if (scenario !== 'recent') age(f.path);
+    await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const removed = removedScenarios.includes(scenario), branchHead = f.git('rev-parse', 'refs/heads/feat/FIX-1');
+    await sweep(f);
+    assert.equal(existsSync(f.path), !removed, JSON.stringify(f.store.cleanupActions()));
+    assert.ok(existsSync(f.repo), 'the primary checkout is never a candidate');
+    assert.equal(f.calls[0], removed ? 1 : 0);
+    assert.equal(f.git('rev-parse', 'refs/heads/feat/FIX-1'), branchHead, 'the branch ref stays available');
+    const actions = automatic(f.store);
+    if (removed) {
+      assert.equal(actions.length, 1); assert.equal(actions[0].state, 'confirmed'); assert.equal((actions[0].input as any).type, 'remove', 'automatic cleanup never uses force review');
+      assert.equal(actions[0].outcomes[0].physicalRemoval, true);
+      if (scenario === 'idle-terminal') assert.deepEqual(f.closes, [{ threadId: 'owner', terminalId: 'setup-shell' }]);
+    } else assert.equal(actions.length, 0, 'refused candidates are not mutated or recorded as removals');
+    f.restart(); await refreshCleanupCatalog(f.c, f.store, f.t3); await sweep(f);
+    assert.equal(f.calls[0], removed ? 1 : 0, 'a restarted sweep never repeats or retries a deletion');
+  } finally { f.close(); }
+});
+
+test('an uncertain automatic removal holds the worktree across restart without another deletion', async t => {
+  const f = fixture(); try {
+    age(f.path); f.lost(); await refreshCleanupCatalog(f.c, f.store, f.t3);
+    await sweep(f);
+    assert.equal(f.calls[0], 1); assert.equal(automatic(f.store)[0].state, 'uncertain'); assert.ok(existsSync(f.path));
+    f.restart(); await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const now = Date.now(); t.mock.method(Date, 'now', () => now + 16 * 60_000);
+    await sweep(f);
+    assert.equal(f.calls[0], 1, 'the uncertain outcome is never replayed'); assert.equal(automatic(f.store).length, 1); assert.ok(existsSync(f.path));
+  } finally { f.close(); }
+});
+
+test('automatic maintenance yields a worktree to a foreground cleanup command and never deletes it twice', async () => {
+  const f = fixture(); try {
+    age(f.path); await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const foreground = manageCleanup(f.c, f.store, f.t3, f.kanvil, { type: 'remove', id: randomUUID(), targets: [f.target], reason: 'Operator delete' }, 'fixture operator', f.boundary);
+    while (!f.store.isLocked(`path:${f.path}`)) await new Promise(resolve => setImmediate(resolve));
+    await sweep(f);
+    assert.equal((await foreground).state, 'confirmed');
+    await sweep(f);
+    assert.equal(f.calls[0], 1); assert.equal(automatic(f.store).length, 0); assert.ok(!existsSync(f.path));
+  } finally { f.close(); }
+});
+
+test('cancelled automatic maintenance leaves the candidate untouched and the next sweep reclaims it', async () => {
+  const f = fixture(); try {
+    age(f.path); await refreshCleanupCatalog(f.c, f.store, f.t3);
+    const abort = new AbortController(); abort.abort();
+    await assert.rejects(sweep(f, abort.signal), /abort/i);
+    assert.equal(f.calls[0], 0); assert.equal(f.store.cleanupActions().length, 0); assert.ok(existsSync(f.path));
+    await sweep(f);
+    assert.equal(f.calls[0], 1); assert.ok(!existsSync(f.path));
+  } finally { f.close(); }
+});

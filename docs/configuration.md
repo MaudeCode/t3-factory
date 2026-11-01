@@ -13,6 +13,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | `idleMinutes` | Required inactivity for the relevant provider in T3 before ticket and discovery work. Upstream reviews do not wait for it. |
 | `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts and manual starts without a provider override; manual runs with `providers` selected may exceed them. |
 | `maxWaitingPRs` | Maximum parked jobs before further dispatches are held; `null` means unlimited. |
+| `minFreeSpaceBytes` | Free bytes required on the target repository's filesystem before any run starts, default `1073741824` (1 GiB). `0` disables the check. Automatic, manual, chain, discovery and upstream starts are all checked. |
 | `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. |
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |

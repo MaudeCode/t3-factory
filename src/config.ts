@@ -58,6 +58,8 @@ export const configSchema = z.preprocess(input => {
   enabled: z.boolean(), pollSeconds: positive.min(15), idleMinutes: positive,
   manualPrelaunchSeconds: positive.max(2_147_483).default(60),
   maxWaitingPRs: z.number().int().positive().nullable(),
+  // Dispatch admission floor for the target repository's filesystem; 0 disables it.
+  minFreeSpaceBytes: z.number().int().min(0).default(1_073_741_824),
   concurrency: z.object({ claude: z.number().int().min(0).default(1), codex: z.number().int().min(0).default(1) }).strict().default({ claude: 1, codex: 1 }),
   models: z.array(preset).min(1),
   monitoringTimeoutMinutes: positive.default(DEFAULT_MONITORING_TIMEOUT_MINUTES),

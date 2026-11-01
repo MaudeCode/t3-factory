@@ -3,6 +3,7 @@ import { backgroundCheckpoint, backgroundRead, readContext } from './read-contex
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
+import { lstat } from 'node:fs/promises';
 import { resolve, basename } from 'node:path';
 import { z } from 'zod';
 import type { Config } from './config.ts';
@@ -29,6 +30,10 @@ export interface CleanupAction {
   overridden?: string[]; identity?: string;
 }
 type Boundary = { processes?: typeof processWorkspaces; signal?: AbortSignal };
+// T3 leaves idle setup shells open in worktrees; removal closes them and looks again.
+const onlyIdleShells = (detail: { terminals: { status: string; hasRunningSubprocess: boolean }[]; checks: { name: string; state: string }[] }) =>
+  detail.terminals.length > 0 && detail.terminals.every(t => t.status === 'running' && !t.hasRunningSubprocess) &&
+  !detail.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name));
 const digest = (data: unknown) => createHash('sha256').update(JSON.stringify(data)).digest('hex');
 const jobPaths = (job: Job) => [job.workspaceCleanup?.path, job.dismissedWorktreePath, job.thread?.worktreePath].filter((p): p is string => !!p);
 const jobIdentity = (j: Job) => [j.id, j.projectId, j.threadId, j.state, j.createdAt, j.completedAt, j.dismissedAt, j.resumedAt, j.command, j.workspaceCleanup, j.workspaceCleanedAt, j.prUrls, j.reportPath,
@@ -441,10 +446,8 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
           const inspection = { ...target, size: forced, ...!forced ? { policy: 'unused' as const } : {} };
           let fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
           const blocked = (detail: typeof fresh) => detail.checks.some(check => check.state !== 'pass' && (!forced || !check.override));
-          // T3 leaves idle setup shells open in worktrees. Like automatic maintenance, close the idle ones and look again.
-          const idleShells = fresh.terminals.filter(t => t.status === 'running' && !t.hasRunningSubprocess);
-          if (idleShells.length === fresh.terminals.length && idleShells.length && !fresh.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name))) {
-            for (const t of idleShells) await t3.closeTerminal(t.threadId, t.terminalId);
+          if (onlyIdleShells(fresh)) {
+            for (const t of fresh.terminals) await t3.closeTerminal(t.threadId, t.terminalId);
             await new Promise(resolve => setTimeout(resolve, 1500));
             fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
           }
@@ -503,4 +506,39 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
     save(action.outcomes.some(o => o.state === 'uncertain') ? 'uncertain' : action.outcomes.some(o => o.state === 'failed') ? 'failed' : action.outcomes.some(o => o.state === 'pending') ? 'pending' : 'confirmed');
     return action;
   });
+}
+
+// Recent activity keeps a just-created or just-used worktree out of automatic removal.
+const RECLAIM_IDLE_MS = 24 * 3_600_000;
+// Matches the Factory job retry cooldown: a refused candidate waits for something outside maintenance to change.
+const RECLAIM_RETRY_MS = 15 * 60_000;
+async function recentlyActive(path: string, bindings: { updatedAt: string; latestUserMessageAt?: string | null; latestRunCompletedAt?: string | null }[]) {
+  const directory = await lstat(path).catch(() => null);
+  const last = Math.max(directory?.mtimeMs ?? Infinity, ...bindings.flatMap(b => [b.updatedAt, b.latestUserMessageAt, b.latestRunCompletedAt]).map(at => Date.parse(at ?? '')).filter(Number.isFinite));
+  return Date.now() - last < RECLAIM_IDLE_MS;
+}
+
+// Background maintenance over the persisted catalog: worktrees with no unfinished Factory cleanup, removed by the
+// same serialized unused-removal executor as Delete unused. Returns true while a step ran, false when the sweep is done.
+export async function reclaimUnusedWorkspace(c: Config, store: Store, t3: T3, kanvil: Kanvil, visited: Set<string>, boundary: Boundary = {}): Promise<boolean> {
+  // manageCleanup rechecks pending outcomes under the path lock; this read only skips known holds cheaply.
+  const catalog = savedCatalog(c, store), actions = store.cleanupActions();
+  for (const item of catalog?.items ?? []) {
+    const key = `path:${item.path}`, checked = `cleanupReclaimChecked:${digest([item.projectId, item.path])}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (!item.present || !item.registered || ['primary', 'active', 'blocked', 'unknown'].includes(item.state) || ['shared', 'unknown'].includes(item.ownership) || item.jobs.some(job => !job.workspaceCleanedAt)) continue;
+    // A foreground command owns this path; it goes first and the next sweep reads its outcome.
+    if (store.isLocked(key) || actions.some(a => cleanupActionPending(a, item.path))) continue;
+    if (Date.now() - (Date.parse(store.get(checked) ?? '') || 0) < RECLAIM_RETRY_MS || await recentlyActive(item.path, item.bindings)) continue;
+    const target = { projectId: item.projectId, path: item.path };
+    const detail = await inspectCleanup(c, store, t3, kanvil, { ...target, policy: 'unused' }, boundary);
+    store.set(checked, new Date().toISOString());
+    // Factory completion verification keeps owning its workspace until it records the cleanup.
+    if (detail.ownership === 'shared' || detail.jobs.some(job => !job.workspaceCleanedAt) || await recentlyActive(detail.path, detail.bindings)) return true;
+    if (detail.state !== 'eligible' && !(detail.workspace?.present && onlyIdleShells(detail))) return true;
+    await manageCleanup(c, store, t3, kanvil, { type: 'remove', id: randomUUID(), targets: [target], reason: 'Automatic maintenance: merged, clean, unused worktree' }, 'automatic maintenance', boundary);
+    return true;
+  }
+  return false;
 }

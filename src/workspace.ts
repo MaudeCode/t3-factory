@@ -24,9 +24,11 @@ export async function worktrees(repo: string, signal?: AbortSignal) {
     return { path: field('worktree')!, head: field('HEAD') ?? '', branch: field('branch')?.replace(/^refs\/heads\//, '') ?? 'HEAD', locked: fields.some(f => f === 'locked' || f.startsWith('locked ')) };
   }).filter(t => t.path);
 }
-export async function freeBytes(path: string): Promise<number | null> {
-  try { const fs = await statfs(path); return fs.bavail * fs.bsize; } catch { return null; }
+// Dispatch admission needs the failure; displays and removal evidence read an unreadable volume as unknown.
+export async function availableBytes(path: string): Promise<number> {
+  const fs = await statfs(path); return fs.bavail * fs.bsize;
 }
+export const freeBytes = (path: string): Promise<number | null> => availableBytes(path).catch(() => null);
 // Repository aliases can share one filesystem and must not multiply the free-space display.
 export async function filesystemSpace(path: string): Promise<{ id: string | null; freeBytes: number | null }> {
   try { return { id: String((await stat(path)).dev), freeBytes: await freeBytes(path) }; }

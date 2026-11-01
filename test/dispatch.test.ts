@@ -1,5 +1,7 @@
 import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -507,4 +509,33 @@ for (const fields of [{ automationReady: false }, { holdReason: 'Decision pendin
   Object.assign(f.tasks[0], fields);
   const row = await f.kanvil.task('root');
   for (const [name, value] of Object.entries(fields)) assert.equal(row[name], value);
+});
+
+// One free-space admission check at the shared launch boundary, before durable ownership or any launch RPC.
+for (const entry of ['manual', 'automatic', 'dry-run'] as const) for (const scenario of ['below', 'equal', 'disabled', 'unreadable'] as const) test(`dispatch free-space preflight: ${entry} ${scenario}`, async t => {
+  const f = dispatchFixture(t), block = 4096, required = 1000 * block;
+  f.c.minFreeSpaceBytes = scenario === 'disabled' ? 0 : required;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const reads: string[] = [];
+  t.mock.method(fs.promises, 'statfs', async (path: string) => {
+    reads.push(path);
+    if (scenario === 'unreadable') throw Object.assign(new Error('EIO: i/o error, statfs'), { code: 'EIO' });
+    return { bavail: scenario === 'below' ? 999 : 1000, bsize: block };
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const outcome = await cycle(f.c, f.store, entry === 'automatic' ? {} : { manual: true, model: 'sol', ticket: 'FIX-1', dryRun: entry === 'dry-run' }, { t3: f.t3, kanvil: f.kanvil });
+  const result = entry === 'automatic' ? (outcome as any).dispatches[0] : outcome, repo = f.c.projects[0].repoPath;
+  if (scenario === 'below') {
+    assert.equal(result.reason, 'disk-space-low', JSON.stringify(result));
+    assert.equal(result.path, repo); assert.equal(result.availableBytes, 999 * block); assert.equal(result.requiredBytes, required);
+    assert.match(String(result.message), /Not launched.*Cleanup/);
+  } else if (scenario === 'unreadable') {
+    assert.equal(result.reason, 'disk-space-check-failed', JSON.stringify(result));
+    assert.equal(result.path, repo); assert.match(String(result.message), /Not launched.*EIO.*minFreeSpaceBytes/);
+  } else assert.equal(result.reason, entry === 'dry-run' ? 'would-dispatch' : 'dispatched', JSON.stringify(result));
+  const launched = entry !== 'dry-run' && ['equal', 'disabled'].includes(scenario);
+  assert.equal(f.launches.length, launched ? 1 : 0, 'no launch RPC without enough space');
+  assert.equal(f.store.jobs().length, launched ? 1 : 0, 'no live reservation without enough space');
+  if (scenario === 'disabled') assert.deepEqual(reads, [], 'zero disables the reading');
+  else assert.ok(reads.includes(repo), 'the target repository filesystem is read');
 });

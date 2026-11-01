@@ -276,7 +276,7 @@ export class FactoryService {
       try {
         if (this.stopped) return;
         const c = this.configure(), kanvil = await this.ensureKanvil(c);
-        more = await cleanupNextWorkspace(c, this.store, this.t3, kanvil, this.cleanupVisited);
+        more = await cleanupNextWorkspace(c, this.store, this.t3, kanvil, this.cleanupVisited, { signal: this.abort.signal });
         this.publishWork();
       } catch (error) { log('workspace-maintenance-failed', { message: safeError(error) }); }
       finally {
