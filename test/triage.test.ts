@@ -1035,3 +1035,28 @@ test('a promotion outcome written over a concurrent edit is retried on the fresh
   assert.ok(labelsOf(inbox).includes('promoted') && labelsOf(inbox).includes('seen'));
   assert.equal(f.created.size, 1);
 });
+
+test('a report whose text changed while triage ran keeps no stale verdict and is triaged again', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(output({ verdict: 'spam', validation: 'not-applicable', scopes: [] })) });
+  conflictOn(f, 'TALIN-5', () => ({ description: 'It crashes on launch, corrected with steps.' }));
+  const result = await f.run().catch(error => ({ outcome: 'error', reason: String(error) }));
+  assert.deepEqual(result, { ticket: 'TALIN-5', outcome: 'waiting', reason: 'report changed during triage' });
+  assert.equal(named(f, 'updateTicket').length, 1, 'the old verdict is not written onto the changed report');
+  assert.deepEqual([current(f, 'TALIN-5').status, labelsOf(current(f, 'TALIN-5'))], ['todo', ['intake']]);
+  assert.equal(f.store.get(`triagePlan:${f.report.id}`), '');
+  f.mode({ stdout: reply(output()) });
+  assert.equal((await f.run(current(f, 'TALIN-5'))).outcome, 'triaged');
+  assert.equal(f.calls().length, 2, 'the changed report gets its own session');
+});
+
+test('a promotion outcome is not written onto a report whose text changed meanwhile', async t => {
+  const f = fixture(t);
+  f.mode({ stdout: reply(promotable()), review: reply({ safe: false, reason: 'Unclear change.' }) });
+  await pass(f);
+  conflictOn(f, 'TALIN-5', () => ({ title: 'App crashes on launch after update' }));
+  const [result] = await pass(f);
+  assert.deepEqual(result, { ticket: 'TALIN-5', outcome: 'waiting', reason: 'report changed during triage' });
+  assert.ok(!labelsOf(current(f, 'TALIN-5')).includes('promotion-blocked'));
+  assert.equal(f.store.get(`triageOutput:${f.report.id}`), '', 'the old output is dropped, so the report is triaged again');
+});
