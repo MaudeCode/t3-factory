@@ -418,6 +418,7 @@ test('a failed refresh serves the newest retained reading only while the shared 
   assert.equal(served.capturedAt, goodAt, 'a failed refresh serves the retained reading with its original capture time');
   assert.deepEqual(reports, [true, false], 'a fresh forced reading reports health; a failed one reports to the recovery owner');
   assert.equal(served.allowed, true); assert.equal('retained' in served && served.retained, true);
+  assert.equal((await readModelQuota(t3, claudeConfig, [], 'opus', false, true, 80)).allowed, false, 'retained readings preserve outstanding quota headroom');
   t.mock.method(t3, 'peekProvider', () => probeFailed());
   assert.equal(liveModelQuota(t3, claudeConfig, [], 'opus')?.capturedAt, goodAt, 'the synchronous reservation boundary shares the fallback');
   t.mock.timers.tick(1000); const probedAt = new Date().toISOString();

@@ -8,7 +8,7 @@ type ModelConfig = Pick<Config, 'models' | 'quota'>;
 class QuotaRefreshError extends Error {}
 
 // One evaluator serves network reads and the synchronous reservation boundary.
-export function modelQuota(c: ModelConfig, jobs: Job[], id: string, provider: Awaited<ReturnType<T3['provider']>>, manual: boolean, requireFreshAfter?: number) {
+export function modelQuota(c: ModelConfig, jobs: Job[], id: string, provider: Awaited<ReturnType<T3['provider']>>, manual: boolean, requireFreshAfter?: number, reservationPercent = 0) {
   const preset = configuredModel(c, id);
   const consumedAfter = jobs.filter(job => (job.modelSelection?.instanceId ?? 'claudeAgent') === preset.model.instanceId).reduce((latest, job) => Math.max(latest, Date.parse(job.createdAt)), 0);
   const name = provider.driver === 'codex' ? 'Codex' : 'Claude';
@@ -52,7 +52,7 @@ export function modelQuota(c: ModelConfig, jobs: Job[], id: string, provider: Aw
     }
   }
   return {
-    provider: name, driver: provider.driver, hasAllowance: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > 0) && (specificRemaining === null || specificRemaining > 0), allowed: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > w.reserved) && (specificRemaining === null || specificRemaining > specificRequired),
+    provider: name, driver: provider.driver, hasAllowance: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > 0) && (specificRemaining === null || specificRemaining > 0), allowed: windows.every(w => (specificRemaining !== null && w.name === 'weekly') || w.remaining > w.reserved + reservationPercent) && (specificRemaining === null || specificRemaining > specificRequired + reservationPercent),
     capturedAt: limits.checkedAt, windows,
     weeklyReserveApplied: provider.driver === 'codex' ? !manual : specificRemaining === null,
     factoryRouting: { model: preset.model, modelId: preset.id, reason: `Assigned model: ${preset.name}`, fableRemainingPercent: displayedRemaining },
@@ -63,11 +63,11 @@ type Provider = Awaited<ReturnType<T3['provider']>>;
 // A stale or failed reading falls back to the newest retained reading of the same account, judged by the
 // same checks: it never authorizes a start once expired, before a reservation, or exhausted. Only a
 // failed probe is replaced; an authoritative unavailable reason, a not-ready provider or another account is not.
-function retainedModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, provider: Provider, manual: boolean) {
+function retainedModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, provider: Provider, manual: boolean, reservationPercent = 0) {
   const unavailable = provider.usageLimits?.unavailable as { reason?: unknown } | undefined, kept = t3.retainedQuota?.(provider);
   if (!kept || unavailable && unavailable.reason !== 'probeFailed') return;
   const snapshot = { ...provider, usageLimits: kept.usageLimits };
-  try { return { quota: { ...modelQuota(c, jobs, id, snapshot, manual), retained: true as const }, snapshot }; }
+  try { return { quota: { ...modelQuota(c, jobs, id, snapshot, manual, undefined, reservationPercent), retained: true as const }, snapshot }; }
   catch { return; }
 }
 
@@ -84,23 +84,23 @@ export function liveModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, 
   return retained;
 }
 
-export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false, refresh = false) {
-  const result = (await readModelQuotas(t3, c, jobs, [id], manual, refresh))[0];
+export async function readModelQuota(t3: T3, c: ModelConfig, jobs: Job[], id: string, manual = false, refresh = false, reservationPercent = 0) {
+  const result = (await readModelQuotas(t3, c, jobs, [id], manual, refresh, reservationPercent))[0];
   if ('error' in result) throw result.error;
   return result.quota!;
 }
 
 // Evaluate every preset on an instance from one authoritative allowance snapshot.
-export async function readModelQuotas(t3: T3, c: ModelConfig, jobs: Job[], ids: string[], manual = false, refresh = false) {
+export async function readModelQuotas(t3: T3, c: ModelConfig, jobs: Job[], ids: string[], manual = false, refresh = false, reservationPercent = 0) {
   const preset = configuredModel(c, ids[0]);
   if (ids.some(id => configuredModel(c, id).model.instanceId !== preset.model.instanceId)) throw new Error('Quota models must share a provider instance');
   type Result = ({ id: string; quota: ReturnType<typeof modelQuota> & { retained?: true }; error?: never } | { id: string; error: unknown; quota?: never }) & { snapshot?: Provider };
   // Replace a stale or failed reading with the retained one where it still passes.
-  const fallback = (results: Result[], provider: Provider) => results.map(result => result.error instanceof QuotaRefreshError ? { id: result.id, ...retainedModelQuota(t3, c, jobs, result.id, provider, manual) ?? result } as Result : result);
+  const fallback = (results: Result[], provider: Provider) => results.map(result => result.error instanceof QuotaRefreshError ? { id: result.id, ...retainedModelQuota(t3, c, jobs, result.id, provider, manual, reservationPercent) ?? result } as Result : result);
   const live = t3.peekProvider(preset.model.instanceId);
   if (live) {
     const evaluated: Result[] = ids.map(id => {
-      try { return { id, quota: modelQuota(c, jobs, id, live, manual), snapshot: live }; }
+      try { return { id, quota: modelQuota(c, jobs, id, live, manual, undefined, reservationPercent), snapshot: live }; }
       catch (error) { return { id, error, snapshot: live }; }
     });
     // A forced read must reach T3: a retained fallback cannot stand in for the probe recovery needs.
@@ -121,7 +121,7 @@ export async function readModelQuotas(t3: T3, c: ModelConfig, jobs: Job[], ids: 
       if (before && !current) throw new Error('Provider identity changed during quota refresh');
       if (current && JSON.stringify(current) !== JSON.stringify(before)) provider = current;
       results = ids.map(id => {
-        try { return { id, quota: modelQuota(c, jobs, id, provider, manual, force ? requestedAt : undefined), snapshot: provider }; }
+        try { return { id, quota: modelQuota(c, jobs, id, provider, manual, force ? requestedAt : undefined, reservationPercent), snapshot: provider }; }
         catch (error) { return { id, error, snapshot: provider }; }
       });
     } catch (error) {

@@ -12,6 +12,10 @@ import { log, triageResults, triageRows } from '../src/scheduler.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'f', GIT_AUTHOR_EMAIL: 'f@example.test', GIT_COMMITTER_NAME: 'f', GIT_COMMITTER_EMAIL: 'f@example.test' } }).toString().trim();
 const budget = { reservePercent: 0, minRemainingPercent: 0 };
+const quotaProvider = (checkedAt: string, usedPercent = 10) => ({ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'fixture' }], usageLimits: { checkedAt, windows: [
+  { id: 'five_hour', usedPercent, windowDurationMins: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+  { id: 'seven_day', usedPercent, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
+] } });
 const promptFile = fileURLToPath(new URL('../prompts/inbox-triage.md', import.meta.url));
 const project = (key: string, repoPath: string, fields: Record<string, unknown> = {}) => ({ name: key, key, enabled: true, kanvilId: key, t3Id: key, repoPath, githubRepo: `fixture/${key.toLowerCase()}`, baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], ...fields });
 const baseConfig = (dir: string, repoPath: string) => ({
@@ -140,6 +144,8 @@ test('config validates inboxes', t => {
   rejects([{ ...tal, inbox: [{ kanvilId: 'TALIN' }, { kanvilId: 'X' }] }, oth], /expected object/);
   assert.throws(() => configSchema.parse({ ...valid, triage: { ...valid.triage, sourceProjectId: 'TALIN' } }));
   assert.equal(configSchema.parse(valid).triage!.concurrency, 3);
+  assert.equal(configSchema.parse(valid).triage!.quotaReservePercent, 5);
+  for (const quotaReservePercent of [0, -1, 101, null]) assert.throws(() => configSchema.parse({ ...valid, triage: { ...valid.triage, quotaReservePercent } }));
   assert.equal(configSchema.parse({ ...valid, triage: { ...valid.triage, concurrency: 1 } }).triage!.concurrency, 1);
   for (const concurrency of [0, -1, 1.5, null]) assert.throws(() => configSchema.parse({ ...valid, triage: { ...valid.triage, concurrency } }));
 });
@@ -254,7 +260,8 @@ test('triage fills three slots and refills a settled slot while its siblings are
   const arrived = Promise.withResolvers<void>(), refill = Promise.withResolvers<void>();
   const gates = reports.map(() => Promise.withResolvers<void>());
   const comment = f.kanvil.addComment;
-  let admissions = 0, admitting = false;
+  let admissions = 0, admitting = false, completed = 0;
+  const reservations: number[] = [];
   const states: Task[][] = [];
   f.kanvil.addComment = async (...args) => {
     const at = reports.findIndex(r => r.id === args[1]);
@@ -266,13 +273,14 @@ test('triage fills three slots and refills a settled slot while its siblings are
     if (!Array.isArray(running)) return; // Also let the serial baseline reach the overlap assertion.
     states.push(running);
     if (running.some(r => r.id === reports[3].id)) refill.resolve();
-  }, budget: async () => {
+  }, budget: async inFlight => {
+    reservations.push(inFlight);
     assert.equal(admitting, false, 'quota admissions cannot overlap');
     admitting = true;
     await Promise.resolve();
     admitting = false;
     admissions++;
-    return {};
+    return { settled: () => completed++ };
   } });
   try {
     await arrived.promise;
@@ -284,6 +292,8 @@ test('triage fills three slots and refills a settled slot while its siblings are
     assert.deepEqual(states.at(-1)!.map(r => r.key), ['TALIN-6', 'TALIN-7', 'TALIN-8'], 'settling one report preserves its active siblings');
   } finally { gates.forEach(g => g.resolve()); await pending; }
   assert.equal(f.calls().length, 4);
+  assert.deepEqual(reservations, [0, 1, 2, 2], 'every queued snapshot and running review reserves its own headroom');
+  assert.equal(completed, 4);
   assert.deepEqual(states.at(-1), [], 'no active report survives the pass');
 });
 
@@ -294,13 +304,13 @@ for (const stop of ['quota refusal', 'cancellation', 'admission error']) test(`$
   const comment = f.kanvil.addComment;
   f.kanvil.addComment = async (...args) => { arrived.resolve(); await release.promise; return comment(...args); };
   const states: Task[][] = [];
-  let admissions = 0;
+  let admissions = 0, completed = 0;
   const pending = triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), signal: controller.signal,
     onRun: running => states.push(running), budget: async () => {
-      if (++admissions === 1) return { model: 'fixture' };
+      if (++admissions === 1) return { model: 'fixture', settled: () => completed++ };
       await arrived.promise;
       if (stop === 'admission error') throw new Error('quota read failed');
-      if (stop === 'cancellation') { controller.abort(); return { model: 'fixture' }; }
+      if (stop === 'cancellation') { controller.abort(); return { model: 'fixture', settled: () => completed++ }; }
       return { blocked: 'quota-budget' };
     } });
   // Attach rejection handling immediately; admission failure must still drain the first run.
@@ -311,6 +321,7 @@ for (const stop of ['quota refusal', 'cancellation', 'admission error']) test(`$
   } finally { release.resolve(); }
   const result = await outcome;
   assert.equal(admissions, 2);
+  assert.equal(completed, stop === 'cancellation' ? 2 : 1, 'every admitted reservation settles, including cancellation before launch');
   assert.equal(f.calls().length, 1);
   assert.deepEqual(states.at(-1), []);
   if (stop === 'admission error') assert.match(String('error' in result && result.error), /quota read failed/);
@@ -367,25 +378,77 @@ test('queue status comes from the live projections with zero requests', async t 
 
 test('each admission counts as Claude consumption, so the next report needs a newer quota reading', async t => {
   const f = fixture(t);
-  let checkedAt = new Date(Date.now() - 1000).toISOString();
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-05T00:00:00Z') });
+  let checkedAt = new Date(Date.now() - 1000).toISOString(), usedPercent = 10;
   const reads: boolean[] = [];
-  const provider = () => ({ instanceId: 'claudeAgent', driver: 'claudeAgent', status: 'ready', installed: true, enabled: true, models: [{ slug: 'fixture' }], usageLimits: { checkedAt, windows: [
-    { id: 'five_hour', usedPercent: 10, windowDurationMins: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
-    { id: 'seven_day', usedPercent: 10, windowDurationMins: 10080, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
-  ] } });
-  const t3 = { providers: async () => [provider()], provider: async (_id: string, force?: boolean) => { reads.push(!!force); return provider(); }, peekProvider: () => undefined } as never;
+  const provider = () => quotaProvider(checkedAt, usedPercent);
+  const client = { providers: async () => [provider()], provider: async (_id: string, force?: boolean) => { reads.push(!!force); return provider(); }, peekProvider: () => undefined };
+  const t3 = client as never;
   const store = { ...f.store, jobSummaries: () => [] };
-  assert.deepEqual(await admitTriage(f.c, t3, store), { model: 'fixture' });
+  const allowed = async (config = f.c, inFlight = 0) => {
+    const admission = await admitTriage(config, t3, store, inFlight);
+    assert.ok(!('blocked' in admission), JSON.stringify(admission));
+    assert.equal(admission.model, 'fixture');
+    return admission;
+  };
+  await allowed();
   // The same reading cannot admit a second report: a forced refresh that returns nothing newer is refused.
   const second = await admitTriage(f.c, t3, store);
   assert.ok('blocked' in second && /stale|refresh/i.test(second.blocked), JSON.stringify(second));
   assert.ok(reads.includes(true), 'a refresh was forced');
-  checkedAt = new Date(Date.now() + 1000).toISOString();
-  assert.deepEqual(await admitTriage(f.c, t3, store), { model: 'fixture' });
+  t.mock.timers.tick(1000); checkedAt = new Date().toISOString();
+  await allowed();
   assert.deepEqual(await admitTriage({ ...f.c, triage: { ...f.c.triage!, enabled: false } }, t3, store), { blocked: 'triage-disabled' });
   // Triage takes no T3 run slot: with Claude T3 jobs off it still runs, held only by the quota reserve.
-  checkedAt = new Date(Date.now() + 2000).toISOString();
-  assert.deepEqual(await admitTriage({ ...f.c, concurrency: { claude: 0, codex: 1 } }, t3, store), { model: 'fixture' });
+  t.mock.timers.tick(1000); checkedAt = new Date().toISOString();
+  await allowed({ ...f.c, concurrency: { claude: 0, codex: 1 } });
+  usedPercent = 88;
+  t.mock.timers.tick(1000); checkedAt = new Date().toISOString();
+  f.c.quota.claude.weekly.minRemainingPercent = 2;
+  assert.deepEqual(await admitTriage(f.c, t3, store, 1), { blocked: 'quota-budget' }, '12% remaining cannot cover the 2% floor plus two 5% run reservations, even with a newer unchanged reading');
+  const final = await allowed();
+  t.mock.timers.tick(1000); final.settled?.();
+  const afterCompletion = await admitTriage(f.c, t3, store);
+  assert.ok('blocked' in afterCompletion && /stale|refresh/.test(afterCompletion.blocked), 'completion requires a newer quota reading before releasing unobserved consumption');
+  usedPercent = 60;
+  t.mock.timers.tick(1000); checkedAt = new Date().toISOString();
+  const active = await allowed(f.c, 2);
+  t.mock.timers.tick(1000); checkedAt = new Date().toISOString();
+  t.mock.method(client, 'provider', async () => {
+    const snapshot = provider();
+    t.mock.timers.tick(1000); active.settled?.();
+    return snapshot;
+  });
+  assert.deepEqual(await admitTriage(f.c, t3, store, 1), { blocked: 'quota-before-triage-completion' }, 'a completion during the quota read cannot release headroom against the earlier snapshot');
+});
+
+test('pre-launch follow-up reservations hold quota while reading tickets', async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-05T00:00:00Z') });
+  f.c.quota.claude.weekly.minRemainingPercent = 2;
+  const reports = [f.report, task('TALIN-6', { labels: [{ name: 'intake' }] })];
+  f.projects.TALIN.push(reports[1]);
+  for (const report of reports) {
+    report.labels!.push({ name: 'triaged' }, { name: 'verdict:actionable' });
+    rememberTriage(f.store, report, { output: output() as TriageOutput, evidence: [{ path: 'src/app.ts', line: 3 }], commit: f.commit });
+  }
+  const release = Promise.withResolvers<void>(), considered = Promise.withResolvers<void>();
+  const taskRead = f.kanvil.task;
+  f.kanvil.task = async (...args) => { await release.promise; return taskRead(...args); };
+  const provider = () => quotaProvider(new Date().toISOString(), 88);
+  const t3 = { providers: async () => [provider()], provider: async () => provider(), peekProvider: () => undefined } as never;
+  let admissions = 0, second: Awaited<ReturnType<typeof admitTriage>> | undefined;
+  const pending = triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async inFlight => {
+    t.mock.timers.tick(1000);
+    const admission = await admitTriage(f.c, t3, { ...f.store, jobSummaries: () => [] }, inFlight);
+    if (++admissions === 2) { second = admission; considered.resolve(); }
+    return admission;
+  } });
+  try {
+    await considered.promise;
+    assert.deepEqual(second, { blocked: 'quota-budget' }, 'an admitted follow-up owns headroom before its network ticket read finishes');
+  } finally { release.resolve(); await pending; }
+  assert.equal(f.calls().length, 1, 'only the reserved review reaches Claude');
 });
 
 test('a stale or disconnected projection delays the run without fetching', async t => {
@@ -554,7 +617,12 @@ test('an actionable, confirmed bug becomes one templated, factory-ready ticket a
   f.projects.TALIN[0] = { ...f.report, description: `It crashes on launch. ${MARKER}` };
   f.mode({ stdout: reply(promotable()), review: safe });
   assert.deepEqual((await pass(f)).map(r => r.outcome), ['triaged']);
-  const [promotedResult] = await pass(f);
+  let safetyCompleted = false;
+  const [promotedResult] = await pass(f, { budget: async inFlight => {
+    assert.equal(inFlight, 0);
+    return { settled: () => { safetyCompleted = true; } };
+  } });
+  assert.equal(safetyCompleted, true, 'the safety review also retires its quota reservation');
   assert.deepEqual(promotedResult, { ticket: 'TALIN-5', outcome: 'promoted', promoted: 'TAL-100', promotedId: current(f, 'TAL-100').id });
 
   const [create] = named(f, 'createTicket'), [projectId, fields] = create.args as [string, Record<string, unknown>];
