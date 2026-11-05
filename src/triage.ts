@@ -53,8 +53,8 @@ export interface TriageKanvil {
   addRelation(projectId: string, ticketId: string, targetId: string, type: 'duplicate', requestId: string): Promise<unknown>;
 }
 // `budget` admits each model run: a switch flipped mid-pass stops the next run, and the run uses the model whose allowance was checked.
-export type Admission = { blocked: string } | { model?: string };
-export interface TriageOptions { command?: string; timeoutMs?: number; budget?: () => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running: Task[]) => void; now?: () => number }
+export type Admission = { blocked: string } | { model?: string; settled?: () => void };
+export interface TriageOptions { command?: string; timeoutMs?: number; budget?: (inFlight: number) => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running: Task[]) => void; now?: () => number }
 /** An inbox and the delivery project it feeds; the project supplies the repository and scopes. */
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
@@ -473,10 +473,13 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
   }
   const fields = promotedFields(target, ticket, saved);
   if (!saved.review) {
-    const admission = await options.budget?.() ?? {};
+    const admission = await options.budget?.(0) ?? {};
     if ('blocked' in admission) return result('waiting', { reason: admission.blocked });
-    options.onRun?.([ticket]);
-    saved.review = await safetyReview(fields, ticket, { ...options, model: admission.model ?? options.model });
+    try {
+      options.onRun?.([ticket]);
+      saved.review = await safetyReview(fields, ticket, { ...options, model: admission.model ?? options.model });
+    }
+    finally { admission.settled?.(); }
     store.set(triagedKey(ticket), JSON.stringify(saved));
   }
   if (!saved.review.safe) return block(`safety review: ${saved.review.reason}`);
@@ -526,16 +529,16 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
       const followUp = saved && !saved.validationReviewed && saved.output.verdict === 'actionable' && saved.output.kind === 'bug'
         && saved.output.validation === 'plausible' && !saved.output.injectionSuspected && !saved.output.duplicateOf && saved.evidence.length > 0;
       if (saved && !followUp) {
-        try { result = await promoteTicket(store, kanvil, target, ticket, saved, { ...options, onRun: () => started(ticket) }); }
+        try { result = await promoteTicket(store, kanvil, target, ticket, saved, { ...options, budget: () => options.budget?.(running.size) ?? Promise.resolve({}), onRun: () => started(ticket) }); }
         catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
         finally { settled(ticket); }
         if (!result) continue;
         record(index, ticket, target, result);
         if (result.outcome === 'waiting') break;
       } else {
-        const admission = await options.budget?.() ?? {};
+        const admission = await options.budget?.(running.size) ?? {};
         if ('blocked' in admission) { record(index, ticket, target, { ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
-        if (options.signal?.aborted) break;
+        if (options.signal?.aborted) { admission.settled?.(); break; }
         const work = (async () => {
           if (followUp && !awaitingPromotion(await kanvil.task(ticket.id, ticket.projectId), target.inbox)) return;
           options.signal?.throwIfAborted();
@@ -544,7 +547,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
         })()
           .catch(error => ({ ticket: ticket.key, outcome: 'error', reason: safeError(error) }))
           .then(result => record(index, ticket, target, result))
-          .finally(() => { pending.delete(work); settled(ticket); })
+          .finally(() => { try { admission.settled?.(); } finally { pending.delete(work); settled(ticket); } })
           .catch(error => { failure ??= { error }; });
         pending.add(work);
       }
@@ -559,7 +562,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
  * A run creates no job, so each admission is recorded as consumption: the next one needs a
  * quota reading taken after it (forcing a refresh), and public reports cannot reuse one snapshot.
  */
-export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }): Promise<Admission> {
+export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }, inFlight = 0): Promise<Admission> {
   try {
     // Triage takes no T3 run slot, so Claude T3 concurrency does not gate it; the quota reserve does.
     if (!c.triage?.enabled) return { blocked: 'triage-disabled' };
@@ -568,11 +571,13 @@ export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provide
     if (!preset) return { blocked: 'No Claude model is configured' };
     const key = `triageAdmittedAt:${preset.model.instanceId}`, last = store.get(key);
     const jobs = [...store.jobSummaries(), ...last ? [{ modelSelection: preset.model, createdAt: last } as Job] : []];
-    const quota = await readModelQuota(t3 as T3, c, jobs, preset.id);
+    const quota = await readModelQuota(t3 as T3, c, jobs, preset.id, false, false, (inFlight + 1) * c.triage.quotaReservePercent);
     if (!quota.hasAllowance) return { blocked: 'quota-exhausted' };
     if (!quota.allowed) return { blocked: 'quota-budget' };
+    const completed = store.get(key);
+    if (completed && Date.parse(quota.capturedAt) <= Date.parse(completed)) return { blocked: 'quota-before-triage-completion' };
     store.set(key, new Date().toISOString());
-    return { model: preset.model.model };
+    return { model: preset.model.model, settled: () => store.set(key, new Date().toISOString()) };
   } catch (error) { return { blocked: safeError(error) }; }
 }
 

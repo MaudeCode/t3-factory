@@ -195,7 +195,7 @@ export class FactoryService {
         this.store.set('triagePromoted', JSON.stringify(promotedTickets(c, kanvil, this.store.events(TRIAGE_RESULTS, undefined, 'triage'))));
         this.publishWork();
       };
-      const results = await triagePass(c, this.store, kanvil, { budget: () => admitTriage(this.configure(), this.t3, this.store), signal: this.abort.signal, onRun: publish });
+      const results = await triagePass(c, this.store, kanvil, { budget: inFlight => admitTriage(this.configure(), this.t3, this.store, inFlight), signal: this.abort.signal, onRun: publish });
       if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
     });
     this.scheduleCleanup(true); this.scheduleCollection();

@@ -25,6 +25,9 @@ test('weekly-only Claude accounts work in reads and live admission while retaini
     assert.deepEqual(result.windows.map(w => w.name), ['weekly']);
     assert.deepEqual(liveModelQuota(t3, c, [], id, manual), result);
   }
+  for (const [id, reservation] of [['opus', 20], ['fable', 65]] as const) {
+    assert.equal((await readModelQuota(t3, c, [], id, false, false, reservation)).allowed, false, 'in-flight headroom applies to the general or model-specific allowance');
+  }
   p.usageLimits.windows[0].usedPercent = 90;
   assert.equal((await readModelQuota(t3, c, [], 'opus')).allowed, false);
   assert.equal((await readModelQuota(t3, c, [], 'fable')).allowed, true);

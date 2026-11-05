@@ -55,6 +55,7 @@
   "triage": {
     "enabled": false,
     "concurrency": 3,
+    "quotaReservePercent": 5,
     "promptFile": "/absolute/path/to/inbox-triage.md"
   },
   // Optional: required once any project lists upstreams.
