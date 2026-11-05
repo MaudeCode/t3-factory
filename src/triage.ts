@@ -529,14 +529,14 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
       const followUp = saved && !saved.validationReviewed && saved.output.verdict === 'actionable' && saved.output.kind === 'bug'
         && saved.output.validation === 'plausible' && !saved.output.injectionSuspected && !saved.output.duplicateOf && saved.evidence.length > 0;
       if (saved && !followUp) {
-        try { result = await promoteTicket(store, kanvil, target, ticket, saved, { ...options, budget: () => options.budget?.(running.size) ?? Promise.resolve({}), onRun: () => started(ticket) }); }
+        try { result = await promoteTicket(store, kanvil, target, ticket, saved, { ...options, budget: () => options.budget?.(pending.size) ?? Promise.resolve({}), onRun: () => started(ticket) }); }
         catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
         finally { settled(ticket); }
         if (!result) continue;
         record(index, ticket, target, result);
         if (result.outcome === 'waiting') break;
       } else {
-        const admission = await options.budget?.(running.size) ?? {};
+        const admission = await options.budget?.(pending.size) ?? {};
         if ('blocked' in admission) { record(index, ticket, target, { ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
         if (options.signal?.aborted) { admission.settled?.(); break; }
         const work = (async () => {
