@@ -54,7 +54,7 @@ export interface TriageKanvil {
 }
 // `budget` admits each model run: a switch flipped mid-pass stops the next run, and the run uses the model whose allowance was checked.
 export type Admission = { blocked: string } | { model?: string };
-export interface TriageOptions { command?: string; timeoutMs?: number; budget?: () => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running?: Task) => void; now?: () => number }
+export interface TriageOptions { command?: string; timeoutMs?: number; budget?: () => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running: Task[]) => void; now?: () => number }
 /** An inbox and the delivery project it feeds; the project supplies the repository and scopes. */
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
@@ -101,11 +101,17 @@ export function triagePrompt(promptFile: string, target: Inbox, ticket: Task, no
   return { prompt: readFileSync(promptFile, 'utf8').replace(/\{\{(nonce|report|key|project|scopes)\}\}/g, (_, key: string) => fill[key]), nonce };
 }
 
+// Concurrent reviews share only the fetched commit, never a disposable snapshot.
+const snapshotRevisions = new Map<string, Promise<string>>();
 /** Builds `code/` (git archive of the fetched release head), `tickets/`, and `report.md`. */
 export async function buildSnapshot(project: Project, ticket: Task, exported: ReturnType<typeof ticketExport>) {
   const branch = project.baseBranch;
-  await exec('git', ['-C', project.repoPath, 'fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { timeout: 120_000 });
-  const commit = (await exec('git', ['-C', project.repoPath, 'rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`])).stdout.trim();
+  const key = JSON.stringify([realpathSync(project.repoPath), branch]);
+  if (!snapshotRevisions.has(key)) snapshotRevisions.set(key, (async () => {
+    await exec('git', ['-C', project.repoPath, 'fetch', '--quiet', '--no-write-fetch-head', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { timeout: 120_000 });
+    return (await exec('git', ['-C', project.repoPath, 'rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`])).stdout.trim();
+  })().finally(() => snapshotRevisions.delete(key)));
+  const commit = await snapshotRevisions.get(key)!;
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 't3-factory-triage-')));
   try {
     const code = join(dir, 'code'), archive = join(dir, 'code.tar');
@@ -469,7 +475,7 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
   if (!saved.review) {
     const admission = await options.budget?.() ?? {};
     if ('blocked' in admission) return result('waiting', { reason: admission.blocked });
-    options.onRun?.(ticket);
+    options.onRun?.([ticket]);
     saved.review = await safetyReview(fields, ticket, { ...options, model: admission.model ?? options.model });
     store.set(triagedKey(ticket), JSON.stringify(saved));
   }
@@ -489,45 +495,63 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
 }
 
 /**
- * A pass: refresh every inbox and target projection, then work the oldest report first, one at a time: triage new
- * reports, and promote actionable ones. An actionable report without its saved triage output is triaged again.
+ * Admit oldest first, overlapping isolated source reviews within the triage limit. Admission and
+ * promotion stay ordered so quota readings and per-inbox promotion counters cannot race.
  */
 export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, options: TriageOptions = {}) {
   const all = inboxes(c);
   if (!all.length) return [];
   // Reads happen here, before any run; a run itself uses only the cached projections.
   const read = await Promise.all(all.map(async target => ({ target, tickets: (await Promise.all([kanvil.tasks(target.inbox.kanvilId, undefined, true), kanvil.tasks(target.project.kanvilId, undefined, true)]))[0] })));
-  options.onRun?.();
+  options.onRun?.([]);
   if (!c.triage?.enabled) return [];
   const queue = read.flatMap(({ target, tickets }) => tickets.flatMap(ticket =>
     needsTriage(ticket, target.inbox) ? [{ target, ticket, saved: null }] : awaitingPromotion(ticket, target.inbox) ? [{ target, ticket, saved: savedTriage(store, ticket) }] : []))
     .toSorted((a, b) => oldestFirst(a.ticket, b.ticket));
-  const results: Result[] = [];
-  for (const { target, ticket, saved } of queue) {
-    if (options.signal?.aborted) break;
-    let result: Result | undefined;
-    const followUp = saved && !saved.validationReviewed && saved.output.verdict === 'actionable' && saved.output.kind === 'bug'
-      && saved.output.validation === 'plausible' && !saved.output.injectionSuspected && !saved.output.duplicateOf && saved.evidence.length > 0;
-    if (saved && !followUp) {
-      try { result = await promoteTicket(store, kanvil, target, ticket, saved, options); }
-      catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
-      if (!result) continue;
-      if (result.outcome === 'waiting') { results.push(result); break; }
-    } else {
-      const admission = await options.budget?.() ?? {};
-      if ('blocked' in admission) { results.push({ ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
-      try {
-        if (followUp && !awaitingPromotion(await kanvil.task(ticket.id, ticket.projectId), target.inbox)) continue;
-        options.onRun?.(ticket);
-        result = await triageTicket(c, store, kanvil, target, ticket, { ...options, model: admission.model ?? options.model }, !!followUp);
+  const results: (Result | undefined)[] = [], pending = new Set<Promise<void>>(), running = new Map<string, Task>();
+  let failure: { error: unknown } | undefined;
+  const publish = () => options.onRun?.([...running.values()]);
+  const started = (ticket: Task) => { running.set(ticket.id, ticket); publish(); };
+  const settled = (ticket: Task) => { running.delete(ticket.id); publish(); };
+  const record = (index: number, ticket: Task, target: Inbox, result?: Result) => {
+    results[index] = result;
+    if (result && result.outcome !== 'waiting') store.record?.('triage', outcomeText(result), { ...result, ticketId: ticket.id, inboxId: ticket.projectId, projectId: target.project.kanvilId, project: target.project.name });
+  };
+  try {
+    for (const [index, { target, ticket, saved }] of queue.entries()) {
+      if (pending.size >= c.triage.concurrency) await Promise.race(pending);
+      if (failure) break;
+      if (options.signal?.aborted) break;
+      let result: Result | undefined;
+      const followUp = saved && !saved.validationReviewed && saved.output.verdict === 'actionable' && saved.output.kind === 'bug'
+        && saved.output.validation === 'plausible' && !saved.output.injectionSuspected && !saved.output.duplicateOf && saved.evidence.length > 0;
+      if (saved && !followUp) {
+        try { result = await promoteTicket(store, kanvil, target, ticket, saved, { ...options, onRun: () => started(ticket) }); }
+        catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
+        finally { settled(ticket); }
+        if (!result) continue;
+        record(index, ticket, target, result);
+        if (result.outcome === 'waiting') break;
+      } else {
+        const admission = await options.budget?.() ?? {};
+        if ('blocked' in admission) { record(index, ticket, target, { ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
+        if (options.signal?.aborted) break;
+        const work = (async () => {
+          if (followUp && !awaitingPromotion(await kanvil.task(ticket.id, ticket.projectId), target.inbox)) return;
+          options.signal?.throwIfAborted();
+          started(ticket);
+          return triageTicket(c, store, kanvil, target, ticket, { ...options, model: admission.model ?? options.model }, !!followUp);
+        })()
+          .catch(error => ({ ticket: ticket.key, outcome: 'error', reason: safeError(error) }))
+          .then(result => record(index, ticket, target, result))
+          .finally(() => { pending.delete(work); settled(ticket); })
+          .catch(error => { failure ??= { error }; });
+        pending.add(work);
       }
-      catch (error) { result = { ticket: ticket.key, outcome: 'error', reason: safeError(error) }; }
     }
-    results.push(result);
-    if (result.outcome !== 'waiting') store.record?.('triage', outcomeText(result), { ...result, ticketId: ticket.id, inboxId: ticket.projectId, projectId: target.project.kanvilId, project: target.project.name });
-  }
-  options.onRun?.();
-  return results;
+  } finally { await Promise.all(pending); publish(); }
+  if (failure) throw failure.error;
+  return results.filter((result): result is Result => !!result);
 }
 
 /**
@@ -553,13 +577,13 @@ export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provide
 }
 
 /** Per-inbox queue from the live projections only: null counts while a projection is not current. */
-export function triageQueue(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanvil, 'cachedTickets'>, running?: Task) {
+export function triageQueue(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanvil, 'cachedTickets'>, running: Task[] = []) {
   return inboxes(c).map(({ project, inbox }) => {
     const tickets = kanvil.cachedTickets(inbox.kanvilId), waiting = tickets?.filter(t => needsTriage(t, inbox)).toSorted(oldestFirst);
     const labelled = (label: string) => tickets?.filter(t => t.projectId === inbox.kanvilId && !t.archived && names(t).includes(label)).length ?? null;
     return { project: project.name, projectId: project.kanvilId, inboxId: inbox.kanvilId, label: inbox.label, synchronized: !!tickets,
       untriaged: waiting?.length ?? null, failed: tickets?.filter(t => failed(t, inbox)).length ?? null,
-      running: running?.projectId === inbox.kanvilId ? running.key ?? null : null, oldestUntriagedAt: waiting?.[0]?.createdAt ?? null,
+      running: running.filter(t => t.projectId === inbox.kanvilId).map(t => t.key).filter(Boolean).join(', ') || null, oldestUntriagedAt: waiting?.[0]?.createdAt ?? null,
       promoted: labelled('promoted'), queued: labelled('promotion-queued'), blocked: labelled('promotion-blocked'), needsOwner: labelled('needs-owner'),
       // null is unlimited and 0 is paused.
       limit: inbox.maxPromotionsPerDay ?? null };

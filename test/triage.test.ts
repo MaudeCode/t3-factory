@@ -139,6 +139,9 @@ test('config validates inboxes', t => {
   rejects([{ ...tal, scopes: ['app', 'app'] }, oth], /Scopes must be unique/);
   rejects([{ ...tal, inbox: [{ kanvilId: 'TALIN' }, { kanvilId: 'X' }] }, oth], /expected object/);
   assert.throws(() => configSchema.parse({ ...valid, triage: { ...valid.triage, sourceProjectId: 'TALIN' } }));
+  assert.equal(configSchema.parse(valid).triage!.concurrency, 3);
+  assert.equal(configSchema.parse({ ...valid, triage: { ...valid.triage, concurrency: 1 } }).triage!.concurrency, 1);
+  for (const concurrency of [0, -1, 1.5, null]) assert.throws(() => configSchema.parse({ ...valid, triage: { ...valid.triage, concurrency } }));
 });
 
 test('only open, untriaged reports carrying the inbox label are triaged', () => {
@@ -222,10 +225,11 @@ const otherReport = (createdAt: string) => task('OTHIN-9', { labels: [{ name: 'r
 
 test('two inboxes route to their own projects, oldest report first', async t => {
   const f = fixture(t);
+  f.c.triage!.concurrency = 1;
   f.projects.OTHIN.push(otherReport('2025-12-01T00:00:00Z'), task('OTHIN-2', { labels: [{ name: 'intake' }] }));
   const order: string[] = [];
   f.mode({ stdout: reply(output({ scopes: [] })) });
-  const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), onRun: ticket => { if (ticket) order.push(ticket.key!); } });
+  const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), onRun: running => { for (const ticket of running) if (!order.includes(ticket.key!)) order.push(ticket.key!); } });
   assert.deepEqual(order, ['OTHIN-9', 'TALIN-5'], 'the older OTHIN-9 goes before TALIN-5; OTHIN-2 lacks its inbox label');
   assert.deepEqual(results.map(r => r.outcome), ['triaged', 'triaged']);
   const [other, tal] = f.calls();
@@ -241,6 +245,77 @@ test('two inboxes route to their own projects, oldest report first', async t => 
     ['triage', 'OTHIN-9 triaged: actionable', 'id-OTHIN-9', 'OTHIN', 'OTH'],
     ['triage', 'TALIN-5 triaged: actionable', f.report.id, 'TALIN', 'TAL'],
   ]);
+});
+
+test('triage fills three slots and refills a settled slot while its siblings are still running', async t => {
+  const f = fixture(t);
+  const reports = [f.report, ...[6, 7, 8].map(n => task(`TALIN-${n}`, { labels: [{ name: 'intake' }] }))];
+  f.projects.TALIN.push(...reports.slice(1));
+  const arrived = Promise.withResolvers<void>(), refill = Promise.withResolvers<void>();
+  const gates = reports.map(() => Promise.withResolvers<void>());
+  const comment = f.kanvil.addComment;
+  let admissions = 0, admitting = false;
+  const states: Task[][] = [];
+  f.kanvil.addComment = async (...args) => {
+    const at = reports.findIndex(r => r.id === args[1]);
+    if (at === 0) arrived.resolve();
+    await gates[at].promise;
+    return comment(...args);
+  };
+  const pending = triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), onRun: running => {
+    if (!Array.isArray(running)) return; // Also let the serial baseline reach the overlap assertion.
+    states.push(running);
+    if (running.some(r => r.id === reports[3].id)) refill.resolve();
+  }, budget: async () => {
+    assert.equal(admitting, false, 'quota admissions cannot overlap');
+    admitting = true;
+    await Promise.resolve();
+    admitting = false;
+    admissions++;
+    return {};
+  } });
+  try {
+    await arrived.promise;
+    assert.equal(admissions, 3, 'three reports must be admitted before the first report finishes');
+    assert.equal(triageQueue(f.c, f.kanvil, states.at(-1)!)[0].running, 'TALIN-5, TALIN-6, TALIN-7');
+    gates[0].resolve();
+    await refill.promise;
+    assert.equal(admissions, 4, 'a free slot starts the fourth report without waiting for siblings');
+    assert.deepEqual(states.at(-1)!.map(r => r.key), ['TALIN-6', 'TALIN-7', 'TALIN-8'], 'settling one report preserves its active siblings');
+  } finally { gates.forEach(g => g.resolve()); await pending; }
+  assert.equal(f.calls().length, 4);
+  assert.deepEqual(states.at(-1), [], 'no active report survives the pass');
+});
+
+for (const stop of ['quota refusal', 'cancellation', 'admission error']) test(`${stop} drains running triage and starts no later report`, async t => {
+  const f = fixture(t), controller = new AbortController();
+  f.projects.TALIN.push(...[6, 7].map(n => task(`TALIN-${n}`, { labels: [{ name: 'intake' }] })));
+  const arrived = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const comment = f.kanvil.addComment;
+  f.kanvil.addComment = async (...args) => { arrived.resolve(); await release.promise; return comment(...args); };
+  const states: Task[][] = [];
+  let admissions = 0;
+  const pending = triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), signal: controller.signal,
+    onRun: running => states.push(running), budget: async () => {
+      if (++admissions === 1) return { model: 'fixture' };
+      await arrived.promise;
+      if (stop === 'admission error') throw new Error('quota read failed');
+      if (stop === 'cancellation') { controller.abort(); return { model: 'fixture' }; }
+      return { blocked: 'quota-budget' };
+    } });
+  // Attach rejection handling immediately; admission failure must still drain the first run.
+  const outcome = pending.then(results => ({ results }), error => ({ error }));
+  try {
+    await arrived.promise;
+    assert.equal(states.at(-1)!.length, 1);
+  } finally { release.resolve(); }
+  const result = await outcome;
+  assert.equal(admissions, 2);
+  assert.equal(f.calls().length, 1);
+  assert.deepEqual(states.at(-1), []);
+  if (stop === 'admission error') assert.match(String('error' in result && result.error), /quota read failed/);
+  else if (stop === 'quota refusal') assert.deepEqual('results' in result && result.results.map(r => r.outcome), ['triaged', 'waiting']);
+  else assert.ok('results' in result, 'cancellation settles the pass after draining its active reports');
 });
 
 test('a scope valid for one project is rejected for the other', async t => {
@@ -274,7 +349,7 @@ test('queue status comes from the live projections with zero requests', async t 
   const now = Date.parse('2026-01-02T00:00:00Z');
   f.projects.TALIN.push(task('TALIN-6', { labels: [{ name: 'intake' }], createdAt: '2025-12-31T00:00:00Z' }), task('TALIN-7', { labels: [{ name: 'intake' }, { name: 'triage-failed' }] }),
     task('TALIN-8', { labels: [{ name: 'intake' }], status: 'cancelled' }), task('TALIN-9', { labels: [{ name: 'intake' }], archived: true }));
-  const rows = triageQueue(f.c, f.kanvil, f.report);
+  const rows = triageQueue(f.c, f.kanvil, [f.report]);
   assert.deepEqual(f.log.map(e => e.name), ['cachedTickets', 'cachedTickets'], 'one cache read per inbox and no HTTP');
   assert.deepEqual(rows, [
     { project: 'TAL', projectId: 'TAL', inboxId: 'TALIN', label: 'intake', synchronized: true, untriaged: 2, failed: 1, running: 'TALIN-5', oldestUntriagedAt: '2025-12-31T00:00:00Z', promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: null },
@@ -881,7 +956,7 @@ test('a limit of 0 pauses promotion for that inbox only; raising it promotes the
   assert.equal(first[0].reason, 'promotion is paused for this inbox');
   assert.deepEqual((await pass(f, {}, paused)).map(r => [r.ticket, r.outcome]), [['TALIN-40', 'promotion-queued']], 'the newly triaged report queues too');
   const order: string[] = [];
-  const raised = await pass(f, { onRun: ticket => { if (ticket) order.push(ticket.key!); } }, withLimits(f, 5));
+  const raised = await pass(f, { onRun: running => { for (const ticket of running) if (!order.includes(ticket.key!)) order.push(ticket.key!); } }, withLimits(f, 5));
   assert.deepEqual(raised.map(r => [r.ticket, r.outcome]), [...queued.map(t => [t.key, 'promoted']), ['TALIN-40', 'promoted']]);
   assert.deepEqual(order, [...queued.map(t => t.key), 'TALIN-40']);
 });
