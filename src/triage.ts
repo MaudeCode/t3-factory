@@ -332,8 +332,8 @@ export const DEFAULT_SENSITIVE_PATHS = [
 // Each rule blocks promotion on its own and is named in the reason.
 const LINT_RULES: [string, RegExp][] = [
   ['url', /\b[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\bmailto:/i],
-  // Hosts, addresses, and words for moving data out: a promoted change only touches the product.
-  ['network', /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|app|ai|co|me|xyz|ru|cn|cloud|site|online|top|info|biz|example|test|invalid|localhost|local|internal)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:exfiltrat\w*|collectors?|webhooks?|beacons?)\b/i],
+  // The .test segment in a JS/TS test filename is not a host; other host suffixes still block.
+  ['network', /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|app|ai|co|me|xyz|ru|cn|cloud|site|online|top|info|biz|example|test(?!\.(?:[cm]?[jt]s|[jt]sx)(?![\w-]|\.[\w-]))|invalid|localhost|local|internal)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b(?:exfiltrat\w*|collectors?|webhooks?|beacons?)\b/i],
   ['code', /`|~~~/],
   ['shell', /(?:^|\s)\$\s|\b(?:curl|wget|sudo|chmod|eval)\b|\brm\s+-|\|\s*(?:ba|z|da|fi)?sh\b/im],
   ['secret', /\b(?:secrets?|tokens?|passwords?|passwd|api[ _-]?keys?|keys?|credentials?|env(?:ironment)?[ _-]?var(?:iable)?s?|keychains?|ssh)\b|\.env\b|process\.env|\$[A-Z_][A-Z0-9_]*/i],
@@ -350,9 +350,11 @@ export function lintProposal(p: Proposal) {
   const webhookDisplay = fields.every(([, text]) => (text.replace(/\bserver(?:'s)? session list response\b|\bview all destination\b/gi, '').match(/[\p{L}\p{N}_]+(?:-\d+)?/gu) ?? [])
     .every(word => WEBHOOK_DISPLAY_WORDS.has(word.toLowerCase()) || /^\d+$|^[A-Z][A-Z0-9]*-\d+$/.test(word)));
   for (const [rule, pattern] of LINT_RULES) {
-    const field = fields.find(([, text]) => pattern.test(rule === 'network' && webhookDisplay
-      ? text.replace(/\bwebhooks?(?=[ -]+(?:sourced[ -]+)?(?:sessions?|sections?|groups?|disclosures?|lists?|rows?)\b)/gi, '') : text));
-    if (field) return `lint: ${rule} in ${field[0]}`;
+    for (const [field, text] of fields) {
+      const match = pattern.exec(rule === 'network' && webhookDisplay
+        ? text.replace(/\bwebhooks?(?=[ -]+(?:sourced[ -]+)?(?:sessions?|sections?|groups?|disclosures?|lists?|rows?)\b)/gi, '') : text);
+      if (match) return `lint: ${rule} in ${field} (matched ${JSON.stringify(match[0])})`;
+    }
   }
   return null;
 }
