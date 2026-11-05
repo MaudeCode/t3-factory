@@ -185,7 +185,7 @@ export class FactoryService {
       await pendingReviews(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
-    // One triage run at a time across every inbox. The queue status is published even while triage is off.
+    // One pass owns the bounded triage workers. Publish the queue even while triage is off.
     this.runLane('inbox-triage', async () => {
       const c = this.configure();
       if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); return; }

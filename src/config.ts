@@ -78,7 +78,7 @@ export const configSchema = z.preprocess(input => {
   upstream: z.object({ enabled: z.boolean().default(false), promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
   // Untrusted intake: a read-only, network-less model run whose JSON output factory code applies.
   // Its own switch, like upstream reviews; each project names its inbox.
-  triage: z.object({ enabled: z.boolean().default(false), promptFile: absolute }).strict().optional(),
+  triage: z.object({ enabled: z.boolean().default(false), concurrency: z.number().int().positive().default(3), promptFile: absolute }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),

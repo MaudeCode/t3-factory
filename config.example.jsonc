@@ -54,6 +54,7 @@
   // Optional: required once any project has an inbox.
   "triage": {
     "enabled": false,
+    "concurrency": 3,
     "promptFile": "/absolute/path/to/inbox-triage.md"
   },
   // Optional: required once any project lists upstreams.
