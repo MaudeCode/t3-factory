@@ -15,24 +15,29 @@ test('ordered label configuration defaults safely and survives settings edits', 
   assert.deepEqual(base.projects[0].priorityLabels, []);
   input.projects[0].priorityLabels = [' security ', 'compatibility'];
   const next = configSchema.parse(input);
-  assert.deepEqual(next.projects[0].priorityLabels, ['security', 'compatibility']);
-  for (const invalid of [['security', ' security '], [' ']]) {
+  assert.deepEqual(next.projects[0].priorityLabels, [['security'], ['compatibility']], 'a bare label is a tier of one');
+  assert.deepEqual(configSchema.parse({ ...input, projects: [{ ...input.projects[0], priorityLabels: [['user-report', ' sec '], 'agent-compat'] }] }).projects[0].priorityLabels, [['user-report', 'sec'], ['agent-compat']]);
+  for (const invalid of [['security', ' security '], [' '], [['security'], ['compatibility', 'security']], [[]]]) {
     assert.throws(() => configSchema.parse({ ...input, projects: [{ ...input.projects[0], priorityLabels: invalid }] }));
   }
   const dir = mkdtempSync(join(tmpdir(), 'factory-label-config-')), file = join(dir, 'config.jsonc');
   try {
     writeFileSync(file, JSON.stringify(base));
     saveSettings({ base, config: next }, file);
-    assert.deepEqual(loadConfig(file).projects[0].priorityLabels, ['security', 'compatibility']);
+    assert.deepEqual(loadConfig(file).projects[0].priorityLabels, [['security'], ['compatibility']]);
+    saveSettings({ base: next, config: { ...next, projects: [{ ...next.projects[0], priorityLabels: [['security', 'compatibility']] }] } }, file);
+    assert.deepEqual(loadConfig(file).projects[0].priorityLabels, [['security', 'compatibility']], 'tiers survive a settings edit');
     assert.deepEqual(loadConfig(file).models, base.models);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('first matching label wins; unconfigured and absent labels have no rank', () => {
-  assert.equal(ticketLabelRank([{ name: 'compatibility' }, { name: 'security' }], ['security', 'compatibility']), 0);
-  assert.equal(ticketLabelRank([{ name: 'compatibility' }], ['security', 'compatibility']), 1);
-  assert.equal(ticketLabelRank([{ name: 'Security' }], ['security']), undefined);
-  assert.equal(ticketLabelRank([], ['security']), undefined);
+test('first matching tier wins; unconfigured and absent labels have no rank', () => {
+  assert.equal(ticketLabelRank([{ name: 'compatibility' }, { name: 'security' }], [['security'], ['compatibility']]), 0);
+  assert.equal(ticketLabelRank([{ name: 'compatibility' }], [['security'], ['compatibility']]), 1);
+  assert.equal(ticketLabelRank([{ name: 'sec' }], [['user-report', 'sec'], ['agent-compat']]), 0, 'labels in one tier share its rank');
+  assert.equal(ticketLabelRank([{ name: 'agent-compat' }], [['user-report', 'sec'], ['agent-compat']]), 1);
+  assert.equal(ticketLabelRank([{ name: 'Security' }], [['security']]), undefined);
+  assert.equal(ticketLabelRank([], [['security']]), undefined);
   assert.equal(ticketLabelRank([{ name: 'security' }], []), undefined);
 });
 
@@ -46,6 +51,10 @@ test('label rank precedes urgency across projects, retaining existing tie breake
   assert.equal(selectTicket(tied, 'A', ['A', 'B'])?.id, 'A-old', 'largest ranked backlog wins');
   assert.equal(selectTicket(tied.slice(1), 'A', ['A', 'B'])?.id, 'B-old', 'equal backlogs rotate');
   assert.equal(selectTicket([urgent, ticket('ordinary', 'A', 'low')], null, ['A', 'B'])?.id, 'unmatched');
+  // One tier: a low user report outranks a high compatibility ticket and ties with a low security ticket, where age decides.
+  const report = ticket('report', 'A', 'low', 0, '2026-01-03'), security = ticket('security', 'A', 'low', 0, '2026-01-02'), compat = ticket('compat', 'A', 'high', 1);
+  assert.equal(selectTicket([compat, report, security], null, ['A'])?.id, 'security');
+  assert.equal(selectTicket([compat, report], null, ['A'])?.id, 'report');
 });
 
 test('model selection respects label tiers without blocking other eligible work', () => {

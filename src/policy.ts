@@ -142,8 +142,9 @@ const BRANCH_KINDS: Record<string, string> = { bug: 'fix', sec: 'fix', feat: 'fe
 export function branchKind(labels: { name: string }[]): string {
   return labels.map(l => BRANCH_KINDS[l.name]).find(Boolean) ?? 'chore';
 }
-export function ticketLabelRank(labels: { name: string }[], priorityLabels: string[]): number | undefined {
-  const rank = priorityLabels.findIndex(name => labels.some(label => label.name === name));
+// Index of the first tier holding any of the ticket's labels; unranked tickets have no rank.
+export function ticketLabelRank(labels: { name: string }[], priorityLabels: string[][]): number | undefined {
+  const rank = priorityLabels.findIndex(tier => tier.some(name => labels.some(label => label.name === name)));
   return rank < 0 ? undefined : rank;
 }
 export interface Candidate { id: string; projectId: string; key: string; priority: string; createdAt: string; difficulty?: Difficulty; automationReady?: boolean; labelRank?: number; title?: string; labels?: { name: string }[] }

@@ -139,7 +139,12 @@ async function showLabels() {
     { id: 'done', projectId: 'app-project', labels: ['app'], state: 'complete' },
     { id: 'other', projectId: 'other-project', labels: ['app'], state: 'waiting' },
   ];
+  await openLimits();
+}
+// Label limits live in the project's Scheduling view.
+async function openLimits() {
   await mount('/projects');
+  root.querySelector('[role="radiogroup"][aria-label="Project settings"] [role="radio"]:nth-child(2)').click(); await pause();
   root.querySelector('.label-limits').scrollIntoView({ block: 'center' }); await pause();
 }
 const mode = label => root.querySelector(`[role="radiogroup"][aria-label="${label} block mode"]`);
@@ -159,12 +164,12 @@ async function labelModes() {
   const appSlots = () => root.querySelector('[aria-label="app runs at once"]');
   appSlots().querySelector('[aria-label="3 at once"]').click(); await pause();
   assert(store.config.value.projects[0].labelLimits.app.limit === 3 && store.config.value.projects[0].labelLimits.app.mode === 'full', 'editing capacity preserves full mode');
-  await store.actions.save(); await mount('/projects');
+  await store.actions.save(); await openLimits();
   assert(chosenMode('app') === 'Full block' && store.config.value.projects[0].labelLimits.app.limit === 3, 'mode and count survive Save/reload');
   await choose('app', 'Running block');
   assert(root.querySelector('.label-limit').textContent.includes('0 running'), 'changing back releases waiting reservations in the display');
   appSlots().querySelector('.slot-off').click(); await pause();
-  await store.actions.save(); await mount('/projects');
+  await store.actions.save(); await openLimits();
   assert(store.config.value.projects[0].labelLimits.app.limit === 0 && chosenMode('app') === 'Running block', 'Off and running mode survive Save/reload');
   root.querySelector('[aria-label="Remove the app limit"]').click(); await pause();
   assert(!mode('app') && mode('web'), 'removing a label removes its mode without affecting another label');

@@ -113,14 +113,14 @@ export function Slots({ path, running = 0, max = 6, picks, label, busyLabel = 'r
 }
 
 // Multi-select chips. `options` is a list of [value, name]; values not in it still show so nothing saved is hidden.
-// `ordered` numbers the picks in the order they were chosen; `custom` adds a box for values the catalog lacks.
-export function Chips({ path, value, onChange, options = [], ordered, custom, label, disabled }) {
+// `custom` adds a box for values the catalog lacks.
+export function Chips({ path, value, onChange, options = [], custom, label, disabled }) {
   const [picked, change] = bind(path, value, onChange);
   const current = picked ?? [];
   const [draft, setDraft] = useState("");
   const names = new Map(options.map(([v, name]) => [v, name]));
   const titles = new Map(options.map(([v, , title]) => [v, title]));
-  const all = ordered ? [...current, ...[...names.keys()].filter((v) => !current.includes(v))] : [...names.keys(), ...current.filter((v) => !names.has(v))];
+  const all = [...names.keys(), ...current.filter((v) => !names.has(v))];
   const toggle = (v) => change(current.includes(v) ? current.filter((x) => x !== v) : [...current, v]);
   const add = () => {
     const v = draft.trim();
@@ -128,10 +128,7 @@ export function Chips({ path, value, onChange, options = [], ordered, custom, la
     setDraft("");
   };
   return html`<div class="chips" role="group" aria-label=${label}>
-    ${all.map((v) => {
-      const i = current.indexOf(v);
-      return html`<button key=${v} type="button" disabled=${disabled} aria-pressed=${i >= 0} title=${titles.get(v)} aria-label=${titles.get(v)} onClick=${() => toggle(v)}>${ordered && i >= 0 && html`<b>${i + 1}</b>`}${names.get(v) ?? v}</button>`;
-    })}
+    ${all.map((v) => html`<button key=${v} type="button" disabled=${disabled} aria-pressed=${current.includes(v)} title=${titles.get(v)} aria-label=${titles.get(v)} onClick=${() => toggle(v)}>${names.get(v) ?? v}</button>`)}
     ${custom && html`<input class="chip-input" disabled=${disabled} placeholder=${custom} aria-label=${custom} value=${draft} onInput=${(e) => setDraft(e.target.value)} onBlur=${add} onKeyDown=${(e) => e.key === "Enter" && (e.preventDefault(), add())} />`}
   </div>`;
 }

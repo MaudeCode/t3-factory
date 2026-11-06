@@ -22,7 +22,7 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
   input.projects[0].priorityLabels = ['compatibility', 'security'];
   input.projects[0].readyStatuses = ['todo'];
   const c = configSchema.parse(input), p = c.projects[0];
-  const other = { ...p, key: 'LIB', name: 'Library', kanvilId: 'library', t3Id: 'library', priorityLabels: ['security'] };
+  const other = { ...p, key: 'LIB', name: 'Library', kanvilId: 'library', t3Id: 'library', priorityLabels: [['security']] };
   c.projects.push(other);
   const task = (number: number, priority: Task['priority'], names: string[] = []): Task => ({ id: `task-${number}`, projectId: p.kanvilId, number, title: 'Fixture', status: 'todo', priority, createdAt: '2026-01-01', labels: ['sf', 'med', ...names].map(name => ({ name })) });
   const tasks = [task(19, 'low'), task(20, 'urgent', ['compatibility']), task(21, 'urgent'), task(22, 'high', ['security']), task(18, 'low')];
@@ -76,7 +76,7 @@ test('blockers inherit downstream label rank and urgency without weakening eligi
     assert.equal(tasks[0].priority, 'low'); assert(!tasks[0].labels!.some(l => l.name === 'compatibility'), 'tracker fields stay unchanged');
     p.priorityLabels = [];
     q = await queue(); assert.equal(q.ready.find(t => t.id === 'task-19')?.priority, 'urgent', 'urgency alone is inherited without label preferences');
-    p.priorityLabels = ['compatibility', 'security'];
+    p.priorityLabels = [['compatibility'], ['security']];
 
     relations.push(blocks(18, 19));
     q = await queue();

@@ -85,7 +85,9 @@ export const configSchema = z.preprocess(input => {
     kanvilId: z.string().min(1), t3Id: z.string().min(1), repoPath: absolute,
     githubRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), baseBranch: z.string().min(1),
     readyStatuses: z.array(z.enum(ticketStatuses).transform((value): string => value)).min(1), doneStatuses: z.array(z.enum(ticketStatuses).transform((value): string => value)).min(1),
-    priorityLabels: z.array(z.string().trim().min(1)).refine(labels => new Set(labels).size === labels.length, 'Priority labels must be unique').default([]),
+    // Priority tiers, highest first. A bare label is a tier of one; labels in one tier share a rank and urgency orders them.
+    priorityLabels: z.array(z.union([z.string().trim().min(1).transform(label => [label]), z.array(z.string().trim().min(1)).min(1)]))
+      .transform((tiers): string[][] => tiers).refine(tiers => { const labels = tiers.flat(); return new Set(labels).size === labels.length; }, 'Priority labels must be unique').default([]),
     // Most runs at once for this project's tickets carrying a label, e.g. ones that each boot a simulator.
     labelLimits: z.record(z.string().trim().min(1), z.union([
       z.number().int().min(0),
