@@ -430,6 +430,7 @@ h2 .help {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   max-height: 280px;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   animation: pop 0.16s var(--ease);
   transform-origin: top;

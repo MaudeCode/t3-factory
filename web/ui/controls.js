@@ -194,7 +194,9 @@ export function Select({ path, value, options, onChange, label, size, multiple, 
     const dialog = wrapper.closest("dialog"), viewport = window.visualViewport;
     const close = () => setOpen(false);
     const position = () => {
-      const p = selectPosition(trigger.getBoundingClientRect(), viewport ?? { width: innerWidth, height: innerHeight }, list.scrollHeight + 2);
+      // Measure the list unconstrained so its natural width does not depend on the width set last time.
+      list.style.width = "auto";
+      const p = selectPosition(trigger.getBoundingClientRect(), viewport ?? { width: innerWidth, height: innerHeight }, list.scrollHeight + 2, 280, list.offsetWidth);
       Object.assign(list.style, { left: `${p.left}px`, top: `${p.top}px`, width: `${p.width}px`, maxHeight: `${p.height}px` });
     };
     const outside = (e) => !wrapper.contains(e.target) && close();

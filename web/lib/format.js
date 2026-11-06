@@ -192,11 +192,12 @@ export function isBackdropClick(event, dialog) {
 }
 
 // Fixed top-layer menu placement in the visible viewport, including a zoomed viewport's offsets.
-export function selectPosition(trigger, viewport, contentHeight, maxHeight = 280) {
+// The menu is at least as wide as its trigger and grows to its widest option, within the viewport.
+export function selectPosition(trigger, viewport, contentHeight, maxHeight = 280, contentWidth = 0) {
   const edge = 8, gap = 4;
   const left = (viewport.offsetLeft ?? 0) + edge, top = (viewport.offsetTop ?? 0) + edge;
   const right = left + viewport.width - edge * 2, bottom = top + viewport.height - edge * 2;
-  const width = Math.min(trigger.width, Math.max(0, right - left));
+  const width = Math.min(Math.max(trigger.width, contentWidth), Math.max(0, right - left));
   const below = Math.max(0, bottom - trigger.bottom - gap), above = Math.max(0, trigger.top - gap - top);
   const desired = Math.min(maxHeight, contentHeight);
   const down = below >= desired || below >= above;

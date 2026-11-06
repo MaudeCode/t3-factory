@@ -19,7 +19,7 @@ let saved = structuredClone(initial), writes = [];
 const state = () => ({ config: saved, status: { jobs: [], journal: [], upNext } });
 window.fetch = async (url, init) => {
   if (url === '/api/config' && init?.method === 'POST') { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
-  if (url === '/api/sources') return Response.json({ t3: [{ id: 'app-project', title: 'Example app', workspaceRoot: '/example/app' }, { id: 'lib-project', title: 'Library', workspaceRoot: '/example/lib' }], kanvil: { projects: [], columns: {}, labels: ['agent-compat', 'app', 'perf', 'sec', 'user-report', 'web'] } });
+  if (url === '/api/sources') return Response.json({ t3: [{ id: 'app-project', title: 'Example app', workspaceRoot: '/example/app' }, { id: 'lib-project', title: 'Library', workspaceRoot: '/example/lib' }], kanvil: { projects: [], columns: {}, labels: ['agent-compat', 'app', 'perf', 'sec', 'software-factory-ready', 'user-report', 'web'] } });
   return Response.json(state());
 };
 const root = document.querySelector('#root');
@@ -52,6 +52,8 @@ async function run() {
   assert(JSON.stringify(tiers()) === JSON.stringify([['user-report', 'sec'], ['agent-compat', 'perf']]), 'a catalog label joins an existing rank');
   assert(counts().join('|') === '2 up next|2 up next|0 up next', 'counts follow the edit before saving');
   const picker = root.querySelector('[role="combobox"][aria-label^="Add a label to rank 2:"]'); picker.click(); await pause();
+  const menu = document.querySelector('.select ul:popover-open'), box = menu.getBoundingClientRect();
+  assert(menu.scrollWidth <= menu.clientWidth && box.width >= picker.getBoundingClientRect().width && box.right <= innerWidth, `the menu grows to its widest option without sideways scroll: ${menu.scrollWidth} in ${menu.clientWidth}`);
   const offered = [...document.querySelectorAll('[role="option"]')].map(el => el.textContent.trim());
   assert(!offered.includes('perf') && !offered.includes('sec') && offered.includes('app') && offered.at(-1) === 'Other label…', `pickers offer only unranked labels: ${offered.join()}`);
   key(picker, 'Escape'); await pause();
