@@ -402,6 +402,17 @@ test('zero provider capacity still observes completed explicit chains without la
   assert.equal(f.launches.length, 0); assert.equal(f.store.jobs().length, 0);
 });
 
+test('a chain overriding provider limits advances on a provider set to Off', async t => {
+  const f = serviceFixture(t);
+  f.c.concurrency = { claude: 10, codex: 0 };
+  f.c.enabled = false; f.c.models[0].automatic = false;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const target = { id: 'root', key: 'FIX-1', title: 'Fixture', projectId: 'FIX', status: 'todo', priority: 'high', createdAt: '2026-01-01', difficulty: 'med' as const, automationReady: true, runnable: true, blockedBy: [], done: false };
+  f.store.savePlan({ id: 'override-chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: ['providers'], state: 'active' });
+  f.internal.scheduleAdmissions('fixture', 'chains'); await f.internal.idle;
+  assert.equal(f.launches.length, 1);
+});
+
 test('fallback maintenance continues without admission and is not postponed by thread wakes', async t => {
   const f = serviceFixture(t), reasons: string[] = [];
   f.c.enabled = false; f.c.concurrency = { claude: 0, codex: 0 }; f.c.models[0].automatic = false; f.c.pollSeconds = 15;
