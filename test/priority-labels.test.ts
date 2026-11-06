@@ -28,6 +28,11 @@ test('ordered label configuration defaults safely and survives settings edits', 
     saveSettings({ base: next, config: { ...next, projects: [{ ...next.projects[0], priorityLabels: [['security', 'compatibility']] }] } }, file);
     assert.deepEqual(loadConfig(file).projects[0].priorityLabels, [['security', 'compatibility']], 'tiers survive a settings edit');
     assert.deepEqual(loadConfig(file).models, base.models);
+    // A file still holding bare labels is reordered without indexing into its strings.
+    writeFileSync(file, JSON.stringify({ ...base, projects: [{ ...base.projects[0], priorityLabels: ['security', 'compatibility'] }] }));
+    const flat = loadConfig(file);
+    saveSettings({ base: flat, config: { ...flat, projects: [{ ...flat.projects[0], priorityLabels: [['compatibility'], ['security']] }] } }, file);
+    assert.deepEqual(loadConfig(file).projects[0].priorityLabels, [['compatibility'], ['security']], 'flat on-disk ranks reorder');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
