@@ -132,7 +132,7 @@ export class T3 {
     if (this.persistent) this.authenticateRpc();
     const generation = this.credentialGeneration;
     let entry = this.shellRead;
-    if (!entry || entry.epoch !== this.shellEpoch || (!this.persistent && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : Date.now() - entry.at > 1000)) {
+    if (!entry || entry.epoch !== this.shellEpoch || (!this.persistent && entry.settled) || (fresh ? entry.settled || !entry.fresh || entry.at < (readContext()?.startedAt ?? Date.now()) : entry.settled && Date.now() - entry.at > 1000)) {
       const pending = this.readLifetime.run(() => this.readShell());
       entry = { at: Date.now(), epoch: this.shellEpoch, fresh, settled: false, pending }; this.shellRead = entry;
       const owned = entry;
@@ -349,7 +349,7 @@ export class T3 {
     if (!refreshInstance && this.persistent && this.liveProviders) return structuredClone(this.providerView!.value);
     const key = refreshInstance ?? '*', after = readContext()?.startedAt ?? Date.now();
     let entry = this.providerSnapshots.get(key);
-    if (!entry || entry.generation !== this.credentialGeneration || (refreshInstance ? entry.settled || entry.at < after : Date.now() - entry.at > 1000)) {
+    if (!entry || entry.generation !== this.credentialGeneration || (refreshInstance ? entry.settled || entry.at < after : entry.settled && Date.now() - entry.at > 1000)) {
       const pending = this.readLifetime.run(() => this.readProviders(refreshInstance));
       entry = { generation: this.credentialGeneration, at: Date.now(), pending, settled: false }; this.providerSnapshots.set(key, entry);
       const owned = entry;

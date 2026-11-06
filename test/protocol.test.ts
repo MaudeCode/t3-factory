@@ -187,6 +187,35 @@ function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: str
 }
 const success = (request: { id: string }) => ({ _tag: 'Exit', requestId: request.id, exit: { _tag: 'Success', value: null } });
 
+for (const kind of ['shell', 'providers'] as const) test(`slow ${kind} fallback reads remain shared until settlement`, async t => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const requestIds: string[] = [];
+  let reads = 0, held = true, now = Date.now();
+  const f = fixtureRpc(t, request => {
+    if (request.tag !== 'server.getConfig') return [success(request)];
+    reads++; entered.resolve();
+    if (held) { requestIds.push(request.id); return []; }
+    return [{ ...success(request), exit: { _tag: 'Success', value: { providers: [] } } }];
+  }, true);
+  if (kind === 'shell') t.mock.method(f.t3, 'request', async () => {
+    reads++; entered.resolve(); await release.promise; return v2Shell();
+  });
+  t.mock.method(Date, 'now', () => now);
+  const read = () => kind === 'shell' ? f.t3.shell() : f.t3.providers();
+  const pending = [read()];
+  const finish = () => { held = false; release.resolve(); for (const id of requestIds.splice(0)) f.respond(id, { providers: [] }); };
+  try {
+    await entered.promise;
+    now += 1001;
+    pending.push(read());
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads, 1, 'cache age cannot replace an unfinished request');
+    finish(); await Promise.all(pending);
+    await read();
+    assert.equal(reads, 2, 'a settled result still expires at the original cache deadline');
+  } finally { finish(); await Promise.allSettled(pending); }
+});
+
 test('persistent RPC multiplexes independent calls over one connection', async t => {
   const f = fixtureRpc(t, request => [success(request)], true);
   await Promise.all([1, 2, 3].map(id => f.t3.dispatch({ id })));
