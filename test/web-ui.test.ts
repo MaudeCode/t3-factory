@@ -222,11 +222,11 @@ test('manual submissions queue behind a deferred check with captured inputs and 
 test('config edits are immutable updates that mark the save bar dirty', () => {
   store.applyState(fixture(), true);
   assert.equal(store.dirty.value, false);
-  store.set(['projects', '0', 'priorityLabels'], coerce('list', { value: 'compatibility, security' }));
-  assert.deepEqual(store.config.value.projects[0].priorityLabels, ['compatibility', 'security']);
+  store.set(['projects', '0', 'priorityLabels'], [['compatibility', 'security']]);
+  assert.deepEqual(store.config.value.projects[0].priorityLabels, [['compatibility', 'security']]);
   assert.deepEqual(store.base.value.projects[0].priorityLabels, ['security', 'compatibility'], 'base copy is untouched');
   assert.equal(store.dirty.value, true);
-  store.set(['projects', '0', 'priorityLabels'], coerce('list', { value: '' }));
+  store.set(['projects', '0', 'priorityLabels'], []);
   assert.deepEqual(store.config.value.projects[0].priorityLabels, []);
 });
 

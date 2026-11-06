@@ -2014,6 +2014,46 @@ h1 .crumb::after {
   min-width: 120px;
 }
 
+/* Priority ladder: one row per rank, drag to reorder; the last rows are the next rank and the unranked rest. */
+.ladder .sortable {
+  border-top: 0;
+}
+.tier {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.sortable-row.lifted .tier {
+  background: var(--surface-2);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.tier > .rank {
+  color: var(--muted);
+  font-size: 12px;
+  width: 16px;
+  text-align: right;
+  flex: none;
+}
+.tier-labels {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+}
+.tier-labels button .icon {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.tier-count {
+  flex: none;
+  white-space: nowrap;
+}
+.tier-rest .row-body {
+  flex: 1 1 auto;
+}
+
 /* Chips */
 /* Anchored panel, e.g. the Runs filters. */
 .popover {
@@ -2126,17 +2166,6 @@ h1 .crumb::after {
 .chips button:disabled {
   opacity: 0.45;
   cursor: default;
-}
-.chips button b {
-  display: inline-block;
-  min-width: 16px;
-  margin: 0 6px 0 -4px;
-  border-radius: 8px;
-  background: var(--accent-ink);
-  color: var(--accent-text);
-  font-size: 10.5px;
-  line-height: 16px;
-  text-align: center;
 }
 .chips .chip-input {
   width: 130px;

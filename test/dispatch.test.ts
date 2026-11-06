@@ -96,7 +96,7 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
     if (scenario === 'parallel-claude-zero' || scenario === 'parallel-both-zero') c.concurrency.claude = 0;
     if (scenario === 'parallel-codex-zero' || scenario === 'parallel-both-zero') c.concurrency.codex = 0;
     if (scenario === 'ceiling') c.models.forEach(m => { m.maxDifficulty = 'low'; });
-    if (scenario.startsWith('label-')) c.projects[0].priorityLabels = ['compatibility', 'security'];
+    if (scenario.startsWith('label-')) c.projects[0].priorityLabels = [['compatibility'], ['security']];
     if (scenario.startsWith('parallel-label')) c.projects[0].labelLimits = { app: 2 };
     writeFileSync(process.env.T3_FACTORY_CONFIG, JSON.stringify(c));
     const tasks = ['discovery', 'parallel-discovery'].includes(scenario) ? [] : (parallel ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]).map(number => ({ id: `task-${number}`, projectId: 'FIX', title: 'Bounded work', number, status: 'todo', priority: number === 1 ? 'urgent' : 'high', createdAt: `2026-01-0${number}T00:00:00Z`, labels: [{ name: 'sf' }, ...scenario === 'unclassified' ? [] : [{ name: 'high' }]] }));

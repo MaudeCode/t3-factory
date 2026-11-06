@@ -403,7 +403,7 @@ struct FactorySettingsView: View {
                 }
                 Field(label: "Ready when in", help: "Tickets in these columns may be picked up.") { chips(path: p + ["readyStatuses"], options: cols) }
                 Field(label: "Done when in", help: "A ticket moved here is finished; its run is settled.") { chips(path: p + ["doneStatuses"], options: cols) }
-                Field(label: "Priority labels", help: "Pick in order of importance. Tickets with a higher label go first; among equals, urgency decides.") { chips(path: p + ["priorityLabels"], options: model.workspaceLabels.map { ($0, $0) }, ordered: true) }
+                Field(label: "Priority", help: "Rank 1 goes first, across every project. Labels in one rank are equal: a low ticket in rank 1 goes before an urgent ticket in rank 2. Everything else follows, by urgency.") { ranks(path: p + ["priorityLabels"]) }
             }.card()
             VStack(alignment: .leading, spacing: 8) {
                 SectionTitle("Watched releases", help: "Each new release of these repositories gets a review run.") { Button("Manage") { page = "upstream" }.buttonStyle(.link) }
@@ -424,15 +424,44 @@ struct FactorySettingsView: View {
             ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
         }.labelsHidden()
     }
-    private func chips(path: [String], options: [(String, String)], ordered: Bool = false) -> some View {
+    // Priority ranks: the labels on one row share a rank. A menu adds a label, its chip removes it, the arrows move the rank.
+    private func ranks(path: [String]) -> some View {
+        let tiers = (valueAt(model.draft, path) as? [Any] ?? []).map { ($0 as? [String]) ?? ($0 as? String).map { [$0] } ?? [] }
+        let ranked = Set(tiers.flatMap { $0 })
+        let free = model.workspaceLabels.filter { !ranked.contains($0) }
+        let save: ([[String]]) -> Void = { model.update(path, $0.filter { !$0.isEmpty }) }
+        let number = { (n: Int) in Text("\(n)").font(.system(size: 11)).foregroundStyle(Theme.muted).frame(width: 14, alignment: .trailing) }
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(tiers.enumerated()), id: \.offset) { i, labels in
+                HStack(alignment: .center, spacing: 8) {
+                    number(i + 1)
+                    Wrap {
+                        ForEach(labels, id: \.self) { l in Chip(text: "\(l)  ×", on: true) { var next = tiers; next[i].removeAll { $0 == l }; save(next) } }
+                        labelMenu("Add label", free) { var next = tiers; next[i].append($0); save(next) }
+                    }
+                    Button { var next = tiers; next.swapAt(i, i - 1); save(next) } label: { Image(systemName: "chevron.up") }.buttonStyle(QuietButton()).disabled(i == 0).help("Move up")
+                    Button { var next = tiers; next.swapAt(i, i + 1); save(next) } label: { Image(systemName: "chevron.down") }.buttonStyle(QuietButton()).disabled(i == tiers.count - 1).help("Move down")
+                }
+            }
+            HStack(spacing: 8) {
+                number(tiers.count + 1)
+                labelMenu("Start a new rank", free) { save(tiers + [[$0]]) }
+                if model.workspaceLabels.isEmpty { CustomChip { l in if !ranked.contains(l) { save(tiers + [[l]]) } } }
+            }
+        }
+    }
+    private func labelMenu(_ title: String, _ labels: [String], pick: @escaping (String) -> Void) -> some View {
+        Menu(title) { ForEach(labels, id: \.self) { l in Button(l) { pick(l) } } }.menuStyle(.borderlessButton).fixedSize().disabled(labels.isEmpty)
+    }
+    private func chips(path: [String], options: [(String, String)]) -> some View {
         let binding = model.stringList(path), current = binding.wrappedValue
         let names = Dictionary(options, uniquingKeysWith: { a, _ in a })
-        let all = ordered ? current + options.map { $0.0 }.filter { !current.contains($0) } : options.map { $0.0 } + current.filter { names[$0] == nil }
+        let all = options.map { $0.0 } + current.filter { names[$0] == nil }
         return VStack(alignment: .leading, spacing: 6) {
             Wrap {
                 ForEach(all, id: \.self) { v in
-                    let i = current.firstIndex(of: v)
-                    Chip(text: names[v] ?? v, on: i != nil, rank: ordered ? i.map { $0 + 1 } : nil) { binding.wrappedValue = i == nil ? current + [v] : current.filter { $0 != v } }
+                    let on = current.contains(v)
+                    Chip(text: names[v] ?? v, on: on) { binding.wrappedValue = on ? current.filter { $0 != v } : current + [v] }
                 }
             }
             if options.isEmpty { CustomChip { binding.wrappedValue = current.contains($0) ? current : current + [$0] } }

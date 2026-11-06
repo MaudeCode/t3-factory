@@ -85,15 +85,12 @@ struct AllowanceBar: View {
     }
 }
 
-// Pill that toggles membership; `rank` numbers an ordered pick.
+// Pill that toggles membership.
 struct Chip: View {
-    let text: String; let on: Bool; var rank: Int? = nil; let action: () -> Void
+    let text: String; let on: Bool; let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                if let rank { Text("\(rank)").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.accent).frame(width: 14, height: 14).background(Circle().fill(Theme.accentInk)) }
-                Text(text).font(.system(size: 12))
-            }
+            Text(text).font(.system(size: 12))
             .padding(.horizontal, 10).padding(.vertical, 4)
             .background(Capsule().fill(on ? Theme.accent : .clear))
             .overlay(Capsule().stroke(on ? Theme.accent : Theme.line, lineWidth: 1))

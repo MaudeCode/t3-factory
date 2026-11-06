@@ -190,7 +190,7 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
     ${selection}
     <a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer" }}>
       <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${project?.priorityLabels ?? []} ...${meta}>${badge}${children}<//>
+        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${(project?.priorityLabels ?? []).flat()} ...${meta}>${badge}${children}<//>
       <//>
     </a>
     ${actions && html`<div class="next-actions">${actions}
