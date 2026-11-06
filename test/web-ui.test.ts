@@ -306,6 +306,11 @@ test('Select placement uses the available viewport below or above and clamps nar
   assert.deepEqual(selectPosition(trigger, { width: 1280, height: 800 }, 500, Infinity), { left: 100, top: 144, width: 240, height: 500 });
   assert.deepEqual(selectPosition({ ...trigger, top: 740, bottom: 780 }, { width: 1280, height: 800 }, 500), { left: 100, top: 456, width: 240, height: 280 });
   assert.deepEqual(selectPosition({ left: 300, top: 150, bottom: 190, width: 400 }, { width: 390, height: 400 }, 500), { left: 8, top: 194, width: 374, height: 198 });
+  // A narrow trigger's menu grows to its widest option, shifts left only to stay on screen, and never shrinks below the trigger.
+  const narrow = { ...trigger, width: 150 };
+  assert.deepEqual(selectPosition(narrow, { width: 1280, height: 800 }, 500, 280, 260), { left: 100, top: 144, width: 260, height: 280 });
+  assert.deepEqual(selectPosition({ ...narrow, left: 1100 }, { width: 1280, height: 800 }, 500, 280, 400), { left: 872, top: 144, width: 400, height: 280 });
+  assert.deepEqual(selectPosition(narrow, { width: 1280, height: 800 }, 500, 280, 90), { left: 100, top: 144, width: 150, height: 280 });
   assert.deepEqual(selectPosition(trigger, { width: 300, height: 200, offsetLeft: 50, offsetTop: 80 }, 40), { left: 100, top: 144, width: 240, height: 40 });
 });
 
