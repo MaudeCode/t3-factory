@@ -9,6 +9,7 @@ import { configSchema } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
 import { cycle, runPlans, cancelPlan } from '../src/scheduler.ts';
+import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { mockLaunchConnection, dispatchFixture, deferred } from './dispatch-fixture.ts';
@@ -84,7 +85,7 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     finish('FIX-13');
 
     // All: a chain that fills the free slots now and continues as tickets unblock, then the target.
-    const started = await cycle(c, store, { manual: true, ticket: 'FIX-50', model: 'auto', overrideLimits: true, chain: 'all' });
+    const started = await cycle(c, store, { manual: true, ticket: 'FIX-50', model: 'auto', overrideLimits: ['idle', 'reserve', 'labels'], chain: 'all' });
     assert.equal(started.reason, 'plan-started', JSON.stringify(started));
     const planId = started.planId as string;
     assert.deepEqual(launches.slice(1).map(l => l.title), ['Factory: FIX-48', 'Factory: FIX-47'], 'two Claude slots: the two highest-priority unblocked blockers; FIX-47 runs despite lacking the ready label');
@@ -115,27 +116,58 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
   }
 });
 
-test('a forced provider survives a saved chain and cannot override deferred capacity', async t => {
-  const f = dispatchFixture(t);
+// Every launch of a chain applies the overrides chosen when it started: the launches made as the user chooses it, and the ones that follow.
+const startChain = async (f: ReturnType<typeof dispatchFixture>, options: { provider?: 'codex'; overrideLimits: OverrideLimits }) => {
   f.tasks[1].status = 'todo';
-  f.c.models[0].automatic = false;
-  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
-  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'auto', provider: 'codex', overrideLimits: true, chain: 'all' }, { t3: f.t3, kanvil: f.kanvil });
-  assert.equal(result.reason, 'plan-started');
-  const plan = f.store.plan(result.planId as string)!;
-  assert.equal(plan.provider, 'codex');
-  assert.equal(f.launches.length, 1, 'the manual-only Codex preset runs the first blocker');
-  const blocker = f.store.jobs()[0]; blocker.state = 'complete'; f.store.save(blocker); f.tasks[1].status = 'done';
-  f.c.concurrency.codex = 0;
-  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
-  const instances = new Map([['codex', 'codex']]);
-  await runPlans(f.c, f.store, f.t3, f.kanvil, instances, f.threads);
-  assert.equal(f.launches.length, 1, 'a saved provider override never bypasses capacity for a deferred chain');
-  f.c.concurrency.codex = 1;
-  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
-  await runPlans(f.c, f.store, f.t3, f.kanvil, instances, f.threads);
-  assert.equal(f.launches.length, 2, 'the target resumes on its forced provider when a slot opens');
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'auto', ...options, chain: 'all' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'plan-started', JSON.stringify(result));
+  return result.planId as string;
+};
+const finishBlocker = (f: ReturnType<typeof dispatchFixture>) => {
+  const blocker = f.store.jobs().find(job => job.ticketKey === 'FIX-2')!; blocker.state = 'complete'; f.store.save(blocker); f.tasks[1].status = 'done';
+};
+const advance = (f: ReturnType<typeof dispatchFixture>) => runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), f.threads);
+const setConfig = (f: ReturnType<typeof dispatchFixture>, change: () => void) => { change(); writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c)); };
+
+test('a chain with the provider override runs every launch past provider capacity, and its forced provider survives', async t => {
+  const f = dispatchFixture(t);
+  setConfig(f, () => { f.c.models[0].automatic = false; f.c.concurrency.codex = 0; });
+  const planId = await startChain(f, { provider: 'codex', overrideLimits: true });
+  assert.equal(f.store.plan(planId)!.provider, 'codex');
+  assert.equal(f.launches.length, 1, 'the first blocker starts with its provider set to Off');
+  finishBlocker(f);
+  await advance(f);
+  assert.equal(f.launches.length, 2, 'the target starts later under the same override');
   assert.equal((f.launches[1] as any).modelSelection.instanceId, 'codex');
+});
+
+test('a chain without the provider override waits for capacity at every launch', async t => {
+  const f = dispatchFixture(t);
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  const planId = await startChain(f, { overrideLimits: ['idle', 'reserve', 'labels'] });
+  assert.equal(f.launches.length, 0);
+  assert.equal(f.store.plan(planId)!.tickets[0].note, 'Waiting for a free Codex slot');
+  setConfig(f, () => { f.c.concurrency.codex = 1; });
+  await advance(f);
+  assert.equal(f.launches.length, 1, 'the blocker starts when a slot opens');
+  finishBlocker(f);
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  await advance(f);
+  assert.equal(f.launches.length, 1, 'a later launch still waits');
+});
+
+for (const [name, overrideLimits, launches] of [['with', ['labels'], 2], ['without', ['idle'], 1]] as const) test(`a chain ${name} the label override ${name === 'with' ? 'passes a full label' : 'waits for the label'} on a later launch`, async t => {
+  const f = dispatchFixture(t);
+  const planId = await startChain(f, { overrideLimits: [...overrideLimits] });
+  assert.equal(f.launches.length, 1);
+  finishBlocker(f);
+  // Another run holds the only slot for the label the target carries.
+  const held = { ...f.store.jobs()[0], id: 'other', taskId: 'other', ticketKey: 'FIX-9', threadId: 'other-thread', state: 'waiting' as const, labels: ['med'] };
+  f.store.save(held);
+  setConfig(f, () => { f.c.projects[0].labelLimits = { med: { limit: 1, mode: 'full' } }; });
+  await advance(f);
+  assert.equal(f.launches.length, launches);
+  if (launches === 1) assert.match(f.store.plan(planId)!.target.note ?? '', /free med slot/);
 });
 
 test('shared dependency ancestors reuse reads without becoming cycles', async t => {

@@ -833,7 +833,7 @@ export async function refreshInventory(c: Config, store: Store, t3: T3, kanvil: 
 export interface Skipped { key: string; reason: string; id?: string; blockedBy?: string[]; ticket?: Candidate }
 export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean }
 // The thresholds this start skips; automatic work skips none.
-const skips = (options: CycleOptions) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
+export const skips = (options: Pick<CycleOptions, 'manual' | 'overrideLimits'>) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
 function dependencyRules(rels: (id: string) => Promise<z.infer<typeof relationsSchema>>, done: (id: string) => Promise<boolean>, limit = readLimiter()) {
   const relations = new Map<string, Promise<z.infer<typeof relationsSchema>>>(), finished = new Map<string, Promise<boolean>>();
@@ -867,7 +867,7 @@ const holdsSlot = (job: Pick<Job, 'state'>, thread: Thread | undefined, timeout:
   !['complete', 'dismissed'].includes(job.state) && (['running', 'dispatching'].includes(job.state) || !!(thread && executing(thread, timeout)));
 
 export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>(), options: CycleOptions = {}): Set<string> {
-  if (options.manual && !options.continuation && skips(options).has('providers')) return new Set();
+  if (skips(options).has('providers')) return new Set();
   const counts = new Map(planned);
   for (const job of jobs) {
     const thread = threads.find(t => t.id === job.threadId);
@@ -1180,8 +1180,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const discovery = !ticketKey && !options.manual && !review;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
-    // Label limits bind every start except a manual one with limits overridden; chain continuations always respect them.
-    const labelGated = !skip.has('labels') || !!options.continuation;
+    // Label limits bind every start except a manual one, or a chain started as one, with them overridden.
+    const labelGated = !skip.has('labels');
     if (labelGated && !ticketKey && !review) {
       const full = labelCapacity(c, [...jobs, ...preparingLabels(store)], shell.threads), open = queue.ready.filter(ticket => !full(ticket));
       if (queue.ready.length && !open.length) return decision('label-limit', { message: 'Every eligible ticket is waiting for a free label slot' });
@@ -1191,7 +1191,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision, clients.currentConfig ?? plan?.currentConfig, recordDecision) : undefined;
       return chained ?? decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
     }
-    // A chain continuation is still user-authorized work, but it starts later and on its own, so it keeps the automatic quota and idle policy.
+    // A chain continuation is still user-authorized work, but it starts later and on its own, so only the chain's recorded overrides waive the automatic quota and idle policy.
     const manualPolicy = !!options.manual && !options.continuation;
     const quotaBaseline = store.jobSummaries();
     const readSelectedQuota = (refresh = false) => {
@@ -1483,7 +1483,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       }
       const driver = instances.get(preset.model.instanceId) ?? 'claudeAgent';
       if (providerDriver && driver !== providerDriver) continue;
-      if (busyProviders(jobs, threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned).has(driver)) { t.note = `Waiting for a free ${driver === 'codex' ? 'Codex' : 'Claude'} slot`; continue; }
+      if (busyProviders(jobs, threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned, { manual: true, overrideLimits: plan.overrideLimits }).has(driver)) { t.note = `Waiting for a free ${driver === 'codex' ? 'Codex' : 'Claude'} slot`; continue; }
       if (store.isLocked(`ticket:${t.id}`)) continue;
       planned.set(driver, (planned.get(driver) ?? 0) + 1);
       pending.push(independentOperation(() => store.exclusive([`ticket:${t.id}`], async () => {

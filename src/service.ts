@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { readOperation, savedOperations } from './operations.ts';
@@ -207,9 +207,10 @@ export class FactoryService {
       const c = this.configure();
       const matches = (model: Config['models'][number]) => model.model.instanceId === driver || !['codex', 'claudeAgent'].includes(model.model.instanceId);
       if (workKind === 'chains') {
-        if (!this.store.plans().some(plan => plan.state === 'active')) return;
-        // One lane still observes completion when all capacities are zero; runPlans cannot launch.
-        if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 && (driver === 'claudeAgent' || c.concurrency.claude > 0)) return;
+        const plans = this.store.plans().filter(plan => plan.state === 'active');
+        if (!plans.length) return;
+        // One lane still observes completion when all capacities are zero. Only a chain that overrides provider limits launches on a provider set to Off.
+        if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 && (driver === 'claudeAgent' || c.concurrency.claude > 0) && !plans.some(plan => skips({ manual: true, overrideLimits: plan.overrideLimits }).has('providers'))) return;
       } else {
         if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0) return;
         if (workKind === 'tickets' ? !c.enabled : !c.upstream?.enabled) return;
