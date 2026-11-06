@@ -1,7 +1,7 @@
 import { ReadContext, independentOperation, waitFor, readAll, readContext, readPhase, readFailure, backgroundCheckpoint, backgroundRead } from './read-context.ts';
 export { readAll } from './read-context.ts';
 import { inboxes, triageCanary, type TriageRow } from './triage.ts';
-import { inspectWorkspace, removeWorkspace, processWorkspaces, canonicalPath, verifyIdleProjection, worktrees, availableBytes } from './workspace.ts';
+import { inspectWorkspace, removeWorkspace, processWorkspaces, reapOrphans, dirtyEntries, canonicalPath, verifyIdleProjection, worktrees, availableBytes } from './workspace.ts';
 // Cleanup builds on this module; the cycle is safe because neither module calls the other while loading.
 import { reclaimUnusedWorkspace } from './cleanup.ts';
 import { formatBytes } from '../web/lib/format.js';
@@ -156,7 +156,8 @@ async function untouchedHead(project: Project, branch: string, worktreePath?: st
   const history = await refHistory(project.repoPath, `refs/heads/${branch}`), created = history.at(-1);
   if (!created) return '';
   history.push(await branchTip(project, branch));
-  if (worktreePath && existsSync(worktreePath)) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
+  // A leftover directory without its .git link is no checkout; only the branch refs can speak for it.
+  if (worktreePath && existsSync(join(worktreePath, '.git'))) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
   return history.every(head => head === created) && await released(project, created) ? created : '';
 }
 // A ticket closed without delivery must have left the ready queue and abandon no work.
@@ -377,12 +378,14 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
     if (!workspace && commands) throw new Error('Command workspace ownership cannot be verified');
     if (!workspace) { job.workspaceCleanedAt = new Date().toISOString(); store.save(job); return; }
     const path = canonicalPath(workspace);
-    const physical = await inspectWorkspace(project.repoPath, path);
+    // The job's own record of this path is the evidence that lets a leftover directory count as removable.
+    const physical = await inspectWorkspace(project.repoPath, path, false, undefined, true);
     if ((physical.present || physical.registered) && !physical.removable) throw new Error('Preserve unregistered, locked or primary workspace');
     if (physical.tracked || physical.untracked) throw new Error(`Preserve workspace changes: ${physical.tracked} tracked, ${physical.untracked} untracked`);
     const assigned = assignedBranch(job);
     if (!assigned) throw new Error('Workspace was not assigned by a Factory launch');
-    const checkoutBranch = existsSync(path) ? await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : null;
+    const checkout = physical.present && !physical.leftover;
+    const checkoutBranch = checkout ? await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) : null;
     const branch = pending?.branch ?? (checkoutBranch && checkoutBranch !== 'HEAD' ? checkoutBranch : thread.branch ?? assigned);
     if (thread.worktreePath && canonicalPath(thread.worktreePath) !== path) throw new Error('Thread workspace changed during cleanup');
     if (path === canonicalPath(project.repoPath)) throw new Error('Preserve the primary checkout');
@@ -394,8 +397,8 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
     if (subagents.some(t => busy(t) || resumed(t))) throw new Error('Workspace is shared with an active subagent');
     const head = await verifyCleanupHead(c, store, kanvil, job, fresh.threads, branch, path);
     if (pending && pending.head !== head) throw new Error('Verified workspace head changed');
-    if (existsSync(path)) {
-      if (await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || (checkoutBranch !== branch && checkoutBranch !== 'HEAD')) throw new Error('Preserve dirty or changed workspace');
+    if (checkout) {
+      if ((await dirtyEntries(path)).length || await git(path, ['rev-parse', 'HEAD']) !== head || (checkoutBranch !== branch && checkoutBranch !== 'HEAD')) throw new Error('Preserve dirty or changed workspace');
     }
     if (commands) {
       if (job.commandStop && job.commandStop.status !== 'confirmed') throw new Error(`Command stop ${job.commandStop.status}; awaiting T3 confirmation`);
@@ -417,7 +420,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
             bounded.providerThreads.some(p => p.pendingBackgroundTasks?.some(t => t.kind !== 'command')) ||
             bounded.subagents.some(a => !['completed', 'failed', 'cancelled', 'interrupted'].includes(a.status))) throw new Error('Bounded thread has new or non-command work');
         await verifyCompletionReport(c, kanvil, job, thread, readCompletionReport(job));
-        if (readFileSync(job.reportPath, 'utf8') !== reportText || await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch) throw new Error('Completion report or workspace changed before command stop');
+        if (readFileSync(job.reportPath, 'utf8') !== reportText || (await dirtyEntries(path)).length || await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch) throw new Error('Completion report or workspace changed before command stop');
         const latest = await t3.shell(true), confirmed = latest.threads.find(t => t.id === thread.id), children = subagentDescendants(latest.threads, thread.id);
         checkOwner();
         if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.projectId !== thread.projectId || confirmed.worktreePath !== thread.worktreePath || confirmed.branch !== thread.branch || busy(confirmed) || resumed(confirmed) || confirmed.activeRunId || confirmed.pendingRuntimeRequest || confirmed.pendingBackgroundTasks.some(t => t.kind !== 'command') || shared(latest.threads, children) || children.some(t => busy(t) || resumed(t) || t.pendingBackgroundTasks.length)) throw new Error('Thread or workspace changed before command stop');
@@ -459,16 +462,17 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
       for (const t of terminals) await mutate(() => t3.closeTerminal(thread.id, t.terminalId));
       return; // Let the shells exit before checking running processes.
     }
-    const removal = await removeWorkspace(project.repoPath, path, t3, false, async () => {
+    const removal = await removeWorkspace(project.repoPath, path, false, async () => {
+      if (!boundary.processes) await reapOrphans(path);
       const cwds = await (boundary.processes ?? processWorkspaces)();
       if (cwds.some(cwd => cwd === path || cwd.startsWith(path + sep))) throw new Error('A running process is still using the workspace');
       const latest = await t3.shell(true), confirmed = latest.threads.find(t => t.id === thread.id), latestSubagents = subagentDescendants(latest.threads, thread.id);
       if (!confirmed || confirmed.updatedAt !== snapshotAt || confirmed.worktreePath !== null || executing(confirmed, c.monitoringTimeoutMinutes) || waiting(confirmed) || confirmed.pendingBackgroundTasks.length || shared(latest.threads, latestSubagents) || latestSubagents.some(t => bound(t) || busy(t) || resumed(t) || t.pendingBackgroundTasks.length)) throw new Error('Thread or workspace changed before removal');
       await verifyIdleProjection(t3, confirmed, job.commandStop?.status === 'confirmed');
       for (const child of latestSubagents) await verifyIdleProjection(t3, child);
-      if (existsSync(path) && (await git(path, ['rev-parse', 'HEAD']) !== head || await git(path, ['status', '--porcelain']) || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch)) throw new Error('Workspace changed before removal');
+      if (checkout && (await git(path, ['rev-parse', 'HEAD']) !== head || (await dirtyEntries(path)).length || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch)) throw new Error('Workspace changed before removal');
       checkOwner();
-    }, () => { mutationUncertain = true; });
+    }, () => { mutationUncertain = true; }, true);
     mutationUncertain = false;
     store.record('cleanup.confirmed', removal.outcome === 'removed' ? 'Worktree physically removed' : 'Already-absent workspace finalized', { path, ...removal }, job.id);
     job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);
@@ -582,9 +586,9 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       const cleanedBinding = (job.workspaceCleanedAt || job.workspaceCleanup) && thread?.branch === null && thread.worktreePath === null;
       if (thread && (thread.settledOverride !== 'settled' || executing(thread) || (thread.branch !== branch && !cleanedBinding) || Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.dismissedAt) || Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.dismissedAt))) continue;
       const worktreePath = thread?.worktreePath ?? job.dismissedWorktreePath ?? job.workspaceCleanup?.path;
-      if (worktreePath && existsSync(worktreePath)) {
-        const [head, changes] = await readAll([git(worktreePath, ['rev-parse', 'HEAD']), git(worktreePath, ['status', '--porcelain'])]);
-        if (head !== dismissedHead || changes) continue;
+      if (worktreePath && existsSync(join(worktreePath, '.git'))) {
+        const [head, changes] = await readAll([git(worktreePath, ['rev-parse', 'HEAD']), dirtyEntries(worktreePath)]);
+        if (head !== dismissedHead || changes.length) continue;
       }
       branches.set(branch, dismissedHead); if (thread) inactiveThreads.add(thread.id); continue;
     }
@@ -593,9 +597,9 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
       if (!thread || executing(thread) || waiting(thread) || !(thread.branch === branch || (thread.branch === null && thread.worktreePath === null)) || !job.completedAt ||
           Date.parse(thread.latestUserMessageAt ?? job.createdAt) > Date.parse(job.completedAt) ||
           Date.parse(thread.latestRunCompletedAt ?? job.createdAt) > Date.parse(job.completedAt)) return;
-      if (thread.worktreePath && existsSync(thread.worktreePath)) {
-        const [current, changes] = await readAll([git(thread.worktreePath, ['rev-parse', 'HEAD']), git(thread.worktreePath, ['status', '--porcelain'])]);
-        if (current !== head || changes) return;
+      if (thread.worktreePath && existsSync(join(thread.worktreePath, '.git'))) {
+        const [current, changes] = await readAll([git(thread.worktreePath, ['rev-parse', 'HEAD']), dirtyEntries(thread.worktreePath)]);
+        if (current !== head || changes.length) return;
       }
       inactiveThreads.add(thread.id);
     };

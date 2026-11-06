@@ -335,9 +335,6 @@ export class T3 {
     // Thread launch prepares the worktree and runs the project setup script; plain dispatch does not.
     return prepared ? prepared.call({ type: 'launch', input }) : this.rpcCall({ type: 'launch', input });
   }
-  async removeWorktree(cwd: string, path: string, force = false) {
-    return this.rpcCall({ type: 'remove-worktree', cwd, path, force });
-  }
   async terminals() {
     return z.object({ type: z.literal('snapshot'), terminals: z.array(z.object({
       threadId: z.string().min(1), terminalId: z.string().min(1), cwd: z.string(), worktreePath: z.string().nullable(),
