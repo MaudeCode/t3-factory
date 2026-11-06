@@ -86,7 +86,7 @@ for (const scenario of ['dirty', 'ignored', 'unmerged', 'orphan', 'shared', 'mis
   } finally { f.close(); }
 });
 
-for (const scenario of ['active', 'queued', 'unknown', 'process', 'primary', 'symlink', 'changed-content', 'changed-head', 'changed-binding', 'new-subagent'] as const) test(`force refuses unsafe or stale review: ${scenario}`, async () => {
+for (const scenario of ['active', 'queued', 'unknown', 'process', 'primary', 'symlink', 'unassigned-leftover', 'changed-content', 'changed-head', 'changed-binding', 'new-subagent'] as const) test(`force refuses unsafe or stale review: ${scenario}`, async () => {
   const f = fixture(); try {
     const owners = f.owners(), r = await f.review(); assert.equal(r.forceAllowed, true);
     if (scenario === 'active') { owners[0].activeRunId = 'new-run'; owners[0].status = 'running'; }
@@ -95,6 +95,8 @@ for (const scenario of ['active', 'queued', 'unknown', 'process', 'primary', 'sy
     if (scenario === 'process') f.boundary.processes = async () => [f.path];
     if (scenario === 'primary') { const p = await manageCleanup(f.c, f.store, f.t3, f.kanvil, { type: 'review', projectId: 'p', path: f.repo }, 'fixture', f.boundary); assert.equal(p.forceAllowed, false); return; }
     if (scenario === 'symlink') { f.git('worktree', 'remove', f.path); symlinkSync(f.repo, f.path); }
+    // A directory without Git metadata that no Factory job recorded is not a worktree, however much it resembles an interrupted removal.
+    if (scenario === 'unassigned-leftover') { f.git('worktree', 'remove', f.path); mkdirSync(f.path); writeFileSync(join(f.path, 'notes'), 'irreplaceable'); const p = await f.review(); assert.equal(p.forceAllowed, false); assert.ok(existsSync(join(f.path, 'notes'))); return; }
     if (scenario === 'changed-content') writeFileSync(join(f.path, 'ignored'), 'changed');
     if (scenario === 'changed-head') { writeFileSync(join(f.path, 'file'), 'new'); execFileSync('git', ['-C', f.path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qam', 'new']); }
     if (scenario === 'changed-binding') owners[0].updatedAt = '2026-01-03T00:00:00Z';

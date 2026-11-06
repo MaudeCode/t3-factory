@@ -69,7 +69,9 @@ export async function dirtyEntries(path: string, signal?: AbortSignal) {
   return status.split('\0').filter(entry => entry && classify(entry) !== 'deleted');
 }
 
-export async function inspectWorkspace(repo: string, input: string, contents = false, signal?: AbortSignal) {
+// `assigned` is the caller's durable evidence (a Factory job or T3 binding recorded this path as its worktree); without it an
+// unregistered directory is never removable, however empty it looks.
+export async function inspectWorkspace(repo: string, input: string, contents = false, signal?: AbortSignal, assigned = false) {
   signal = AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
   signal.throwIfAborted();
   const path = canonicalPath(input), root = canonicalPath(repo), registrations = await worktrees(repo, signal);
@@ -87,7 +89,8 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
   let tracked = 0, untracked = 0, ignored = 0, deleted = 0;
   const changes: { kind: string; path: string }[] = [];
   const ignoredPaths = new Set<string>();
-  // An interrupted removal can leave the directory without its .git link; Git no longer knows it and nothing in it is work.
+  // An interrupted removal can leave an assigned directory without its .git link: Git only started deleting a clean tree, so
+  // what remains is not work. An unassigned directory without Git metadata is simply not a worktree.
   const leftover = present && !registration && !existsSync(join(path, '.git'));
   if (present && !leftover) {
     const s = await lstat(path); inode = `${s.dev}:${s.ino}`;
@@ -126,7 +129,7 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
   const identity = { path, root, primary, present, registered: !!registration, registration, common, inode, head, branch, status, content };
   return { ...identity, leftover, tracked, untracked, ignored, deleted, changes, files: contents ? files : null, bytes: contents && !ignored ? bytes : null,
     fingerprint: createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
-    removable: path !== root && path !== primary && (registration ? !registration.locked && (!present || !!common) : leftover),
+    removable: path !== root && path !== primary && (registration ? !registration.locked && (!present || !!common) : leftover && assigned),
   };
 }
 
@@ -142,19 +145,19 @@ async function removeWorktree(repo: string, path: string, present: boolean) {
   await workspaceGit(repo, ['worktree', 'prune']);
 }
 
-export async function removeWorkspace(repo: string, path: string, force = false, beforeRemove?: () => Promise<void>, onRemove?: () => void) {
-  const before = await inspectWorkspace(repo, path);
+export async function removeWorkspace(repo: string, path: string, force = false, beforeRemove?: () => Promise<void>, onRemove?: () => void, assigned = false) {
+  const before = await inspectWorkspace(repo, path, false, undefined, assigned);
   if (before.present || before.registered) {
     if (!before.removable) throw new Error('Only a registered, unlocked, non-primary worktree of the configured repository can be removed');
     if (!force && (before.tracked || before.untracked)) throw new Error('Preserve tracked or untracked workspace changes');
     await beforeRemove?.();
     // Git needs force for ignored files, so recheck real changes after the final activity guard.
-    const final = force ? before : await inspectWorkspace(repo, path);
+    const final = force ? before : await inspectWorkspace(repo, path, false, undefined, assigned);
     if (!force && (!final.removable || final.head !== before.head || final.branch !== before.branch || final.inode !== before.inode || final.tracked || final.untracked)) throw new Error('Workspace identity or tracked/untracked contents changed before removal');
     onRemove?.();
     await removeWorktree(repo, before.path, before.present);
   }
-  const after = await inspectWorkspace(repo, path);
+  const after = await inspectWorkspace(repo, path, false, undefined, assigned);
   if (after.present || after.registered) throw new Error('Workspace removal is not confirmed; directory or Git registration remains');
   return { outcome: before.present ? 'removed' as const : 'already-absent' as const, physicalRemoval: before.present, registrationRemoved: before.registered };
 }

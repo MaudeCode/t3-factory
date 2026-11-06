@@ -378,7 +378,8 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
     if (!workspace && commands) throw new Error('Command workspace ownership cannot be verified');
     if (!workspace) { job.workspaceCleanedAt = new Date().toISOString(); store.save(job); return; }
     const path = canonicalPath(workspace);
-    const physical = await inspectWorkspace(project.repoPath, path);
+    // The job's own record of this path is the evidence that lets a leftover directory count as removable.
+    const physical = await inspectWorkspace(project.repoPath, path, false, undefined, true);
     if ((physical.present || physical.registered) && !physical.removable) throw new Error('Preserve unregistered, locked or primary workspace');
     if (physical.tracked || physical.untracked) throw new Error(`Preserve workspace changes: ${physical.tracked} tracked, ${physical.untracked} untracked`);
     const assigned = assignedBranch(job);
@@ -471,7 +472,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
       for (const child of latestSubagents) await verifyIdleProjection(t3, child);
       if (checkout && (await git(path, ['rev-parse', 'HEAD']) !== head || (await dirtyEntries(path)).length || await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']) !== checkoutBranch)) throw new Error('Workspace changed before removal');
       checkOwner();
-    }, () => { mutationUncertain = true; });
+    }, () => { mutationUncertain = true; }, true);
     mutationUncertain = false;
     store.record('cleanup.confirmed', removal.outcome === 'removed' ? 'Worktree physically removed' : 'Already-absent workspace finalized', { path, ...removal }, job.id);
     job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job);

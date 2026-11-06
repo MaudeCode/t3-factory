@@ -70,8 +70,10 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kanvil: Ka
     catch (e) { checks.push({ name, state: e instanceof z.ZodError ? 'unknown' : 'blocked', override, detail: safeError(e), checkedAt: new Date().toISOString() }); }
   };
   let workspace: Awaited<ReturnType<typeof inspectWorkspace>> | null = null;
+  // A recorded Factory assignment is the evidence that lets a leftover directory (no .git link) count as removable.
+  const allJobs = store.jobs(), recorded = allJobs.some(j => jobPaths(j).some(p => canonicalPath(p) === canonicalPath(input.path)));
   await check('Repository and worktree identity', false, async () => {
-    workspace = await inspectWorkspace(project.repoPath, input.path, !!input.size, signal);
+    workspace = await inspectWorkspace(project.repoPath, input.path, !!input.size, signal, recorded);
     if ((workspace.present || workspace.registered) && !workspace.removable) throw new Error('Preserve primary, locked or unregistered checkout');
     return workspace.present ? 'Registered worktree belongs to the configured repository' : workspace.registered ? 'Directory absent; stale Git registration remains' : 'Directory and Git registration absent';
   });
@@ -94,7 +96,7 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kanvil: Ka
     }
     return owners.length ? `${owners.length} idle bindings and subagents verified` : 'No live T3 binding';
   });
-  const jobs = store.jobs().filter(j => owners.some(t => t.id === j.threadId) || jobPaths(j).some(p => canonicalPath(p) === path));
+  const jobs = allJobs.filter(j => owners.some(t => t.id === j.threadId) || jobPaths(j).some(p => canonicalPath(p) === path));
   await check('Factory activity', false, () => {
     if (!shellKnown) throw new Error('T3 ownership is unknown');
     if (c.stateDir && usesWorkspace(c.stateDir, path)) throw new Error('Preserve Factory state and completion reports');
@@ -479,7 +481,8 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
           // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
           await verifyDetachedOwners(t3, fresh.bindings);
           if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
-          const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
+          const assigned = fresh.jobs.length > 0;
+          const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal, assigned);
           if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
           const result = await removeWorkspace(project.repoPath, target.path, forced, async () => {
             const evidence = await inspectCleanup(c, store, t3, kanvil, recheck, boundary);
@@ -487,7 +490,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
             await verifyDetachedOwners(t3, fresh.bindings);
             await recent([]);
             if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
-          }, () => { mutated = true; });
+          }, () => { mutated = true; }, assigned);
           action.outcomes.push({ path: target.path, state: 'confirmed', message: result.outcome, physicalRemoval: result.physicalRemoval,
             freeSpaceChange: beforeFree === null ? null : await freeBytes(project.repoPath).then(n => n === null ? null : n - beforeFree) });
           for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanedAt = new Date().toISOString(); job.workspaceCleanupError = job.workspaceCleanupBlockedAt = undefined; store.save(job); }
