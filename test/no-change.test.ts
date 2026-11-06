@@ -43,8 +43,7 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
     const kanvil = { config: c.kanvil, task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status, automationReady: scenario !== 'automation-disabled', holdReason: scenario === 'held' ? 'Decision pending' : null, archived: scenario === 'archived', labels: [{ name: 'med' }, ...(scenario === 'unlabeled' ? [] : [{ name: 'sf' }])] }) } as unknown as Kanvil;
     const threads = [thread];
     const t3 = { shell: async () => ({ threads }), request: async () => ({ projection: v2Projection(thread) }), terminals: async () => [],
-      dispatch: async (command: any) => { thread.worktreePath = null; thread.branch = null; assert.equal(command.type, 'thread.metadata.update'); },
-      removeWorktree: async (_cwd: string, path: string) => { git(repo, 'worktree', 'remove', path); } } as unknown as T3;
+      dispatch: async (command: any) => { thread.worktreePath = null; thread.branch = null; assert.equal(command.type, 'thread.metadata.update'); } } as unknown as T3;
     try {
       if (scenario === 'dirty') writeFileSync(join(tree, 'untracked'), 'keep me');
       if (scenario.endsWith('extra-commit')) { writeFileSync(join(tree, 'file'), 'new work\n'); git(tree, 'commit', '-qam', 'unmerged'); }

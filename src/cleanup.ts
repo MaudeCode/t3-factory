@@ -11,7 +11,7 @@ import type { T3, Kanvil } from './clients.ts';
 import { cleanupActionPending, type Store, type Job } from './store.ts';
 import { subagentDescendants, type Thread } from './policy.ts';
 import { cleanupCompletedWorkspace, verifyCleanupHead, verifyReleasedWorkspaceHead, verifyCompletionReport, readCompletionReport, safeError } from './scheduler.ts';
-import { canonicalPath, inspectWorkspace, worktrees, freeBytes, filesystemSpace, processWorkspaces, usesWorkspace, removeWorkspace, verifyIdleProjection } from './workspace.ts';
+import { canonicalPath, inspectWorkspace, worktrees, freeBytes, filesystemSpace, processWorkspaces, reapOrphans, usesWorkspace, removeWorkspace, verifyIdleProjection } from './workspace.ts';
 
 const target = { projectId: z.string().min(1).max(200), path: z.string().startsWith('/').max(4096) };
 export const cleanupRequestSchema = z.discriminatedUnion('type', [
@@ -32,8 +32,9 @@ export interface CleanupAction {
 // `idleMs` is automatic maintenance's retention: the executor enforces it on its own fresh readings.
 type Boundary = { processes?: typeof processWorkspaces; signal?: AbortSignal; idleMs?: number };
 // T3 leaves idle setup shells open in worktrees; removal closes them and looks again.
-const onlyIdleShells = (detail: { terminals: { status: string; hasRunningSubprocess: boolean }[]; checks: { name: string; state: string }[] }) =>
-  detail.terminals.length > 0 && detail.terminals.every(t => t.status === 'running' && !t.hasRunningSubprocess) &&
+// Idle setup shells and orphaned daemons are the only blockers cleanup clears itself; every other refusal stands.
+const onlyLeftovers = (detail: { terminals: { status: string; hasRunningSubprocess: boolean }[]; processCount: number | null; checks: { name: string; state: string }[] }) =>
+  (detail.terminals.length > 0 || !!detail.processCount) && detail.terminals.every(t => t.status === 'running' && !t.hasRunningSubprocess) &&
   !detail.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name));
 const digest = (data: unknown) => createHash('sha256').update(JSON.stringify(data)).digest('hex');
 const jobPaths = (job: Job) => [job.workspaceCleanup?.path, job.dismissedWorktreePath, job.thread?.worktreePath].filter((p): p is string => !!p);
@@ -133,13 +134,15 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kanvil: Ka
   await check('Contents', true, () => {
     if (!physical) throw new Error('Contents unknown');
     if (physical.tracked || physical.untracked) throw new Error(`${physical.tracked} tracked changes, ${physical.untracked} untracked files will be lost`);
-    return physical.ignored ? `${physical.ignored} ignored entries remain; normal cleanup deletes ignored files` : 'No tracked, untracked or ignored changes';
+    if (physical.leftover) return 'Leftover directory of a removed worktree; nothing in it is work';
+    return [physical.deleted ? `${physical.deleted} deleted tracked files are recoverable from the commit` : '', physical.ignored ? `${physical.ignored} ignored entries remain; normal cleanup deletes ignored files` : ''].filter(Boolean).join('; ') || 'No tracked, untracked or ignored changes';
   });
   let reports: { jobId: string; status: string; reason: string; prUrls: string[] }[] = [];
   await check(input.policy === 'unused' ? 'Merged HEAD' : 'Verified completion and merged HEAD', true, async () => {
     if (input.policy === 'unused') {
       if (!physical || !shellKnown) throw new Error('Worktree or live ownership is unknown');
       if (!physical.present && !physical.registered) return 'Already absent; no worktree remains to delete';
+      if (physical.leftover) return 'Leftover directory of a removed worktree; no HEAD to merge';
       const release = await verifyReleasedWorkspaceHead(project, physical.head, signal);
       return `Workspace HEAD is merged into the remote release branch at ${release}`;
     }
@@ -193,7 +196,7 @@ export function cleanupPresentation(item: Pick<CleanupInventoryItem, 'state' | '
   if (!item.jobs.length) return next('ready', item.bindings.length ? 'Idle T3 worktree; merge and local changes will be checked' : 'No active binding; merge and local changes will be checked', 'remove');
   if (item.jobs.length !== 1 || item.ownership === 'shared') return next('ready', 'Recorded owners are idle; merge and local changes will be checked', 'remove');
   if (/resumed/i.test(error)) return next('attention', 'Work resumed after completion', 'force');
-  if (/Ticket is no longer Done|task not found|Completion.*(?:missing|unavailable)|report.*missing|ENOENT|not assigned|fetch failed|ECONN|ETIMEDOUT/i.test(error)) return next('ready', 'Previous check could not finish; merge and local changes will be checked', 'remove');
+  if (/Ticket is no longer Done|(?:task|ticket) not found|Completion.*(?:missing|unavailable)|report.*missing|ENOENT|not a git repository|not assigned|fetch failed|ECONN|ETIMEDOUT/i.test(error)) return next('ready', 'Previous check could not finish; merge and local changes will be checked', 'remove');
   if (/tracked.*untracked|dirty or changed|Preserve dirty workspace/i.test(error)) return next('attention', 'Tracked changes or untracked files remain', 'thread');
   if (/not.*(?:merged|release branch)/i.test(error)) return next('attention', 'Completion or merged work is not verified', 'force');
   if (/terminal:read/i.test(error)) return terminalReadable === true ? next('ready', 'Terminal access is restored; cleanup can be retried', 'remove') : next('attention', terminalReadable === false ? 'T3 terminal visibility could not be verified' : 'Previous cleanup could not read T3 terminals', 'inspect');
@@ -447,8 +450,9 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
           const inspection = { ...target, size: forced, ...!forced ? { policy: 'unused' as const } : {} };
           let fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
           const blocked = (detail: typeof fresh) => detail.checks.some(check => check.state !== 'pass' && (!forced || !check.override));
-          if (onlyIdleShells(fresh)) {
+          if (onlyLeftovers(fresh)) {
             for (const t of fresh.terminals) await t3.closeTerminal(t.threadId, t.terminalId);
+            if (fresh.processCount && !boundary.processes) await reapOrphans(fresh.path, boundary.signal);
             await new Promise(resolve => setTimeout(resolve, 1500));
             fresh = await inspectCleanup(c, store, t3, kanvil, inspection, boundary);
           }
@@ -477,7 +481,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
           if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
           const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal);
           if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
-          const result = await removeWorkspace(project.repoPath, target.path, t3, forced, async () => {
+          const result = await removeWorkspace(project.repoPath, target.path, forced, async () => {
             const evidence = await inspectCleanup(c, store, t3, kanvil, recheck, boundary);
             if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
             await verifyDetachedOwners(t3, fresh.bindings);
@@ -532,7 +536,9 @@ export async function reclaimUnusedWorkspace(c: Config, store: Store, t3: T3, ka
     const key = `path:${item.path}`, checked = `cleanupReclaimChecked:${digest([item.projectId, item.path])}`;
     if (visited.has(key)) continue;
     visited.add(key);
-    if (!item.present || !item.registered || ['primary', 'active', 'blocked', 'unknown'].includes(item.state) || ['shared', 'unknown'].includes(item.ownership) || item.jobs.some(job => !job.workspaceCleanedAt)) continue;
+    // Finished jobs whose own verification can no longer complete (missing report or ticket, interrupted removal) fall back to the
+    // unused policy; a job that has not failed yet keeps its workspace until its own cleanup records a result.
+    if (!item.present || (!item.registered && !item.jobs.length) || ['primary', 'active', 'unknown'].includes(item.state) || ['shared', 'unknown'].includes(item.ownership) || item.next?.action !== 'remove' || item.jobs.some(job => !['complete', 'dismissed'].includes(job.state) || (!job.workspaceCleanedAt && !job.error))) continue;
     // A foreground command owns this path; it goes first and the next sweep reads its outcome.
     if (store.isLocked(key) || actions.some(a => cleanupActionPending(a, item.path))) continue;
     if (Date.now() - (Date.parse(store.get(checked) ?? '') || 0) < RECLAIM_RETRY_MS || await recentlyActive(item.path, item.bindings)) continue;
@@ -540,8 +546,10 @@ export async function reclaimUnusedWorkspace(c: Config, store: Store, t3: T3, ka
     const detail = await inspectCleanup(c, store, t3, kanvil, { ...target, policy: 'unused' }, boundary);
     store.set(checked, new Date().toISOString());
     // Factory completion verification keeps owning its workspace until it records the cleanup.
-    if (detail.ownership === 'shared' || detail.jobs.some(job => !job.workspaceCleanedAt) || await recentlyActive(detail.path, detail.bindings)) return true;
-    if (detail.state !== 'eligible' && !(detail.workspace?.present && onlyIdleShells(detail))) return true;
+    if (detail.ownership === 'shared' || await recentlyActive(detail.path, detail.bindings)) return true;
+    if (detail.state !== 'eligible' && !(detail.workspace?.present && onlyLeftovers(detail))) return true;
+    // A process that is not an orphaned daemon keeps the worktree; recording a refusal every sweep would only add noise.
+    if (detail.processCount && !(await reapOrphans(detail.path, boundary.signal)).length) return true;
     await manageCleanup(c, store, t3, kanvil, { type: 'remove', id: randomUUID(), targets: [target], reason: 'Automatic maintenance: merged, clean, unused worktree' }, 'automatic maintenance', { ...boundary, idleMs: RECLAIM_IDLE_MS });
     return true;
   }

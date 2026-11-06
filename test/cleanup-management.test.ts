@@ -27,8 +27,10 @@ function fixture() {
   const t3 = { shell: async () => { onShell?.(); if (unknown) throw { _tag: 'EnvironmentAuthorizationError', detail: 'Missing terminal:read scope' }; return { threads, projects: [{ id: 't3', workspaceRoot: repo }] }; },
     request: async (url: string) => ({ projection: v2Projection(threads.find(t => url.includes(`/threads/${t.id}/`))!, { runs: queued ? [{ status: 'queued' }] : [], runtimeRequests: [], messages: [], providerThreads: [], subagents: [] }) }),
     terminals: async () => terminalList, closeTerminal: async (threadId: string, terminalId: string) => { closes.push({ threadId, terminalId }); terminalList = terminalList.filter(t => t.terminalId !== terminalId); }, dispatch: async (command: any) => { detachCalls++; const thread = threads.find(t => t.id === command.threadId)!; assert.equal(command.expectedWorktreePath, thread.worktreePath); thread.worktreePath = thread.branch = null; },
-    removeWorktree: async (_repo: string, target: string, force: boolean) => { removeCalls++; if (removeError) throw new Error('RPC response lost'); git('worktree', 'remove', ...force ? ['--force'] : [], target); if (lostAfter) throw new Error('RPC response lost after removal'); },
   } as unknown as T3;
+  // Removal moves the directory aside; the fixture counts and fails that move the way a lost RPC response used to.
+  const realRename = fs.promises.rename;
+  fs.promises.rename = async (from, to) => { removeCalls++; if (removeError) throw new Error('Removal failed'); await realRename(from, to); if (lostAfter) { git('worktree', 'prune'); throw new Error('Result lost after removal'); } };
   const kanvil = { task: async () => ({ id: 'task', projectId: 'p', number: 1, title: 'Fixture', createdAt: '2026-01-01T00:00:00Z', priority: 'low', status: 'done' }) } as unknown as Kanvil;
   const boundary = { processes: async () => ['/unrelated'] };
   const target = { projectId: 'p', path };
@@ -46,7 +48,7 @@ function fixture() {
     terminal: (busy: boolean) => { terminalList = [{ threadId: 'owner', terminalId: 'setup-shell', cwd: path, worktreePath: path, status: 'running', pid: 1, hasRunningSubprocess: busy, label: 'fish', updatedAt: '2026-01-01T00:00:00Z' }]; }, closes,
     unknown: () => { unknown = true; }, queued: () => { queued = true; }, lost: () => { removeError = true; }, lostAfter: () => { lostAfter = true; }, race: (fn: () => void) => { onShell = fn; },
     restart: () => { store.close(); store = new Store(join(dir, 'state')); },
-    close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); },
+    close: () => { fs.promises.rename = realRename; store.close(); rmSync(dir, { recursive: true, force: true }); },
   };
 }
 
@@ -80,7 +82,7 @@ for (const scenario of ['dirty', 'ignored', 'unmerged', 'orphan', 'shared', 'mis
     assert.equal(result.outcomes[0].message, scenario === 'missing' ? 'already-absent' : 'removed');
     assert.equal(existsSync(f.path), false); assert.ok(!f.git('worktree', 'list', '--porcelain').includes(f.path));
     assert.equal(f.git('rev-parse', 'refs/heads/feat/FIX-1'), branchHead, 'branch ref preserved');
-    f.restart(); assert.deepEqual(await f.force(r, id), result); assert.equal(f.calls[0], 1);
+    f.restart(); assert.deepEqual(await f.force(r, id), result); assert.equal(f.calls[0], scenario === 'missing' ? 0 : 1, 'an absent directory is never moved');
   } finally { f.close(); }
 });
 
@@ -303,7 +305,7 @@ for (const scenario of ['ignored-only', 'tracked-change', 'untracked-change', 'q
 for (const tracked of [true, false]) test(`ignored-only removal rechecks ${tracked ? 'tracked' : 'untracked'} changes after the final activity callback`, async () => {
   const f = fixture(); try {
     writeFileSync(join(f.path, 'ignored'), 'discard ignored files only');
-    await assert.rejects(removeWorkspace(f.repo, f.path, f.t3, false, async () => {
+    await assert.rejects(removeWorkspace(f.repo, f.path, false, async () => {
       writeFileSync(join(f.path, tracked ? 'file' : 'new-work'), 'new work must survive');
     }), /dirty|changed|untracked/i);
     assert.ok(existsSync(f.path)); assert.equal(f.calls[0], 0);
@@ -567,10 +569,10 @@ test('automatic maintenance finalizes a finished job whose worktree is gone inst
 const automatic = (store: Store) => store.cleanupActions().filter(action => action.operator === 'automatic maintenance');
 const age = (path: string) => { const old = Date.now() / 1000 - 2 * 86_400; fs.utimesSync(path, old, old); };
 const sweep = async (f: ReturnType<typeof fixture>, signal?: AbortSignal) => { const visited = new Set<string>(); while (await cleanupNextWorkspace(f.c, f.store, f.t3, f.kanvil, visited, { ...f.boundary, signal })); };
-const removedScenarios = ['orphan', 't3-only', 'ignored', 'idle-terminal', 'cleaned-job'];
+const removedScenarios = ['orphan', 't3-only', 'ignored', 'idle-terminal', 'cleaned-job', 'factory-fallback', 'half-deleted'];
 for (const scenario of [...removedScenarios, 'shared', 'active', 'queued', 'busy-terminal', 'process', 'tracked', 'untracked', 'unmerged', 'recent', 'factory-hold', 'unfinished-job', 'uncertain'] as const) test(`automatic maintenance reclaims only merged, clean, unused catalog worktrees: ${scenario}`, async () => {
   const f = fixture(); try {
-    const owners = ['t3-only', 'active', 'queued', 'busy-terminal', 'idle-terminal', 'recent', 'factory-hold', 'unfinished-job'].includes(scenario) ? f.owners() : scenario === 'shared' ? f.owners(2) : [];
+    const owners = ['t3-only', 'active', 'queued', 'busy-terminal', 'idle-terminal', 'recent', 'factory-hold', 'factory-fallback', 'unfinished-job'].includes(scenario) ? f.owners() : scenario === 'shared' ? f.owners(2) : [];
     if (scenario === 'active') { owners[0].activeRunId = 'active'; owners[0].status = 'running'; }
     if (scenario === 'queued') f.queued();
     if (scenario === 'busy-terminal' || scenario === 'idle-terminal') f.terminal(scenario === 'busy-terminal');
@@ -580,7 +582,11 @@ for (const scenario of [...removedScenarios, 'shared', 'active', 'queued', 'busy
     if (scenario === 'untracked') writeFileSync(join(f.path, 'untracked'), 'preserve new work');
     if (scenario === 'unmerged') { writeFileSync(join(f.path, 'file'), 'unmerged work'); execFileSync('git', ['-C', f.path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qam', 'unmerged']); }
     if (scenario === 'recent') owners[0].latestUserMessageAt = new Date().toISOString();
-    if (scenario === 'factory-hold') f.store.save({ ...f.job(), workspaceCleanupBlockedAt: new Date().toISOString(), workspaceCleanupError: 'Ticket is no longer Done' });
+    if (scenario === 'factory-hold') f.store.save({ ...f.job(), workspaceCleanupBlockedAt: new Date().toISOString(), workspaceCleanupError: 'Completion is awaiting human input' });
+    // A finished job whose own verification can no longer complete falls back to the unused policy instead of holding its worktree forever.
+    if (scenario === 'factory-fallback') f.store.save({ ...f.job(), workspaceCleanupBlockedAt: new Date().toISOString(), workspaceCleanupError: 'kanvil.read failed after 14ms: Kanvil ticket not found or inaccessible' });
+    // A removal interrupted mid-delete leaves only deleted tracked files, which the commit still holds.
+    if (scenario === 'half-deleted') rmSync(join(f.path, 'file'));
     if (scenario === 'unfinished-job') f.store.save({ ...f.job(), state: 'running', completedAt: null });
     if (scenario === 'cleaned-job') f.store.save({ ...f.job(), thread: undefined, workspaceCleanup: { path: f.path, branch: 'feat/FIX-1', head: f.git('rev-parse', 'HEAD') }, workspaceCleanedAt: '2026-01-03T00:00:00Z' });
     if (scenario === 'uncertain') { const at = new Date().toISOString(); f.store.saveCleanupAction({ id: randomUUID(), input: {}, operator: 'fixture', requestedAt: at, updatedAt: at, state: 'uncertain', targets: [f.target], reason: 'Earlier response lost', outcomes: [{ path: f.path, state: 'uncertain', message: 'RPC response lost' }] }); }

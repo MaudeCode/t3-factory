@@ -381,18 +381,6 @@ test('closing the RPC owner drains a submitted mutation before disposing its soc
   assert.equal(failed, undefined); assert.equal(settled, true); assert.equal(closed, true);
 });
 
-test('workspace removal uses the native T3 RPC without force', async t => {
-  const { t3, requests } = fixtureRpc(t, request => [success(request)]);
-  await t3.removeWorktree('/repo', '/worktree');
-  assert.deepEqual(requests(), [{ tag: 'vcs.removeWorktree', payload: { cwd: '/repo', path: '/worktree', force: false } }]);
-});
-
-test('explicit operator force removal uses the native T3 force contract', async t => {
-  const { t3, requests } = fixtureRpc(t, request => [success(request)]);
-  await t3.removeWorktree('/repo', '/worktree', true);
-  assert.deepEqual(requests(), [{ tag: 'vcs.removeWorktree', payload: { cwd: '/repo', path: '/worktree', force: true } }]);
-});
-
 const summary = { threadId: 'thread-1', terminalId: 'setup-install-dependencies', cwd: '/worktree', worktreePath: '/worktree', status: 'running', pid: 42, exitCode: null, exitSignal: null, hasRunningSubprocess: false, label: 'fish', updatedAt: '2026-01-01T00:00:00.000Z' };
 const snapshot = (terminals: unknown[]) => (request: { id: string }) => [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', terminals }] }];
 

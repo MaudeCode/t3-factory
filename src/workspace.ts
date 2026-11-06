@@ -2,11 +2,12 @@ import { z } from 'zod';
 import { readPhase } from './read-context.ts';
 import type { Thread } from './policy.ts';
 // Filesystem evidence shared by automatic maintenance and operator reviews. Never follows worktree symlinks.
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { lstat, realpath, readdir, readlink, statfs, stat } from 'node:fs/promises';
-import { createReadStream, existsSync, realpathSync } from 'node:fs';
+import { createReadStream, existsSync, realpathSync, promises as fsp } from 'node:fs';
 import { dirname, basename, join, resolve, sep } from 'node:path';
 import type { T3 } from './clients.ts';
 
@@ -41,6 +42,32 @@ export async function processWorkspaces(signal?: AbortSignal): Promise<string[]>
   return paths;
 }
 export const usesWorkspace = (cwd: string, path: string) => { const p = canonicalPath(cwd); return p === path || p.startsWith(path + sep); };
+// Daemons an agent started and left behind (dev servers, sidecars) outlive their terminal and are reparented to launchd.
+// Once every other check has passed, those are the only processes that can still hold a finished worktree.
+export async function reapOrphans(path: string, signal?: AbortSignal): Promise<number[]> {
+  const killed: number[] = [];
+  for (let round = 0; round < 3; round++) {
+    const { stdout } = await exec('lsof', ['-b', '-n', '-d', 'cwd', '-Fpn'], { timeout: 20_000, maxBuffer: 4_000_000, signal });
+    const orphans: number[] = []; let pid = 0;
+    for (const line of stdout.split('\n')) {
+      if (line.startsWith('p')) pid = Number(line.slice(1));
+      else if (line.startsWith('n') && pid && usesWorkspace(line.slice(1).replace(/ \(deleted\)$/, ''), path)) {
+        const ppid = await exec('ps', ['-o', 'ppid=', '-p', String(pid)]).then(r => r.stdout.trim(), () => '');
+        if (ppid === '1') orphans.push(pid);
+      }
+    }
+    if (!orphans.length) break;
+    for (const pid of orphans) { try { process.kill(pid, 'SIGTERM'); killed.push(pid); } catch {} }
+    await sleep(1000, undefined, { signal });
+  }
+  return killed;
+}
+// Deleted tracked files are recoverable from the commit, so a removal that was interrupted mid-delete leaves nothing to preserve.
+const classify = (entry: string) => entry.startsWith('??') ? 'untracked' : entry.startsWith('!!') ? 'ignored' : /^[ D][ D] /.test(entry) ? 'deleted' : 'tracked';
+export async function dirtyEntries(path: string, signal?: AbortSignal) {
+  const status = await workspaceGit(path, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], signal);
+  return status.split('\0').filter(entry => entry && classify(entry) !== 'deleted');
+}
 
 export async function inspectWorkspace(repo: string, input: string, contents = false, signal?: AbortSignal) {
   signal = AbortSignal.any([AbortSignal.timeout(30_000), ...signal ? [signal] : []]);
@@ -57,10 +84,12 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
   if (join(ancestor, basename(input)) !== path) throw new Error('Worktree path escapes its registered parent');
   let head = registration?.head ?? '', branch = registration?.branch ?? '', status = '';
   let common = '', inode = '', content = '', files = 0, bytes = 0;
-  let tracked = 0, untracked = 0, ignored = 0;
+  let tracked = 0, untracked = 0, ignored = 0, deleted = 0;
   const changes: { kind: string; path: string }[] = [];
   const ignoredPaths = new Set<string>();
-  if (present) {
+  // An interrupted removal can leave the directory without its .git link; Git no longer knows it and nothing in it is work.
+  const leftover = present && !registration && !existsSync(join(path, '.git'));
+  if (present && !leftover) {
     const s = await lstat(path); inode = `${s.dev}:${s.ino}`;
     const ownCommon = (await workspaceGit(path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], signal)).trim();
     common = await realpath(ownCommon);
@@ -72,7 +101,8 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i]; if (!entry) continue;
       if (changes.length < 100) changes.push({ kind: entry.slice(0, 2), path: entry.slice(3) });
-      if (entry.startsWith('??')) untracked++; else if (entry.startsWith('!!')) { ignored++; ignoredPaths.add(entry.slice(3).replace(/\/$/, '')); } else { tracked++; if (/^[RC]|^.[RC]/.test(entry)) i++; }
+      const kind = classify(entry);
+      if (kind === 'untracked') untracked++; else if (kind === 'ignored') { ignored++; ignoredPaths.add(entry.slice(3).replace(/\/$/, '')); } else if (kind === 'deleted') deleted++; else { tracked++; if (/^[RC]|^.[RC]/.test(entry)) i++; }
     }
     if (contents) {
       const hash = createHash('sha256');
@@ -94,13 +124,25 @@ export async function inspectWorkspace(repo: string, input: string, contents = f
     }
   }
   const identity = { path, root, primary, present, registered: !!registration, registration, common, inode, head, branch, status, content };
-  return { ...identity, tracked, untracked, ignored, changes, files: contents ? files : null, bytes: contents && !ignored ? bytes : null,
+  return { ...identity, leftover, tracked, untracked, ignored, deleted, changes, files: contents ? files : null, bytes: contents && !ignored ? bytes : null,
     fingerprint: createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
-    removable: path !== root && path !== primary && !!registration && !registration.locked && (!present || !!common),
+    removable: path !== root && path !== primary && (registration ? !registration.locked && (!present || !!common) : leftover),
   };
 }
 
-export async function removeWorkspace(repo: string, path: string, t3: T3, force = false, beforeRemove?: () => Promise<void>, onRemove?: () => void) {
+// Renaming the directory is atomic and instant, so an aborted or restarted removal never leaves a half-deleted tree behind.
+// A detached process deletes the moved tree while cleanup verifies the result.
+// ponytail: a reboot during that delete leaves a .<name>.removing-* folder beside the worktrees to delete by hand.
+async function removeWorktree(repo: string, path: string, present: boolean) {
+  if (present) {
+    const trash = join(dirname(path), `.${basename(path)}.removing-${randomUUID().slice(0, 8)}`);
+    await fsp.rename(path, trash);
+    spawn('rm', ['-rf', trash], { detached: true, stdio: 'ignore' }).unref();
+  }
+  await workspaceGit(repo, ['worktree', 'prune']);
+}
+
+export async function removeWorkspace(repo: string, path: string, force = false, beforeRemove?: () => Promise<void>, onRemove?: () => void) {
   const before = await inspectWorkspace(repo, path);
   if (before.present || before.registered) {
     if (!before.removable) throw new Error('Only a registered, unlocked, non-primary worktree of the configured repository can be removed');
@@ -110,7 +152,7 @@ export async function removeWorkspace(repo: string, path: string, t3: T3, force 
     const final = force ? before : await inspectWorkspace(repo, path);
     if (!force && (!final.removable || final.head !== before.head || final.branch !== before.branch || final.inode !== before.inode || final.tracked || final.untracked)) throw new Error('Workspace identity or tracked/untracked contents changed before removal');
     onRemove?.();
-    await t3.removeWorktree(repo, before.path, force || final.ignored > 0);
+    await removeWorktree(repo, before.path, before.present);
   }
   const after = await inspectWorkspace(repo, path);
   if (after.present || after.registered) throw new Error('Workspace removal is not confirmed; directory or Git registration remains');
