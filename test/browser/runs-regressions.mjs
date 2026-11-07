@@ -6,7 +6,7 @@ for (const [name, engine] of [["chromium", chromium], ["webkit", webkit]]) {
   const browser = await engine.launch();
   try {
     for (const width of [1280, 390, 669]) {
-      for (const test of ["runsHeader", "queueTransitions", "runsControls", "runsHistory", "runProjects", "run", "readiness"]) {
+      for (const test of ["runsHeader", "queueTransitions", "runsControls", "runsHistory", "runProjects", "run", "readiness", "epics"]) {
         const page = await browser.newPage({ viewport: { width, height: 844 }, hasTouch: width <= 900 });
         try {
           await page.goto(`${origin}/test/browser/queue.html`);

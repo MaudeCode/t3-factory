@@ -56,6 +56,10 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
         assert(Math.max(...heads[width]) - Math.min(...heads[width]) <= 1, `list page heads share one height at ${width}px: ${heads[width].join(", ")}`);
       }]);
     }
+    // Foldable poses with touch input; the fixture itself checks three-digit counts and overflow.
+    for (const width of [360, 382, 385, 594, 669, 951]) cases.push(["Epics tab", "queue", "queueTests", width, async page => {
+      assert((await page.evaluate(() => queueTests.epics())).coarse, "Epics check ran with touch input");
+    }]);
     for (const [test, fixture, api, width, run] of cases) {
       const context = await browser.newContext({ viewport: { width, height: 800 }, hasTouch: true });
       const page = await context.newPage();

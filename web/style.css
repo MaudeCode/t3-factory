@@ -410,6 +410,10 @@ h2 .help {
   transform: translateY(-70%) rotate(45deg);
   transition: transform var(--fast);
 }
+.select > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .select.open > button,
 .select > button:focus-visible {
   border-color: var(--accent);
@@ -1444,6 +1448,26 @@ h2 .icon,
   white-space: normal;
   overflow-wrap: anywhere;
 }
+/* A long Epic title gives its start controls their own line rather than squeezing either. */
+.epic > header {
+  flex-wrap: wrap;
+}
+.epic h2 {
+  min-width: 0;
+}
+.epic-start {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.epic-start .select {
+  width: auto;
+  min-width: 96px;
+}
+.epic-note {
+  margin: 0 0 var(--space-2);
+}
 .chain-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1454,6 +1478,10 @@ h2 .icon,
   border-top: 1px solid var(--line);
   border-radius: var(--radius);
   color: inherit;
+}
+/* A reason a ticket will not start has to be readable, so it wraps instead of clipping. */
+.chain-row .row-body > small {
+  white-space: normal;
 }
 .chain-row > .tag {
   min-width: 72px;

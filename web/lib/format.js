@@ -14,6 +14,8 @@ export function matchesRunFilters(row, filters = {}, query = "") {
     !(filters.tagsNot ?? []).some(tag => labels.includes(tag)) &&
     (!text || [row.key, row.label, row.title].some(value => value?.toLowerCase().includes(text)));
 }
+// Whether any filter a queue row can fail is on.
+export const hasRunFilters = (filters = {}) => ["projects", "tags", "tagsNot", "difficulties", "priorities"].some(key => filters[key]?.length);
 
 export function ticketKey(value) {
   const key = value?.trim().toUpperCase() ?? "";

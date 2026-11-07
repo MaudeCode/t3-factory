@@ -1427,7 +1427,7 @@ function taskReader(c: Config, kanvil: Kanvil, { cancelledFinished = false, cach
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
   };
   return { task, relations, done, node, projects, get ids() { return tasks.keys(); } };
 }

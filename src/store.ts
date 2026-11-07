@@ -56,7 +56,7 @@ export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
 // An Epic plan has no target: its tickets are the Epic's unfinished members and their blockers, re-read on every pass.
 export interface PlanTicket {
   id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
-  difficulty?: Difficulty; automationReady?: boolean; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
+  difficulty?: Difficulty; automationReady?: boolean; labels?: string[]; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
   outside?: boolean; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
 }
 export interface Plan { requestId?: string; id: string; createdAt: string; target?: PlanTicket; epic?: { id: string; title: string; restrictedCount?: number; error?: string }; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }

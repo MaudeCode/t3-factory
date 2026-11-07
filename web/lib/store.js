@@ -413,16 +413,18 @@ export async function pollOperation(id) {
     message("Checking dispatch status: " + error.message, true);
   }
 }
+const pendingRequest = (matches) => operations.value.some((op) => matches(op.input) && ["queued", "running", "uncertain"].includes(op.state));
 export function pendingRun(ticket) {
   const key = ticketKey(ticket);
-  return !!key && operations.value.some((op) => ticketKey(op.input.ticket) === key && ["queued", "running", "uncertain"].includes(op.state));
+  return !!key && pendingRequest((input) => ticketKey(input.ticket) === key);
 }
 export function pendingReview(repo) {
-  return !!repo && operations.value.some((op) => op.input.upstream?.toLowerCase() === repo.toLowerCase() && ["queued", "running", "uncertain"].includes(op.state));
+  return !!repo && pendingRequest((input) => input.upstream?.toLowerCase() === repo.toLowerCase());
 }
+export const pendingEpic = (epic) => !!epic && pendingRequest((input) => input.epic === epic);
 // `origin` names the page that started the request; it stays on the saved request, never in the dispatch input.
 export function startRun(input, origin) {
-  if (pendingRun(input.ticket) || pendingReview(input.upstream)) return null;
+  if (pendingRun(input.ticket) || pendingReview(input.upstream) || pendingEpic(input.epic)) return null;
   return enqueueOperation(input, "dispatch", undefined, origin);
 }
 function enqueueOperation(input, kind = "dispatch", cleanupTargets, origin) {

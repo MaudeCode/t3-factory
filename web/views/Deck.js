@@ -27,6 +27,7 @@ import {
   modelName,
   projectOf,
   matchesRunFilters,
+  hasRunFilters,
   byNewest,
   byFinished,
   isFinished,
@@ -83,10 +84,17 @@ function Machine({ provider }) {
   </section>`;
 }
 
+// What a request starts. An Epic request carries only its ID, so its name comes from the current status.
+const requestName = ({ upstream, ticket, epic }) => {
+  if (!epic) return upstream || ticket;
+  const known = [...(status.value.epics ?? []), ...(status.value.plans ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
+  return `Epic ${known?.title ?? epic}`;
+};
+
 function Operation({ op }) {
   return html`<div class=${`operation ${op.state}`} role="status">
     ${op.state === "running" && html`<i class="spinner"></i>`}
-    <span><b class="key">${op.input.upstream || op.input.ticket || "Next eligible ticket"}</b> · ${op.input.provider ? providerName(op.input.provider) : op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${operationText(op)}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
+    <span><b class="key">${requestName(op.input) || "Next eligible ticket"}</b> ·${op.input.provider ? providerName(op.input.provider) : op.input.model} · ${overrideText(op.input.overrideLimits)}<br />${operationText(op)}${op.state === "uncertain" && html` <span class="muted">This request will not be resent automatically.</span>`}</span>
     <${OperationActions} op=${op} />
   </div>`;
 }
@@ -96,8 +104,10 @@ export function OperationActions({ op }) {
   const d = op.result?.data;
   return html`${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" onClick=${() => showBlockedChoice(op.id)}>Choose how to run it<//>`}
     ${op.notReceived && html`<${Button} size="sm" onClick=${() => retryRequest(op.id)}>Retry saved request<//>`}
-    ${!["queued", "running"].includes(op.state) && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${op.input.upstream || op.input.ticket || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}`;
+    ${!["queued", "running"].includes(op.state) && html`<${Button} variant="ghost" size="sm" icon aria-label=${`Dismiss ${requestName(op.input) || "request"}`} onClick=${() => actions.dismissOperation(op.id)}>×<//>`}`;
 }
+
+export const modelOptions = () => [["auto", "Auto"], ...config.value.models.map((m) => [m.id, m.name])];
 
 // Start bar: project key, dash, ticket number; model; override; start. An empty number means the next eligible ticket.
 export function Composer({ initialTicket } = {}) {
@@ -123,7 +133,7 @@ export function Composer({ initialTicket } = {}) {
   return html`${invalid && html`<p class="alert" role="alert">Invalid ticket link. Enter a ticket key to continue.</p>`}<form class="composer" onSubmit=${submit}>
     <${Select} class="ticket-project" label="Ticket project" value=${project} onChange=${setProject} options=${options} />
     <input class="mono ticket-number" value=${number} onInput=${(e) => { const parsed = parseTicketInput(e.target.value, keys); if (parsed.project) setProject(parsed.project); setNumber(e.target.value = parsed.number); }} placeholder=${linked ? "number" : "next"} required=${linked} inputmode="numeric" aria-label="Ticket number" title=${number ? `Ticket ${project}-${number}` : "Leave empty to start the next eligible ticket"} />
-    <${Select} label="Model" value=${model} onChange=${setModel} options=${[["auto", "Auto"], ...config.value.models.map((m) => [m.id, m.name])]} />
+    <${Select} label="Model" value=${model} onChange=${setModel} options=${modelOptions()} />
     <${Select} multiple class="overrides" placeholder="Respect limits" label="Override limits" value=${overrides} onChange=${setOverrides} options=${OVERRIDES} />
     <${Button} variant="primary" type="submit" icon="play" label=${key ? `Start ${key}` : "Start next eligible ticket"} disabled=${invalid || pending} />
   </form>`;
@@ -133,36 +143,46 @@ export function Operations({ list = launchOperations.value } = {}) {
   return list.map((op) => html`<${Operation} key=${op.id} op=${op} />`);
 }
 
-// Chains and Epics the user started: each ticket's state, and what the next one waits for.
-export function Chains() {
-  clock.value;
-  const plans = (status.value.plans ?? []).filter((p) => p.state === "active");
-  if (!plans.length) return null;
+// A chain's or an Epic's tickets: each one's state, what it waits for, and why it will not start. `plan.state` is
+// missing on an Epic that has not started; `show` narrows the rows without changing what they wait for.
+export function PlanRows({ plan, show = () => true }) {
+  const all = plan.target ? [...plan.tickets, plan.target] : plan.tickets, byId = new Map(all.map((t) => [t.id, t]));
   const jobByTask = new Map(jobs.value.filter(isOpen).map((j) => [j.taskId, j]));
-  return plans.map((p) => {
-    const all = p.target ? [...p.tickets, p.target] : p.tickets, byId = new Map(all.map((t) => [t.id, t])), done = all.filter((t) => t.done).length;
-    const state = (t) => {
-      const job = jobByTask.get(t.id);
-      if (t.done) return ["Done", "ok", ""];
-      if (job) return [stateLabel(job.state), toneOf(job.state), ""];
-      const ahead = t.blockedBy.filter((id) => !byId.get(id)?.done).map((id) => byId.get(id)?.key ?? "?");
-      if (t === p.target && p.tickets.some((x) => !x.done)) return ["Last", "", "after every ticket above"];
-      if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
-      return ["Next", "attention", t.note ?? "starts when a slot is free"];
-    };
-    const hidden = p.epic?.restrictedCount ?? 0, cancelLabel = p.epic ? "Cancel Epic" : "Cancel chain";
-    return html`<${Section} key=${p.id} title=${p.epic ? `Epic ${p.epic.title}` : `Chain to ${p.target.key}`} count=${`${done} of ${all.length} done`}
-      aside=${html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: p.epic ? `Cancel Epic ${p.epic.title}?` : `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: cancelLabel }, () => actions.cancelPlan(p.id))}>${cancelLabel}<//>`}>
-      ${all.map((t) => {
-        const [label, tone, note] = state(t), job = jobByTask.get(t.id);
-        const detail = [note || (job ? modelName(config.value, job) : ""), t.outside && "outside this Epic"].filter(Boolean).join(" · ");
-        return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
-          <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${(detail || t.automationReady === true) && html`<${Meta} automationReady=${t.automationReady}>${detail}<//>`}<//>
-        <//>`;
-      })}
-      ${hidden > 0 && html`<p class="hint tone-attention">${hidden} ticket${hidden === 1 ? "" : "s"} in projects Factory cannot read keep this Epic open.</p>`}
+  const state = (t, job) => {
+    if (t.done) return ["Done", "ok", ""];
+    if (job) return [stateLabel(job.state), toneOf(job.state), ""];
+    if (plan.state && plan.state !== "active") return ["Not run", "", ""];
+    const ahead = t.blockedBy.filter((id) => !byId.get(id)?.done).map((id) => byId.get(id)?.key ?? "?");
+    if (t === plan.target && plan.tickets.some((x) => !x.done)) return ["Last", "", "after every ticket above"];
+    if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
+    return ["Next", "attention", t.note ?? (plan.state ? "starts when a slot is free" : "")];
+  };
+  const reasons = (t) => [
+    t.runnable === false && "Its project is not included in the factory",
+    t.automationReady === false && (t.readiness?.reasons?.map((r) => r.message).join("; ") || "Automation readiness is off"),
+  ];
+  return all.filter(show).map((t) => {
+    const job = jobByTask.get(t.id), [label, tone, note] = state(t, job);
+    // The scheduler writes the same not-included note, so a repeated reason shows once.
+    const detail = [...new Set([note || (job ? modelName(config.value, job) : ""), t.outside && "outside this Epic", ...(t.done || job ? [] : reasons(t))])].filter(Boolean).join(" · ");
+    return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
+      <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${(detail || t.automationReady === true) && html`<${Meta} automationReady=${t.automationReady}>${detail}<//>`}<//>
     <//>`;
   });
+}
+export const planProgress = (plan) => {
+  const all = plan.target ? [...plan.tickets, plan.target] : plan.tickets;
+  return `${all.filter((t) => t.done).length} of ${all.length} done`;
+};
+export const CancelPlan = ({ plan, title, label }) => html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title, message: "Tickets already running finish on their own.", label }, () => actions.cancelPlan(plan.id))}>${label}<//>`;
+
+// Chains the user started. Epics have their own tab on the Runs page.
+export function Chains() {
+  clock.value;
+  return (status.value.plans ?? []).filter((p) => p.state === "active" && !p.epic).map((p) => html`<${Section} key=${p.id} title=${`Chain to ${p.target.key}`} count=${planProgress(p)}
+    aside=${html`<${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" />`}>
+    <${PlanRows} plan=${p} />
+  <//>`);
 }
 
 // A ticket that already has an open run or is the target of an active chain.
@@ -242,7 +262,7 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
         ? tickets.slice(0, limit).map((t) => html`<${TicketRow} key=${t.id} ticket=${t} project=${project(t.projectId)} actions=${html`<${RunNow} ticket=${t} hold=${startHold(t)} ...${start} />`}>
             ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
           <//>`)
-        : html`<${Empty}>${query.trim() || ["projects", "tags", "difficulties", "priorities"].some(key => filters?.[key]?.length) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
+        : html`<${Empty}>${query.trim() || hasRunFilters(filters) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
     ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
   <//>`;
