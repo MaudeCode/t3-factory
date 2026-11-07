@@ -354,6 +354,26 @@ test('a ticket that loses readiness mid-run waits while the running Epic continu
   assert.deepEqual(titles(f), ['FIX-1', 'FIX-2'], 'the rest start and the unready ticket does not');
 });
 
+const parentOf = (f: ReturnType<typeof dispatchFixture>, parent: string, ...children: string[]) => {
+  Object.assign(f.tasks.find(task => task.id === parent)!, { automationReady: false, holdReason: 'the children carry the work' });
+  for (const child of children) f.relations.push({ sourceTaskId: parent, targetTaskId: child, relationType: 'subtask' });
+};
+
+test('a held parent with unfinished children does not block its Epic, and its children carry the work', async t => {
+  const f = epicFixture(t, 'parent', 'a', 'b');
+  parentOf(f, 'parent', 'a', 'b');
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  assert.equal(writeStatus(f.c, f.store).epics.find(row => row.id === 'epic')!.startBlock, null, 'the page shows the same answer');
+  const started = await startEpic(f);
+  assert.equal(started.reason, 'plan-started', JSON.stringify(started));
+  assert.deepEqual(titles(f), ['FIX-2', 'FIX-3'], 'the children start together and the parent does not');
+  finishTicket(f, 'a'); finishTicket(f, 'b'); await advance(f);
+  assert.deepEqual(titles(f), ['FIX-2', 'FIX-3'], 'a held parent never launches');
+  assert.equal(plan(f).state, 'active', 'it stays open until the parent is closed');
+  finishTicket(f, 'parent'); await advance(f);
+  assert.equal(plan(f).state, 'done');
+});
+
 for (const [name, setup, reason, text] of [
   ['an archived Epic', f => { f.epics[0].archived = true; }, 'epic-archived', /archived/],
   ['an Epic with no unfinished members', f => { f.tasks[0].status = 'done'; f.tasks[1].status = 'cancelled'; }, 'epic-no-unfinished', /no unfinished/],
@@ -363,6 +383,8 @@ for (const [name, setup, reason, text] of [
   ['an Epic with restricted tickets', f => { f.epics[0].restrictedCount = 2; }, 'epic-restricted-tickets', /2 tickets/],
   ['an Epic with a member without automation readiness', f => { f.tasks[1].automationReady = false; }, 'epic-tickets-not-ready', /FIX-2 \(Agent work is not enabled in Kanvil\)/],
   ['an Epic with a member on hold', f => { f.tasks[1].holdReason = 'waiting on legal'; }, 'epic-tickets-not-ready', /FIX-2 \(Ticket is on hold: waiting on legal\)/],
+  ['an Epic with a held parent whose children are finished', f => { f.tasks.push(f.task('child', 9, 'done')); parentOf(f, 'b', 'child'); }, 'epic-tickets-not-ready', /FIX-2/],
+  ['an Epic with a held child under a held parent', f => { parentOf(f, 'b', 'a'); f.tasks[0].holdReason = 'waiting on legal'; }, 'epic-tickets-not-ready', /FIX-1 \(Ticket is on hold: waiting on legal\)/],
   ['an Epic with an outside blocker on hold', f => { f.tasks.push({ ...f.task('outsider', 9, 'todo'), holdReason: 'waiting on legal' }); blocks(f, 'outsider', 'a'); }, 'epic-tickets-not-ready', /FIX-9/],
 ] as [string, (f: ReturnType<typeof dispatchFixture>) => void, string, RegExp][]) test(`starting ${name} is refused with every override and creates no plan`, async t => {
   const f = epicFixture(t, 'a', 'b');

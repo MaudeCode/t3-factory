@@ -1451,7 +1451,10 @@ export async function blockerTree(c: Config, kanvil: Kanvil, roots: string | str
     for (const r of await reader.relations(id)) {
       if (r.relationType === 'blocks' && r.targetTaskId === id) await require(attach, r.sourceTaskId);
       else if (r.relationType === 'subtask' && r.targetTaskId === id) await visit(r.sourceTaskId, attach); // a parent's blockers block its subtasks
-      else if (r.relationType === 'subtask' && r.sourceTaskId === id) await require(attach, r.targetTaskId); // an umbrella waits for its children
+      else if (r.relationType === 'subtask' && r.sourceTaskId === id && attach.id === id) { // an umbrella waits for its children; they do not wait for each other
+        await require(attach, r.targetTaskId);
+        if (attach.blockedBy.includes(r.targetTaskId)) attach.umbrella = true;
+      }
     }
   };
   if (Array.isArray(roots)) {
@@ -1514,7 +1517,8 @@ function epicStartBlock(c: Config, epic: Pick<Epic, 'title' | 'archived'>, ticke
   if (running) return { reason: 'epic-already-running', message: `Epic ${epic.title} is already running.` };
   const open = tickets.filter(ticket => !ticket.done);
   const excluded = open.filter(ticket => !ticket.runnable).map(ticket => ({ key: ticket.key, project: c.projects.find(project => project.kanvilId === ticket.projectId)?.name ?? ticket.key.match(/^([A-Z0-9]+)-\d+$/)?.[1] ?? ticket.projectId }));
-  const held = open.filter(ticket => ticket.runnable && ticket.hold);
+  // A held umbrella's work runs through its children, so only its own ticket waits. Launches still refuse it.
+  const held = open.filter(ticket => ticket.runnable && ticket.hold && !ticket.umbrella);
   if (excluded.length || restrictedCount || held.length) return {
     reason: excluded.length ? 'epic-project-not-included' : restrictedCount ? 'epic-restricted-tickets' : 'epic-tickets-not-ready', tickets: excluded, restrictedCount,
     message: [
