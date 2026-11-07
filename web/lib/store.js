@@ -47,6 +47,7 @@ export const issues = computed(() => {
   };
   return [
     { source: "Session tickets", href: "/session-tickets", error: status.value.sessionTickets?.error },
+    { source: "Epics", href: "/runs", error: status.value.epicsError },
     { source: "Session ticket starts", href: "/session-tickets", note: "Not started", error: failed(SESSION_ORIGIN) },
     { source: "Triage starts", href: "/triage", note: "Not started", error: failed(TRIAGE_ORIGIN) },
   ].filter((i) => i.error);

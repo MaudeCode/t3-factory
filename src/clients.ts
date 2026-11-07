@@ -437,6 +437,7 @@ export const taskSchema = z.object({
   readiness: readinessSchema.optional(),
   version: z.number().int().positive().optional(),
   kind: z.string().optional(), scopes: z.array(z.string()).optional(), updatedAt: z.string().optional(),
+  epicId: z.string().nullable().optional(),
 }).passthrough();
 export type Task = z.infer<typeof taskSchema>;
 const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
@@ -444,6 +445,8 @@ const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
   automationReady: z.boolean(), holdReason: z.string().nullable(), archived: z.boolean(), parentId: z.string().nullable(),
   acceptanceCriteria: z.string(), version: z.number().int().positive(),
 });
+const epicSchema = z.object({ id: z.string(), workspaceId: z.string(), title: z.string(), archived: z.boolean() }).passthrough();
+export type Epic = z.infer<typeof epicSchema>;
 const projectSchema = z.object({ id: z.string(), workspaceId: z.string(), name: z.string(), key: z.string(), description: z.string().optional(), archivedAt: z.string().nullish() }).passthrough();
 const snapshotSchema = z.object({ project: projectSchema, tickets: z.array(nativeTicket), cursor: z.string().regex(/^\d+$/) });
 type Snapshot = z.infer<typeof snapshotSchema>;
@@ -546,6 +549,27 @@ export class Kanvil {
   async labels() {
     const rows = await readAll((await this.projects()).map(p => this.request(`/projects/${encodeURIComponent(p.id)}/labels/catalog`)));
     return [...new Set(rows.flatMap(r => z.array(z.object({ name: z.string() })).parse(r).map(l => l.name)))].sort();
+  }
+  private async allPages<T>(path: string, row: z.ZodType<T>) {
+    const items: T[] = [], separator = path.includes('?') ? '&' : '?';
+    let total: number | undefined, restrictedCount: number | undefined;
+    do {
+      const page = z.object({ items: z.array(row), total: z.number().int().nonnegative(), restrictedCount: z.number().int().nonnegative().optional() }).parse(await this.request(`${path}${separator}limit=100&offset=${items.length}`));
+      if ((total !== undefined && total !== page.total) || (!page.items.length && items.length < page.total)) throw new Error('Kanvil list changed during pagination');
+      total = page.total; restrictedCount = page.restrictedCount; items.push(...page.items);
+    } while (items.length < total);
+    return { items, restrictedCount };
+  }
+  // Archived Epics are included so a start can refuse one by name. A Kanvil without Epics has none.
+  async epics(): Promise<Epic[]> {
+    try { return (await this.allPages(`/workspaces/${encodeURIComponent(this.config.workspaceId)}/epics?archived=include`, epicSchema)).items; }
+    catch (error) { if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404) return []; throw error; }
+  }
+  // The tickets the caller can read and a count of the rest. A missing Epic stays an error: a running plan must not read it as empty.
+  async epicTickets(epicId: string) {
+    const { items, restrictedCount } = await this.allPages(`/workspaces/${encodeURIComponent(this.config.workspaceId)}/epics/${encodeURIComponent(epicId)}/tickets`, nativeTicket);
+    if (restrictedCount === undefined) throw new Error('Kanvil Epic read omitted its restricted count');
+    return { tickets: items.map(normalized), restrictedCount };
   }
   generations() { return { epoch: this.connectionEpoch, projects: new Map(this.projectVersions), metadata: new Map(this.metadataVersions), tickets: new Map(this.ticketVersions) }; }
   unchanged(before: ReturnType<Kanvil['generations']>, projects: Iterable<string>, tickets?: Iterable<string>) {

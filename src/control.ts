@@ -75,7 +75,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all' } {
+export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all' } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
@@ -84,6 +84,10 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
       const value = args[++i];
       if (!/^[\w.-]+\/[\w.-]+$/.test(value ?? '')) throw new Error('--upstream requires owner/repo');
       options.upstream = value.toLowerCase();
+    } else if (args[i] === '--epic') {
+      const value = args[++i];
+      if (!/^[\w-]{1,64}$/.test(value ?? '')) throw new Error('--epic requires an Epic ID');
+      options.epic = value;
     } else if (args[i] === '--model') {
       const value = args[++i];
       if (!/^[a-z][a-z0-9-]*$/.test(value ?? '')) throw new Error('--model requires auto or a configured model ID');
@@ -104,6 +108,7 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
     else throw new Error(`Unknown dispatch argument: ${args[i]}`);
   }
   if (options.upstream && (options.ticket || options.chain)) throw new Error('--upstream cannot be combined with ticket options');
+  if (options.epic && (options.ticket || options.chain || options.upstream)) throw new Error('--epic cannot be combined with ticket, chain or upstream options');
   if (options.provider && options.model && options.model !== 'auto') throw new Error('--provider requires automatic model selection');
   return options;
 }

@@ -133,14 +133,14 @@ export function Operations({ list = launchOperations.value } = {}) {
   return list.map((op) => html`<${Operation} key=${op.id} op=${op} />`);
 }
 
-// Chains the user started: each ticket's state, and what the next one waits for.
+// Chains and Epics the user started: each ticket's state, and what the next one waits for.
 export function Chains() {
   clock.value;
   const plans = (status.value.plans ?? []).filter((p) => p.state === "active");
   if (!plans.length) return null;
   const jobByTask = new Map(jobs.value.filter(isOpen).map((j) => [j.taskId, j]));
   return plans.map((p) => {
-    const all = [...p.tickets, p.target], byId = new Map(all.map((t) => [t.id, t])), done = all.filter((t) => t.done).length;
+    const all = p.target ? [...p.tickets, p.target] : p.tickets, byId = new Map(all.map((t) => [t.id, t])), done = all.filter((t) => t.done).length;
     const state = (t) => {
       const job = jobByTask.get(t.id);
       if (t.done) return ["Done", "ok", ""];
@@ -150,15 +150,17 @@ export function Chains() {
       if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
       return ["Next", "attention", t.note ?? "starts when a slot is free"];
     };
-    return html`<${Section} key=${p.id} title=${`Chain to ${p.target.key}`} count=${`${done} of ${all.length} done`}
-      aside=${html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: "Cancel chain" }, () => actions.cancelPlan(p.id))}>Cancel chain<//>`}>
+    const hidden = p.epic?.restrictedCount ?? 0, cancelLabel = p.epic ? "Cancel Epic" : "Cancel chain";
+    return html`<${Section} key=${p.id} title=${p.epic ? `Epic ${p.epic.title}` : `Chain to ${p.target.key}`} count=${`${done} of ${all.length} done`}
+      aside=${html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: p.epic ? `Cancel Epic ${p.epic.title}?` : `Cancel the chain to ${p.target.key}?`, message: "Tickets already running finish on their own.", label: cancelLabel }, () => actions.cancelPlan(p.id))}>${cancelLabel}<//>`}>
       ${all.map((t) => {
         const [label, tone, note] = state(t), job = jobByTask.get(t.id);
-        const detail = note || (job ? modelName(config.value, job) : "");
+        const detail = [note || (job ? modelName(config.value, job) : ""), t.outside && "outside this Epic"].filter(Boolean).join(" · ");
         return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
           <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${(detail || t.automationReady === true) && html`<${Meta} automationReady=${t.automationReady}>${detail}<//>`}<//>
         <//>`;
       })}
+      ${hidden > 0 && html`<p class="hint tone-attention">${hidden} ticket${hidden === 1 ? "" : "s"} in projects Factory cannot read keep this Epic open.</p>`}
     <//>`;
   });
 }
@@ -168,7 +170,7 @@ export const openRun = (t) => {
   const key = ticketKey(t.key);
   // Held queue rows carry a key without a tracker ID.
   const matches = (id, otherKey) => (t.id && id === t.id) || (key && ticketKey(otherKey) === key);
-  return jobs.value.some(j => matches(j.taskId, j.ticketKey) && isOpen(j)) || (status.value.plans ?? []).some(p => p.state === "active" && matches(p.target.id, p.target.key));
+  return jobs.value.some(j => matches(j.taskId, j.ticketKey) && isOpen(j)) || (status.value.plans ?? []).some(p => p.state === "active" && p.target && matches(p.target.id, p.target.key));
 };
 
 // Why a ticket cannot be started from here right now, or null when it can.

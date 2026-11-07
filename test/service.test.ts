@@ -22,6 +22,9 @@ test('commands reach the running scheduler over its socket and fall back without
     assert.deepEqual(commandFor(['once']), { type: 'once', options: { dryRun: false, doctor: false } });
     assert.deepEqual(commandFor(['doctor']), { type: 'once', options: { dryRun: false, doctor: true } });
     assert.throws(() => commandFor(['dispatch', '--chain', 'later']), /--chain requires first or all/);
+    assert.deepEqual(commandFor(['dispatch', '--epic', 'epic-1', '--model', 'opus', '--override', 'idle']), { type: 'dispatch', options: { manual: true, epic: 'epic-1', model: 'opus', overrideLimits: ['idle'] } });
+    for (const other of [['--ticket', 'APP-1'], ['--chain', 'all'], ['--upstream', 'up/stable']]) assert.throws(() => commandFor(['dispatch', '--epic', 'epic-1', ...other]), /--epic cannot be combined/);
+    assert.throws(() => commandFor(['dispatch', '--epic']), /--epic requires/);
     assert.deepEqual(commandFor(['dispatch', '--override', 'idle,labels']), { type: 'dispatch', options: { manual: true, overrideLimits: ['idle', 'labels'] } });
     assert.deepEqual(commandFor(['dispatch', '--override', 'providers']), { type: 'dispatch', options: { manual: true, overrideLimits: ['providers'] } });
     assert.deepEqual(commandFor(['dispatch', '--provider', 'codex', '--override-limits']), { type: 'dispatch', options: { manual: true, provider: 'codex', overrideLimits: true } });

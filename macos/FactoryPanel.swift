@@ -276,26 +276,28 @@ struct JournalRow: View {
     }
 }
 
-// A chain the user started: each ticket's state and what the next one waits for.
+// A chain or Epic the user started: each ticket's state and what the next one waits for.
 struct ChainCard: View {
     @ObservedObject var model: FactoryModel
     let plan: [String: Any]
     var body: some View {
-        let target = plan["target"] as? [String: Any] ?? [:]
-        let tickets = (plan["tickets"] as? [[String: Any]] ?? []) + [target]
+        let target = plan["target"] as? [String: Any]
+        let epic = plan["epic"] as? [String: Any]
+        let tickets = (plan["tickets"] as? [[String: Any]] ?? []) + (target.map { [$0] } ?? [])
+        let hidden = epic?["restrictedCount"] as? Int ?? 0
         let byId = Dictionary(tickets.compactMap { t in (t["id"] as? String).map { ($0, t) } }, uniquingKeysWith: { a, _ in a })
         let done = tickets.filter { $0["done"] as? Bool == true }.count
         let openByTask = Dictionary(model.jobs.filter { !["complete", "dismissed"].contains($0["state"] as? String ?? "") }.compactMap { j in (j["taskId"] as? String).map { ($0, j) } }, uniquingKeysWith: { a, _ in a })
         VStack(alignment: .leading, spacing: 8) {
-            SectionTitle("Chain to \(target["key"] as? String ?? "")", count: nil) {
+            SectionTitle(epic != nil ? "Epic \(epic?["title"] as? String ?? "")" : "Chain to \(target?["key"] as? String ?? "")", count: nil) {
                 Text("\(done) of \(tickets.count) done").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted)
-                Button("Cancel chain") { Task { await model.cancelChain(plan) } }.buttonStyle(QuietButton(color: Theme.danger)).disabled(model.busy != nil)
+                Button(epic != nil ? "Cancel Epic" : "Cancel chain") { Task { await model.cancelChain(plan) } }.buttonStyle(QuietButton(color: Theme.danger)).disabled(model.busy != nil)
             }
             ForEach(Array(tickets.enumerated()), id: \.offset) { _, t in
                 let id = t["id"] as? String ?? ""
                 let job = openByTask[id]
                 let ahead = (t["blockedBy"] as? [String] ?? []).compactMap { byId[$0] }.filter { $0["done"] as? Bool != true }.compactMap { $0["key"] as? String }
-                let isTarget = id == target["id"] as? String
+                let isTarget = target != nil && id == target?["id"] as? String
                 let state: (String, Color, String) = t["done"] as? Bool == true ? ("Done", Theme.ok, "")
                     : job != nil ? ((job?["state"] as? String == "waiting" ? "Needs you" : "Running"), job?["state"] as? String == "waiting" ? Theme.attention : Theme.accent, model.modelName(job!))
                     : isTarget && tickets.dropLast().contains(where: { $0["done"] as? Bool != true }) ? ("Last", Theme.muted, "after every ticket above")
@@ -309,6 +311,9 @@ struct ChainCard: View {
                     }
                     Spacer()
                 }
+            }
+            if hidden > 0 {
+                Text("\(hidden) ticket\(hidden == 1 ? "" : "s") in projects Factory cannot read keep this Epic open.").font(.system(size: 11)).foregroundStyle(Theme.attention)
             }
         }.card()
     }

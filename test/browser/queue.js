@@ -397,7 +397,36 @@ async function queueTransitions() {
   return { passed: true };
 }
 async function phoneHeader() { await showRuns(); return checkPageHead(); }
-window.queueTests = { phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+// A plan with no target through the real Chains section and the shared start hold.
+const epicTicket = (n, extra = {}) => ({ id: `e${n}`, key: `APP-${n}`, title: `Epic ticket ${n}`, blockedBy: [], done: false, automationReady: true, ...extra });
+const epicPlan = { id: "epic-plan", state: "active", model: "auto", epic: { id: "epic", title: "Launch", restrictedCount: 2 }, tickets: [epicTicket(1, { done: true }), epicTicket(2), epicTicket(3, { blockedBy: ["e2"] }), epicTicket(4, { outside: true, note: "Waiting for a free Codex slot" })] };
+async function showEpic(plan = epicPlan) {
+  operations.value = [];
+  applyState({ ...state, status: { ...state.status, plans: [plan] } }, true);
+  render(html`<${Deck.Chains} />`, root);
+  await pause();
+}
+async function epicSection() {
+  await showEpic();
+  const text = root.textContent;
+  assert(root.querySelector("h2")?.textContent.includes("Epic Launch") || text.includes("Epic Launch"), "the section names the Epic");
+  assert(!text.includes("Chain to") && !text.includes("Last"), "a plan with no target has no chain title or Last row");
+  assert(text.includes("1 of 4 done"), "the count covers only the Epic's tickets");
+  assert(root.querySelectorAll(".chain-row").length === 4, "no blank row is added for a missing target");
+  assert(text.includes("after APP-2"), "a blocked member names what it waits for");
+  assert(text.includes("outside this Epic"), "a blocker outside the Epic is marked");
+  assert(text.includes("2 tickets in projects Factory cannot read"), "hidden tickets are reported");
+  assert([...root.querySelectorAll("button")].some(b => b.textContent.includes("Cancel Epic")), "cancelling names the Epic");
+  assert(Deck.openRun({ id: "e2", key: "APP-2" }) === false, "a target-less plan does not read as a ticket's open run");
+  assert(document.documentElement.scrollWidth <= innerWidth, "the Epic section has no horizontal overflow");
+  await showEpic({ ...epicPlan, epic: { id: "epic", title: "Launch", restrictedCount: 0 } });
+  assert(!root.textContent.includes("cannot read"), "no hidden tickets, no notice");
+  await showEpic({ id: "chain", state: "active", tickets: [epicTicket(5)], target: epicTicket(6, { blockedBy: ["e5"] }) });
+  assert(root.textContent.includes("Chain to APP-6") && root.textContent.includes("Last") && root.textContent.includes("Cancel chain"), "a chain keeps its title, target row and action");
+  await showEpic();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.queueTests = { epicSection, showEpic, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

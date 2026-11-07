@@ -57,6 +57,29 @@ test('native ticket payloads supply complete labels, priority and difficulty wit
   assert.throws(() => taskDifficulty({ ...task, difficulty: 'low' }), /disagree/);
 });
 
+test('Epic reads page across projects, keep the restricted count, and read as empty on a Kanvil without Epics', async t => {
+  const epic = (id: string, archived = false) => ({ id, workspaceId: 'workspace', title: id, description: '', archived, version: 1, createdBy: 'a', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', openTickets: 1, closedTickets: 0 });
+  let missing = false;
+  const f = fixture(t, url => {
+    if (missing) return json({ error: { code: 'not_found' } }, 404);
+    if (url.pathname === '/api/v1/workspaces/workspace/epics') return json({ items: [epic('live'), epic('old', true)], total: 2 });
+    if (url.pathname === '/api/v1/workspaces/workspace/epics/live/tickets') {
+      const offset = Number(url.searchParams.get('offset'));
+      return json({ items: [ticket({ id: `member-${offset}`, epicId: 'live', projectId: offset ? 'other' : 'project' })], total: 2, restrictedCount: 3 });
+    }
+    throw new Error(url.pathname);
+  });
+  assert.deepEqual((await f.client.epics()).map(e => [e.id, e.archived]), [['live', false], ['old', true]]);
+  const read = await f.client.epicTickets('live');
+  assert.deepEqual(read.tickets.map(task => [task.id, task.projectId, task.epicId]), [['member-0', 'project', 'live'], ['member-1', 'other', 'live']]);
+  assert.equal(read.restrictedCount, 3);
+  assert.deepEqual(read.tickets[0].labels?.[0], { name: 'sec' }, 'members are normalized like other native tickets');
+  assert(f.calls.includes('/api/v1/workspaces/workspace/epics/live/tickets?limit=100&offset=1'));
+  missing = true;
+  assert.deepEqual(await f.client.epics(), [], 'a Kanvil version without Epics has none');
+  await assert.rejects(f.client.epicTickets('live'), KanvilTaskNotFound, 'a running plan must not read a lost Epic as an empty one');
+});
+
 test('malformed payloads and project or workspace mismatches fail closed', async t => {
   let payload: unknown = snapshot();
   const f = fixture(t, () => json(payload));

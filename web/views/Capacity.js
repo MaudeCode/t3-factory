@@ -1,7 +1,7 @@
 import { html } from "../lib/h.js";
 import { config, jobs, clock, serverNow, quotaFor } from "../lib/store.js";
 import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span } from "../lib/format.js";
-import { Field, Range, Stepper, Slots, Budget, Section, useReady, Page, Icon } from "../ui/index.js";
+import { Field, Range, Stepper, Slots, Toggle, Budget, Section, useReady, Page, Icon } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
@@ -40,6 +40,7 @@ export function Capacity() {
           <${Field} label="Check the queue every"><${Range} label="Check interval" path=${["pollSeconds"]} min="15" max="900" step="15" format=${seconds} /><//>
         <//>
         <${Section} title="Waiting and recovery">
+          <${Toggle} label="Hold Epic tickets until the Epic starts" hint="Automatic starts skip a ticket in an Epic that has not started. You can still start it by name." path=${["holdEpicTicketsUntilStarted"]} />
           <${Field} group label=${`Runs that may wait for you: ${waiting} waiting now`} hint="Past the limit, automatic starts pause until you answer one."><${Stepper} label="Runs that may wait for you" path=${["maxWaitingPRs"]} min="1" max="20" unlimited="No limit" /><//>
           <${Field} label="Park a stalled monitor after" hint="A run whose background monitor makes no progress for this long is parked and marked as needing you."><${Range} label="Monitor timeout" path=${["monitoringTimeoutMinutes"]} min="5" max="240" step="5" format=${minutes} /><//>
           <${Field} label="Trust an allowance reading for" hint="Older readings are refreshed from T3 before a start."><${Range} label="Allowance reading age" path=${["quota", "maxAgeSeconds"]} min="30" max="1800" step="30" format=${seconds} /><//>

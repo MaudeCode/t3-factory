@@ -257,6 +257,11 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     ).json();
     assert.equal(result.state, "done");
     assert.equal(result.result.data.ticket, "APP-8");
+    const epicId = randomUUID();
+    assert.equal((await request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": epicId }, body: JSON.stringify({ epic: "epic-1", model: "opus", overrideLimits: ["idle"] }) })).status, 202);
+    assert.deepEqual(calls.at(-1)!.args, ["dispatch", "--request-id", epicId, "--model", "opus", "--epic", "epic-1", "--override", "idle"], "an Epic start uses the existing request flow and options");
+    finish({ code: 0, data: { reason: "plan-started" } });
+    for (const other of [{ ticket: "APP-1" }, { chain: "all" }, { upstream: "up/stable" }]) assert.equal((await request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() }, body: JSON.stringify({ epic: "epic-1", model: "auto", ...other }) })).status, 400, "an Epic start stands alone");
     const reviewId = randomUUID(), reviewInput = { upstream: "UP/Stable", model: "auto", overrideLimits: true };
     const review = (input = reviewInput) => request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": reviewId }, body: JSON.stringify(input) });
     assert.equal((await review()).status, 202);

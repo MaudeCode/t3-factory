@@ -40,4 +40,5 @@ export function mockTracker(t: TestContext, target: Kanvil, read: (name: string,
   t.mock.method(target, 'relations', (id: string) => read('relations', { taskId: id }));
   t.mock.method(target, 'columns', (projectId: string) => read('columns', { projectId }));
   t.mock.method(target, 'projects', () => read('projects', {}));
+  if ('epics' in target) t.mock.method(target as any, 'epics', async () => []);
 }

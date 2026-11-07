@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
-import { cycle, runPlans, cancelPlan } from '../src/scheduler.ts';
+import { cycle, runPlans, cancelPlan, refreshInventory, writeStatus } from '../src/scheduler.ts';
 import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -167,7 +167,7 @@ for (const [name, overrideLimits, launches] of [['with', ['labels'], 2], ['witho
   setConfig(f, () => { f.c.projects[0].labelLimits = { med: { limit: 1, mode: 'full' } }; });
   await advance(f);
   assert.equal(f.launches.length, launches);
-  if (launches === 1) assert.match(f.store.plan(planId)!.target.note ?? '', /free med slot/);
+  if (launches === 1) assert.match(f.store.plan(planId)!.target!.note ?? '', /free med slot/);
 });
 
 test('shared dependency ancestors reuse reads without becoming cycles', async t => {
@@ -218,4 +218,227 @@ test('cancelling a chain during suspended final validation cannot launch or rest
   assert.equal(f.launches.length, 0);
   assert.equal(f.store.plan('chain')!.state, 'cancelled');
   assert.equal(results[0].reason, 'plan-cancelled-before-dispatch');
+});
+
+// Epics: a plan with no target that follows its members. Every scenario starts through the real dispatch path.
+const epicFixture = (t: test.TestContext, ...members: string[]) => {
+  const f = dispatchFixture(t);
+  f.relations.splice(0);
+  f.tasks.splice(0, f.tasks.length, ...members.map((id, n) => f.task(id, n + 1, 'todo')));
+  f.epics.push({ id: 'epic', title: 'Launch', archived: false, members: [...members], restrictedCount: 0 });
+  setConfig(f, () => { f.c.concurrency.codex = 5; });
+  return f;
+};
+const limits: OverrideLimits = ['idle', 'reserve', 'labels'];
+const startEpic = (f: ReturnType<typeof dispatchFixture>, options: Record<string, unknown> = {}) => cycle(f.c, f.store, { manual: true, epic: 'epic', model: 'auto', overrideLimits: limits, ...options } as any, { t3: f.t3, kanvil: f.kanvil }) as Promise<Record<string, any>>;
+const titles = (f: ReturnType<typeof dispatchFixture>) => f.launches.map(l => (l as any).title.replace('Factory: ', '')).toSorted();
+const finishTicket = (f: ReturnType<typeof dispatchFixture>, id: string, status = 'done') => {
+  f.tasks.find(task => task.id === id)!.status = status;
+  const job = f.store.jobs().find(job => job.taskId === id);
+  if (job) { job.state = 'complete'; f.store.save(job); }
+};
+const blocks = (f: ReturnType<typeof dispatchFixture>, source: string, target: string) => f.relations.push({ sourceTaskId: source, targetTaskId: target, relationType: 'blocks' });
+const plan = (f: ReturnType<typeof dispatchFixture>) => f.store.plans().at(-1)!;
+const foreign = (f: ReturnType<typeof dispatchFixture>, id: string, status = 'todo') => { const task = { ...f.task(id, 7, status), projectId: 'OTHER', key: 'OTHER-7' }; f.tasks.push(task); return task; };
+
+test('an Epic starts every free member at once and the rest as their blockers finish, then ends without an extra launch', async t => {
+  const f = epicFixture(t, 'a', 'b', 'c');
+  blocks(f, 'a', 'c');
+  const started = await startEpic(f, { model: 'sol' });
+  assert.equal(started.reason, 'plan-started', JSON.stringify(started));
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2'], 'both free members start in the same pass');
+  assert.equal(plan(f).target, undefined);
+  assert.deepEqual(plan(f).epic, { id: 'epic', title: 'Launch', restrictedCount: 0 });
+  await advance(f);
+  assert.equal(f.launches.length, 2, 'a blocked member waits');
+  finishTicket(f, 'a'); await advance(f);
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2', 'FIX-3'], 'it starts once its blocker is finished in Kanvil');
+  assert.equal((f.launches[2] as any).modelSelection.model, 'fixture-sol', 'a later launch keeps the chosen model');
+  assert.match((f.launches[2] as any).initialMessage.text, /Started by a chain the user requested/);
+  finishTicket(f, 'b'); finishTicket(f, 'c'); await advance(f);
+  assert.equal(plan(f).state, 'done');
+  assert.equal(f.launches.length, 3, 'a plan with no target launches nothing extra');
+  assert.deepEqual(f.store.events(20).filter(e => e.kind.startsWith('plan.')).map(e => e.text).toReversed(), ['Epic Launch started with 3 tickets', 'Epic Launch finished']);
+});
+
+test('an Epic applies its overrides on every pass, and limits it did not override still cap it', async t => {
+  const f = epicFixture(t, 'a', 'b', 'c');
+  blocks(f, 'a', 'c');
+  setConfig(f, () => { f.c.concurrency.codex = 1; });
+  await startEpic(f);
+  assert.deepEqual(titles(f), ['FIX-1'], 'one provider slot starts one ticket');
+  assert.equal(plan(f).tickets.find(ticket => ticket.id === 'b')!.note, 'Waiting for a free Codex slot');
+  const overridden = epicFixture(t, 'a', 'b', 'c');
+  blocks(overridden, 'a', 'c');
+  setConfig(overridden, () => { overridden.c.concurrency.codex = 1; });
+  await startEpic(overridden, { overrideLimits: true });
+  assert.deepEqual(titles(overridden), ['FIX-1', 'FIX-2'], 'the provider override passes capacity at the start');
+  finishTicket(overridden, 'a'); await advance(overridden);
+  assert.deepEqual(titles(overridden), ['FIX-1', 'FIX-2', 'FIX-3'], 'and on a later pass');
+});
+
+test('an Epic plan follows membership, and a failed member read keeps its last list and records the error', async t => {
+  const f = epicFixture(t, 'a', 'b');
+  blocks(f, 'a', 'b');
+  await startEpic(f);
+  assert.deepEqual(titles(f), ['FIX-1']);
+  f.tasks.push(f.task('late', 3, 'todo'));
+  f.epics[0].members.push('late');
+  f.epics[0].members.splice(f.epics[0].members.indexOf('b'), 1);
+  await advance(f);
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-3'], 'a ticket added mid-run joins on the next pass');
+  assert.deepEqual(plan(f).tickets.map(ticket => ticket.id).toSorted(), ['a', 'late'], 'a removed ticket without a run leaves');
+  f.epics[0].members.splice(0, 1);
+  await advance(f);
+  assert.deepEqual(plan(f).tickets.map(ticket => ticket.id).toSorted(), ['a', 'late'], 'a removed ticket with a run stays until it finishes');
+  f.epics[0].members.unshift('a');
+  f.hooks.epics = async () => { throw new Error('Kanvil unavailable'); };
+  finishTicket(f, 'a'); finishTicket(f, 'late'); await advance(f);
+  assert.equal(plan(f).state, 'active', 'an unreadable Epic cannot finish');
+  assert.deepEqual(plan(f).tickets.map(ticket => [ticket.id, ticket.done]).toSorted(), [['a', true], ['late', true]], 'the last list stays and keeps advancing');
+  f.tasks.find(task => task.id === 'late')!.status = 'todo'; await advance(f);
+  assert.match(plan(f).tickets.find(ticket => ticket.id === 'late')!.note ?? '', /Kanvil unavailable/, 'the error is recorded in the ticket note');
+  f.hooks.epics = async () => {};
+  await advance(f);
+  assert.doesNotMatch(plan(f).tickets.find(ticket => ticket.id === 'late')!.note ?? '', /Kanvil unavailable/, 'a later good read clears the error');
+  finishTicket(f, 'late'); await advance(f);
+  assert.equal(plan(f).state, 'done');
+});
+
+test('a blocker outside the Epic joins the plan, and a cancelled member cannot stall it', async t => {
+  const f = epicFixture(t, 'a', 'b', 'gone', 'c');
+  f.tasks.find(task => task.id === 'gone')!.status = 'cancelled';
+  f.tasks.push(f.task('outsider', 9, 'todo'));
+  blocks(f, 'outsider', 'a'); blocks(f, 'gone', 'b'); blocks(f, 'c', 'a');
+  const started = await startEpic(f);
+  assert.equal(started.reason, 'plan-started', JSON.stringify(started));
+  const outsider = plan(f).tickets.find(ticket => ticket.id === 'outsider')!;
+  assert.equal(outsider.outside, true);
+  assert.equal(plan(f).tickets.find(ticket => ticket.id === 'b')!.outside, undefined);
+  assert.equal(plan(f).tickets.some(ticket => ticket.id === 'gone'), false, 'a cancelled member has nothing left to run');
+  assert.deepEqual(titles(f), ['FIX-2', 'FIX-4', 'FIX-9'], 'a cancelled blocker releases its dependent, through the launch checks too');
+  finishTicket(f, 'outsider'); finishTicket(f, 'c', 'cancelled'); await advance(f);
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2', 'FIX-4', 'FIX-9'], 'the member waits for its blocker outside the Epic');
+  finishTicket(f, 'a', 'cancelled'); finishTicket(f, 'b'); await advance(f);
+  assert.equal(plan(f).state, 'done', 'cancelled members count as finished');
+});
+
+for (const [name, setup, reason, text] of [
+  ['an archived Epic', f => { f.epics[0].archived = true; }, 'epic-archived', /archived/],
+  ['an Epic with no unfinished members', f => { f.tasks[0].status = 'done'; f.tasks[1].status = 'cancelled'; }, 'epic-no-unfinished', /no unfinished/],
+  ['an Epic with a member in a missing project', f => { foreign(f, 'other'); f.epics[0].members.push('other'); }, 'epic-project-not-included', /OTHER-7 \(OTHER\)/],
+  ['an Epic with an outside blocker in a missing project', f => { foreign(f, 'other'); blocks(f, 'other', 'a'); }, 'epic-project-not-included', /OTHER-7 \(OTHER\)/],
+  ['an Epic with a member in a disabled project', f => { setConfig(f, () => { f.c.projects.push({ ...f.c.projects[0], name: 'Paused', key: 'OFF', kanvilId: 'OFF', t3Id: 'OFF', enabled: false }); }); f.tasks.push({ ...f.task('off', 3, 'todo'), projectId: 'OFF' }); f.epics[0].members.push('off'); }, 'epic-project-not-included', /OFF-3 \(Paused\)/],
+  ['an Epic with restricted tickets', f => { f.epics[0].restrictedCount = 2; }, 'epic-restricted-tickets', /2 tickets/],
+] as [string, (f: ReturnType<typeof dispatchFixture>) => void, string, RegExp][]) test(`starting ${name} is refused with every override and creates no plan`, async t => {
+  const f = epicFixture(t, 'a', 'b');
+  setup(f);
+  const refused = await startEpic(f, { overrideLimits: true });
+  assert.equal(refused.reason, reason, JSON.stringify(refused));
+  assert.match(refused.message, text);
+  assert.equal(f.store.plans().length, 0);
+  assert.equal(f.launches.length, 0);
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  const row = writeStatus(f.c, f.store).epics.find(row => row.id === 'epic');
+  if (row) assert.deepEqual([row.startBlock?.reason, row.startBlock?.message], [refused.reason, refused.message], 'the page and the start path share one answer');
+});
+
+test('an Epic with an active plan is refused, a finished ticket in a missing project blocks nothing, and status follows both', async t => {
+  const f = epicFixture(t, 'a');
+  foreign(f, 'other', 'done'); f.epics[0].members.push('other');
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  const open = writeStatus(f.c, f.store).epics[0];
+  assert.equal(open.startBlock, null);
+  assert.deepEqual(open.tickets.map(ticket => [ticket.key, ticket.runnable, ticket.readiness?.ready]), [['FIX-1', true, true]]);
+  assert.equal((await startEpic(f)).reason, 'plan-started');
+  const refused = await startEpic(f);
+  assert.equal(refused.reason, 'epic-already-running');
+  assert.equal(f.store.plans().length, 1);
+  const running = writeStatus(f.c, f.store).epics[0];
+  assert.deepEqual([running.startBlock?.reason, running.startBlock?.message], [refused.reason, refused.message]);
+  assert.equal(running.planId, plan(f).id);
+});
+
+test('a running Epic stays active and reports hidden tickets until none remain', async t => {
+  const f = epicFixture(t, 'a');
+  await startEpic(f);
+  f.epics[0].restrictedCount = 1;
+  finishTicket(f, 'a'); await advance(f);
+  assert.equal(plan(f).state, 'active');
+  assert.equal(plan(f).epic!.restrictedCount, 1);
+  f.epics[0].restrictedCount = 0; await advance(f);
+  assert.equal(plan(f).state, 'done');
+});
+
+for (const [name, leave] of [
+  ['joins from a missing project', f => { foreign(f, 'late'); f.epics[0].members.push('late'); }],
+  ['has its project disabled', f => {
+    setConfig(f, () => { f.c.projects.push({ ...f.c.projects[0], name: 'Paused', key: 'OFF', kanvilId: 'OFF', t3Id: 'OFF', enabled: false }); });
+    f.tasks.push({ ...f.task('late', 8, 'todo'), projectId: 'OFF' }); f.epics[0].members.push('late');
+  }],
+] as [string, (f: ReturnType<typeof dispatchFixture>) => void][]) test(`a ticket that ${name} mid-run waits with its note while the rest of the Epic continues`, async t => {
+  const f = epicFixture(t, 'a', 'dependent', 'free');
+  blocks(f, 'a', 'free');
+  await startEpic(f);
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2']);
+  leave(f);
+  blocks(f, 'late', 'dependent');
+  await advance(f);
+  const ticket = plan(f).tickets.find(ticket => ticket.id === 'late')!;
+  assert.equal(ticket.runnable, false);
+  assert.equal(ticket.note, 'Its project is not included in the factory');
+  finishTicket(f, 'a'); finishTicket(f, 'dependent'); await advance(f);
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2', 'FIX-3'], 'other tickets continue');
+  finishTicket(f, 'free'); await advance(f);
+  assert.equal(plan(f).state, 'active', 'the Epic stays active until that ticket is finished elsewhere');
+  finishTicket(f, 'late'); await advance(f);
+  assert.equal(plan(f).state, 'done');
+});
+
+const automaticPass = (f: ReturnType<typeof dispatchFixture>) => cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets' });
+const heldReason = (f: ReturnType<typeof dispatchFixture>, key = 'FIX-1') => JSON.parse(f.store.get('upNext')!).held.find((row: any) => row.key === key)?.reason;
+for (const held of [undefined, false, true]) test(`holdEpicTicketsUntilStarted ${held}: ${held ? 'an unstarted Epic waits but a named start works' : 'an unstarted Epic stays schedulable'}`, async t => {
+  const f = epicFixture(t, 'a');
+  f.tasks[0].epicId = 'epic';
+  if (held !== undefined) setConfig(f, () => { (f.c as any).holdEpicTicketsUntilStarted = held; });
+  await automaticPass(f);
+  if (!held) { assert.deepEqual(titles(f), ['FIX-1']); return; }
+  assert.equal(titles(f).includes('FIX-1'), false);
+  assert.match(heldReason(f), /Waits for its Epic to start/);
+  assert.equal((await f.run()).reason, 'dispatched', 'a named start is unaffected');
+});
+
+test('holding unstarted Epics leaves members of an archived Epic to ordinary scheduling', async t => {
+  const f = epicFixture(t, 'a');
+  f.tasks[0].epicId = 'epic'; f.epics[0].archived = true;
+  setConfig(f, () => { (f.c as any).holdEpicTicketsUntilStarted = true; });
+  await automaticPass(f);
+  assert.deepEqual(titles(f), ['FIX-1'], 'an archived Epic can never start, so holding for it would strand the ticket');
+});
+
+for (const [name, holdBefore, holdAfter, archived, launched] of [
+  ['the setting turns on', false, true, false, false],
+  ['the ticket joins an unstarted Epic', true, true, false, false],
+  ['the ticket joins an archived Epic', true, true, true, true],
+  ['the setting stays off', false, false, false, true],
+] as const) test(`an automatic pass on a prepared queue rechecks the unstarted-Epic hold when ${name}`, async t => {
+  const f = epicFixture(t, 'a');
+  f.epics[0].archived = archived;
+  setConfig(f, () => { f.c.holdEpicTicketsUntilStarted = holdBefore; });
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  assert.equal(JSON.parse(f.store.get('upNext')!).tickets[0].key, 'FIX-1', 'the queue was prepared before the change');
+  f.tasks[0].epicId = 'epic';
+  setConfig(f, () => { f.c.holdEpicTicketsUntilStarted = holdAfter; });
+  await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets', backgroundInventory: true });
+  assert.equal(titles(f).includes('FIX-1'), launched);
+});
+
+for (const joined of [false, true]) test(`whatever the setting, a running Epic keeps a member ${joined ? 'that has not joined its plan yet' : 'from its plan'} out of automatic passes`, async t => {
+  const f = epicFixture(t, 'a', 'b');
+  const node = { id: 'a', key: 'FIX-1', title: 'Fixture', projectId: 'FIX', status: 'todo', priority: 'high', createdAt: '2026-01-01', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };
+  if (joined) f.tasks[0].epicId = 'epic';
+  f.store.savePlan({ id: 'running', createdAt: new Date().toISOString(), epic: { id: 'epic', title: 'Launch' }, tickets: joined ? [] : [node], model: 'sol', overrideLimits: [], state: 'active' });
+  await automaticPass(f);
+  assert.deepEqual(titles(f), ['FIX-2'], 'other tickets still start');
+  assert.match(heldReason(f), /Runs with its Epic/);
 });

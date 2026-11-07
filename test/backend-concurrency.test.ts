@@ -734,3 +734,33 @@ test('quota recovery runs one bounded backoff per provider, ends on a fresh read
   await f.service.stop();
   assert.equal(f.internal.quotaRecovery.size, 0, 'shutdown disposes recovery timers');
 });
+
+test('two simultaneous Epic starts make one plan', async t => {
+  const f = dispatchFixture(t), gate = deferred();
+  f.relations.splice(0);
+  f.tasks.splice(0, f.tasks.length, f.task('a', 1, 'todo'), f.task('b', 2, 'todo'));
+  f.epics.push({ id: 'epic', title: 'Launch', archived: false, members: ['a', 'b'], restrictedCount: 0 });
+  f.c.concurrency.codex = 2; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  let arrivals = 0;
+  f.hooks.epics = async () => { if (++arrivals === 2) gate.resolve(); await gate.promise; };
+  const start = () => cycle(f.c, f.store, { manual: true, epic: 'epic', model: 'auto', overrideLimits: ['idle', 'reserve', 'labels'] } as any, { t3: f.t3, kanvil: f.kanvil });
+  const results = await Promise.all([start(), start()]);
+  assert.deepEqual(results.map(result => result.reason).toSorted(), ['epic-already-running', 'plan-started']);
+  assert.equal(f.store.plans().length, 1);
+  assert.equal(f.launches.length, 2);
+});
+
+test('an Epic started during an automatic pass final validation takes the ticket that pass selected', async t => {
+  const f = dispatchFixture(t);
+  f.relations.splice(0);
+  f.tasks.splice(0, f.tasks.length, f.task('a', 1, 'todo'));
+  let started = false;
+  f.hooks.quota = async refresh => {
+    if (!refresh || started) return;
+    started = true;
+    f.store.savePlan({ id: 'running', createdAt: new Date().toISOString(), epic: { id: 'epic', title: 'Launch' }, tickets: [{ id: 'a', key: 'FIX-1', title: 'Fixture', projectId: 'FIX', status: 'todo', priority: 'high', createdAt: '2026-01-01', runnable: true, blockedBy: [], done: false }], model: 'sol', overrideLimits: [], state: 'active' });
+  };
+  const result = await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets' });
+  assert.equal(started, true);
+  assert.equal(f.launches.length, 0, JSON.stringify(result));
+});
