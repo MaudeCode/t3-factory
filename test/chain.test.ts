@@ -141,6 +141,18 @@ test('a chain with the provider override runs every launch past provider capacit
   assert.equal((f.launches[1] as any).modelSelection.instanceId, 'codex');
 });
 
+test('a running chain shows a ticket\'s hold until it is lifted', async t => {
+  const f = dispatchFixture(t);
+  const planId = await startChain(f, { overrideLimits: true });
+  const target = () => f.store.plan(planId)!.target!;
+  f.tasks[0].holdReason = 'waiting on legal';
+  await advance(f);
+  assert.match(target().hold ?? '', /waiting on legal/);
+  f.tasks[0].holdReason = null;
+  await advance(f);
+  assert.equal(target().hold, undefined);
+});
+
 test('a chain without the provider override waits for capacity at every launch', async t => {
   const f = dispatchFixture(t);
   setConfig(f, () => { f.c.concurrency.codex = 0; });
@@ -323,6 +335,25 @@ test('a blocker outside the Epic joins the plan, and a cancelled member cannot s
   assert.equal(plan(f).state, 'done', 'cancelled members count as finished');
 });
 
+test('only an unfinished ticket that cannot start blocks an Epic, and the automatic-runs switch does not', async t => {
+  const f = epicFixture(t, 'a', 'b', 'c');
+  Object.assign(f.tasks.find(task => task.id === 'c')!, { status: 'done', automationReady: false });
+  setConfig(f, () => { f.c.enabled = false; });
+  const started = await startEpic(f);
+  assert.equal(started.reason, 'plan-started', JSON.stringify(started));
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2']);
+});
+
+test('a ticket that loses readiness mid-run waits while the running Epic continues', async t => {
+  const f = epicFixture(t, 'a', 'b', 'c');
+  blocks(f, 'a', 'b'); blocks(f, 'a', 'c');
+  assert.equal((await startEpic(f)).reason, 'plan-started');
+  f.tasks.find(task => task.id === 'c')!.automationReady = false;
+  finishTicket(f, 'a'); await advance(f);
+  assert.equal(plan(f).state, 'active');
+  assert.deepEqual(titles(f), ['FIX-1', 'FIX-2'], 'the rest start and the unready ticket does not');
+});
+
 for (const [name, setup, reason, text] of [
   ['an archived Epic', f => { f.epics[0].archived = true; }, 'epic-archived', /archived/],
   ['an Epic with no unfinished members', f => { f.tasks[0].status = 'done'; f.tasks[1].status = 'cancelled'; }, 'epic-no-unfinished', /no unfinished/],
@@ -330,6 +361,9 @@ for (const [name, setup, reason, text] of [
   ['an Epic with an outside blocker in a missing project', f => { foreign(f, 'other'); blocks(f, 'other', 'a'); }, 'epic-project-not-included', /OTHER-7 \(OTHER\)/],
   ['an Epic with a member in a disabled project', f => { setConfig(f, () => { f.c.projects.push({ ...f.c.projects[0], name: 'Paused', key: 'OFF', kanvilId: 'OFF', t3Id: 'OFF', enabled: false }); }); f.tasks.push({ ...f.task('off', 3, 'todo'), projectId: 'OFF' }); f.epics[0].members.push('off'); }, 'epic-project-not-included', /OFF-3 \(Paused\)/],
   ['an Epic with restricted tickets', f => { f.epics[0].restrictedCount = 2; }, 'epic-restricted-tickets', /2 tickets/],
+  ['an Epic with a member without automation readiness', f => { f.tasks[1].automationReady = false; }, 'epic-tickets-not-ready', /FIX-2 \(Agent work is not enabled in Kanvil\)/],
+  ['an Epic with a member on hold', f => { f.tasks[1].holdReason = 'waiting on legal'; }, 'epic-tickets-not-ready', /FIX-2 \(Ticket is on hold: waiting on legal\)/],
+  ['an Epic with an outside blocker on hold', f => { f.tasks.push({ ...f.task('outsider', 9, 'todo'), holdReason: 'waiting on legal' }); blocks(f, 'outsider', 'a'); }, 'epic-tickets-not-ready', /FIX-9/],
 ] as [string, (f: ReturnType<typeof dispatchFixture>) => void, string, RegExp][]) test(`starting ${name} is refused with every override and creates no plan`, async t => {
   const f = epicFixture(t, 'a', 'b');
   setup(f);

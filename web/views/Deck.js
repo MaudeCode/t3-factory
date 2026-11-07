@@ -159,7 +159,7 @@ export function PlanRows({ plan, show = () => true }) {
   };
   const reasons = (t) => [
     t.runnable === false && "Its project is not included in the factory",
-    t.automationReady === false && (t.readiness?.reasons?.map((r) => r.message).join("; ") || "Automation readiness is off"),
+    t.automationReady === false ? t.readiness?.reasons?.map((r) => r.message).join("; ") || "Automation readiness is off" : t.hold,
   ];
   return all.filter(show).map((t) => {
     const job = jobByTask.get(t.id), [label, tone, note] = state(t, job);
@@ -174,7 +174,7 @@ export const planProgress = (plan) => {
   const all = plan.target ? [...plan.tickets, plan.target] : plan.tickets;
   return `${all.filter((t) => t.done).length} of ${all.length} done`;
 };
-export const CancelPlan = ({ plan, title, label }) => html`<${Button} variant="ghost" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title, message: "Tickets already running finish on their own.", label }, () => actions.cancelPlan(plan.id))}>${label}<//>`;
+export const CancelPlan = ({ plan, title, label, icon, class: extra }) => html`<${Button} variant="ghost" size="sm" icon=${icon} label=${icon && label} class=${extra} disabled=${busy.value} onClick=${() => confirmAction({ title, message: "Tickets already running finish on their own.", label }, () => actions.cancelPlan(plan.id))}>${!icon && label}<//>`;
 
 // Chains the user started. Epics have their own tab on the Runs page.
 export function Chains() {
@@ -203,18 +203,20 @@ export function startHold(t) {
 // One ticket in a list: key and title linking to the tracker, its facets, and the actions beside it.
 // The queue, session and triage lists share this row; Start stays visible and secondary actions use a mobile popover.
 // `badge`, such as a triage outcome, leads the facet line, so the row stays as tall as any other.
-// A `plain` row is not a startable ticket, so it has no difficulty to warn about.
-export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain, link, meta }) {
+// A `plain` row is not a startable ticket, so it has no difficulty to warn about. `toggle` makes the row's body a
+// disclosure button instead of a link; `expanded` is left unset when there is nothing to open.
+export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain, link, meta, toggle }) {
   const c = config.value;
   const [open, setOpen] = useState(false), button = useRef();
   const label = `More actions for ${t.key}`;
+  const body = html`<${RowBody} title=${t.key ? html`<b class="key">${t.key}</b> ${t.title}` : t.title}>
+    <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${(project?.priorityLabels ?? []).flat()} ...${meta}>${badge}${children}<//>
+  <//>`;
   return html`<div class="next" key=${t.id}>
     ${selection}
-    <a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer" }}>
-      <${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>
-        <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${(project?.priorityLabels ?? []).flat()} ...${meta}>${badge}${children}<//>
-      <//>
-    </a>
+    ${toggle
+      ? html`<button type="button" class="next-ticket next-toggle" aria-expanded=${toggle.expanded} disabled=${toggle.disabled} onClick=${toggle.onClick}><${Icon} name="chevronRight" />${body}</button>`
+      : html`<a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer" }}>${body}</a>`}
     ${actions && html`<div class="next-actions">${actions}
       ${secondaryActions && html`<div class="next-secondary">${secondaryActions}</div>
         <span ref=${button} class="next-more"><${Button} size="sm" icon class="next-run" label=${label} aria-expanded=${open} onClick=${() => setOpen(!open)}>⋯<//></span>
