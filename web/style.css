@@ -1448,25 +1448,67 @@ h2 .icon,
   white-space: normal;
   overflow-wrap: anywhere;
 }
-/* A long Epic title gives its start controls their own line rather than squeezing either. */
-.epic > header {
-  flex-wrap: wrap;
-}
-.epic h2 {
-  min-width: 0;
-}
-.epic-start {
+/* The body of a row that opens in place. Its title and detail wrap, because an Epic's title and reason have to be readable. */
+button.next-toggle {
   display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.next-toggle:disabled {
+  color: inherit;
+  cursor: default;
+}
+button.next-toggle:disabled:hover {
+  background: transparent;
+}
+.next-toggle > .icon {
+  flex: none;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.next-toggle[aria-expanded="true"] > .icon {
+  transform: rotate(90deg);
+}
+.next-toggle:not([aria-expanded]) > .icon {
+  visibility: hidden;
+}
+.next-toggle .row-body > span {
+  font-weight: 600;
+  white-space: normal;
+}
+.next-toggle .row-body > small {
+  white-space: normal;
+}
+/* Touch-sized controls would otherwise sit on the row's separators. */
+.epic .next-actions {
   align-items: center;
   gap: var(--space-2);
-  min-width: 0;
+  padding-block: var(--space-1);
 }
-.epic-start .select {
+.epic .select {
   width: auto;
   min-width: 96px;
 }
+.epic-issue {
+  display: inline-flex;
+  margin-left: 6px;
+  font-size: 12px;
+  color: var(--attention);
+  vertical-align: -1px;
+}
+/* Note and tickets line up with the Epic's title, past the chevron. */
+.epic-tickets {
+  margin-left: 18px;
+}
 .epic-note {
-  margin: 0 0 var(--space-2);
+  margin: 0;
+  padding-bottom: var(--space-2);
 }
 .chain-row {
   display: grid;
@@ -2567,6 +2609,7 @@ h1 .crumb::after {
   .chips button,
   .popover .chips button,
   .slot,
+  .next-toggle,
   .select li {
     min-height: 44px;
   }

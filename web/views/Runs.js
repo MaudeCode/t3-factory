@@ -1,5 +1,5 @@
 // Every run the factory has made, and one run in full.
-import { html, useEffect, useRef, useState } from "../lib/h.js";
+import { html, signal, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message, startRun, pendingEpic } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
@@ -30,7 +30,7 @@ import {
   byNewest,
 } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Link, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
-import { RunList, UpNext, Chains, Operations, StartOptions, startOptions, OrderChoice, PlanRows, planProgress, CancelPlan, modelOptions } from "./Deck.js";
+import { RunList, UpNext, Chains, Operations, StartOptions, startOptions, OrderChoice, PlanRows, planProgress, CancelPlan, modelOptions, TicketRow } from "./Deck.js";
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
@@ -92,14 +92,23 @@ const epicLists = () => {
     finished: plans.filter((p) => p.state !== "active"),
   };
 };
-// An Epic title matches the whole Epic; otherwise search and filters narrow its rows. Hidden tickets are no rows, so
-// an Epic made only of them stays until something narrows the list.
+// Epics opened on this page. They stay open through live updates, a change of tab and a start, until a reload.
+const openEpics = signal(new Set());
+const toggleEpic = (id) => {
+  const next = new Set(openEpics.value);
+  if (!next.delete(id)) next.add(id);
+  openEpics.value = next;
+};
+// An Epic title matches the whole Epic; otherwise search and filters narrow its rows, and `narrowed` keeps the Epic
+// open so the rows that matched are visible. Hidden tickets are no rows, so an Epic made only of them stays until
+// something narrows the list.
 function matchEpics(list, filters, query) {
   const text = query.trim().toLowerCase();
   return list.flatMap((epic) => {
     const titled = text && epic.title.toLowerCase().includes(text);
     const show = (t) => matchesRunFilters(t, filters, titled ? "" : query);
-    return epic.tickets.some(show) || !(hasRunFilters(filters) || (text && !titled)) ? [{ epic, show }] : [];
+    const narrowed = hasRunFilters(filters) || (!!text && !titled);
+    return epic.tickets.some(show) || !narrowed ? [{ epic, show, narrowed }] : [];
   });
 }
 function EpicStart({ epic }) {
@@ -108,30 +117,46 @@ function EpicStart({ epic }) {
   const hold = epic.startBlock?.message ?? (pendingEpic(epic.id) ? "A request for this Epic is already pending." : null);
   // /api/dispatch refuses a provider with a pinned model. The pick comes back with Auto.
   const chosen = provider ? "auto" : model;
-  return html`<div class="epic-start">
-    <${Select} label=${`Model for ${epic.title}`} value=${chosen} onChange=${setModel} options=${modelOptions()} disabled=${!!provider} />
-    <${Button} size="sm" icon="play" class="epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${() => startRun({ epic: epic.id, model: chosen, ...(provider ? { provider } : {}), overrideLimits })} />
-  </div>`;
+  return html`<${Select} label=${`Model for ${epic.title}`} value=${chosen} onChange=${setModel} options=${modelOptions()} disabled=${!!provider} />
+    <${Button} size="sm" icon="play" class="next-run epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${() => startRun({ epic: epic.id, model: chosen, ...(provider ? { provider } : {}), overrideLimits })} />`;
 }
-function EpicSection({ epic, show }) {
+// What an Epic's row says about it: one state tag, then how far along it is and, while it runs, what its runs are doing.
+function epicSummary(epic) {
+  const running = epic.state === "active", states = jobs.value.filter((j) => isOpen(j) && epic.tickets.some((t) => t.id === j.taskId)).map((j) => j.state);
+  const active = states.filter((s) => s !== "waiting").length, waiting = states.length - active;
+  const [label, tone] = !epic.state ? (epic.startBlock ? ["Can't start", "attention"] : ["Ready", ""])
+    : running ? (waiting ? ["Needs you", "attention"] : ["Running", "on"])
+    : epic.state === "done" ? ["Done", "ok"] : ["Cancelled", ""];
+  const progress = [epic.tickets.length && planProgress(epic), running && active && `${active} running`, running && waiting && `${waiting} waiting for you`].filter(Boolean).join(" · ");
+  return { label, tone, progress };
+}
+function EpicRow({ epic, show, narrowed }) {
+  // A row in status.epics and the plan it becomes on start share the Epic's ID.
+  const id = epic.epic?.id ?? epic.id;
   const running = epic.state === "active", started = !!epic.state, hidden = epic.restrictedCount ?? 0;
   const model = epic.provider ? providerName(epic.provider) : epic.model === "auto" ? "Auto" : config.value.models.find((m) => m.id === epic.model)?.name ?? epic.model;
   const note = started ? running && hidden > 0 && `${hidden} ticket${hidden === 1 ? "" : "s"} in projects Factory cannot read keep this Epic open.` : epic.startBlock?.message;
-  return html`<${Section} class="epic" title=${epic.title} count=${epic.tickets.length ? planProgress(epic) : null} aside=${!started
-    ? html`<${EpicStart} epic=${epic} />`
-    : running
-      ? html`<div class="epic-start"><span class="muted small epic-choice">${model} · ${overrideText(epic.overrideLimits)}</span><${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" /></div>`
-      : html`<${Tag} tone=${epic.state === "done" ? "ok" : ""}>${epic.state === "done" ? "Done" : "Cancelled"}<//>`}>
-    ${note && html`<p class="hint tone-attention epic-note">${note}</p>`}
-    <${PlanRows} plan=${epic} show=${show} />
-  <//>`;
+  const { label, tone, progress } = epicSummary(epic);
+  // The symbol means one thing: the scheduler will refuse to start this Epic.
+  const block = !started && epic.startBlock?.message, opens = epic.tickets.length > 0 || !!note, open = opens && (narrowed || openEpics.value.has(id));
+  return html`<div class="epic">
+    <${TicketRow} ticket=${{ id, title: html`${epic.title}${block && html`<span class="epic-issue" title=${block}><${Icon} name="alert" label=${block} /></span>`}` }} plain meta=${{ project: undefined }}
+      toggle=${{ expanded: opens ? open : undefined, disabled: !opens || narrowed, onClick: () => toggleEpic(id) }}
+      badge=${html`<${Tag} tone=${tone}>${label}<//>`}
+      actions=${!started ? html`<${EpicStart} epic=${epic} />` : running && html`<${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" icon="x" class="next-run" />`}>
+      ${progress && html`<span class="epic-progress">${progress}</span>`}
+      ${running && html`<span class="epic-choice">${model} · ${overrideText(epic.overrideLimits)}</span>`}
+    <//>
+    ${open && html`<div class="epic-tickets">${note && html`<p class="hint tone-attention epic-note">${note}</p>`}<${PlanRows} plan=${epic} show=${show} /></div>`}
+  </div>`;
 }
 function Epics({ filters, query }) {
   const { open, finished } = epicLists();
   const shown = matchEpics(open, filters, query);
+  const section = (match) => html`<${EpicRow} key=${match.epic.id} ...${match} />`;
   return html`<${Operations} />
-    ${shown.length ? shown.map(({ epic, show }) => html`<${EpicSection} key=${epic.id} epic=${epic} show=${show} />`) : html`<${Empty}>${open.length ? "No Epics match." : "No open Epics."}<//>`}
-    ${matchEpics(finished, filters, query).map(({ epic, show }) => html`<${EpicSection} key=${epic.id} epic=${epic} show=${show} />`)}`;
+    ${shown.length ? shown.map(section) : html`<${Empty}>${open.length ? "No Epics match." : "No open Epics."}<//>`}
+    ${matchEpics(finished, filters, query).map(section)}`;
 }
 
 export function Runs() {

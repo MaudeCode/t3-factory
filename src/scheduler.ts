@@ -11,7 +11,7 @@ import { join, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { taskDifficulty, taskHold } from './policy.ts';
+import { automationHold, taskDifficulty, taskHold } from './policy.ts';
 import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task, type Epic } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision } from './store.ts';
@@ -1427,7 +1427,7 @@ function taskReader(c: Config, kanvil: Kanvil, { cancelledFinished = false, cach
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, hold: automationHold(t) || undefined, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
   };
   return { task, relations, done, node, projects, get ids() { return tasks.keys(); } };
 }
@@ -1514,11 +1514,13 @@ function epicStartBlock(c: Config, epic: Pick<Epic, 'title' | 'archived'>, ticke
   if (running) return { reason: 'epic-already-running', message: `Epic ${epic.title} is already running.` };
   const open = tickets.filter(ticket => !ticket.done);
   const excluded = open.filter(ticket => !ticket.runnable).map(ticket => ({ key: ticket.key, project: c.projects.find(project => project.kanvilId === ticket.projectId)?.name ?? ticket.key.match(/^([A-Z0-9]+)-\d+$/)?.[1] ?? ticket.projectId }));
-  if (excluded.length || restrictedCount) return {
-    reason: excluded.length ? 'epic-project-not-included' : 'epic-restricted-tickets', tickets: excluded, restrictedCount,
+  const held = open.filter(ticket => ticket.runnable && ticket.hold);
+  if (excluded.length || restrictedCount || held.length) return {
+    reason: excluded.length ? 'epic-project-not-included' : restrictedCount ? 'epic-restricted-tickets' : 'epic-tickets-not-ready', tickets: excluded, restrictedCount,
     message: [
       excluded.length ? `Epic ${epic.title} has unfinished tickets in projects the factory does not run: ${excluded.map(ticket => `${ticket.key} (${ticket.project})`).join(', ')}.` : '',
       restrictedCount ? `Epic ${epic.title} has ${plural(restrictedCount, 'ticket')} in projects the factory cannot read.` : '',
+      held.length ? `Epic ${epic.title} has tickets the factory will not start: ${held.map(ticket => `${ticket.key} (${ticket.hold})`).join(', ')}.` : '',
     ].filter(Boolean).join(' '),
   };
   if (!open.length) return { reason: 'epic-no-unfinished', message: `Epic ${epic.title} has no unfinished tickets.` };

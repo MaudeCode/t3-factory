@@ -255,10 +255,16 @@ export function taskDifficulty(task: Task) {
   if (label && label !== task.difficulty) throw new Error('Native difficulty and label disagree');
   return task.difficulty ?? undefined;
 }
-export function taskHold(task: Task): string {
-  if (task.archived) return 'Ticket is archived';
+// A choice recorded on the ticket that keeps every start off it, whatever the limits or overrides.
+export function automationHold(task: Pick<Task, 'holdReason' | 'automationReady'>): string {
   if (task.holdReason) return `Ticket is on hold: ${task.holdReason}`;
   if (!task.automationReady) return 'Agent work is not enabled in Kanvil';
+  return '';
+}
+export function taskHold(task: Task): string {
+  if (task.archived) return 'Ticket is archived';
+  const hold = automationHold(task);
+  if (hold) return hold;
   if (task.readiness && !task.readiness.ready && !task.readiness.reasons.length) return 'Kanvil has not confirmed readiness';
   // The dependency walker retains its full chain view. Every other server gate remains mandatory.
   return task.readiness?.reasons.filter(r => r.code !== 'dependency').map(r => r.message).join('; ') ?? '';
