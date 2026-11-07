@@ -12,9 +12,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { taskDifficulty, taskHold } from './policy.ts';
-import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task } from './clients.ts';
+import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task, type Epic } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
-import { Store, jobLabel, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision } from './store.ts';
+import { Store, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
@@ -706,8 +706,22 @@ function branchConflict(key: string, refs: string, released: Map<string, string>
   return mentionsTicket(unmatched, key);
 }
 
-export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string) {
+// Unnamed scheduling never takes a ticket from a running Epic, so the model and overrides chosen for the Epic always apply.
+const activeEpicPlans = (store: Store) => store.plans().filter(plan => plan.state === 'active' && plan.epic);
+function runningEpicHold(store: Store) {
+  const active = activeEpicPlans(store);
+  const epics = new Set(active.map(plan => plan.epic!.id)), tickets = new Set(active.flatMap(plan => plan.tickets.map(ticket => ticket.id)));
+  return (ticket: Pick<Task, 'id' | 'epicId'>) => tickets.has(ticket.id) || ticket.epicId && epics.has(ticket.epicId) ? 'Runs with its Epic' : '';
+}
+// An archived Epic can never start, so its members are not held for it. An unreadable catalog holds every member.
+const unstartedEpicHold = (epics: Epic[] | undefined) => (ticket: Pick<Task, 'epicId'>) =>
+  ticket.epicId && !epics?.find(epic => epic.id === ticket.epicId)?.archived ? 'Waits for its Epic to start' : '';
+
+export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, cancelledFinished = false) {
   const projects = c.projects.filter(p => p.enabled);
+  const running = runningEpicHold(store);
+  const unstarted = !ticketKey && c.holdEpicTicketsUntilStarted ? unstartedEpicHold(await kanvil.epics().catch(() => undefined)) : undefined;
+  const epicHold = (task: Task) => ticketKey ? '' : running(task) || (unstarted?.(task) ?? '');
   const all = new Map<string, Task>();
   const listedProjects = ticketKey ? projects.filter(p => ticketKey.startsWith(`${p.key}-`)) : projects;
   // Only ready columns can yield work; a named ticket is read from every column so its real status can be reported.
@@ -731,7 +745,7 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
   });
   if (ticketKey && ![...all.values()].some(t => `${projects.find(p => p.kanvilId === t.projectId)!.key}-${t.number}` === ticketKey)) skipped.push({ key: ticketKey, reason: 'Ticket was not found in the enabled project' });
   // Caches hold promises so concurrent lookups of one task share a single read.
-  const finalStatuses = new Map<string, Promise<string[]>>(c.projects.map(p => [p.kanvilId, Promise.resolve(p.doneStatuses)]));
+  const finalStatuses = new Map<string, Promise<string[]>>(c.projects.map(p => [p.kanvilId, Promise.resolve(cancelledFinished ? [...p.doneStatuses, 'cancelled'] : p.doneStatuses)]));
   const fetched = new Map<string, Promise<Task>>();
   const getTask = (id: string): Promise<Task> => {
     const known = all.get(id);
@@ -785,6 +799,8 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
     const key = `${p.key}-${t.number}`;
     const hold = taskHold(t);
     if (hold) return { key, id: t.id, reason: hold };
+    const heldForEpic = epicHold(t);
+    if (heldForEpic) return { key, id: t.id, reason: heldForEpic };
     let difficulty: Candidate['difficulty'];
     try { difficulty = taskDifficulty(t); }
     catch { return { key, id: t.id, reason: 'Conflicting difficulty labels' }; }
@@ -830,12 +846,15 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
 
 // Queue display is independent of provider admission and completion verification.
 export async function refreshInventory(c: Config, store: Store, t3: T3, kanvil: Kanvil) {
-  const queue = await inventory(c, kanvil, (await t3.shell()).threads, store.jobs(), store);
+  await publishQueue(c, store, kanvil, await inventory(c, kanvil, (await t3.shell()).threads, store.jobs(), store));
+}
+async function publishQueue(c: Config, store: Store, kanvil: Kanvil, queue: Pick<Queue, 'ready' | 'skipped'>) {
   store.set('upNext', JSON.stringify(upNext(c, store, queue)));
+  await refreshEpics(c, store, kanvil);
 }
 
 export interface Skipped { key: string; reason: string; id?: string; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean }
+export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean }
 // The thresholds this start skips; automatic work skips none.
 export const skips = (options: Pick<CycleOptions, 'manual' | 'overrideLimits'>) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
@@ -939,8 +958,9 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   if (options.provider && (!options.manual || options.model && options.model !== 'auto')) throw new Error('A provider choice requires manual automatic model selection');
   if (clients.github) githubClients.set(store, clients.github);
   if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
-  if (options.manual && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
-  if (options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
+  if (options.epic && (!options.manual || options.ticket || options.chain || options.upstream)) throw new Error('An Epic start requires a manual request and no ticket, chain or upstream options');
+  if (options.manual && !options.epic && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
+  if (!options.manual && options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
     const result = { reason, at: new Date().toISOString(), ...extra };
     clients.decide!(result);
@@ -954,6 +974,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   const instances = new Map(providers.map(p => [p.instanceId, p.driver]));
   if (ownsKanvil) await kanvil.connect();
   try {
+    if (options.epic) return await startEpic(c, store, t3, kanvil, instances, shell.threads, options, skip, decision, clients.currentConfig, clients.decide);
     if (!options.manual && !clients.deferReconcile) await reconcile(c, store, t3, kanvil, shell.threads, !options.dryRun && !options.doctor, !clients.deferCleanup);
     // Chains the user started run whether or not automation is on; they take their slots first.
     if (!options.manual && !options.doctor && !options.dryRun && (!clients.workKind || clients.workKind === 'chains')) {
@@ -1025,9 +1046,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     await backgroundCheckpoint();
     // The service inventory lane owns this catalogue. Other lanes may read a scoped
     // or empty queue; publishing those would hide ready tickets from manual starts.
-    if (!clients.backgroundInventory && !options.ticket && !options.upstream && queueRead) {
-      store.set('upNext', JSON.stringify(upNext(c, store, queue)));
-    }
+    if (!clients.backgroundInventory && !options.ticket && !options.upstream && queueRead) await publishQueue(c, store, kanvil, queue);
     // Fully paused: provider status, quota, and the queue stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
     if (!ticketsOn && !reviewsOn) { saveStreams(); return decision('disabled', { streams, eligible: queue.ready.length }); }
     // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
@@ -1070,7 +1089,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
       const scoped: Queue = { ready: assignment ? queue.ready.filter(t => t.id === assignment.ticket.id) : [], skipped: queue.skipped, selected: undefined };
       const attempt = async (): Promise<Decision> => {
         try {
-          const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects, inspect: options.doctor, review, shell, queue: scoped, t3, kanvil, currentConfig: clients.currentConfig }, clients);
+          const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects, inspect: options.doctor, review, shell, queue: scoped, t3, kanvil, currentConfig: clients.currentConfig, unnamed: !options.ticket }, clients);
           stream.reason = result.reason;
           if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
           if (result.reason === 'dispatched' || result.reason === 'would-dispatch') (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: null, upstream: review?.upstream }));
@@ -1132,18 +1151,18 @@ function preparedInventory(c: Config, store: Store): Queue | undefined {
   const rows = z.object({ tickets: z.array(z.unknown()), held: z.array(z.object({ key: z.string(), reason: z.string() })) }).safeParse(value);
   if (!rows.success) return;
   const rowSchema = z.object({ id: z.string(), key: z.string(), projectId: z.string(), title: z.string(), priority: z.string(), createdAt: z.string(), difficulty: z.enum(['low', 'med', 'high']), automationReady: z.literal(true), labelRank: z.number().nullable().optional(), labels: z.array(z.string()), after: z.array(z.string()) });
-  const ready: Candidate[] = [], owned = taskOwners(store.jobSummaries());
+  const ready: Candidate[] = [], owned = taskOwners(store.jobSummaries()), running = runningEpicHold(store);
   for (const row of rows.data.tickets) {
     const parsed = rowSchema.safeParse(row);
     if (!parsed.success) return; // Older projections are warmed once, not silently reinterpreted.
     const task = parsed.data;
-    if (owned.has(task.id) || task.after.length || !c.projects.some(project => project.enabled && project.kanvilId === task.projectId && task.key.startsWith(project.key + '-'))) continue;
+    if (owned.has(task.id) || running(task) || task.after.length || !c.projects.some(project => project.enabled && project.kanvilId === task.projectId && task.key.startsWith(project.key + '-'))) continue;
     ready.push({ ...task, labelRank: task.labelRank ?? undefined, labels: task.labels.map(name => ({ name })) });
   }
   return { ready, skipped: rows.data.held, selected: undefined };
 }
 
-async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?: { driver: string; instanceDrivers: Map<string, string>; skipProjects: Set<string>; inspect?: boolean; review?: PendingReview; shell?: Awaited<ReturnType<T3['shell']>>; queue?: Queue; t3?: T3; kanvil?: Kanvil; currentConfig?: () => Config }, clients: Clients = {}, activePlanId?: string): Promise<Decision> {
+async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?: { driver: string; instanceDrivers: Map<string, string>; skipProjects: Set<string>; inspect?: boolean; review?: PendingReview; shell?: Awaited<ReturnType<T3['shell']>>; queue?: Queue; t3?: T3; kanvil?: Kanvil; currentConfig?: () => Config; unnamed?: boolean }, clients: Clients = {}, activePlanId?: string): Promise<Decision> {
   const recordDecision = clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual && !options.continuation });
   const preset = options.model && options.model !== 'auto' ? c.models.find(p => p.id === options.model) : undefined;
   if (options.model && options.model !== 'auto' && !preset) throw new Error('Unknown model; select a configured model');
@@ -1175,12 +1194,14 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const jobs = store.jobs();
     const running = jobs.filter(j => ['running', 'dispatching'].includes(j.state));
     const parked = jobs.filter(j => j.state === 'waiting');
+    // A cancelled ticket counts as finished for an Epic, so a launch from one must agree with the plan that chose it.
+    const cancelledFinished = !!(activePlanId && store.plan(activePlanId)?.epic);
     const driver = plan?.driver ?? instances.get(preset.model.instanceId);
     if (driver && busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(driver)) return decision(c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running', { driver });
     const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
     if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     // A review needs no ticket queue, so ticket-only reads cannot block it.
-    const queue = plan?.queue ?? (clients.backgroundInventory && options.manual && !ticketKey && !review && !options.doctor ? preparedInventory(c, store) : undefined) ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey));
+    const queue = plan?.queue ?? (clients.backgroundInventory && options.manual && !ticketKey && !review && !options.doctor ? preparedInventory(c, store) : undefined) ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey, cancelledFinished));
     const discovery = !ticketKey && !options.manual && !review;
     if (discovery && (queue.ready.length || queue.skipped.some(s => /difficulty/.test(s.reason)))) return decision('ticket-work-takes-priority');
     queue.ready = queue.ready.filter(t => acceptsDifficulty(preset, t));
@@ -1254,7 +1275,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
           readSelectedQuota(true),
           (async () => {
             if (!queue.selected) return undefined;
-            const reader = taskReader(c, kanvil);
+            const reader = taskReader(c, kanvil, { cancelledFinished });
             const rootId = queue.selected.id, watched = new Set<string>([rootId]);
             const rules = dependencyRules(async id => { watched.add(id); return relationsSchema.parse(await kanvil.relations(id, true, id === rootId, await reader.task(id))); }, async id => reader.done(await reader.task(id)));
             const [task, blockers, children, prs, refs] = await readAll([
@@ -1291,6 +1312,9 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const selected = queue.selected, selectionProject = project;
       const refusal = selected && (() => {
         if (!checked || checked.task.projectId !== selectionProject.kanvilId || `${selectionProject.key}-${checked.task.number}` !== selected.key || !selectionProject.readyStatuses.includes(checked.task.status) || taskHold(checked.task) || checked.task.readiness?.ready !== true) return { reason: 'ticket-changed-before-dispatch' };
+        // An Epic can start after this pass read the queue. Its choices win over unnamed selection.
+        const heldForEpic = (!options.ticket || plan?.unnamed) && runningEpicHold(store)(checked.task);
+        if (heldForEpic) return { reason: 'ticket-changed-before-dispatch', message: heldForEpic };
         const { task, blockers, children } = checked, key = selected.key;
         let difficulty: Candidate['difficulty'];
         try { difficulty = taskDifficulty(task); } catch { difficulty = undefined; }
@@ -1381,10 +1405,14 @@ export async function stopJob(c: Config, store: Store, t3: T3, jobId: string) {
 
 // Chains ------------------------------------------------------------------------------------------
 // Reads tickets and tells whether they are finished, for configured projects and, through their columns, any other.
-function taskReader(c: Config, kanvil: Kanvil) {
+// `cached` serves display reads from the live projection; admission always reads fresh.
+function taskReader(c: Config, kanvil: Kanvil, { cancelledFinished = false, cached = false } = {}) {
   const tasks = new Map<string, Promise<Task>>(), columns = new Map<string, Promise<string[]>>(), projects = new Set<string>();
-  const task = (id: string) => cachedRead(tasks, id, () => kanvil.task(id).then(task => { projects.add(task.projectId); return task; }));
+  const relationReads = new Map<string, Promise<z.infer<typeof relationsSchema>>>();
+  const task = (id: string) => cachedRead(tasks, id, () => (cached ? kanvil.task(id, undefined, true).then(task => kanvil.eligibleTask(task)) : kanvil.task(id)).then(task => { projects.add(task.projectId); return task; }));
+  const relations = (id: string) => cachedRead(relationReads, id, () => (cached ? kanvil.relations(id, false) : kanvil.relations(id)).then(r => relationsSchema.parse(r)));
   const done = async (t: Task) => {
+    if (cancelledFinished && t.status === 'cancelled') return true;
     const p = c.projects.find(p => p.kanvilId === t.projectId);
     if (p) return p.doneStatuses.includes(t.status);
     if (!columns.has(t.projectId)) columns.set(t.projectId, kanvil.columns(t.projectId).then(r => z.array(z.object({ slug: z.string(), isFinal: z.boolean() }).passthrough()).parse(r).filter(c => c.isFinal).map(c => c.slug)));
@@ -1394,15 +1422,16 @@ function taskReader(c: Config, kanvil: Kanvil) {
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t) };
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
   };
-  return { task, done, node, projects, get ids() { return tasks.keys(); } };
+  return { task, relations, done, node, projects, get ids() { return tasks.keys(); } };
 }
 // Every unfinished ticket that must finish before `rootId` may start: its blockers, their blockers, a parent's blockers, and an umbrella's children.
-export async function blockerTree(c: Config, kanvil: Kanvil, rootId: string) {
-  const reader = taskReader(c, kanvil), nodes = new Map<string, PlanTicket>(), seen = new Set<string>();
-  const relations = new Map<string, Promise<z.infer<typeof relationsSchema>>>();
-  const rels = (id: string) => { if (!relations.has(id)) relations.set(id, kanvil.relations(id).then(r => relationsSchema.parse(r))); return relations.get(id)!; };
+// Several roots are walked as one graph: each root joins the result, and a root that blocks another is its blocker like any other.
+export async function blockerTree(c: Config, kanvil: Kanvil, root: string): Promise<{ target: PlanTicket; tickets: PlanTicket[] }>;
+export async function blockerTree(c: Config, kanvil: Kanvil, roots: string[], reader?: ReturnType<typeof taskReader>): Promise<{ tickets: PlanTicket[] }>;
+export async function blockerTree(c: Config, kanvil: Kanvil, roots: string | string[], reader = taskReader(c, kanvil)): Promise<{ target?: PlanTicket; tickets: PlanTicket[] }> {
+  const nodes = new Map<string, PlanTicket>(), seen = new Set<string>();
   const ensure = async (id: string) => { if (!nodes.has(id)) nodes.set(id, await reader.node(await reader.task(id))); return nodes.get(id)!; };
   const require = async (attach: PlanTicket, id: string) => {
     if (await reader.done(await reader.task(id))) return;
@@ -1414,23 +1443,27 @@ export async function blockerTree(c: Config, kanvil: Kanvil, rootId: string) {
     const key = `${id}:${attach.id}`;
     if (seen.has(key)) return;
     seen.add(key);
-    for (const r of await rels(id)) {
+    for (const r of await reader.relations(id)) {
       if (r.relationType === 'blocks' && r.targetTaskId === id) await require(attach, r.sourceTaskId);
       else if (r.relationType === 'subtask' && r.targetTaskId === id) await visit(r.sourceTaskId, attach); // a parent's blockers block its subtasks
       else if (r.relationType === 'subtask' && r.sourceTaskId === id) await require(attach, r.targetTaskId); // an umbrella waits for its children
     }
   };
-  const target = await ensure(rootId);
-  await visit(rootId, target);
-  return { target, tickets: [...nodes.values()].filter(t => t.id !== rootId) };
+  if (Array.isArray(roots)) {
+    for (const id of roots) await visit(id, await ensure(id));
+    return { tickets: [...nodes.values()] };
+  }
+  const target = await ensure(roots);
+  await visit(roots, target);
+  return { target, tickets: [...nodes.values()].filter(t => t.id !== roots) };
 }
 const byPlanPriority = (a: PlanTicket, b: PlanTicket) => compareTicketPriority(a, b) || a.createdAt.localeCompare(b.createdAt) || a.key.localeCompare(b.key);
 // Tickets of a chain that could start now: unfinished, unblocked, not already owned by an open run. The target waits for every other ticket.
 export function chainReady(plan: Pick<Plan, 'target' | 'tickets'>, jobs: Job[]) {
   const owned = new Set(jobs.filter(j => !['complete', 'dismissed'].includes(j.state)).map(j => j.taskId));
-  const all = [...plan.tickets, plan.target], byId = new Map(all.map(t => [t.id, t]));
+  const byId = new Map(planTickets(plan).map(t => [t.id, t]));
   const free = (t: PlanTicket) => !t.done && !owned.has(t.id) && t.blockedBy.every(id => byId.get(id)?.done ?? true);
-  return [...plan.tickets.filter(free), ...(plan.tickets.every(t => t.done) && free(plan.target) ? [plan.target] : [])].toSorted(byPlanPriority);
+  return [...plan.tickets.filter(free), ...(plan.target && plan.tickets.every(t => t.done) && free(plan.target) ? [plan.target] : [])].toSorted(byPlanPriority);
 }
 // A blocked manual ticket: describe its chain, run the first runnable blocker, or start the whole chain.
 async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, queue: Pick<Queue, 'skipped'>, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>): Promise<Decision | undefined> {
@@ -1447,14 +1480,108 @@ async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, in
     const result = await run({ ...options, chain: undefined, ticket: pick.key });
     return { ...result, chain: { target: ticketKey, picked: pick.key } };
   }
-  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), target: tree.target, tickets: tree.tickets, model: options.model ?? 'auto', ...(options.provider ? { provider: options.provider } : {}), overrideLimits: [...skip], state: 'active' };
+  const { plan, dispatches, started } = await beginPlan(c, store, t3, kanvil, instances, threads, options, skip, { target: tree.target, tickets: tree.tickets }, currentConfig, decide);
+  return decision('plan-started', { ticket: ticketKey, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Chain to ${ticketKey} started: ${started} of ${count} ticket${count === 1 ? '' : 's'} running now, the rest as they unblock.` });
+}
+// Durable before its first launch, and saved before the first await so a caller's checks stay atomic with it.
+async function beginPlan(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, contents: Pick<Plan, 'target' | 'epic' | 'tickets'>, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>) {
+  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), ...contents, model: options.model ?? 'auto', ...(options.provider ? { provider: options.provider } : {}), overrideLimits: [...skip], state: 'active' };
   const context = readContext();
   if (context) context.own({ planId: plan.id }, () => store.savePlan(plan));
   else store.savePlan(plan);
   const dispatches = await runPlans(c, store, t3, kanvil, instances, threads, plan.id, undefined, currentConfig, decide);
-  const started = dispatches.filter(d => d.reason === 'dispatched').length;
-  return decision('plan-started', { ticket: ticketKey, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Chain to ${ticketKey} started: ${started} of ${count} ticket${count === 1 ? '' : 's'} running now, the rest as they unblock.` });
+  return { plan, dispatches, started: dispatches.filter(d => d.reason === 'dispatched').length };
 }
+
+// Epics --------------------------------------------------------------------------------------------
+// An Epic's unfinished members and everything they wait for. A cancelled ticket counts as finished, so it cannot stall the group.
+async function epicTree(c: Config, kanvil: Kanvil, epicId: string, cached = false) {
+  const { tickets: members, restrictedCount } = await kanvil.epicTickets(epicId);
+  const reader = taskReader(c, kanvil, { cancelledFinished: true, cached }), memberIds = new Set(members.map(member => member.id));
+  const open = (await readAll(members.map(async member => await reader.done(member) ? [] : [member.id]))).flat();
+  const { tickets } = await blockerTree(c, kanvil, open, reader);
+  return { tickets: tickets.map(ticket => memberIds.has(ticket.id) ? ticket : { ...ticket, outside: true }), restrictedCount, memberIds };
+}
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+// The one answer to whether an Epic may start, for the start path and for status.epics. Overrides never waive it.
+function epicStartBlock(c: Config, epic: Pick<Epic, 'title' | 'archived'>, tickets: PlanTicket[], restrictedCount: number, running: boolean) {
+  if (epic.archived) return { reason: 'epic-archived', message: `Epic ${epic.title} is archived.` };
+  if (running) return { reason: 'epic-already-running', message: `Epic ${epic.title} is already running.` };
+  const open = tickets.filter(ticket => !ticket.done);
+  const excluded = open.filter(ticket => !ticket.runnable).map(ticket => ({ key: ticket.key, project: c.projects.find(project => project.kanvilId === ticket.projectId)?.name ?? ticket.key.match(/^([A-Z0-9]+)-\d+$/)?.[1] ?? ticket.projectId }));
+  if (excluded.length || restrictedCount) return {
+    reason: excluded.length ? 'epic-project-not-included' : 'epic-restricted-tickets', tickets: excluded, restrictedCount,
+    message: [
+      excluded.length ? `Epic ${epic.title} has unfinished tickets in projects the factory does not run: ${excluded.map(ticket => `${ticket.key} (${ticket.project})`).join(', ')}.` : '',
+      restrictedCount ? `Epic ${epic.title} has ${plural(restrictedCount, 'ticket')} in projects the factory cannot read.` : '',
+    ].filter(Boolean).join(' '),
+  };
+  if (!open.length) return { reason: 'epic-no-unfinished', message: `Epic ${epic.title} has no unfinished tickets.` };
+  return null;
+}
+// Reads run before the verdict, and the verdict and the saved plan share a synchronous step, so simultaneous starts make one plan.
+async function startEpic(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>): Promise<Decision> {
+  if (options.model && options.model !== 'auto' && !c.models.some(model => model.id === options.model)) throw new Error('Unknown model; select a configured model');
+  const epic = (await kanvil.epics()).find(epic => epic.id === options.epic);
+  if (!epic) return decision('epic-not-found', { epic: options.epic, message: 'Kanvil has no such Epic in this workspace.' });
+  const { tickets, restrictedCount } = await epicTree(c, kanvil, epic.id);
+  const block = epicStartBlock(c, epic, tickets, restrictedCount, activeEpicPlans(store).some(plan => plan.epic!.id === epic.id));
+  if (block) return decision(block.reason, { epic: epic.id, ...block });
+  if (options.dryRun) return decision('would-dispatch', { kind: 'epic', epic: epic.id, tickets, message: `Epic ${epic.title} would start with ${plural(tickets.length, 'ticket')}.` });
+  const { plan, dispatches, started } = await beginPlan(c, store, t3, kanvil, instances, threads, options, skip, { epic: { id: epic.id, title: epic.title, restrictedCount }, tickets }, currentConfig, decide);
+  return decision('plan-started', { epic: epic.id, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Epic ${epic.title} started: ${started} of ${plural(tickets.length, 'ticket')} running now, the rest as they unblock.` });
+}
+// Members may have joined or left since the last pass. Returns the tickets this read refreshed, or nothing when it failed.
+async function refreshEpicPlan(c: Config, store: Store, kanvil: Kanvil, plan: Plan) {
+  const epic = plan.epic!, withoutError = (ticket: PlanTicket) => ticket.note === epic.error ? { ...ticket, note: undefined } : ticket;
+  try {
+    const { tickets, restrictedCount, memberIds } = await backgroundRead(() => epicTree(c, kanvil, epic.id));
+    const fresh = new Map(tickets.map(ticket => [ticket.id, ticket])), listed = new Set(plan.tickets.map(ticket => ticket.id));
+    const ran = new Set(store.jobSummaries().filter(job => job.state !== 'dismissed' && (job.state !== 'complete' || job.createdAt >= plan.createdAt)).map(job => job.taskId));
+    plan.tickets = [
+      ...plan.tickets.flatMap(ticket => {
+        const next = fresh.get(ticket.id);
+        return next ? [withoutError({ ...next, note: ticket.note })] : memberIds.has(ticket.id) || ran.has(ticket.id) ? [withoutError(ticket)] : [];
+      }),
+      ...tickets.filter(ticket => !listed.has(ticket.id)),
+    ];
+    epic.restrictedCount = restrictedCount; delete epic.error;
+    return new Set(fresh.keys());
+  } catch (error) {
+    if (readContext()?.controller.signal.aborted) throw error;
+    epic.error = safeError(error);
+    log('epic-read-failed', { planId: plan.id, message: epic.error });
+  }
+}
+// Runs with the Up next inventory rather than on every status write. A failed read keeps the last list.
+async function refreshEpics(c: Config, store: Store, kanvil: Kanvil) {
+  try {
+    const rows = await backgroundRead(async () => {
+      const limit = readLimiter(), epics = (await kanvil.epics()).filter(epic => !epic.archived);
+      return readAll(epics.map(epic => limit(async () => {
+        const { tickets, restrictedCount } = await epicTree(c, kanvil, epic.id, true);
+        return { id: epic.id, title: epic.title, restrictedCount, tickets };
+      })));
+    });
+    store.set('epics', JSON.stringify(rows.filter(row => row.tickets.length || row.restrictedCount)));
+    store.set('epicsError', '');
+  } catch (error) {
+    if (readContext()?.controller.signal.aborted) throw error;
+    const message = safeError(error);
+    log('epics-read-failed', { message });
+    store.set('epicsError', JSON.stringify({ at: new Date().toISOString(), message, problems: [{ title: "Couldn't read Kanvil Epics", cause: message, subjects: [], raw: [] }] }));
+  }
+}
+// The stored reading, judged against the current configuration and plans so a start and its status cannot disagree.
+function epicRows(c: Config, store: Store) {
+  const rows = JSON.parse(store.get('epics') || '[]') as { id: string; title: string; restrictedCount: number; tickets: PlanTicket[] }[], active = activeEpicPlans(store);
+  return rows.map(row => {
+    const tickets = row.tickets.map(ticket => ({ ...ticket, runnable: !!c.projects.find(project => project.kanvilId === ticket.projectId)?.enabled }));
+    const plan = active.find(plan => plan.epic!.id === row.id);
+    return { ...row, tickets, planId: plan?.id ?? null, startBlock: epicStartBlock(c, { title: row.title, archived: false }, tickets, row.restrictedCount, !!plan) };
+  });
+}
+
 // Advance every active chain: refresh ticket states, finish chains whose tickets are all done, start what can start within the run limits.
 export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], only?: string, providerDriver?: string, currentConfig?: () => Config, decide = store.decisionRecorder({ workKind: 'chains', providerDriver })): Promise<Decision[]> {
   const results: Decision[] = [];
@@ -1462,17 +1589,19 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     await backgroundCheckpoint();
     const plan = store.plan(original.id)!;
     if (plan.state !== 'active') continue;
-    const all = [...plan.tickets, plan.target];
+    const refreshed = plan.epic ? await refreshEpicPlan(c, store, kanvil, plan) : undefined;
+    const all = planTickets(plan);
     const limit = readLimiter();
-    await readAll(all.map(t => limit(async () => {
+    await readAll(all.filter(t => !refreshed?.has(t.id)).map(t => limit(async () => {
       try {
-        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil), task = await reader.task(t.id); return { status: task.status, done: await reader.done(task) }; });
+        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic }), task = await reader.task(t.id); return { status: task.status, done: await reader.done(task) }; });
         Object.assign(t, result);
       }
       catch (error) { t.note = safeError(error); }
     })));
     if (store.plan(plan.id)?.state !== 'active') continue;
-    if (all.every(t => t.done)) { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); continue; }
+    // An Epic also waits for a good read of its members and for any tickets hidden from the factory.
+    if (all.every(t => t.done) && !plan.epic?.error && !plan.epic?.restrictedCount) { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); continue; }
     const pending: Promise<void>[] = [], planned = new Map<string, number>();
     const jobs = store.jobSummaries();
     for (const t of chainReady(plan, jobs)) {
@@ -1499,6 +1628,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       })));
     }
     await readAll(pending);
+    if (plan.epic?.error) for (const t of plan.tickets) if (!t.done) t.note = plan.epic.error;
     if (store.plan(plan.id)?.state === 'active') store.savePlan(plan);
   }
   return results;
@@ -1658,6 +1788,7 @@ export function writeStatus(c: Config, store: Store) {
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
+    epics: epicRows(c, store), epicsError: JSON.parse(store.get('epicsError') || 'null'),
     sessionTickets: sessionTicketStatus(c, store),
     jobs: store.jobSummaries().filter(j => j.state !== 'dismissed').map(({ ...job }) => ({ ...job, label: jobLabel(job) })),
     // The menu app reads only this file, so it gets the recent journal and the last finished runs here.

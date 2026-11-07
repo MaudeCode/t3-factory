@@ -68,9 +68,11 @@ const dispatchSchema = z
     chain: z.enum(["first", "all"]).optional(),
     ticketKeyRevision: z.string().min(1).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
+    epic: z.string().regex(/^[\w-]{1,64}$/).optional(),
   })
   .strict()
   .refine(input => !input.upstream || (!input.ticket && !input.chain), "An upstream review cannot include ticket options")
+  .refine(input => !input.epic || (!input.ticket && !input.chain && !input.upstream), "An Epic start cannot include ticket, chain or upstream options")
   .refine(input => !input.provider || input.model === "auto", "A provider choice requires automatic model selection");
 const requestId = z.string().uuid();
 // Toggle endpoints and the CLI commands for [off, on].
@@ -492,6 +494,7 @@ export function createFactoryWeb(options: {
             ...(dispatch.provider ? ["--provider", dispatch.provider] : []),
             ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
             ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
+            ...(dispatch.epic ? ["--epic", dispatch.epic] : []),
             ...(dispatch.overrideLimits === true ? ["--override-limits"] : dispatch.overrideLimits && dispatch.overrideLimits.length ? ["--override", dispatch.overrideLimits.join(",")] : []),
             ...(dispatch.chain ? ["--chain", dispatch.chain] : []),
           ];

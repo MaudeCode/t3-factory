@@ -6,6 +6,8 @@
   "manualPrelaunchSeconds": 60,
   "idleMinutes": 30,
   "maxWaitingPRs": null,
+  // Automatic scheduling skips a ticket in an Epic until that Epic starts. A running Epic always keeps its tickets.
+  "holdEpicTicketsUntilStarted": false,
   // Free bytes required on the repository's filesystem before a run starts; 0 disables the check.
   "minFreeSpaceBytes": 1073741824,
   "concurrency": { "claude": 1, "codex": 1 },

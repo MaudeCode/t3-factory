@@ -1455,7 +1455,7 @@ h2 .icon,
   border-radius: var(--radius);
   color: inherit;
 }
-.chain-row .tag {
+.chain-row > .tag {
   min-width: 72px;
   text-align: center;
 }

@@ -32,6 +32,21 @@ Use your own ticket key and configured model ID. With `--model auto`, `--provide
 
 Manual jobs can overlap other runs and can start while automatic dispatch is paused. `--override-limits` skips the scheduler's idle-time, quota-reserve, label-limit and provider-limit thresholds for that run. `--override` skips only the ones you list, comma-separated from `idle`, `reserve`, `labels` and `providers`; for example, `--override idle,reserve` starts now but still waits for a free label slot. The web and native start bars offer the same four choices, all on by default. Without the provider override, manual starts respect provider run limits, including zero. Auto selects from providers with capacity; an explicitly chosen model is refused when its provider has no capacity. The override cannot select a model whose applicable allowance is exhausted, even when the override is enabled. Automatic model selection skips exhausted presets and tries the next eligible model. It does not bypass provider-enforced limits, difficulty ceilings, readiness, dependencies, duplicate ownership, or merge gates. Manual Codex runs already omit the scheduler's idle and reserve checks; they still require valid provider quota information.
 
+### Epics
+
+```sh
+t3-factory dispatch --epic EPIC_ID --model auto --override labels
+t3-factory plan-cancel PLAN_ID
+```
+
+`--epic`, or `epic` on `/api/dispatch`, starts a Kanvil Epic with one model, provider and override choice. It cannot be combined with `--ticket`, `--chain` or `--upstream`. Every ticket that can start does, within the limits you did not override, and the rest start as their blockers finish. A blocker outside the Epic joins the run and is marked as outside. Native readiness, holds, hard allowance, duplicate checks and merge gates still apply to each launch.
+
+A start is refused, and no run is created, when the Epic is archived, already running or has no unfinished tickets, when an unfinished ticket or blocker is in a project missing from the Factory config or disabled, or when the Epic has tickets in projects Factory cannot read. Overrides never waive these. `status.epics` reports the same answer for each open Epic.
+
+A running Epic rereads its members on every pass: tickets added to it join, and removed tickets that have no run leave. A cancelled ticket counts as finished. It ends when every remaining ticket is finished and none are hidden from Factory. Hidden tickets keep it active, and a failed read keeps its last list and shows the error on its tickets. A ticket whose project leaves Factory mid-run does not start and its dependents wait, while other tickets continue, until it is finished elsewhere, the project returns or you cancel. Archiving an Epic does not stop a running one. Cancelling lets running tickets finish.
+
+Automatic starts never take a ticket from a running Epic. Set `holdEpicTicketsUntilStarted` to also keep them off an Epic you have not started yet. Starting one ticket by name always works.
+
 ## Session tickets
 
 The web app's **Session tickets** page lists tickets that your T3 sessions reported creating, whichever project they belong to. The scheduler reads every top-level session's conversation in the background, including older history and sessions that are settled, confirms each reported ticket with the tracker, and keeps the list in its state database, so it survives restarts and needs no skill run or reporting thread. A ticket appears only if the tracker shows it was created during the session that reported it; mentions, quoted text, tables and examples do not count. The list is not the automatic queue: it is every open session-created ticket in a ready column, including ones that have automation disabled or belong to a project the factory does not run. Tickets in progress, in review or done are hidden, and return if they move back to a ready column.

@@ -46,7 +46,9 @@ export function dispatchFixture(t: TestContext) {
   const hooks = {
     shell: async (_final: boolean) => {}, providers: async () => {},
     quota: async (_refresh: boolean) => {}, read: async (_name: string, _id: string, _final: boolean) => {},
+    epics: async () => {},
   };
+  const epics: { id: string; title: string; archived: boolean; members: string[]; restrictedCount: number }[] = [];
   let shellReads = 0, labelReads = 0;
   let final = false;
   t.mock.method(t3, 'shell', async () => { const isFinal = ++shellReads > 1; if (isFinal) final = true; calls.push(`shell:${isFinal}`); await hooks.shell(isFinal); return { threads: [...threads], projects: c.projects.map(p => ({ id: p.t3Id, title: p.name, workspaceRoot: p.repoPath })) }; });
@@ -68,8 +70,16 @@ export function dispatchFixture(t: TestContext) {
     if (name === 'columns') return [{ slug: 'done', isFinal: true }];
     throw new Error(name);
   });
+  if ('epics' in kanvil) {
+    t.mock.method(kanvil as any, 'epics', async () => { await hooks.epics(); return epics.map(({ id, title, archived }) => ({ id, workspaceId: 'workspace', title, archived })); });
+    t.mock.method(kanvil as any, 'epicTickets', async (id: string) => {
+      await hooks.epics();
+      const epic = epics.find(epic => epic.id === id)!;
+      return { tickets: await Promise.all(epic.members.map(member => kanvil.task(member))), restrictedCount: epic.restrictedCount };
+    });
+  }
   t.after(async () => { for (const close of beforeClose) await close(); store.close(); process.env.PATH = oldPath; if (oldConfig === undefined) delete process.env.T3_FACTORY_CONFIG; else process.env.T3_FACTORY_CONFIG = oldConfig; rmSync(dir, { recursive: true, force: true }); });
-  return { c, dir, store, t3, kanvil, calls, hooks, tasks, task, relations, threads, launches, provider, beforeClose,
+  return { c, dir, store, t3, kanvil, calls, hooks, tasks, task, relations, threads, launches, provider, beforeClose, epics,
     run: (model = 'sol', manual = true) => cycle(c, store, manual ? { manual: true, model, ticket: 'FIX-1' } : {}, { t3, kanvil }),
   };
 }

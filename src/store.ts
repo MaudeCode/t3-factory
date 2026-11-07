@@ -53,11 +53,15 @@ export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
   return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : 'Discovery');
 }
 // A chain: the unfinished tickets that must finish before a target ticket, run in priority order as they unblock.
+// An Epic plan has no target: its tickets are the Epic's unfinished members and their blockers, re-read on every pass.
 export interface PlanTicket {
   id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
   difficulty?: Difficulty; automationReady?: boolean; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
+  outside?: boolean; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
 }
-export interface Plan { requestId?: string; id: string; createdAt: string; target: PlanTicket; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
+export interface Plan { requestId?: string; id: string; createdAt: string; target?: PlanTicket; epic?: { id: string; title: string; restrictedCount?: number; error?: string }; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
+// Every ticket of a plan, with any target last.
+export const planTickets = (plan: Pick<Plan, 'target' | 'tickets'>) => plan.target ? [...plan.tickets, plan.target] : plan.tickets;
 export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }
 // A ticket that a T3 session reported creating, with every session and message that reported it.
 export interface SessionSource { threadId: string; messageId: string; projectId: string; title: string; at: string }
@@ -212,9 +216,10 @@ export class Store {
     const before = this.plan(plan.id);
     if (before && before.state !== 'active' && plan.state === 'active') return;
     this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(plan.id, JSON.stringify(plan));
-    const detail = { planId: plan.id, ticketKey: plan.target.key, tickets: plan.tickets.map(t => t.key) };
-    if (!before) this.record('plan.created', `Chain to ${plan.target.key} started with ${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'} ahead of it`, detail);
-    else if (before.state !== plan.state) this.record('plan.state', `Chain to ${plan.target.key} ${plan.state === 'done' ? 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
+    const detail = { planId: plan.id, ticketKey: plan.target?.key, epicId: plan.epic?.id, tickets: plan.tickets.map(t => t.key) };
+    const name = plan.epic ? `Epic ${plan.epic.title}` : `Chain to ${plan.target!.key}`, count = `${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'}`;
+    if (!before) this.record('plan.created', `${name} started with ${count}${plan.epic ? '' : ' ahead of it'}`, detail);
+    else if (before.state !== plan.state) this.record('plan.state', `${name} ${plan.state === 'done' ? 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
   }
   sessionThreads(): SessionThread[] { return this.statement('SELECT data FROM session_threads ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   sessionThread(id: string): SessionThread | undefined { const row = this.statement('SELECT data FROM session_threads WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }

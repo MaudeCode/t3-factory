@@ -213,7 +213,23 @@ async function settingsLayout() {
   await store.actions.revert();
   return { passed: true, views: ['Projects', 'Models'], viewport: [innerWidth, innerHeight] };
 }
-window.capacityTests = { run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance };
+// The scheduling setting through its real Toggle, Save and reload.
+async function epicHold() {
+  await show();
+  const toggle = () => root.querySelector('[aria-label="Hold Epic tickets until the Epic starts"]') ?? [...root.querySelectorAll('label.toggle')].find(el => el.textContent.includes('Hold Epic tickets')).querySelector('input, button');
+  const on = () => toggle().checked ?? toggle().getAttribute('aria-checked') === 'true';
+  assert(toggle() && !on(), 'the hold starts off without a saved value');
+  toggle().click(); await pause();
+  assert(store.config.value.holdEpicTicketsUntilStarted === true && store.dirty.value, 'the toggle edits the config draft');
+  await store.actions.save(); await mount();
+  assert(writes.at(-1).config.holdEpicTicketsUntilStarted === true && on(), 'the setting survives Save and reload');
+  const row = root.querySelector('label.toggle').getBoundingClientRect();
+  assert(row.left >= 0 && row.right <= innerWidth, 'the row fits the viewport');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'Capacity has no horizontal overflow');
+  await show();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.capacityTests = { epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance };
 const labelFixture = new URLSearchParams(location.search).get('labels');
 if (labelFixture === 'run') {
   try { await labelModes(); document.body.dataset.result = 'passed'; }
