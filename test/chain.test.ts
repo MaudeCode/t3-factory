@@ -208,7 +208,7 @@ test('independent final dependency reads fan out with a bound of six', async t =
 
 test('cancelling a chain during suspended final validation cannot launch or restore the plan', async t => {
   const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
-  const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };
+  const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, labels: [], runnable: true, blockedBy: [], done: false };
   f.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: [], state: 'active' });
   let cancelled = false;
   f.hooks.quota = async refresh => { if (refresh && !cancelled) { cancelPlan(f.store, 'chain'); cancelled = true; } };
@@ -349,7 +349,7 @@ test('an Epic with an active plan is refused, a finished ticket in a missing pro
   await refreshInventory(f.c, f.store, f.t3, f.kanvil);
   const open = writeStatus(f.c, f.store).epics[0];
   assert.equal(open.startBlock, null);
-  assert.deepEqual(open.tickets.map(ticket => [ticket.key, ticket.runnable, ticket.readiness?.ready]), [['FIX-1', true, true]]);
+  assert.deepEqual(open.tickets.map(ticket => [ticket.key, ticket.runnable, ticket.readiness?.ready, ticket.labels]), [['FIX-1', true, true, ['sf', 'med']]], 'the page filters Epic rows by these labels');
   assert.equal((await startEpic(f)).reason, 'plan-started');
   const refused = await startEpic(f);
   assert.equal(refused.reason, 'epic-already-running');

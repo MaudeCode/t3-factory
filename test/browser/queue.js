@@ -2,9 +2,10 @@
 import { openSearch, checkPageHead } from "./search.js";
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status, history, setSessionProvider, setSessionOverrides } from "../../web/lib/store.js";
+import { applyState, operations, status, history, setSessionProvider, setSessionOverrides, startRun } from "../../web/lib/store.js";
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
+import { Confirmation } from "../../web/ui/index.js";
 
 const root = document.querySelector("#root");
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -397,36 +398,193 @@ async function queueTransitions() {
   return { passed: true };
 }
 async function phoneHeader() { await showRuns(); return checkPageHead(); }
-// A plan with no target through the real Chains section and the shared start hold.
-const epicTicket = (n, extra = {}) => ({ id: `e${n}`, key: `APP-${n}`, title: `Epic ticket ${n}`, blockedBy: [], done: false, automationReady: true, ...extra });
-const epicPlan = { id: "epic-plan", state: "active", model: "auto", epic: { id: "epic", title: "Launch", restrictedCount: 2 }, tickets: [epicTicket(1, { done: true }), epicTicket(2), epicTicket(3, { blockedBy: ["e2"] }), epicTicket(4, { outside: true, note: "Waiting for a free Codex slot" })] };
-async function showEpic(plan = epicPlan) {
+// The real Runs page on its Epics tab: start, block, run, cancel, search and filter, with synthetic status.
+const epicTicket = (n, extra = {}) => ({ id: `e${n}`, key: `APP-${n}`, title: `Epic ticket ${n}`, projectId: "p", priority: "medium", difficulty: "med", labels: [], blockedBy: [], done: false, runnable: true, automationReady: true, ...extra });
+const notIncluded = "Epic Paused has unfinished tickets in projects the factory does not run: OTHER-5 (Other).";
+const cannotRead = "Epic Hidden has 2 tickets in projects the factory cannot read.";
+const epicRows = () => [
+  { id: "launch", title: "Launch", restrictedCount: 0, planId: null, startBlock: null, tickets: [
+    epicTicket(1, { labels: ["bug"], priority: "high" }),
+    epicTicket(2, { blockedBy: ["e1"] }),
+    epicTicket(3, { outside: true }),
+    epicTicket(4, { automationReady: false, readiness: { ready: false, reasons: [{ code: "automation_disabled", message: "Automation is off for this ticket" }] } }),
+  ] },
+  { id: "paused", title: "Paused", restrictedCount: 0, planId: null, startBlock: { reason: "epic-project-not-included", message: notIncluded, tickets: [{ key: "OTHER-5", project: "Other" }], restrictedCount: 0 }, tickets: [epicTicket(5, { key: "OTHER-5", projectId: "other", runnable: false }), epicTicket(6)] },
+  { id: "hidden", title: "Hidden", restrictedCount: 2, planId: null, startBlock: { reason: "epic-restricted-tickets", message: cannotRead, tickets: [], restrictedCount: 2 }, tickets: [] },
+  { id: "moving", title: "Moving", restrictedCount: 2, planId: "moving-plan", startBlock: { reason: "epic-already-running", message: "Epic Moving is already running." }, tickets: [] },
+];
+const epicPlans = () => [
+  { id: "moving-plan", state: "active", model: "preset-sol", overrideLimits: ["labels"], epic: { id: "moving", title: "Moving", restrictedCount: 2 }, tickets: [epicTicket(7, { done: true }), epicTicket(8), epicTicket(9, { blockedBy: ["e8"] }), epicTicket(10, { outside: true, note: "Waiting for a free Codex slot" })] },
+  { id: "over-plan", state: "done", model: "auto", overrideLimits: true, finishedAt: new Date().toISOString(), epic: { id: "over", title: "Shipped" }, tickets: [epicTicket(11, { done: true })] },
+  { id: "stopped-plan", state: "cancelled", model: "auto", overrideLimits: true, finishedAt: new Date().toISOString(), epic: { id: "stopped", title: "Stopped" }, tickets: [epicTicket(12, { done: true }), epicTicket(13)] },
+  { id: "chain", state: "active", model: "auto", overrideLimits: true, tickets: [epicTicket(14)], target: epicTicket(15, { blockedBy: ["e14"] }) },
+];
+const epicsStatus = (extra = {}) => ({ ...filterState.status, jobs: [], epics: epicRows(), plans: epicPlans(), ...extra });
+// `extra` replaces parts of the status, so a screenshot can show any state.
+async function showEpics(extra) {
+  const oldFetch = window.fetch;
+  window.fetch = (url, init) => url === "/api/history" ? Promise.resolve(Response.json([])) : oldFetch(url, init);
   operations.value = [];
-  applyState({ ...state, status: { ...state.status, plans: [plan] } }, true);
-  render(html`<${Deck.Chains} />`, root);
+  history.value = [];
+  applyState({ ...filterState, status: epicsStatus(extra) }, true);
+  window.history.replaceState(null, "", "?state=epics");
+  render(null, root);
+  render(html`<${Runs} /><${Confirmation} />`, root);
   await pause();
+  window.fetch = oldFetch;
 }
-async function epicSection() {
-  await showEpic();
-  const text = root.textContent;
-  assert(root.querySelector("h2")?.textContent.includes("Epic Launch") || text.includes("Epic Launch"), "the section names the Epic");
-  assert(!text.includes("Chain to") && !text.includes("Last"), "a plan with no target has no chain title or Last row");
-  assert(text.includes("1 of 4 done"), "the count covers only the Epic's tickets");
-  assert(root.querySelectorAll(".chain-row").length === 4, "no blank row is added for a missing target");
-  assert(text.includes("after APP-2"), "a blocked member names what it waits for");
-  assert(text.includes("outside this Epic"), "a blocker outside the Epic is marked");
-  assert(text.includes("2 tickets in projects Factory cannot read"), "hidden tickets are reported");
-  assert([...root.querySelectorAll("button")].some(b => b.textContent.includes("Cancel Epic")), "cancelling names the Epic");
-  assert(Deck.openRun({ id: "e2", key: "APP-2" }) === false, "a target-less plan does not read as a ticket's open run");
-  assert(document.documentElement.scrollWidth <= innerWidth, "the Epic section has no horizontal overflow");
-  await showEpic({ ...epicPlan, epic: { id: "epic", title: "Launch", restrictedCount: 0 } });
-  assert(!root.textContent.includes("cannot read"), "no hidden tickets, no notice");
-  await showEpic({ id: "chain", state: "active", tickets: [epicTicket(5)], target: epicTicket(6, { blockedBy: ["e5"] }) });
-  assert(root.textContent.includes("Chain to APP-6") && root.textContent.includes("Last") && root.textContent.includes("Cancel chain"), "a chain keeps its title, target row and action");
-  await showEpic();
-  return { passed: true, viewport: [innerWidth, innerHeight] };
+const epicSection = (title) => [...root.querySelectorAll(".section")].find(s => s.querySelector("h2")?.firstChild?.textContent === title);
+const epicTitles = () => [...root.querySelectorAll(".section h2")].map(h => h.firstChild.textContent).join();
+const epicKeys = (title) => [...epicSection(title).querySelectorAll(".chain-row .key")].map(e => e.textContent).join();
+const stateTab = (name) => [...root.querySelectorAll('[aria-label="State"] [role="radio"]')].find(b => b.textContent.startsWith(name));
+const runEpic = (title) => epicSection(title).querySelector('button.epic-run');
+const modelPicker = (title) => epicSection(title).querySelector('[role="combobox"]');
+async function pickEpicModel(title, name) {
+  modelPicker(title).click(); await pause();
+  byText('[role="option"]', name, epicSection(title)).click(); await pause();
 }
-window.queueTests = { epicSection, showEpic, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+async function epicSearch(value) {
+  const input = await openSearch();
+  input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); await pause();
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await pause();
+}
+async function epics() {
+  setSessionProvider("auto"); setSessionOverrides(["labels"]);
+  const oldFetch = window.fetch, oldUrl = location.href, dispatches = [], cancels = [];
+  let hold = Promise.resolve();
+  window.fetch = async (url, init) => {
+    if (url === "/api/history") return Response.json([]);
+    if (url === "/api/dispatch") {
+      const input = JSON.parse(init.body), id = init.headers["Idempotency-Key"];
+      dispatches.push(input);
+      await hold;
+      return Response.json({ id, input, state: "done", result: { data: { reason: "epic-project-not-included", message: "Epic Launch changed: OTHER-9 is in a project the factory does not run." } } });
+    }
+    if (url.startsWith?.("/api/plans/")) { cancels.push(url); return Response.json({ ok: true }); }
+    return Response.json({ ...filterState, status: status.value });
+  };
+  const settled = async () => { for (let n = 0; n < 100 && operations.value.some(op => ["queued", "running"].includes(op.state)); n++) await pause(); };
+  try {
+    await showEpics();
+    // The tab, its count, and the controls that stay put.
+    assert(stateTab("Epics"), "Runs has an Epics tab");
+    assert(stateTab("Epics").textContent === "Epics4", `the tab counts open Epics: ${stateTab("Epics").textContent}`);
+    assert(stateTab("Epics").getAttribute("aria-checked") === "true", "the state link opens the tab");
+    assert([...root.querySelectorAll('[aria-label="Start order"] button')].every(b => b.disabled), "order stays visible and disabled");
+    await openFilters();
+    assert(!dialog().querySelector('[aria-label="Provider"]'), "Epics do not filter by provider");
+    await closeFilters();
+    // Rows through the shared renderer.
+    const launch = epicSection("Launch");
+    assert(epicTitles() === "Moving,Launch,Paused,Hidden,Shipped,Stopped", `Epics list open then finished: ${epicTitles()}`);
+    assert(launch.querySelector("h2 small").textContent === "0 of 4 done", "each Epic counts its tickets");
+    assert(launch.querySelectorAll(".chain-row").length === 4, "one row per ticket");
+    assert(launch.textContent.includes("after APP-1"), "a blocked member names what it waits for");
+    assert(launch.textContent.includes("outside this Epic"), "a blocker outside the Epic is marked");
+    assert(launch.textContent.includes("Automation is off for this ticket"), "a member without readiness says why");
+    assert(!launch.textContent.includes("starts when a slot is free"), "an Epic that has not started promises nothing");
+    assert(Deck.openRun({ id: "e2", key: "APP-2" }) === false, "a target-less plan does not read as a ticket's open run");
+    // Start: exact payload, duplicate protection, refusal feedback.
+    assert(modelPicker("Launch").getAttribute("aria-label").endsWith("Auto"), "the model defaults to Auto");
+    assert(runEpic("Launch").getAttribute("aria-label") === "Run Epic Launch" && !runEpic("Launch").textContent.trim() && runEpic("Launch").querySelector(".icon-play"), "Run is an icon-only button named for the Epic");
+    await pickEpicModel("Launch", "Sol");
+    let release; hold = new Promise(resolve => { release = resolve; });
+    const run = runEpic("Launch");
+    run.click(); await pause();
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "preset-sol", overrideLimits: ["labels"] }), `Run submits the choices: ${JSON.stringify(dispatches[0])}`);
+    assert(root.querySelector(".operation")?.textContent.includes("Epic Launch"), "the request row names the Epic");
+    assert(runEpic("Launch").disabled, "a pending start disables Run");
+    run.click(); await pause();
+    assert(startRun({ epic: "launch", model: "auto" }) === null, "a pending start refuses a second submission");
+    release(); hold = Promise.resolve(); await settled();
+    assert(dispatches.length === 1, "one request reached the server");
+    assert(root.querySelector(".operation")?.textContent.includes("OTHER-9"), "a refusal is ordinary request feedback");
+    assert(epicSection("Launch") && !runEpic("Launch").disabled && epicTitles().startsWith("Moving,Launch"), "a refusal does not change the Epic");
+    operations.value = [{ id: "unknown", input: { epic: "launch" }, state: "uncertain" }]; await pause();
+    assert(runEpic("Launch").disabled, "an uncertain start disables Run");
+    assert(startRun({ epic: "launch", model: "auto" }) === null, "an uncertain start cannot be resubmitted");
+    assert(startRun({ epic: "paused", model: "auto" }) !== null, "another Epic stays available"); await settled();
+    operations.value = []; dispatches.length = 0;
+    // A provider means automatic model selection.
+    setSessionProvider("codex"); await pause();
+    assert(modelPicker("Launch").disabled, "the model Select is disabled while a provider is forced");
+    assert(modelPicker("Launch").getAttribute("aria-label").endsWith("Auto"), "a forced provider shows Auto");
+    runEpic("Launch").click(); await pause(); await settled();
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "auto", provider: "codex", overrideLimits: true }), `a provider sends no pinned model: ${JSON.stringify(dispatches[0])}`);
+    operations.value = [];
+    setSessionProvider("auto"); await pause();
+    assert(!modelPicker("Launch").disabled && modelPicker("Launch").getAttribute("aria-label").endsWith("Sol"), "Auto restores the picked model");
+    // A start block is the scheduler's answer, and it lifts on a status update.
+    const paused = () => epicSection("Paused");
+    assert(runEpic("Paused").disabled && runEpic("Paused").getAttribute("aria-label").includes(notIncluded) && runEpic("Paused").title.includes(notIncluded), "a blocked Run states the reason");
+    assert(paused().querySelector(".epic-note")?.textContent === notIncluded, "the line names the missing project");
+    assert(paused().querySelectorAll(".chain-row")[0].textContent.includes("Its project is not included in the factory"), "the affected row says so");
+    assert(!paused().querySelectorAll(".chain-row")[1].textContent.includes("not included"), "other rows do not");
+    assert(epicSection("Hidden").querySelector(".epic-note")?.textContent === cannotRead && runEpic("Hidden").disabled, "unreadable tickets block too, with their number");
+    setSessionOverrides(["idle", "reserve", "labels", "providers"]); await pause();
+    assert(runEpic("Paused").disabled, "overrides do not enable a blocked Run");
+    setSessionProvider("codex"); await pause();
+    assert(runEpic("Paused").disabled, "a forced provider does not enable a blocked Run");
+    setSessionProvider("auto"); setSessionOverrides(["labels"]);
+    status.value = { ...status.value, epics: status.value.epics.map(row => row.id === "paused" ? { ...row, startBlock: null, tickets: [epicTicket(6)] } : row) }; await pause();
+    assert(!runEpic("Paused").disabled && runEpic("Paused").getAttribute("aria-label") === "Run Epic Paused" && !paused().querySelector(".epic-note"), "a cleared block enables Run without a reload");
+    // Running and finished.
+    const moving = epicSection("Moving");
+    assert(!runEpic("Moving"), "a running Epic has no Run");
+    assert(moving.querySelector("h2 small").textContent === "1 of 4 done", "a running Epic counts its plan's tickets");
+    assert(moving.querySelector(".epic-choice")?.textContent === "Sol · Override label limits", `the recorded choices show: ${moving.querySelector(".epic-choice")?.textContent}`);
+    assert(moving.querySelector(".epic-note")?.textContent.includes("2 tickets"), "hidden tickets keep a running Epic open");
+    assert(moving.textContent.includes("Waiting for a free Codex slot"), "scheduler notes reach the row");
+    byText("button", "Cancel Epic", moving).click(); await pause();
+    assert(document.querySelector("dialog[open]")?.textContent.includes("Tickets already running finish on their own."), "cancelling asks through the shared confirmation");
+    byText("button", "Cancel Epic", document.querySelector("dialog[open]")).click(); await pause();
+    assert(cancels.join() === "/api/plans/moving-plan/cancel", `cancelling posts the plan: ${cancels.join()}`);
+    assert(epicSection("Shipped").textContent.includes("Done") && epicSection("Stopped").textContent.includes("Cancelled"), "finished plans keep their final state");
+    assert(epicSection("Stopped").querySelectorAll(".chain-row")[1].textContent.includes("Not run"), "a cancelled plan does not promise its remaining tickets");
+    assert(!epicSection("Hidden").querySelector("h2 small"), "an Epic with no readable tickets has nothing to count");
+    assert([...root.querySelectorAll(".chain-row small")].every(s => s.scrollWidth <= s.clientWidth), "a row's reason is never clipped");
+    // Search and filters.
+    await epicSearch("launch");
+    assert(epicTitles() === "Launch" && epicKeys("Launch") === "APP-1,APP-2,APP-3,APP-4", `an Epic title matches the whole Epic: ${epicTitles()}`);
+    await epicSearch("APP-2");
+    assert(epicTitles() === "Launch" && epicKeys("Launch") === "APP-2", `a ticket key narrows to its row: ${epicTitles()}`);
+    assert(root.querySelector(".page-head h1 small").textContent === "1", "the title counts the Epics a search leaves");
+    await epicSearch("nothing here");
+    assert(!epicTitles() && root.textContent.includes("No Epics match.") && !root.textContent.includes("No open Epics."), "a search with no match says so");
+    await epicSearch("");
+    await openFilters();
+    await pickFilter("Tags", "bug");
+    assert(epicTitles() === "Launch" && epicKeys("Launch") === "APP-1", `Filter narrows rows and hides Epics with none: ${epicTitles()}`);
+    await clearFilters();
+    await pickFilter("Priority", "High");
+    assert(epicTitles() === "Launch" && epicKeys("Launch") === "APP-1" && !epicSection("Hidden"), "an Epic with no rows hides while a filter is on");
+    await clearFilters();
+    await closeFilters();
+    assert(epicTitles() === "Moving,Launch,Paused,Hidden,Shipped,Stopped", "clearing restores every Epic");
+    // Up next keeps chains only.
+    stateTab("Up next").click(); await pause();
+    assert(!root.textContent.includes("Epic Moving") && !root.textContent.includes("Moving"), "a running Epic is gone from Up next's chains");
+    assert(root.textContent.includes("Chain to APP-15") && root.textContent.includes("Last") && byText("button", "Cancel chain"), "a chain keeps its title, target row and action");
+    stateTab("Epics").click(); await pause();
+    // Nothing to show.
+    status.value = { ...status.value, epics: [], plans: [] }; await pause();
+    assert(root.querySelector(".empty")?.textContent === "No open Epics." && stateTab("Epics").textContent === "Epics0", "no Epics reads as empty");
+    status.value = { ...status.value, plans: epicPlans().filter(p => p.id === "over-plan") }; await pause();
+    assert(root.querySelector(".empty")?.textContent === "No open Epics." && epicTitles() === "Shipped", "finished plans stay listed below the empty line");
+    // A long catalog with long names and three-digit counts.
+    const long = "A realistic Epic title with enough detail to wrap on a folded phone display";
+    status.value = { ...status.value, plans: [], epics: Array.from({ length: 149 }, (_, i) => ({ id: `e-${i}`, title: `${long} ${i}`, restrictedCount: 0, planId: null, startBlock: null, tickets: Array.from({ length: i ? 2 : 149 }, (_, n) => epicTicket(1000 + n, { title: long, done: n < 12 })) })) }; await pause();
+    assert(stateTab("Epics").textContent === "Epics149", "three-digit tab count");
+    assert(root.querySelector(".section h2 small").textContent === "12 of 149 done", "three-digit Epic count");
+    const inside = el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; };
+    const coarse = matchMedia("(pointer: coarse)").matches, first = root.querySelector(".section");
+    assert(inside(first.querySelector(".epic-start")) && inside(first.querySelector("h2")), "title and start controls stay inside the viewport");
+    assert(!coarse || (first.querySelector(".epic-run").offsetHeight >= 44 && first.querySelector(".epic-run").offsetWidth >= 44), "Run is a full touch target");
+    assert(document.documentElement.scrollWidth <= innerWidth, "the Epics tab has no horizontal overflow");
+    return { passed: true, viewport: [innerWidth, innerHeight], coarse };
+  } finally { window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]); }
+}
+window.queueTests = { epics, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

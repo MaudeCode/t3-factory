@@ -169,7 +169,7 @@ export function Budget({ label, remaining, reserved, note, reservePath, floorPat
 // Custom dropdown. `options` is a list of [value, name]; `onChange` receives the value.
 // `multiple` makes it a multi-pick: `value` is an array, the menu stays open while picking, and the
 // trigger reads the placeholder (or label) until something is picked, then "A" or "A +2".
-export function Select({ path, value, options, onChange, label, size, multiple, placeholder, class: extra }) {
+export function Select({ path, value, options, onChange, label, size, multiple, placeholder, disabled, class: extra }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const ref = useRef(), menu = useRef(), button = useRef();
@@ -265,6 +265,7 @@ export function Select({ path, value, options, onChange, label, size, multiple, 
       aria-activedescendant=${open && options[active] ? `${id}-${active}` : undefined}
       aria-label=${multiple ? label : `${label}: ${text}`}
       data-on=${multiple && picked.length > 0}
+      disabled=${disabled}
       onClick=${() => open ? setOpen(false) : show()}
       onKeyDown=${onKeyDown}
     >
