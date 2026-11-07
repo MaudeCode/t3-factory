@@ -416,6 +416,23 @@ test('holding unstarted Epics leaves members of an archived Epic to ordinary sch
   assert.deepEqual(titles(f), ['FIX-1'], 'an archived Epic can never start, so holding for it would strand the ticket');
 });
 
+for (const [name, holdBefore, holdAfter, archived, launched] of [
+  ['the setting turns on', false, true, false, false],
+  ['the ticket joins an unstarted Epic', true, true, false, false],
+  ['the ticket joins an archived Epic', true, true, true, true],
+  ['the setting stays off', false, false, false, true],
+] as const) test(`an automatic pass on a prepared queue rechecks the unstarted-Epic hold when ${name}`, async t => {
+  const f = epicFixture(t, 'a');
+  f.epics[0].archived = archived;
+  setConfig(f, () => { f.c.holdEpicTicketsUntilStarted = holdBefore; });
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  assert.equal(JSON.parse(f.store.get('upNext')!).tickets[0].key, 'FIX-1', 'the queue was prepared before the change');
+  f.tasks[0].epicId = 'epic';
+  setConfig(f, () => { f.c.holdEpicTicketsUntilStarted = holdAfter; });
+  await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets', backgroundInventory: true });
+  assert.equal(titles(f).includes('FIX-1'), launched);
+});
+
 for (const joined of [false, true]) test(`whatever the setting, a running Epic keeps a member ${joined ? 'that has not joined its plan yet' : 'from its plan'} out of automatic passes`, async t => {
   const f = epicFixture(t, 'a', 'b');
   const node = { id: 'a', key: 'FIX-1', title: 'Fixture', projectId: 'FIX', status: 'todo', priority: 'high', createdAt: '2026-01-01', difficulty: 'med' as const, runnable: true, blockedBy: [], done: false };

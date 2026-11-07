@@ -716,12 +716,15 @@ function runningEpicHold(store: Store) {
 // An archived Epic can never start, so its members are not held for it. An unreadable catalog holds every member.
 const unstartedEpicHold = (epics: Epic[] | undefined) => (ticket: Pick<Task, 'epicId'>) =>
   ticket.epicId && !epics?.find(epic => epic.id === ticket.epicId)?.archived ? 'Waits for its Epic to start' : '';
+// Why unnamed scheduling leaves a ticket to its Epic. `epics` is the catalog read when the setting is on.
+function epicHold(c: Config, store: Store, epics?: Epic[]) {
+  const running = runningEpicHold(store), unstarted = unstartedEpicHold(epics);
+  return (ticket: Pick<Task, 'id' | 'epicId'>) => running(ticket) || (c.holdEpicTicketsUntilStarted ? unstarted(ticket) : '');
+}
 
 export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, cancelledFinished = false) {
   const projects = c.projects.filter(p => p.enabled);
-  const running = runningEpicHold(store);
-  const unstarted = !ticketKey && c.holdEpicTicketsUntilStarted ? unstartedEpicHold(await kanvil.epics().catch(() => undefined)) : undefined;
-  const epicHold = (task: Task) => ticketKey ? '' : running(task) || (unstarted?.(task) ?? '');
+  const heldForEpic = ticketKey ? () => '' : epicHold(c, store, c.holdEpicTicketsUntilStarted ? await kanvil.epics().catch(() => undefined) : undefined);
   const all = new Map<string, Task>();
   const listedProjects = ticketKey ? projects.filter(p => ticketKey.startsWith(`${p.key}-`)) : projects;
   // Only ready columns can yield work; a named ticket is read from every column so its real status can be reported.
@@ -799,8 +802,8 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
     const key = `${p.key}-${t.number}`;
     const hold = taskHold(t);
     if (hold) return { key, id: t.id, reason: hold };
-    const heldForEpic = epicHold(t);
-    if (heldForEpic) return { key, id: t.id, reason: heldForEpic };
+    const leftToEpic = heldForEpic(t);
+    if (leftToEpic) return { key, id: t.id, reason: leftToEpic };
     let difficulty: Candidate['difficulty'];
     try { difficulty = taskDifficulty(t); }
     catch { return { key, id: t.id, reason: 'Conflicting difficulty labels' }; }
@@ -1281,7 +1284,9 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
             const [task, blockers, children, prs, refs] = await readAll([
               reader.task(queue.selected.id), rules.blockersOf(queue.selected.id), rules.openChildren(queue.selected.id), openPullRequests(project!, store, true), repositoryRead(store, `refs:${project!.repoPath}`, () => git(project!.repoPath, ['for-each-ref', '--format=%(refname)\t%(objectname)', 'refs/heads', 'refs/remotes']), true),
             ]);
-            return { task, labels: task.labels ?? [], blockers, children, prs, refs, projects: reader.projects, tickets: new Set([...watched, ...reader.ids]) };
+            // Prepared rows can predate the setting or the ticket's membership, so an unnamed start judges the fresh ticket.
+            const epics = (!options.ticket || plan?.unnamed) && c.holdEpicTicketsUntilStarted && task.epicId ? await kanvil.epics().catch(() => undefined) : undefined;
+            return { task, labels: task.labels ?? [], blockers, children, prs, refs, epics, projects: reader.projects, tickets: new Set([...watched, ...reader.ids]) };
           })(),
           // Read with the other final snapshots; the verdict below stays inside the synchronous admission checks.
           c.minFreeSpaceBytes ? availableBytes(project!.repoPath).then(bytes => ({ bytes }), (error: unknown) => ({ error })) : Promise.resolve(undefined),
@@ -1312,8 +1317,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const selected = queue.selected, selectionProject = project;
       const refusal = selected && (() => {
         if (!checked || checked.task.projectId !== selectionProject.kanvilId || `${selectionProject.key}-${checked.task.number}` !== selected.key || !selectionProject.readyStatuses.includes(checked.task.status) || taskHold(checked.task) || checked.task.readiness?.ready !== true) return { reason: 'ticket-changed-before-dispatch' };
-        // An Epic can start after this pass read the queue. Its choices win over unnamed selection.
-        const heldForEpic = (!options.ticket || plan?.unnamed) && runningEpicHold(store)(checked.task);
+        // An Epic can also start after this pass read the queue. Its choices win over unnamed selection.
+        const heldForEpic = (!options.ticket || plan?.unnamed) && epicHold(c, store, checked.epics)(checked.task);
         if (heldForEpic) return { reason: 'ticket-changed-before-dispatch', message: heldForEpic };
         const { task, blockers, children } = checked, key = selected.key;
         let difficulty: Candidate['difficulty'];
