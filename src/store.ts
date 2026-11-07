@@ -57,7 +57,7 @@ export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
 export interface PlanTicket {
   id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
   difficulty?: Difficulty; automationReady?: boolean; labels?: string[]; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
-  outside?: boolean; hold?: string; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
+  outside?: boolean; hold?: string; umbrella?: boolean; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
 }
 export interface Plan { requestId?: string; id: string; createdAt: string; target?: PlanTicket; epic?: { id: string; title: string; restrictedCount?: number; error?: string }; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 // Every ticket of a plan, with any target last.
