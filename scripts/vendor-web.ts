@@ -43,6 +43,7 @@ const icons = {
   paintbrush: octicon("paintbrush"),
   sync: octicon("sync"),
   arrowRight: octicon("arrow-right"),
+  chevronRight: octicon("chevron-right"),
   zap: octicon("zap"),
   person: octicon("person"),
   alert: octicon("alert"),
