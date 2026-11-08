@@ -1710,6 +1710,7 @@ h1 .crumb::after {
   background: var(--accent);
 }
 .section h2 small,
+.disclosure > summary small,
 .page-head h1 small {
   font-size: 11px;
   font-weight: 600;
@@ -2676,10 +2677,12 @@ h1 .crumb::after {
 .cleanup-inline-tools { align-items: center; margin-block: var(--space-2) var(--space-3); }
 .cleanup-check { display: flex; flex-direction: column; gap: 4px; padding: var(--space-2) 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; font-size: 12px; }
 .cleanup-check small { color: var(--muted); }
-.cleanup-disclosure.section { margin: 0; padding: 0; border-top: 1px solid var(--line); }
-.cleanup-disclosure > summary { padding: var(--space-3) 0; cursor: pointer; font-size: 12px; color: var(--muted); }
-.cleanup-disclosure[open] > summary { color: var(--ink); }
-.cleanup-disclosure > div { padding-bottom: var(--space-3); }
+.disclosure.section { margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.disclosure > summary { padding: var(--space-3) 0; cursor: pointer; font-size: 12px; color: var(--muted); }
+.disclosure[open] > summary { color: var(--ink); }
+.disclosure > div { padding-bottom: var(--space-3); }
+/* A disclosure keeps its list-item marker, so its touch height comes from padding. */
+@media (pointer: coarse) { .disclosure > summary { padding-block: 14px; } }
 .cleanup-progress { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-bottom: 1px solid var(--line); padding-block: var(--space-2); margin-bottom: var(--space-2); font-size: 12.5px; }
 .cleanup-progress.error { color: var(--attention); }
 @media (max-width: 600px) {
