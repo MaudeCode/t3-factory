@@ -414,8 +414,11 @@ const epicRows = () => [
   { id: "moving", title: "Moving", restrictedCount: 2, planId: "moving-plan", startBlock: { reason: "epic-already-running", message: "Epic Moving is already running." }, tickets: [] },
 ];
 const epicPlans = () => [
-  { id: "moving-plan", state: "active", model: "preset-sol", overrideLimits: ["labels"], epic: { id: "moving", title: "Moving", restrictedCount: 2 }, tickets: [epicTicket(7, { done: true }), epicTicket(8), epicTicket(9, { blockedBy: ["e8"], automationReady: false, readiness: { ready: false, reasons: [{ code: "automation_disabled", message: "Automation is off for this ticket" }] } }), epicTicket(10, { outside: true, note: "Waiting for a free Codex slot" })] },
-  { id: "over-plan", state: "done", model: "auto", overrideLimits: true, finishedAt: new Date().toISOString(), epic: { id: "over", title: "Shipped" }, tickets: [epicTicket(11, { done: true })] },
+  { id: "moving-old", state: "cancelled", model: "auto", overrideLimits: true, createdAt: "2026-01-01T00:00:00Z", finishedAt: new Date().toISOString(), epic: { id: "moving", title: "Moving" }, tickets: [epicTicket(7)] },
+  { id: "over-old", state: "cancelled", model: "auto", overrideLimits: true, createdAt: "2026-01-01T00:00:00Z", finishedAt: new Date().toISOString(), epic: { id: "over", title: "Shipped" }, tickets: [epicTicket(11)] },
+  { id: "launch-old", state: "done", model: "auto", overrideLimits: true, createdAt: "2026-01-01T00:00:00Z", finishedAt: new Date().toISOString(), epic: { id: "launch", title: "Launch" }, tickets: [epicTicket(1, { done: true })] },
+  { id: "moving-plan", state: "active", createdAt: "2026-01-02T00:00:00Z", model: "preset-sol", overrideLimits: ["labels"], epic: { id: "moving", title: "Moving", restrictedCount: 2 }, tickets: [epicTicket(7, { done: true }), epicTicket(8), epicTicket(9, { blockedBy: ["e8"], automationReady: false, readiness: { ready: false, reasons: [{ code: "automation_disabled", message: "Automation is off for this ticket" }] } }), epicTicket(10, { outside: true, note: "Waiting for a free Codex slot" })] },
+  { id: "over-plan", state: "done", createdAt: "2026-01-02T00:00:00Z", model: "auto", overrideLimits: true, finishedAt: new Date().toISOString(), epic: { id: "over", title: "Shipped" }, tickets: [epicTicket(11, { done: true })] },
   { id: "stopped-plan", state: "cancelled", model: "auto", overrideLimits: true, finishedAt: new Date().toISOString(), epic: { id: "stopped", title: "Stopped" }, tickets: [epicTicket(12, { done: true }), epicTicket(13)] },
   { id: "chain", state: "active", model: "auto", overrideLimits: true, tickets: [epicTicket(14)], target: epicTicket(15, { blockedBy: ["e14"] }) },
 ];
@@ -482,6 +485,14 @@ async function epics() {
     await openFilters();
     assert(!dialog().querySelector('[aria-label="Provider"]'), "Epics do not filter by provider");
     await closeFilters();
+    // One row per Epic, latest run first; finished Epics wait in a collapsed group.
+    const finishedGroup = () => root.querySelector("details.epic-finished");
+    assert(epicTitles() === "Moving,Launch,Paused,Hidden,Shipped,Stopped", `older runs of an Epic are not listed: ${epicTitles()}`);
+    assert(finishedGroup() && !finishedGroup().open, "finished Epics start in a collapsed group");
+    assert(finishedGroup().querySelector("summary").textContent === "Finished2", `the group counts finished Epics: ${finishedGroup().querySelector("summary").textContent}`);
+    assert([...finishedGroup().querySelectorAll(".epic")].map(epicTitleOf).join() === "Shipped,Stopped", "only finished Epics are in the group");
+    assert(!matchMedia("(pointer: coarse)").matches || finishedGroup().querySelector("summary").offsetHeight >= 44, "the Finished header is a full touch target");
+    assert(epicSection("Shipped").querySelector(".tag").textContent === "Done", "a cancelled run that was run again shows its later result");
     // Collapsed by default: the summary and anything that needs attention stay, the tickets wait to be opened.
     assert(!root.querySelector(".epic .chain-row"), "every Epic starts collapsed");
     const launch = epicSection("Launch");
@@ -586,6 +597,8 @@ async function epics() {
     await setEpicOpen("Launch", true);
     assert(epicKeys("Launch") === "APP-1,APP-2,APP-3,APP-4", "an Epic title matches the whole Epic");
     await setEpicOpen("Launch", false);
+    await epicSearch("ship");
+    assert(finishedGroup().open && epicTitles() === "Shipped", "a search opens the finished group to show its matches");
     await epicSearch("APP-2");
     assert(epicTitles() === "Launch" && epicKeys("Launch") === "APP-2", `a ticket key narrows to its row: ${epicTitles()}`);
     assert(epicToggle("Launch").getAttribute("aria-expanded") === "true" && epicToggle("Launch").disabled, "a narrowed Epic stays open until the search clears");
@@ -602,6 +615,7 @@ async function epics() {
     await clearFilters();
     await closeFilters();
     assert(epicTitles() === "Moving,Launch,Paused,Hidden,Shipped,Stopped", "clearing restores every Epic");
+    assert(!finishedGroup().open, "clearing closes the finished group again");
     assert(!root.querySelector(".epic .chain-row"), "clearing a search or filter collapses what it opened");
     // Up next keeps chains only.
     stateTab("Up next").click(); await pause();

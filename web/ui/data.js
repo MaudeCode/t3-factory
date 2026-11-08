@@ -66,9 +66,9 @@ export const Meta = ({ project, kind, model, priority, difficulty, automationRea
 export const RowBody = ({ title, children }) => html`<span class="row-body"><span>${title}</span>${children && html`<small>${children}</small>`}</span>`;
 
 // Titled block of a page. `aside` sits on the title line; `hint` explains the block from a question mark beside
-// the title; `count` follows the title.
-export const Section = ({ title, hint, count, aside, children, class: extra, collapsible = false, onToggle }) =>
-  collapsible ? html`<details class=${`section ${extra ?? ""}`} onToggle=${onToggle}><summary>${title}</summary><div>${children}</div></details>` : html`<section class=${`section ${extra ?? ""}`}>
+// the title; `count` follows the title. A `collapsible` block is a closed disclosure unless `open` says otherwise.
+export const Section = ({ title, hint, count, aside, children, class: extra, collapsible = false, open, onToggle }) =>
+  collapsible ? html`<details class=${`section disclosure ${extra ?? ""}`} open=${open} onToggle=${onToggle}><summary>${title}${count != null && html`<small>${count}</small>`}</summary><div>${children}</div></details>` : html`<section class=${`section ${extra ?? ""}`}>
     ${title && html`<header><h2>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h2>${aside}</header>`}
     ${children}
   </section>`;

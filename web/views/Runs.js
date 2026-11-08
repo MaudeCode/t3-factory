@@ -87,10 +87,11 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
 const epicLists = () => {
   const plans = (status.value.plans ?? []).filter((p) => p.epic).map((p) => ({ ...p, title: p.epic.title, restrictedCount: p.epic.restrictedCount }));
   const running = plans.filter((p) => p.state === "active");
-  return {
-    open: [...running, ...(status.value.epics ?? []).filter((row) => !running.some((p) => p.epic.id === row.id))],
-    finished: plans.filter((p) => p.state !== "active"),
-  };
+  const open = [...running, ...(status.value.epics ?? []).filter((row) => !running.some((p) => p.epic.id === row.id))];
+  // One row per Epic: its open row, else its newest finished run. A run cancelled and then run again is not listed.
+  const listed = new Set(open.map((e) => e.epic?.id ?? e.id)), latest = new Map();
+  for (const p of plans) if (p.state !== "active" && !listed.has(p.epic.id) && !(latest.get(p.epic.id)?.createdAt > p.createdAt)) latest.set(p.epic.id, p);
+  return { open, finished: [...latest.values()] };
 };
 // Epics opened on this page. They stay open through live updates, a change of tab and a start, until a reload.
 const openEpics = signal(new Set());
@@ -154,9 +155,11 @@ function Epics({ filters, query }) {
   const { open, finished } = epicLists();
   const shown = matchEpics(open, filters, query);
   const section = (match) => html`<${EpicRow} key=${match.epic.id} ...${match} />`;
+  const done = matchEpics(finished, filters, query);
+  // Finished Epics stay out of the way until a search or filter could be looking for one.
   return html`<${Operations} />
     ${shown.length ? shown.map(section) : html`<${Empty}>${open.length ? "No Epics match." : "No open Epics."}<//>`}
-    ${matchEpics(finished, filters, query).map(section)}`;
+    ${done.length > 0 && html`<${Section} collapsible class="epic-finished" title="Finished" count=${done.length} open=${!!query.trim() || hasRunFilters(filters)}>${done.map(section)}<//>`}`;
 }
 
 export function Runs() {
