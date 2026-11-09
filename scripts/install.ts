@@ -1,4 +1,4 @@
-import { bootout, bootstrap } from './launchd.ts';
+import { bootout, bootstrap, writeControlAgent } from './launchd.ts';
 import { cpSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -28,18 +28,14 @@ const config = process.env.T3_FACTORY_CONFIG ?? join(home, '.config/t3-factory/c
 if (!existsSync(config)) throw new Error('Create the configuration and T3 credential before installing the service');
 mkdirSync(dirname(plist), { recursive: true });
 mkdirSync(join(home, 'Library/Logs'), { recursive: true });
-writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key>${string(label)}
+writeControlAgent(plist, `<key>Label</key>${string(label)}
 <key>ProgramArguments</key><array>${[process.execPath, join(app, 'src/main.ts'), 'run'].map(string).join('')}</array>
 <key>WorkingDirectory</key>${string(app)}
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>
-<key>ProcessType</key><string>Background</string>
 <key>EnvironmentVariables</key><dict><key>PATH</key>${string(path)}<key>T3_FACTORY_CONFIG</key>${string(config)}<key>NODE_NO_WARNINGS</key><string>1</string></dict>
 <key>StandardOutPath</key>${string(join(home, 'Library/Logs/t3-factory.log'))}
 <key>StandardErrorPath</key>${string(join(home, 'Library/Logs/t3-factory-error.log'))}
-</dict></plist>\n`, { mode: 0o600 });
+`);
 const bin = join(home, '.local/bin/t3-factory');
 mkdirSync(dirname(bin), { recursive: true });
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
