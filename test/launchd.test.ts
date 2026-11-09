@@ -1,6 +1,9 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import * as launchd from '../scripts/launchd.ts';
 
@@ -77,4 +80,19 @@ test('bootout fails rather than returning while the old service is still loaded'
   const { result, elapsed } = await withClock(t, () => launchd.bootout('gui/501', 'local.t3-factory'));
   await assert.rejects(result, { message: 'launchd did not unload gui/501/local.t3-factory within 15 seconds' });
   assert.ok(elapsed >= 15_000 && elapsed <= 16_000, `gave up after ${elapsed} ms`);
+});
+
+test('control-agent definitions retain one Interactive resource class without caller overrides', t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-agent-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const service of ['scheduler', 'web']) {
+    const path = join(root, service + '.plist');
+    launchd.writeControlAgent(path, `<key>Label</key><string>fixture.${service}</string>`);
+    const output = readFileSync(path, 'utf8');
+    assert.match(output, /<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+    assert.equal([...output.matchAll(/<key>ProcessType<\/key>/g)].length, 1);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.throws(() => launchd.writeControlAgent(path, '<key>ProcessType</key><string>Background</string>'), /owns ProcessType/);
+    assert.equal(readFileSync(path, 'utf8'), output, 'a rejected duplicate cannot replace the previous definition');
+  }
 });

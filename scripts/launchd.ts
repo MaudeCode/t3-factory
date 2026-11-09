@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { setTimeout } from "node:timers/promises";
 
@@ -42,4 +43,15 @@ export async function bootstrap(domain: string, plist: string) {
       await setTimeout(wait);
     }
   }
+}
+
+// These long-lived control-plane agents serve interactive state and deadline-bound RPCs.
+export function writeControlAgent(plist: string, body: string) {
+  if (/<key>\s*ProcessType\s*<\/key>/.test(body)) throw new Error('The control-agent writer owns ProcessType');
+  writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>ProcessType</key><string>Interactive</string>
+${body}
+</dict></plist>\n`, { mode: 0o600 });
 }
