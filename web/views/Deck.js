@@ -227,15 +227,14 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
   </div>`;
 }
 
-// How tickets started by hand run: a provider that overrides every limit, or Auto with the chosen overrides.
+// Manual starts share independent provider and limit override choices.
 // Ticket lists share the choice.
 export const startOptions = () => {
   const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
-  return { provider, overrideLimits: provider ? true : sessionOverrides.value };
+  return { provider, overrideLimits: sessionOverrides.value };
 };
 export function StartOptions() {
-  const { provider } = startOptions();
-  return html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: override all scheduler limits`])]} /><${Chips} label="Override limits" disabled=${!!provider} value=${provider ? OVERRIDES.map(([key]) => key) : sessionOverrides.value} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
+  return html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: use selected overrides`])]} /><${Chips} label="Override limits" value=${sessionOverrides.value} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
 }
 
 // Newest or oldest first, for ticket and run lists.

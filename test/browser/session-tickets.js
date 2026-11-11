@@ -434,20 +434,33 @@ async function providerChoice() {
     if (innerWidth <= 900) assert(control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44, 'provider icons have touch targets');
   }
   radios()[1].click(); await pause();
-  assert(limits().every(control => control.disabled && control.getAttribute('aria-pressed') === 'true'), 'an explicit provider overrides all limits and disables their controls');
+  assert(limits().every(control => !control.disabled), 'an explicit provider keeps limit overrides editable');
+  assert(limits().filter(control => control.getAttribute('aria-pressed') === 'true').length === 1, 'selecting a provider preserves the selected overrides');
+  for (const control of limits()) {
+    const pressed = control.getAttribute('aria-pressed');
+    control.click(); await pause();
+    assert(control.getAttribute('aria-pressed') !== pressed, 'each override can be toggled with a selected provider');
+    control.click(); await pause();
+  }
+  limits()[0].click(); await pause();
+  assert(JSON.parse(localStorage.getItem('factorySessionOverrides')).join() === 'labels,idle', 'editing overrides with a provider persists the selection');
   button('Run APP-2 now').click(); await pause();
-  assert(calls[0].input.provider === 'codex' && calls[0].input.model === 'auto' && calls[0].input.overrideLimits === true, 'Codex captures its provider choice with all scheduler limits overridden');
+  assert(calls[0].input.provider === 'codex' && calls[0].input.model === 'auto' && calls[0].input.overrideLimits.join() === 'labels,idle', 'Codex captures its provider choice and selected overrides');
   radios()[2].click(); await pause();
+  assert(limits().every(control => !control.disabled) && limits().filter(control => control.getAttribute('aria-pressed') === 'true').length === 2, 'switching providers preserves editable overrides');
+  for (const control of limits().filter(control => control.getAttribute('aria-pressed') === 'true')) { control.click(); await pause(); }
   button('Select tickets').click(); await pause();
   button('Select APP-5').click(); button('Select APP-1').click(); await pause();
   button('Run selected tickets').click(); await pause();
   radios()[0].click(); await pause();
-  assert(limits().every(control => !control.disabled) && limits().filter(control => control.getAttribute('aria-pressed') === 'true').length === 1, 'returning to Auto restores its original overrides');
+  assert(limits().every(control => !control.disabled && control.getAttribute('aria-pressed') === 'false'), 'Auto keeps the empty override selection');
+  limits()[3].click(); await pause();
   release();
   for (let n = 0; n < 100 && operations.value.some(op => op.state !== 'done'); n++) await pause();
-  assert(calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).length === 2 && calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).every(c => c.input.provider === 'claudeAgent' && c.input.overrideLimits === true), 'bulk starts retain Claude after switching back to Auto');
+  assert(calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).length === 2 && calls.filter(c => ['APP-5', 'APP-1'].includes(c.input?.ticket)).every(c => c.input.provider === 'claudeAgent' && Array.isArray(c.input.overrideLimits) && c.input.overrideLimits.length === 0), 'bulk starts retain Claude and no overrides after later edits');
   setSessionProvider('claudeAgent'); await show();
   assert(radios()[2].getAttribute('aria-checked') === 'true', 'provider choices survive remount');
+  assert(limits().every(control => !control.disabled) && limits()[3].getAttribute('aria-pressed') === 'true' && limits().filter(control => control.getAttribute('aria-pressed') === 'true').length === 1, 'override edits survive remount with a selected provider');
   assert(localStorage.getItem('factorySessionProvider') === 'claudeAgent', 'the provider choice is saved');
   setSessionProvider('auto'); setSessionOverrides(['idle', 'reserve', 'labels']); await show();
   return 'provider choice checks passed';

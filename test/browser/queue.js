@@ -300,10 +300,9 @@ async function runsControls() {
   assert(limits().length === 4, "Runs exposes all shared override choices");
   button(1).click(); await pause();
   assert(JSON.stringify(calls[0]) === JSON.stringify({ ticket: "APP-1", model: "auto", overrideLimits: ["labels"] }), "Auto captures selected overrides");
-  providers().querySelector('[aria-label="Codex: override all scheduler limits"]').click(); await pause();
-  assert(limits().every(b => b.disabled), "explicit provider disables override editing");
+  providers().querySelectorAll('button')[1].click(); await pause();
   root.querySelector('[aria-label="Run WEB-2 now"]').click(); await pause();
-  assert(calls[1]?.provider === "codex" && calls[1]?.overrideLimits === true, "provider choice reaches queue dispatch");
+  assert(calls[1]?.provider === "codex" && calls[1]?.overrideLimits.join() === "labels", "provider and selected overrides reach queue dispatch");
   operations.value = [{ id: "pending", input: { ticket: "APP-1" }, state: "uncertain" }]; await pause();
   assert(!button(1), "pending duplicate leaves the queue with header choices");
   assert(queueKeys() === "WEB-2,APP-3", "remaining tickets preserve scheduler order");
@@ -544,7 +543,7 @@ async function epics() {
     assert(modelPicker("Launch").disabled, "the model Select is disabled while a provider is forced");
     assert(modelPicker("Launch").getAttribute("aria-label").endsWith("Auto"), "a forced provider shows Auto");
     runEpic("Launch").click(); await pause(); await settled();
-    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "auto", provider: "codex", overrideLimits: true }), `a provider sends no pinned model: ${JSON.stringify(dispatches[0])}`);
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "auto", provider: "codex", overrideLimits: ["labels"] }), `a provider sends no pinned model and keeps selected overrides: ${JSON.stringify(dispatches[0])}`);
     operations.value = [];
     setSessionProvider("auto"); await pause();
     assert(!modelPicker("Launch").disabled && modelPicker("Launch").getAttribute("aria-label").endsWith("Sol"), "Auto restores the picked model");
