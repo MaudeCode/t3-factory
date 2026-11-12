@@ -379,16 +379,17 @@ test('a project added from the catalogs starts with its path, prefix, and column
   store.applyState(fixture(), true);
   store.sources.value = {
     t3: [{ id: 't3-1', title: 'widgets', workspaceRoot: '/Users/me/git/example/widgets' }],
-    kanvil: { projects: [{ id: 'k1', name: 'Widgets', slug: 'WID', githubRepo: null }], columns: { k1: [{ slug: 'backlog', name: 'Backlog', isFinal: false }, { slug: 'todo', name: 'To do', isFinal: false }, { slug: 'done', name: 'Done', isFinal: true }, { slug: 'cancelled', name: "Won't do", isFinal: true }] }, labels: [] },
+    kanvil: { projects: [{ id: 'k1', workspaceId: 'other', name: 'Widgets', slug: 'WID', githubRepo: null }], columns: { k1: [{ slug: 'backlog', name: 'Backlog', isFinal: false }, { slug: 'todo', name: 'To do', isFinal: false }, { slug: 'done', name: 'Done', isFinal: true }, { slug: 'cancelled', name: "Won't do", isFinal: true }] }, labels: [] },
   };
   store.actions.addProject(store.sources.value.t3[0], store.sources.value.kanvil.projects[0]);
   const added = store.config.value.projects.at(-1);
   assert.deepEqual(
     { ...added, upstreams: undefined },
-    { name: 'widgets', enabled: false, key: 'WID', kanvilId: 'k1', t3Id: 't3-1', repoPath: '/Users/me/git/example/widgets', githubRepo: 'example/widgets', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done', 'cancelled'], priorityLabels: [], upstreams: undefined },
+    { name: 'widgets', enabled: false, key: 'WID', kanvilId: 'k1', kanvilWorkspaceId: 'other', t3Id: 't3-1', repoPath: '/Users/me/git/example/widgets', githubRepo: 'example/widgets', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done', 'cancelled'], priorityLabels: [], upstreams: undefined },
   );
   assert.equal(store.selectedProject.value, 1);
   store.actions.linkKanvil(0, 'k1');
+  assert.equal(store.config.value.projects[0].kanvilWorkspaceId, 'other', 'relinking saves the selected project workspace');
   assert.deepEqual(store.config.value.projects[0].readyStatuses, ['todo'], 'relinking resets the columns to the new project');
   store.actions.addUpstream(0, { name: 'T3', repo: 'pingdotgg/t3code', firstBase: 'v1', prereleases: false });
   store.actions.setUpstream(0, 0, { name: 'T3 Code', repo: 'pingdotgg/t3code', firstBase: 'v1', prereleases: true });

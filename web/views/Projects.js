@@ -8,12 +8,23 @@ const t3Options = (current) => {
   const list = sources.value?.t3 ?? [];
   return [...(current && !list.some((p) => p.id === current) ? [[current, current]] : []), ...list.map((p) => [p.id, p.title])];
 };
-const kanvilOptions = (current) => {
-  const list = sources.value?.kanvil.projects ?? [];
-  return [...(current && !list.some((p) => p.id === current) ? [[current, current]] : []), ...list.map((p) => [p.id, `${p.name} (${p.slug})`])];
-};
 const columnOptions = (kanvilId) => (sources.value?.kanvil.columns[kanvilId] ?? []).map((c) => [c.slug, c.name]);
 const workspaceLabels = () => sources.value?.kanvil.labels ?? [];
+
+// Add and Setup share the same workspace-scoped Select controls.
+function KanvilPicker({ value, workspaceId = config.value.kanvil.workspaceId, onChange, onWorkspaceChange, exclude = new Set() }) {
+  const [workspace, setWorkspace] = useState(workspaceId);
+  useEffect(() => setWorkspace(workspaceId), [workspaceId]);
+  const catalog = sources.value?.kanvil;
+  const workspaces = catalog?.workspaces ?? [];
+  const workspaceOptions = [...(!workspaces.some(w => w.id === workspaceId) ? [[workspaceId, workspaceId]] : []), ...workspaces.map(w => [w.id, w.name])];
+  const projects = (catalog?.projects ?? []).filter(p => (p.workspaceId ?? config.value.kanvil.workspaceId) === workspace && (!exclude.has(p.id) || p.id === value));
+  const selected = workspace === workspaceId ? value : projects.some(p => p.id === value) ? value : '';
+  const options = [...(selected && !projects.some(p => p.id === selected) ? [[selected, selected]] : []), ...projects.map(p => [p.id, `${p.name} (${p.slug})`])];
+  return html`<${Field} label="Kanvil workspace"><${Select} label="Kanvil workspace" value=${workspace} options=${workspaceOptions}
+      onChange=${id => { setWorkspace(id); onWorkspaceChange?.(); }} /><//>
+    <${Field} label="Kanvil project"><${Select} label="Kanvil project" value=${selected} options=${[['', projects.length ? 'Choose' : 'No projects available'], ...options]} onChange=${id => id && onChange(id)} /><//>`;
+}
 
 const OTHER = "\0other";
 // Picks a label the project has not used yet: the workspace catalog, or a typed name the catalog lacks.
@@ -94,7 +105,6 @@ function AddProject({ open, onClose }) {
   const src = sources.value;
   const taken = new Set(config.value.projects.flatMap((p) => [p.t3Id, p.kanvilId]));
   const t3Choices = (src?.t3 ?? []).filter((p) => !taken.has(p.id)).map((p) => [p.id, p.title]);
-  const kanvilChoices = (src?.kanvil.projects ?? []).filter((p) => !taken.has(p.id)).map((p) => [p.id, `${p.name} (${p.slug})`]);
   const t3Project = src?.t3.find((p) => p.id === t3),
     kanvilProject = src?.kanvil.projects.find((p) => p.id === kanvil);
   const add = () => {
@@ -107,7 +117,7 @@ function AddProject({ open, onClose }) {
     actions=${html`<${Button} variant="ghost" onClick=${onClose}>Cancel<//><${Button} variant="primary" disabled=${!t3Project && !kanvilProject} onClick=${add}>Add project<//>`}>
     ${src
       ? html`<${Field} label="T3 project" hint="Sets the repository path T3 works in."><${Select} label="T3 project" value=${t3} options=${[["", "Choose"], ...t3Choices]} onChange=${setT3} /><//>
-        <${Field} label="Kanvil project" hint="Sets the ticket prefix and which columns mean ready and done."><${Select} label="Kanvil project" value=${kanvil} options=${[["", "Choose"], ...kanvilChoices]} onChange=${setKanvil} /><//>
+        <${KanvilPicker} value=${kanvil} onChange=${setKanvil} onWorkspaceChange=${() => setKanvil('')} exclude=${taken} />
         ${(t3Project || kanvilProject) && html`<${Facts} items=${[["Path", t3Project?.workspaceRoot], ["Tickets", kanvilProject && `${kanvilProject.slug}-…`], ["GitHub", kanvilProject?.githubRepo]]} />`}`
       : html`<p class="muted">Loading the T3 and Kanvil catalogs…</p>`}
   <//>`;
@@ -131,7 +141,7 @@ function Setup({ index, project }) {
     <//>
     <${Section} title="Tickets">
       <div class="grid-2">
-        <${Field} label="Kanvil project"><${Select} label="Kanvil project" value=${project.kanvilId} options=${kanvilOptions(project.kanvilId)} onChange=${(v) => actions.linkKanvil(index, v)} /><//>
+        <${KanvilPicker} value=${project.kanvilId} workspaceId=${project.kanvilWorkspaceId ?? config.value.kanvil.workspaceId} onChange=${(v) => actions.linkKanvil(index, v)} />
         <${Field} label="Ticket prefix"><${Input} mono path=${[...p, "key"]} /><//>
       </div>
       <${Field} group label="Ready when in" hint="Tickets in these columns may be picked up."><${Chips} label="Ready statuses" path=${[...p, "readyStatuses"]} options=${columns} custom=${columns.length ? undefined : "Add a status"} /><//>

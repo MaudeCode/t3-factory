@@ -970,7 +970,7 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
     log('decision', result); return result;
   };
   const skip = skips(options);
-  const t3 = clients.t3 ?? new T3(c.t3), kanvil = clients.kanvil ?? new Kanvil(c.kanvil), ownsKanvil = !clients.kanvil;
+  const t3 = clients.t3 ?? new T3(c.t3), kanvil = clients.kanvil ?? new Kanvil(c.kanvil, c.projects), ownsKanvil = !clients.kanvil;
   const publishStreams = streamUpdate(store, clients.workKind === 'upstream' ? 'upstreamStreams' : 'streams', clients.providerDriver ? [clients.providerDriver] : undefined);
   let [shell, providers] = await backgroundRead(() => { return readAll([t3.shell(), t3.providers()]); });
   await backgroundCheckpoint();
@@ -1189,7 +1189,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const live = shell.projects.find(x => x.id === p.t3Id);
     if (!live || live.workspaceRoot !== p.repoPath) throw new Error(`T3 project mapping mismatch for ${p.name}`);
   }
-  const kanvil = plan?.kanvil ?? clients.kanvil ?? new Kanvil(c.kanvil), ownsKanvil = !(plan?.kanvil ?? clients.kanvil);
+  const kanvil = plan?.kanvil ?? clients.kanvil ?? new Kanvil(c.kanvil, c.projects), ownsKanvil = !(plan?.kanvil ?? clients.kanvil);
   if (ownsKanvil) await kanvil.connect();
   let prepared: Awaited<ReturnType<T3['prepareLaunch']>> | undefined, releaseTicket: (() => void) | undefined, clearPreparation: (() => void) | undefined;
   try {
@@ -1534,7 +1534,7 @@ function epicStartBlock(c: Config, epic: Pick<Epic, 'title' | 'archived'>, ticke
 async function startEpic(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>): Promise<Decision> {
   if (options.model && options.model !== 'auto' && !c.models.some(model => model.id === options.model)) throw new Error('Unknown model; select a configured model');
   const epic = (await kanvil.epics()).find(epic => epic.id === options.epic);
-  if (!epic) return decision('epic-not-found', { epic: options.epic, message: 'Kanvil has no such Epic in this workspace.' });
+  if (!epic) return decision('epic-not-found', { epic: options.epic, message: 'Kanvil has no such Epic in the configured workspaces.' });
   const { tickets, restrictedCount } = await epicTree(c, kanvil, epic.id);
   const block = epicStartBlock(c, epic, tickets, restrictedCount, activeEpicPlans(store).some(plan => plan.epic!.id === epic.id));
   if (block) return decision(block.reason, { epic: epic.id, ...block });

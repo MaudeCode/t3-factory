@@ -266,6 +266,7 @@ export const actions = {
         enabled: false,
         key: kanvil?.slug ?? "",
         kanvilId: kanvil?.id ?? "",
+        ...(kanvil?.workspaceId ? { kanvilWorkspaceId: kanvil.workspaceId } : {}),
         t3Id: t3?.id ?? "",
         repoPath: t3?.workspaceRoot ?? "",
         githubRepo: kanvil?.githubRepo ?? repoFromPath(t3?.workspaceRoot),
@@ -287,7 +288,7 @@ export const actions = {
   },
   linkKanvil: (index, id) => {
     const kanvil = sources.value?.kanvil.projects.find((p) => p.id === id);
-    update((c) => Object.assign(c.projects[index], { kanvilId: id, key: kanvil?.slug ?? c.projects[index].key, ...statusesFor(id) }));
+    update((c) => Object.assign(c.projects[index], { kanvilId: id, kanvilWorkspaceId: kanvil?.workspaceId ?? c.projects[index].kanvilWorkspaceId ?? c.kanvil.workspaceId, key: kanvil?.slug ?? c.projects[index].key, ...statusesFor(id) }));
   },
   addUpstream: (project, entry) => update((c) => (c.projects[project].upstreams ??= []).push(entry)),
   setUpstream: (project, index, entry) => update((c) => (c.projects[project].upstreams[index] = entry)),

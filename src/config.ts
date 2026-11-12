@@ -84,7 +84,7 @@ export const configSchema = z.preprocess(input => {
   factorySkill: absolute,
   projects: z.array(z.object({
     name: z.string().min(1), enabled: z.boolean(), key: z.string().regex(/^[A-Z0-9]+$/),
-    kanvilId: z.string().min(1), t3Id: z.string().min(1), repoPath: absolute,
+    kanvilId: z.string().min(1), kanvilWorkspaceId: z.string().min(1).optional(), t3Id: z.string().min(1), repoPath: absolute,
     githubRepo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), baseBranch: z.string().min(1),
     readyStatuses: z.array(z.enum(ticketStatuses).transform((value): string => value)).min(1), doneStatuses: z.array(z.enum(ticketStatuses).transform((value): string => value)).min(1),
     // Priority tiers, highest first. A bare label is a tier of one; labels in one tier share a rank and urgency orders them.

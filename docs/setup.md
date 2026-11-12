@@ -40,6 +40,8 @@ The scheduler talks directly to Kanvil's HTTP API and durable server-sent event 
 
 Set `kanvil.url` to the HTTPS web origin, or a loopback HTTP origin for local development, without `/api` or `/mcp`. Set `kanvil.workspaceId` to the verified workspace ID. For each project, set `kanvilId` to its actual Kanvil project ID and `key` to its current ticket prefix, alongside the T3 project ID, local repository path and GitHub `OWNER/REPOSITORY`. Use native status categories such as `todo` and `done`, including for custom workflow states. The configured base branch must exist on `origin`.
 
+In Projects, choose a Kanvil workspace, then a project in it. Add project and Setup use the same picker and list only workspaces and projects the API credential can read. The selection saves `projects[].kanvilWorkspaceId`; projects without it keep using `kanvil.workspaceId`. Factory reads ticket inventory, session reports and Epics across the configured workspaces, and includes each project's workspace in its worker prompt. Changing a mapping takes effect in the running service after Save.
+
 The server must support `/api/v1/checkpoint`, `/snapshot`, `/events`, `/tickets/resolve`, project workflow states, and native ticket readiness. A reverse proxy must preserve SSE streaming and disable buffering. Ticket changes wake Factory immediately; there is no periodic ticket-inventory or label scan. A lost connection replays from its processed cursor, and an expired cursor starts a new snapshot. Automation waits while the event feed is disconnected. The general maintenance and allowance timers still run.
 
 ### Migrate an existing installation

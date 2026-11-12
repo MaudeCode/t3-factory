@@ -443,7 +443,7 @@ export class FactoryService {
   private ensureKanvil(c: Config): Promise<Kanvil> {
     return readPhase('kanvil.connect', async signal => {
       this.kanvil ??= new ReadContext().run(async () => {
-        const client = new Kanvil(c.kanvil);
+        const client = new Kanvil(c.kanvil, c.projects);
         await client.connect(this.abort.signal);
         void client.subscribe(event => {
           if (this.stopped) return;
@@ -471,7 +471,9 @@ export class FactoryService {
     this.pollSeconds = c.pollSeconds;
     if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
     if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
-    if (JSON.stringify(c.kanvil) !== this.kanvilSettings) { if (this.kanvilSettings) log('kanvil-settings-changed'); this.dropKanvil(); this.kanvilSettings = JSON.stringify(c.kanvil); }
+    const projects = c.projects.filter(p => p.kanvilWorkspaceId && p.kanvilWorkspaceId !== c.kanvil.workspaceId).map(p => [p.kanvilId, p.kanvilWorkspaceId]);
+    const kanvilSettings = JSON.stringify({ ...c.kanvil, ...(projects.length ? { projects } : {}) });
+    if (kanvilSettings !== this.kanvilSettings) { if (this.kanvilSettings) log('kanvil-settings-changed'); this.dropKanvil(); this.store.set('sessionCatalog', 'null'); this.kanvilSettings = kanvilSettings; }
     return c;
   }
 
