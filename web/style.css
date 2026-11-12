@@ -850,6 +850,8 @@ dialog {
     overlay 0.25s allow-discrete;
 }
 dialog[open] {
+  display: flex;
+  flex-direction: column;
   transform: none;
   opacity: 1;
 }
@@ -864,6 +866,7 @@ dialog::backdrop {
 }
 .dialog-head {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-4);
@@ -872,8 +875,13 @@ dialog::backdrop {
   font-size: 15px;
   font-weight: 600;
 }
+.dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+}
 .dialog-actions {
   display: flex;
+  flex-shrink: 0;
   gap: var(--space-2);
   justify-content: flex-end;
   margin-top: var(--space-4);

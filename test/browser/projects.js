@@ -41,7 +41,7 @@ const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, b
 // Opens a label picker and chooses an option by its text.
 async function pick(label, text, scope = root) {
   const button = scope.querySelector(`[role="combobox"][aria-label^="${label}:"]`);
-  assert(button, `${label} picker is present`); button.click(); await pause();
+  assert(button, `${label} picker is present`); button.scrollIntoView({ block: 'nearest' }); button.click(); await pause();
   const option = [...document.querySelectorAll('[role="option"]')].find(el => el.textContent.trim() === text);
   assert(option, `${label} offers ${text}`); option.click(); await pause();
 }
@@ -105,6 +105,12 @@ async function workspaces() {
   await show('Setup');
   root.querySelector('[aria-label="Add project"]').click(); await pause();
   const dialog = root.querySelector('dialog[open]');
+  const bounds = dialog.getBoundingClientRect(), footer = dialog.querySelector('.dialog-actions').getBoundingClientRect();
+  assert(footer.top >= bounds.top && footer.bottom <= bounds.bottom && footer.bottom <= innerHeight, 'Add project actions remain fully visible at the short viewport');
+  const dialogProject = dialog.querySelector('[role="combobox"][aria-label^="Kanvil project:"]');
+  dialogProject.scrollIntoView({ block: 'nearest' }); await pause();
+  const projectBounds = dialogProject.getBoundingClientRect(), visibleFooter = dialog.querySelector('.dialog-actions').getBoundingClientRect();
+  assert(projectBounds.top >= bounds.top && projectBounds.bottom <= visibleFooter.top && visibleFooter.bottom <= bounds.bottom, 'scrolling reveals the project control without hiding the dialog actions');
   await pick('T3 project', 'Second app', dialog);
   await pick('Kanvil workspace', 'Other workspace', dialog);
   await pick('Kanvil project', 'Second app (SEC)', dialog);
