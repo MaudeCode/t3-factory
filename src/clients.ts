@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { z } from 'zod';
 import { threadSchema, ticketStatuses, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
-import type { Config } from './config.ts';
+import type { Config, Project } from './config.ts';
 import { callT3Rpc, subscribeT3Shell, T3Rpc, type RpcAction } from './rpc.ts';
 import { ReadContext, readContext, waitFor, readAll, readPhase, backgroundRead } from './read-context.ts';
 
@@ -484,7 +484,14 @@ export class Kanvil {
   private readonly refreshes = new Map<string, Promise<void>>();
   private readonly dependents = new Map<string, Set<string>>();
   private connectionEpoch = 0;
-  constructor(config: Config['kanvil']) { this.config = config; }
+  private readonly mappings: Pick<Project, 'kanvilId' | 'kanvilWorkspaceId'>[];
+  private readonly projectWorkspaces = new Map<string, string>();
+  constructor(config: Config['kanvil'], mappings: Pick<Project, 'kanvilId' | 'kanvilWorkspaceId'>[] = []) { this.config = config; this.mappings = mappings; }
+  workspaceId(projectId: string) {
+    const mapped = this.mappings.find(p => p.kanvilId === projectId);
+    return mapped ? mapped.kanvilWorkspaceId ?? this.config.workspaceId : this.projectWorkspaces.get(projectId) ?? this.config.workspaceId;
+  }
+  private workspaceIds() { return [...new Set([this.config.workspaceId, ...this.mappings.map(p => this.workspaceId(p.kanvilId))])]; }
   async connect(signal?: AbortSignal) { signal?.throwIfAborted(); this.headers(); }
   private headers() {
     const token = process.env.KANVIL_API_KEY?.trim();
@@ -536,18 +543,23 @@ export class Kanvil {
     if (response.status === 404 && code === 'not_found') throw new KanvilTaskNotFound('Kanvil ticket not found or inaccessible');
     throw new KanvilError(response.status, code);
   }
-  async projects() {
-    const projects = z.array(projectSchema).parse(await this.request(`/projects?workspaceId=${encodeURIComponent(this.config.workspaceId)}`));
-    if (projects.some(p => p.workspaceId !== this.config.workspaceId)) throw new Error('Kanvil project workspace mismatch');
-    return projects.filter(p => !p.archivedAt).map(p => ({ ...p, slug: p.key }));
+  async workspaces() { return z.array(z.object({ id: z.string(), name: z.string() })).parse(await this.request('/workspaces')); }
+  // The picker sees all accessible projects; runtime inventories stay within the configured workspaces.
+  async projects(all = false) {
+    const groups = await readAll((all ? [undefined] : this.workspaceIds()).map(async workspaceId => {
+      const projects = z.array(projectSchema).parse(await this.request(workspaceId ? `/projects?workspaceId=${encodeURIComponent(workspaceId)}` : '/projects'));
+      if (workspaceId && projects.some(p => p.workspaceId !== workspaceId)) throw new Error('Kanvil project workspace mismatch');
+      return projects;
+    }));
+    return groups.flat().filter(p => !p.archivedAt).map(p => { this.projectWorkspaces.set(p.id, p.workspaceId); return { ...p, slug: p.key }; });
   }
   async columns(projectId: string) {
     const states = z.array(z.object({ category: z.enum(ticketStatuses), name: z.string(), position: z.number() })).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/workflow`));
     // Factory selects native categories, including every custom state in the category.
     return [...new Map(states.map(s => [s.category, { slug: s.category, name: s.category.replaceAll('_', ' '), isFinal: ['done', 'cancelled'].includes(s.category), position: s.position }])).values()];
   }
-  async labels() {
-    const rows = await readAll((await this.projects()).map(p => this.request(`/projects/${encodeURIComponent(p.id)}/labels/catalog`)));
+  async labels(projects?: { id: string }[]) {
+    const rows = await readAll((projects ?? await this.projects()).map(p => this.request(`/projects/${encodeURIComponent(p.id)}/labels/catalog`)));
     return [...new Set(rows.flatMap(r => z.array(z.object({ name: z.string() })).parse(r).map(l => l.name)))].sort();
   }
   private async allPages<T>(path: string, row: z.ZodType<T>) {
@@ -562,12 +574,19 @@ export class Kanvil {
   }
   // Archived Epics are included so a start can refuse one by name. A Kanvil without Epics has none.
   async epics(): Promise<Epic[]> {
-    try { return (await this.allPages(`/workspaces/${encodeURIComponent(this.config.workspaceId)}/epics?archived=include`, epicSchema)).items; }
-    catch (error) { if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404) return []; throw error; }
+    return (await readAll(this.workspaceIds().map(async workspaceId => {
+      try {
+        const { items } = await this.allPages(`/workspaces/${encodeURIComponent(workspaceId)}/epics?archived=include`, epicSchema);
+        if (items.some(epic => epic.workspaceId !== workspaceId)) throw new Error('Kanvil Epic workspace mismatch');
+        return items;
+      } catch (error) { if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404) return []; throw error; }
+    }))).flat();
   }
   // The tickets the caller can read and a count of the rest. A missing Epic stays an error: a running plan must not read it as empty.
   async epicTickets(epicId: string) {
-    const { items, restrictedCount } = await this.allPages(`/workspaces/${encodeURIComponent(this.config.workspaceId)}/epics/${encodeURIComponent(epicId)}/tickets`, nativeTicket);
+    const workspaceId = this.workspaceIds().length === 1 ? this.config.workspaceId : (await this.epics()).find(epic => epic.id === epicId)?.workspaceId;
+    if (!workspaceId) throw new KanvilTaskNotFound('Kanvil Epic not found or inaccessible');
+    const { items, restrictedCount } = await this.allPages(`/workspaces/${encodeURIComponent(workspaceId)}/epics/${encodeURIComponent(epicId)}/tickets`, nativeTicket);
     if (restrictedCount === undefined) throw new Error('Kanvil Epic read omitted its restricted count');
     return { tickets: items.map(normalized), restrictedCount };
   }
@@ -588,7 +607,7 @@ export class Kanvil {
     if (!this.ownedProjects.has(projectId)) {
       const pending = new ReadContext().run(async () => {
         const project = projectSchema.parse(await this.request(`/projects/${encodeURIComponent(projectId)}`));
-        if (project.id !== projectId || project.workspaceId !== this.config.workspaceId) throw new Error('Kanvil project workspace mismatch');
+        if (project.id !== projectId || project.workspaceId !== this.workspaceId(projectId)) throw new Error('Kanvil project workspace mismatch');
       });
       this.ownedProjects.set(projectId, pending);
       void pending.catch(() => { if (this.ownedProjects.get(projectId) === pending) this.ownedProjects.delete(projectId); });
@@ -631,7 +650,7 @@ export class Kanvil {
     const read = async () => {
       const revision = this.generations();
       const snapshot = snapshotSchema.parse(await this.request(`/snapshot?projectId=${encodeURIComponent(projectId)}`));
-      if (snapshot.project.id !== projectId || snapshot.project.workspaceId !== this.config.workspaceId || snapshot.tickets.some(t => t.projectId !== projectId)) throw new Error('Kanvil snapshot ownership mismatch');
+      if (snapshot.project.id !== projectId || snapshot.project.workspaceId !== this.workspaceId(projectId) || snapshot.tickets.some(t => t.projectId !== projectId)) throw new Error('Kanvil snapshot ownership mismatch');
       if (!this.unchanged(revision, [projectId])) throw new Error('Kanvil snapshot changed during read');
       for (const ticket of snapshot.tickets) this.tasksById.set(ticket.id, normalized(ticket));
       return snapshot;

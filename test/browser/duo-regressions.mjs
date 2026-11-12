@@ -60,8 +60,11 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
     for (const width of [360, 382, 385, 594, 669, 951]) cases.push(["Epics tab", "queue", "queueTests", width, async page => {
       assert((await page.evaluate(() => queueTests.epics())).coarse, "Epics check ran with touch input");
     }]);
-    for (const [test, fixture, api, width, run] of cases) {
-      const context = await browser.newContext({ viewport: { width, height: 800 }, hasTouch: true });
+    for (const [width, height] of [[382, 580], [594, 368], [385, 571], [669, 867], [951, 585]]) cases.push([
+      "workspace project selection", "projects", "projectsTests", width, page => page.evaluate(() => projectsTests.workspaces()), height,
+    ]);
+    for (const [test, fixture, api, width, run, height = 800] of cases) {
+      const context = await browser.newContext({ viewport: { width, height }, hasTouch: true });
       const page = await context.newPage();
       try {
         await page.goto(`${origin}/test/browser/${fixture}.html`);

@@ -88,6 +88,39 @@ test('malformed payloads and project or workspace mismatches fail closed', async
   }
 });
 
+test('configured workspaces supply projects, ticket reads and Epics without accepting a moved project', async t => {
+  let moved = false;
+  const project = { id: 'second', workspaceId: 'other', name: 'Second', key: 'SEC' };
+  const sibling = { ...project, id: 'sibling', name: 'Unmapped sibling', key: 'SIB' };
+  const f = fixture(t, url => {
+    if (url.pathname === '/api/v1/workspaces') return json([{ id: 'workspace', name: 'First' }, { id: 'other', name: 'Other' }]);
+    if (url.pathname === '/api/v1/projects') return json(!url.searchParams.has('workspaceId') ? [project, sibling, { ...project, id: 'extra', workspaceId: 'unconfigured' }] : url.searchParams.get('workspaceId') === 'workspace' ? [] : [project, sibling]);
+    if (url.pathname === '/api/v1/projects/second') return json({ ...project, workspaceId: moved ? 'unexpected' : 'other' });
+    if (url.pathname === '/api/v1/tickets/resolve') return json({ ticket: ticket({ projectId: 'second' }) });
+    if (url.pathname === '/api/v1/projects/second/tickets/ticket') return json({ ticket: ticket({ projectId: 'second' }), readiness: { ready: true, reasons: [] } });
+    if (url.pathname === '/api/v1/snapshot') {
+      const selected = url.searchParams.get('projectId') === 'sibling' ? sibling : project;
+      return json({ project: { ...selected, workspaceId: moved ? 'unexpected' : 'other' }, tickets: [ticket({ projectId: selected.id })], cursor: '5' });
+    }
+    if (url.pathname.endsWith('/epics')) { const workspaceId = url.pathname.split('/')[4]; return json({ items: [{ id: workspaceId, workspaceId, title: workspaceId, archived: false }], total: 1 }); }
+    if (url.pathname === '/api/v1/workspaces/other/epics/other/tickets') return json({ items: [ticket({ projectId: 'second' })], total: 1, restrictedCount: 0 });
+    throw new Error(url.pathname);
+  });
+  const client = new Kanvil(f.client.config, [{ kanvilId: 'second', kanvilWorkspaceId: 'other' }]);
+  t.after(() => client.close());
+  assert.deepEqual((await client.workspaces()).map(w => w.id), ['workspace', 'other']);
+  assert.deepEqual((await client.projects()).map(p => p.id), ['second', 'sibling']);
+  await assert.doesNotReject(client.tasks('sibling', undefined, true), 'historical import scans can read an unmapped sibling in a discovered workspace');
+  assert.deepEqual((await client.projects(true)).map(p => p.id), ['second', 'sibling', 'extra'], 'the picker can discover a workspace before a project there is configured');
+  assert.equal((await listTasks(client, 'second'))[0].projectId, 'second');
+  assert.equal((await client.findTask('APP-1', 'second')).projectId, 'second');
+  assert.deepEqual((await client.epics()).map(e => e.workspaceId), ['workspace', 'other']);
+  assert.equal((await client.epicTickets('other')).tickets[0].projectId, 'second');
+  moved = true;
+  await assert.rejects(listTasks(client, 'second'), /ownership mismatch/);
+  await assert.rejects(client.tasks('sibling', undefined, true), /ownership mismatch/, 'discovered projects still reject an unexpected workspace move');
+});
+
 test('ready inventory obtains native readiness in one bulk eligibility page', async t => {
   const rows = [ticket(), ticket({ id: 'second', key: 'APP-2', number: 2 })];
   const f = fixture(t, url => {

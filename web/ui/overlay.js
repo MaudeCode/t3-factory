@@ -64,7 +64,7 @@ export function Dialog({ open, onClose, title, children, actions, descriptionId 
         <h2>${title}</h2>
         ${!actions && html`<${Button} variant="ghost" size="sm" onClick=${() => ref.current.close()}>Done<//>`}
       </div>
-      ${children}
+      <div class="dialog-body">${children}</div>
       ${actions && html`<div class="dialog-actions">${actions}</div>`}`}
   </dialog>`;
 }

@@ -19,7 +19,10 @@ let saved = structuredClone(initial), writes = [];
 const state = () => ({ config: saved, status: { jobs: [], journal: [], upNext } });
 window.fetch = async (url, init) => {
   if (url === '/api/config' && init?.method === 'POST') { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
-  if (url === '/api/sources') return Response.json({ t3: [{ id: 'app-project', title: 'Example app', workspaceRoot: '/example/app' }, { id: 'lib-project', title: 'Library', workspaceRoot: '/example/lib' }], kanvil: { projects: [], columns: {}, labels: ['agent-compat', 'app', 'perf', 'sec', 'software-factory-ready', 'user-report', 'web'] } });
+  if (url === '/api/sources') return Response.json({ t3: [{ id: 'app-project', title: 'Example app', workspaceRoot: '/example/app' }, { id: 'lib-project', title: 'Library', workspaceRoot: '/example/lib' }, { id: 'second-t3', title: 'Second app', workspaceRoot: '/example/second' }], kanvil: {
+    workspaces: [{ id: 'workspace', name: 'First workspace' }, { id: 'other', name: 'Other workspace' }, { id: 'empty', name: 'Empty workspace' }],
+    projects: [{ id: 'app-project', workspaceId: 'workspace', name: 'Example app', slug: 'APP' }, { id: 'lib-project', workspaceId: 'workspace', name: 'Library', slug: 'LIB' }, { id: 'second-project', workspaceId: 'other', name: 'Second app', slug: 'SEC' }],
+    columns: { 'second-project': [{ slug: 'todo', name: 'To do', isFinal: false }, { slug: 'done', name: 'Done', isFinal: true }] }, labels: ['agent-compat', 'app', 'perf', 'sec', 'software-factory-ready', 'user-report', 'web'] } });
   return Response.json(state());
 };
 const root = document.querySelector('#root');
@@ -36,9 +39,9 @@ const ranks = () => [...root.querySelectorAll('.ladder .sortable .tier')];
 const labelsOf = (rank) => [...rank.querySelectorAll('.tier-labels [aria-pressed]')].map(b => b.textContent.trim());
 const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
 // Opens a label picker and chooses an option by its text.
-async function pick(label, text) {
-  const button = root.querySelector(`[role="combobox"][aria-label^="${label}:"]`);
-  assert(button, `${label} picker is present`); button.click(); await pause();
+async function pick(label, text, scope = root) {
+  const button = scope.querySelector(`[role="combobox"][aria-label^="${label}:"]`);
+  assert(button, `${label} picker is present`); button.scrollIntoView({ block: 'nearest' }); button.click(); await pause();
   const option = [...document.querySelectorAll('[role="option"]')].find(el => el.textContent.trim() === text);
   assert(option, `${label} offers ${text}`); option.click(); await pause();
 }
@@ -87,6 +90,48 @@ async function run() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'Projects has no horizontal overflow');
   return { passed: true, viewport: [innerWidth, innerHeight], writes: writes.length };
 }
-window.projectsTests = { run, show };
+async function workspaces() {
+  await show('Setup');
+  assert(root.querySelector('[aria-label="Kanvil workspace: First workspace"]'), 'legacy mappings use the configured default workspace');
+  await pick('Kanvil workspace', 'Other workspace');
+  const projectPicker = root.querySelector('[role="combobox"][aria-label^="Kanvil project:"]');
+  projectPicker.click(); await pause();
+  const choices = [...root.querySelectorAll('.select [role="option"]')].map(el => el.textContent.trim());
+  assert(choices.includes('Second app (SEC)') && !choices.includes('Example app (APP)') && !choices.includes('Library (LIB)'), 'project choices belong to the selected workspace');
+  key(projectPicker, 'Escape'); await pause();
+  await pick('Kanvil project', 'Second app (SEC)');
+  await store.actions.save(); await mount();
+  assert(store.config.value.projects[0].kanvilWorkspaceId === 'other' && root.querySelector('[aria-label="Kanvil workspace: Other workspace"]') && root.querySelector('[aria-label="Kanvil project: Second app (SEC)"]'), 'relinked project and workspace survive Save/reload');
+  await show('Setup');
+  root.querySelector('[aria-label="Add project"]').click(); await pause();
+  const dialog = root.querySelector('dialog[open]');
+  const bounds = dialog.getBoundingClientRect(), footer = dialog.querySelector('.dialog-actions').getBoundingClientRect();
+  assert(footer.top >= bounds.top && footer.bottom <= bounds.bottom && footer.bottom <= innerHeight, 'Add project actions remain fully visible at the short viewport');
+  const dialogProject = dialog.querySelector('[role="combobox"][aria-label^="Kanvil project:"]');
+  dialogProject.scrollIntoView({ block: 'nearest' }); await pause();
+  const projectBounds = dialogProject.getBoundingClientRect(), visibleFooter = dialog.querySelector('.dialog-actions').getBoundingClientRect();
+  assert(projectBounds.top >= bounds.top && projectBounds.bottom <= visibleFooter.top && visibleFooter.bottom <= bounds.bottom, 'scrolling reveals the project control without hiding the dialog actions');
+  await pick('T3 project', 'Second app', dialog);
+  await pick('Kanvil workspace', 'Other workspace', dialog);
+  await pick('Kanvil project', 'Second app (SEC)', dialog);
+  await pick('Kanvil workspace', 'Empty workspace', dialog);
+  assert(dialog.querySelector('[aria-label="Kanvil project: No projects available"]'), 'switching to an empty workspace clears the previous project selection');
+  await pick('Kanvil workspace', 'Other workspace', dialog);
+  await pick('Kanvil project', 'Second app (SEC)', dialog);
+  [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Add project').click(); await pause();
+  const added = store.config.value.projects.at(-1);
+  assert(added.kanvilId === 'second-project' && added.kanvilWorkspaceId === 'other' && added.key === 'SEC' && added.doneStatuses.includes('done'), 'Add project stores workspace, identity, prefix and statuses together');
+  await store.actions.save(); await mount(); store.selectedProject.value = 2; await pause();
+  assert(root.querySelector('[aria-label="Kanvil workspace: Other workspace"]') && root.querySelector('[aria-label="Kanvil project: Second app (SEC)"]'), 'added mapping survives Save/reload');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'workspace and project controls stay within the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.projectsTests = { run, show, workspaces };
 // Opening the page shows the Scheduling view with synthetic data; ?view=Setup or ?view=Releases open the others.
-show(new URLSearchParams(location.search).get('view') ?? 'Scheduling');
+const params = new URLSearchParams(location.search);
+show(params.get('view') ?? 'Scheduling').then(async () => {
+  if (params.has('add')) {
+    root.querySelector('[aria-label="Add project"]').click(); await pause();
+    await pick('Kanvil workspace', 'Other workspace', root.querySelector('dialog[open]'));
+  }
+});

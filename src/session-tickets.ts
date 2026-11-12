@@ -20,7 +20,7 @@ const OUTAGE_GRACE_MS = 15 * 60_000; // a shorter outage clears on its own and i
 export const REPORT_VERSION = 6;
 const MAX_REPORT_KEYS = 200;
 
-interface CatalogProject { id: string; name: string; slug: string; ready: string[]; final: string[] }
+interface CatalogProject { id: string; workspaceId?: string; name: string; slug: string; ready: string[]; final: string[] }
 interface Catalog { at: number; projects: Record<string, CatalogProject> }
 export interface Budget { reads?: number; lookups?: number; refreshes?: number }
 
@@ -160,13 +160,19 @@ async function catalog(c: Config, store: Store, kanvil: Kanvil, reread = false):
   for (const p of projects) {
     await backgroundCheckpoint();
     const configured = c.projects.find(x => x.kanvilId === p.id);
-    if (configured) { entries.push({ id: p.id, name: configured.name, slug: configured.key, ready: configured.readyStatuses, final: configured.doneStatuses }); continue; }
+    if (configured) { entries.push({ id: p.id, workspaceId: configured.kanvilWorkspaceId ?? c.kanvil.workspaceId, name: configured.name, slug: configured.key, ready: configured.readyStatuses, final: configured.doneStatuses }); continue; }
     const columns = z.array(column).parse(await backgroundRead(() => kanvil.columns(p.id))).toSorted((a, b) => a.position - b.position);
-    entries.push({ id: p.id, name: p.name, slug: p.slug, ready: ['todo'], final: columns.filter(x => x.isFinal).map(x => x.slug) });
+    entries.push({ id: p.id, workspaceId: p.workspaceId, name: p.name, slug: p.slug, ready: ['todo'], final: columns.filter(x => x.isFinal).map(x => x.slug) });
   }
   const fresh: Catalog = { at: Date.now(), projects: Object.fromEntries(entries.map(e => [e.id, e])) };
   store.set('sessionCatalog', JSON.stringify(fresh));
   return fresh;
+}
+
+// Confirmation and refresh share the catalog's project/workspace ownership check.
+function ticketProject(c: Config, cat: Catalog, task: Pick<z.infer<typeof trackerTask>, 'projectId' | 'workspaceId'>) {
+  const project = cat.projects[task.projectId];
+  return project && (task.workspaceId === undefined || task.workspaceId === (project.workspaceId ?? c.kanvil.workspaceId)) ? project : undefined;
 }
 
 // Read one page of a session and record what it reports. Progress is written only with its candidates.
@@ -222,7 +228,7 @@ async function lookup(c: Config, t3: T3, kanvil: Kanvil, cat: Catalog, threadId:
     if (matches.length > 1) throw new Error('Ambiguous Kaneo source key');
     task = matches[0] ?? task;
   }
-  if (!task || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId) || !cat.projects[task.projectId]) return null;
+  if (!task || !ticketProject(c, cat, task)) return null;
   const source = importedTicketSource(task);
   return source ? { ...task, createdAt: source.createdAt } : task;
 }
@@ -366,9 +372,9 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
       if (task) {
         cat ??= await catalog(c, store, kanvil);
         if (!cat.projects[task.projectId] && !refreshedCatalog) { refreshedCatalog = true; cat = await catalog(c, store, kanvil, true); }
-        project = cat.projects[task.projectId];
-        // Archived/deleted projects and tickets outside this workspace are no longer list members.
-        if (!project || (task.workspaceId !== undefined && task.workspaceId !== c.kanvil.workspaceId)) task = null;
+        project = ticketProject(c, cat, task);
+        // Archived/deleted projects and tickets outside their catalog workspace are no longer list members.
+        if (!project) task = null;
       }
       if (!task) {
         row.missing = true; delete row.refreshError;

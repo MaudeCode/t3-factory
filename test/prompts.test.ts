@@ -45,6 +45,8 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
     const updated = skill.replace('green CI', 'green CI on the exact current head');
     writeFileSync(c.factorySkill, updated);
     assert.ok(promptFor(job, project, c).includes(updated.trim()), 'skill edits apply on the next dispatch without restarting Factory');
+    project.kanvilWorkspaceId = 'other-workspace';
+    assert.match(promptFor(job, project, c), /Kanvil workspace: other-workspace\n/, 'the worker receives its project workspace');
     writeFileSync(c.factorySkill, ' \n');
     assert.throws(() => promptFor(job, project, c), /skill.*empty/i);
     rmSync(c.factorySkill);

@@ -58,6 +58,21 @@ function serviceFixture(t: test.TestContext) {
   return { dir, c, path, thread, tasks, turnItems, status, until };
 }
 
+test('settings reload replaces the Kanvil client when a project workspace changes', async t => {
+  const f = serviceFixture(t), workspaces: string[] = [];
+  t.mock.method(Kanvil.prototype, 'connect', async function(this: Kanvil) { workspaces.push(this.workspaceId('FIX')); });
+  const service = new FactoryService(f.path);
+  try {
+    await service.start();
+    await f.until(() => workspaces.includes('workspace'));
+    f.c.projects[0].kanvilWorkspaceId = 'other';
+    writeFileSync(f.path, JSON.stringify(f.c));
+    service.wake('fixture');
+    await f.until(() => workspaces.includes('other'));
+    assert(workspaces.includes('other'), 'the running service uses the saved project workspace on its next read');
+  } finally { await service.stop(); }
+});
+
 // Regression proof for the ticket's first acceptance criterion: paused automation, no browser, no skill run.
 test('the scheduler collects a session-created ticket into status on its own and keeps it across a restart', { timeout: 20000 }, async t => {
   const f = serviceFixture(t);
@@ -649,6 +664,28 @@ test('missing session ticket references retire and missing saved tickets leave t
   assert.equal(f.store.sessionTicket('task-7')!.missing, true, 'the stored row and its provenance remain recoverable');
   assert.equal(f.store.sessionTicket('task-7')!.refreshedAt, row.refreshedAt);
   assert.equal(f.status().error, null, 'missing tickets do not make collection fail');
+});
+
+test('session collection and refresh use the project catalog workspace rather than the default workspace', async t => {
+  const f = collectorFixture(t);
+  f.c.projects[0].kanvilWorkspaceId = 'other';
+  f.projects[0].workspaceId = 'other';
+  f.tasks.push(task('task-7', 7, 'FIX', { workspaceId: 'other' }));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.collect();
+  assert.deepEqual(f.keys(), ['FIX-7'], 'a reported ticket in another configured workspace is collected');
+  const saved = f.store.sessionTicket('task-7')!;
+  f.tasks[0].title = 'Updated title';
+  f.store.saveSessionTicket({ ...saved, refreshAfter: new Date(0).toISOString() });
+  await f.collect();
+  assert.equal(f.store.sessionTicket('task-7')!.title, 'Updated title', 'refresh retains tickets in the mapped workspace');
+  f.tasks[0].workspaceId = 'unexpected';
+  f.projects[0].workspaceId = 'unexpected';
+  f.store.set('sessionCatalog', 'null');
+  f.store.saveSessionTicket({ ...f.store.sessionTicket('task-7')!, refreshAfter: new Date(0).toISOString() });
+  await f.collect();
+  assert.deepEqual(f.keys(), [], 'refresh still excludes a ticket that disagrees with its catalog workspace');
 });
 
 test('tickets in an archived or removed project leave the list without a workspace-move error and recover on restore', async t => {

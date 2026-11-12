@@ -90,7 +90,7 @@ if (command === 'web') {
     else {
       store = new Store(c.stateDir);
       if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; cleanup refused');
-      const lazy = { task: async (id: string) => { if (!kanvil) { kanvil = new Kanvil(c.kanvil); await kanvil.connect(); } return kanvil.task(id); } } as Kanvil;
+      const lazy = { task: async (id: string) => { if (!kanvil) { kanvil = new Kanvil(c.kanvil, c.projects); await kanvil.connect(); } return kanvil.task(id); } } as Kanvil;
       console.log(JSON.stringify(await manageCleanup(c, store, new T3(c.t3), lazy, input, process.argv[3] ?? 'local CLI operator')));
       if (!['inspect', 'review'].includes(input.type)) writeStatus(c, store);
     }
@@ -138,17 +138,19 @@ if (command === 'web') {
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'sources') {
   // Catalogs the settings pages pick from: T3 projects, Kanvil projects with their columns, and workspace labels.
-  const c = loadConfig(configPath), kanvil = new Kanvil(c.kanvil);
+  const c = loadConfig(configPath), kanvil = new Kanvil(c.kanvil, c.projects);
   try {
     const t3 = z.object({ projects: z.array(z.object({ id: z.string(), title: z.string(), workspaceRoot: z.string() }).passthrough()) }).parse(await new T3(c.t3).request('/api/orchestration/shell')).projects;
     await kanvil.connect();
-    const projects = await kanvil.projects();
-    const labels = await kanvil.labels();
+    const workspaces = await kanvil.workspaces();
+    const projects = await kanvil.projects(true);
+    const labels = await kanvil.labels(projects);
     const columns = await Promise.all(projects.map(async p => [p.id, await kanvil.columns(p.id)] as const));
     console.log(JSON.stringify({
       t3: t3.map(({ id, title, workspaceRoot }) => ({ id, title, workspaceRoot })),
       kanvil: {
-        projects: projects.map(p => ({ id: p.id, name: p.name, slug: p.slug, githubRepo: p.description?.match(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?=[\s.,;)]|$)/)?.[1] ?? null })),
+        workspaces,
+        projects: projects.map(p => ({ id: p.id, workspaceId: p.workspaceId, name: p.name, slug: p.slug, githubRepo: p.description?.match(/github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?(?=[\s.,;)]|$)/)?.[1] ?? null })),
         columns: Object.fromEntries(columns),
         labels: labels,
       },
