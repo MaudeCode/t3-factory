@@ -485,8 +485,12 @@ export class Kanvil {
   private readonly dependents = new Map<string, Set<string>>();
   private connectionEpoch = 0;
   private readonly mappings: Pick<Project, 'kanvilId' | 'kanvilWorkspaceId'>[];
+  private readonly projectWorkspaces = new Map<string, string>();
   constructor(config: Config['kanvil'], mappings: Pick<Project, 'kanvilId' | 'kanvilWorkspaceId'>[] = []) { this.config = config; this.mappings = mappings; }
-  workspaceId(projectId: string) { return this.mappings.find(p => p.kanvilId === projectId)?.kanvilWorkspaceId ?? this.config.workspaceId; }
+  workspaceId(projectId: string) {
+    const mapped = this.mappings.find(p => p.kanvilId === projectId);
+    return mapped ? mapped.kanvilWorkspaceId ?? this.config.workspaceId : this.projectWorkspaces.get(projectId) ?? this.config.workspaceId;
+  }
   private workspaceIds() { return [...new Set([this.config.workspaceId, ...this.mappings.map(p => this.workspaceId(p.kanvilId))])]; }
   async connect(signal?: AbortSignal) { signal?.throwIfAborted(); this.headers(); }
   private headers() {
@@ -547,7 +551,7 @@ export class Kanvil {
       if (workspaceId && projects.some(p => p.workspaceId !== workspaceId)) throw new Error('Kanvil project workspace mismatch');
       return projects;
     }));
-    return groups.flat().filter(p => !p.archivedAt).map(p => ({ ...p, slug: p.key }));
+    return groups.flat().filter(p => !p.archivedAt).map(p => { this.projectWorkspaces.set(p.id, p.workspaceId); return { ...p, slug: p.key }; });
   }
   async columns(projectId: string) {
     const states = z.array(z.object({ category: z.enum(ticketStatuses), name: z.string(), position: z.number() })).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/workflow`));
