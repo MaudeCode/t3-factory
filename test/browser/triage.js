@@ -121,6 +121,10 @@ async function run() {
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(visibleTag(row('PIN-9'))?.textContent === 'closed' && visibleTag(row('PIN-9')).classList.contains('tag-label') && row('PIN-9').textContent.includes('Closed during triage'), 'a report closed during triage shows a neutral closed tag, not an error');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
+  // The ticket a duplicate result names opens from its own link, not the report the row opens.
+  [...row('PIN-3').querySelectorAll('a')].find((a) => a.textContent === 'Open EX-12').click(); await pause(); await pause();
+  assert(new URLSearchParams(location.search).get('ticket') === 'EX-12', `a duplicate's link opens the named ticket, not the report: ${location.search}`);
+  history.back(); await pause(); await pause();
   assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
   assert(row('GONE-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t38', 'a result from an inbox no longer configured keeps its recorded project');
   // Search and order.
