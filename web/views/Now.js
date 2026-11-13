@@ -34,7 +34,7 @@ function Run({ job, now, needs }) {
 }
 function Report({ event }) {
   const row = reportRow(event, `open-${event.data.ticketId}`);
-  return html`<${Row} icon="inbox" iconLabel="Inbox report" tone="attention" id=${row.key} title=${row.title} href="/triage" end=${decide(row).actions} />`;
+  return html`<${Row} icon="inbox" iconLabel="Inbox report" tone="attention" id=${row.key} title=${row.title} href="/sources" end=${decide(row).actions} />`;
 }
 function Problem({ item }) {
   const p = item.problem;

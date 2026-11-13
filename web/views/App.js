@@ -11,15 +11,14 @@ import { Now } from "./Now.js";
 import { TicketPanel } from "./TicketPanel.js";
 import { Runs } from "./Runs.js";
 import { Queue } from "./Queue.js";
+import { Sources } from "./Sources.js";
 import { Cleanup } from "./Cleanup.js";
 import { Activity } from "./Activity.js";
 import { Models } from "./Models.js";
 import { Capacity } from "./Capacity.js";
 import { Projects } from "./Projects.js";
-import { Upstream } from "./Upstream.js";
-import { Triage } from "./Triage.js";
 
-const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": Runs, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream, "/triage": Triage };
+const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": Runs, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/sources": Sources };
 const CONNECTION = { connecting: "Connecting", live: "Live", retrying: "Retrying", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.

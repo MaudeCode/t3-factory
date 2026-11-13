@@ -137,7 +137,8 @@ export function ReadyReports({ lead }) {
 }
 export const readyReportCount = () => promotedTickets(config.value).length;
 
-export function Triage() {
+// The Sources page's Inbox triage view; `lead` is its view switch.
+export function Triage({ lead } = {}) {
   clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
@@ -157,13 +158,15 @@ export function Triage() {
   const shown = (list) => list.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => order === "oldest" ? byNewest(b, a) : byNewest(a, b));
   const history = shown(activity), owed = shown(attention), moving = shown(working).toSorted((a, b) => triagingNow(b) - triagingNow(a));
   if (!c.triage && !streams.length)
-    return html`<${Page} narrow title="Triage">
+    return html`<${Page} narrow title="Sources">
+      ${lead}
       <${Empty}>No inboxes. Add <code>inbox</code> and <code>scopes</code> to a project and a <code>triage</code> section to the config file to turn triage on.<//>
     <//>`;
   const narrowed = narrowedBy(filters, query);
   const waiting = streams.some((row) => row.untriaged), triaging = streams.some((row) => row.running);
-  return html`<${Page} title="Triage" hint=${HINT}
+  return html`<${Page} title="Sources" hint=${HINT}
     actions=${html`<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
+    ${lead}
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on in settings.</p>`}
       ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} owed=${attention.filter((r) => r.event.data.inboxId === row.inboxId).length} />`) : html`<p class="muted">No project has an inbox.</p>`}
