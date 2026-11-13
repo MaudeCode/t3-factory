@@ -68,7 +68,7 @@ export function closeTicket() {
   ticketPanel.value = "";
 }
 
-export function navigate(href, replace = false) {
+export function navigate(href, replace = false, keepScroll = false) {
   href = moved(href);
   const query = href.includes("?") ? href.slice(href.indexOf("?") + 1) : "";
   const next = match(href);
@@ -77,10 +77,18 @@ export function navigate(href, replace = false) {
   route.value = next;
   search.value = location.search;
   ticketPanel.value = panelKey(target);
-  window.scrollTo(0, 0);
+  if (!keepScroll) window.scrollTo(0, 0);
 }
 globalThis.addEventListener?.("popstate", () => { const here = settle(); route.value = match(here); search.value = location.search; ticketPanel.value = panelKey(here); });
 
+// A run chosen from the Runs list. Where the list and the run sit side by side, the list stays where it is scrolled;
+// where the run replaces the list, the page starts at its top like any other navigation.
+export const followRun = (event) => {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+  event.preventDefault();
+  const beside = !!document.querySelector(".runs-split") && getComputedStyle(document.querySelector(".runs-split")).display === "grid";
+  navigate(event.currentTarget.getAttribute("href"), false, beside);
+};
 // Click handler for internal links: same-tab navigation without a reload.
 export const follow = (event) => {
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;

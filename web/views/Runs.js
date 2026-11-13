@@ -1,10 +1,10 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
-import { follow } from "../lib/router.js";
+import { follow, openTicket } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest } from "../lib/format.js";
-import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Link, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
+import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest, STOPS, stopOf, ticketKey } from "../lib/format.js";
+import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, OrderChoice } from "./Deck.js";
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
@@ -57,7 +57,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
     <//>`;
 }
 
-export function Runs() {
+export function Runs({ id } = {}) {
   clock.value;
   useEffect(() => {
     loadHistory().catch((e) => message(e.message, true));
@@ -76,48 +76,61 @@ export function Runs() {
       (state === "all" || (state === "open" ? isOpen(j) : j.state === state)) &&
       matchesRunFilters(j, filters, query) &&
       (!filters.providers?.length || filters.providers.includes(providerOf(j))),
-  ).toSorted((a, b) => order === "oldest" ? byNewest(b, a) : byNewest(a, b));
-  return html`<${Page} class="runs" title="Runs" count=${list.length} actions=${html`<${OrderChoice} label="Start order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers />`}>
+  // Under Open, what waits on the owner comes first.
+  ).toSorted((a, b) => (state === "open" ? (b.state === "waiting") - (a.state === "waiting") : 0) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
+  // With no run named in the address, the first run listed is shown beside the list.
+  const selected = id ?? list[0]?.id;
+  return html`<div class=${`runs-split${id ? " has-run" : ""}`}>
+  <div class="runs-list"><${Page} class="runs" title="Runs" count=${list.length} actions=${html`<${OrderChoice} label="Start order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers />`}>
     <${Segmented}
       label="State"
       value=${state}
       onChange=${setState}
-      options=${[["open", "Open", all.filter(isOpen).length], ["waiting", "Needs you", counts.waiting], ["complete", "Done", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
+      options=${[["open", "Open", all.filter(isOpen).length], ["waiting", "Needs you", counts.waiting], ["complete", "Finished", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
     />
     ${history.value === null && !jobs.value.length
         ? html`<${Empty}>Loading runs.<//>`
         : list.length
-          ? html`<${RunList} list=${list} />`
+          ? html`<${RunList} list=${list} selected=${selected ?? ""} />`
           : html`<${Empty}>No runs match.<//>`}
-  <//>`;
+  <//></div>
+  <div class="runs-detail">${selected ? html`<${RunDetail} id=${selected} />` : html`<${Page} narrow><${Empty}>No run to show.<//><//>`}</div>
+  </div>`;
 }
 
 export function RunDetail({ id }) {
   clock.value;
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
+  // A read answers for the run it was started for; a slower one for another run is dropped.
+  const shown = useRef(id);
+  if (shown.current !== id) { shown.current = id; setDetail(null); setError(""); }
   useEffect(() => {
-    loadRun(id).then(setDetail, (e) => setError(e.message));
+    loadRun(id).then((d) => shown.current === id && (d?.job ? (setError(""), setDetail(d)) : setError("Run not found")), (e) => shown.current === id && setError(e.message));
   }, [id, jobs.value]);
-  if (error) return html`<${Page} narrow title="Run" lead=${error} />`;
-  if (!detail) return html`<${Page} narrow><${Empty}>Loading run.<//><//>`;
+  if (error) return html`<${Page} narrow title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> Run`} lead=${error} />`;
+  if (!detail || detail.job.id !== id) return html`<${Page} narrow><${Empty}>Loading run.<//><//>`;
   const c = config.value,
     job = jobs.value.find((j) => j.id === id) ?? detail.job,
     project = projectOf(c, job),
     now = serverNow(),
     prs = (job.prUrls || []).map(safeLink).filter(Boolean),
     ticket = ticketLink(c, job),
-    report = detail.report;
+    report = detail.report,
+    stop = stopOf(job.state),
+    // A ticket in one of Factory's projects opens in the ticket panel; anything else keeps its tracker link.
+    inFactory = job.kind !== "upstream" && job.kind !== "discovery" && project?.key && ticketKey(job.label)?.startsWith(`${project.key}-`) ? ticketKey(job.label) : "";
   return html`<${Page} class="run-detail" title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
     lead=${`${job.historyOnly ? "Archived run" : job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
-    <div class="links-row">
-      <a href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow}>Cleanup review</a>
-      ${ticket && html`<${Link} href=${ticket}>Ticket in Kanvil<//>`}
-      ${prs.map((href) => html`<${Link} key=${href} href=${href}>${prLabel(href)}<//>`)}
-      ${job.threadId && html`<a href=${threadLink(job)}>Open in T3 Code</a>`}
-      ${project && html`<${Link} href=${projectLink(c, project.kanvilId)}>${project.name}<//>`}
+    <div class="run-actions">
+      ${job.threadId && html`<a class="btn btn-sm btn-primary" href=${threadLink(job)}>Open in T3 Code</a>`}
+      ${prs.map((href) => html`<a key=${href} class="btn btn-sm" href=${href} target="_blank" rel="noopener noreferrer">${prLabel(href)}</a>`)}
+      ${ticket && (inFactory ? html`<${Button} size="sm" onClick=${() => openTicket(inFactory)}>Ticket<//>` : html`<a class="btn btn-sm" href=${ticket} target="_blank" rel="noopener noreferrer">Ticket</a>`)}
+      <a class="btn btn-sm btn-ghost" href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow}>Cleanup review</a>
+      ${project && html`<a class="btn btn-sm btn-ghost" href=${projectLink(c, project.kanvilId)} target="_blank" rel="noopener noreferrer">${project.name}</a>`}
     </div>
+    <ol class="run-track" aria-label="Progress">${STOPS.map((name, i) => html`<li key=${name} class=${i + 1 === stop ? "now" : i + 1 < stop ? "past" : ""} aria-current=${i + 1 === stop ? "step" : undefined}>${name}</li>`)}</ol>
     <div class="run-grid">
     <div>
     ${job.state === "waiting" && html`<p class="callout">${job.thread?.pending ? `T3 ${PENDING_KINDS[job.thread.pending] ?? `is waiting: ${job.thread.pending}`}. ` : ""}${job.reason}</p>`}
