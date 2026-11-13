@@ -667,6 +667,7 @@ test('tracker Markdown becomes elements, with HTML left as text and unsafe link 
   assert.equal(render('```ts\nconst a = "<b>";\n# not a heading\n```\n> quoted\n\n---\n| Key | State |\n| --- | --- |\n| A-1 | *open* |'),
     '<pre><code>const a = "<b>";\n# not a heading</code></pre><blockquote><p>quoted</p></blockquote><hr></hr>'
     + '<div><table><thead><tr><th>Key</th><th>State</th></tr></thead><tbody><tr><td>A-1</td><td><em>open</em></td></tr></tbody></table></div>');
+  assert.equal(render('````md\n```ts\nlet a;\n```\n````\nafter'), '<pre><code>```ts\nlet a;\n```</code></pre><p>after</p>');
   assert.equal(render('See [the PR](https://example.test/pr/1), https://example.test/a. Not [this](javascript:alert(1)) or [that](http://example.test).'),
     '<p>See <a href=https://example.test/pr/1>the PR</a>, <a href=https://example.test/a>https://example.test/a</a>. Not [this](javascript:alert(1)) or [that](http://example.test).</p>');
   assert.equal(render('<img src=x onerror="alert(1)">\n<script>alert(1)</script>'), '<p><img src=x onerror="alert(1)">\n<script>alert(1)</script></p>');

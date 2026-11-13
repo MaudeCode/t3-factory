@@ -4,12 +4,14 @@
 import { h } from "./h.js";
 import { safeLink } from "./format.js";
 
-const FENCE = /^\s*(```|~~~)/, HEADING = /^\s{0,3}(#{1,6})\s+(.+)$/, RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/, QUOTE = /^\s{0,3}>\s?/;
+const FENCE = /^\s*(`{3,}|~{3,})/, HEADING = /^\s{0,3}(#{1,6})\s+(.+)$/, RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/, QUOTE = /^\s{0,3}>\s?/;
 const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/, TASK = /^\[([ xX])\]\s+(.*)$/, INDENTED = /^\s+\S/;
 const ROW = /^\s*\|.*\|\s*$/, DIVIDER = /^\s*\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|\s*$/;
 // A star opens emphasis only at a word's start, so `src/*.ts and web/*.js` stays as written.
 const INLINE = /`([^`\n]+)`|\*\*(\S(?:[^\n]*?\S)?)\*\*|(?<![\w/*])\*(\S(?:[^*\n]*?\S)?)\*(?!\w)|\[([^\]\n]+)\]\(([^)\s]+)\)|https:\/\/[^\s<>]+/g;
 const starts = (line) => FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line) || ITEM.test(line);
+// A fence closes on a line of its own character, at least as long as the one that opened it.
+const closes = (fence, line) => line.length >= fence.length && line === fence[0].repeat(line.length);
 const cells = (line) => line.trim().slice(1, -1).split("|").map((cell) => cell.trim());
 
 function inline(text) {
@@ -59,7 +61,7 @@ function blocks(lines) {
     if (!line.trim()) i++;
     else if (fence) {
       i++;
-      out.push(h("pre", null, h("code", null, take((l) => !l.trimStart().startsWith(fence[1])).join("\n"))));
+      out.push(h("pre", null, h("code", null, take((l) => !closes(fence[1], l.trim())).join("\n"))));
       i++;
     } else if (heading) {
       i++;
