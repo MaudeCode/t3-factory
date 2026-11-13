@@ -199,6 +199,11 @@ export const modelName = (config, job) => {
   return slug ? (config.models.find((m) => m.model.model === slug)?.name ?? slug) : "Factory";
 };
 
+// A run's ticket key when the ticket is in one of Factory's projects, so the ticket panel can read it.
+export const factoryTicket = (config, job) => {
+  const key = ticketKey(job.label), project = projectOf(config, job);
+  return job.kind !== "upstream" && job.kind !== "discovery" && project?.key && key.startsWith(`${project.key}-`) ? key : "";
+};
 export const byNewest = (a, b) => String(b.createdAt).localeCompare(String(a.createdAt));
 
 // Convert an input's string value to the configured type.

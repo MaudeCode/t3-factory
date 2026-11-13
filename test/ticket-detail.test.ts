@@ -29,7 +29,7 @@ function tracker() {
 test('a ticket read returns only the allowlisted fields, with its readable blockers, dependents and Epic', async () => {
   const detail = await ticketDetail(config, tracker(), 'app-1');
   assert.deepEqual(detail, {
-    id: 'app-1', projectId: 'p-app', key: 'APP-1', title: 'Title of app-1', status: 'todo', priority: 'high', difficulty: 'med', kind: 'feature', labels: ['feat'], scopes: ['web'],
+    id: 'app-1', projectId: 'p-app', inbox: false, key: 'APP-1', title: 'Title of app-1', status: 'todo', priority: 'high', difficulty: 'med', kind: 'feature', labels: ['feat'], scopes: ['web'],
     description: 'Body', acceptanceCriteria: '- one', automationReady: false, holdReason: 'On hold', readiness: ['Ticket is on hold'],
     blockedBy: [{ key: 'APP-2', title: 'Title of blocker', done: true }], blocks: [{ key: 'APP-3', title: 'Title of dependent', done: false }],
     epic: 'Epic one', createdAt: '2026-01-01T00:00:00Z', url: 'https://tracker.example/projects/p-app/tickets/app-1',
@@ -43,4 +43,15 @@ test('a key outside the configured projects, a malformed key and a missing ticke
   assert.equal(await ticketDetail(config, kanvil, '../APP-1'), null);
   assert.deepEqual((kanvil as { reads: string[] }).reads, [], 'none of them reaches the tracker');
   assert.equal(await ticketDetail(config, kanvil, 'APP-9'), null);
+});
+
+test('a report in a configured inbox is read and marked; a key that resolves outside Factory is not found', async () => {
+  const withInbox = { kanvil: { url: 'https://tracker.example/' }, projects: [{ key: 'APP', kanvilId: 'p-app', inbox: { kanvilId: 'p-in' } }] } as never;
+  const kanvil = {
+    task: async (id: string) => { if (id === 'IN-1') return task('in-1', { key: 'IN-1', projectId: 'p-in', epicId: undefined }); if (id === 'LIB-1') return task('lib-1', { key: 'LIB-1', projectId: 'p-lib' }); throw new KanvilTaskNotFound('missing'); },
+    relations: async () => [], epics: async () => [],
+  } as never;
+  const report = await ticketDetail(withInbox, kanvil, 'in-1');
+  assert.deepEqual([report?.key, report?.inbox, report?.projectId], ['IN-1', true, 'p-in']);
+  assert.equal(await ticketDetail(withInbox, kanvil, 'LIB-1'), null);
 });

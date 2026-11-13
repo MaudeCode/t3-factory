@@ -3,7 +3,7 @@ import { html, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow, openTicket } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest, STOPS, stopOf, ticketKey } from "../lib/format.js";
+import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest, STOPS, stopOf } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, OrderChoice } from "./Deck.js";
 
@@ -98,7 +98,8 @@ export function Runs({ id } = {}) {
   </div>`;
 }
 
-export function RunDetail({ id }) {
+// `embedded` is the run inside the ticket panel: its title links to the run's own page and it offers no Ticket button.
+export function RunDetail({ id, embedded }) {
   clock.value;
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
@@ -119,14 +120,14 @@ export function RunDetail({ id }) {
     report = detail.report,
     stop = stopOf(job.state),
     // A ticket in one of Factory's projects opens in the ticket panel; anything else keeps its tracker link.
-    inFactory = job.kind !== "upstream" && job.kind !== "discovery" && project?.key && ticketKey(job.label)?.startsWith(`${project.key}-`) ? ticketKey(job.label) : "";
-  return html`<${Page} class="run-detail" title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
+    inFactory = factoryTicket(c, job);
+  return html`<${Page} class="run-detail" title=${html`<a class="crumb" href=${embedded ? `/runs/${id}` : "/runs"} onClick=${follow}>${embedded ? "Run" : "Runs"}</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
     lead=${`${job.historyOnly ? "Archived run" : job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
     <div class="run-actions">
       ${job.threadId && html`<a class="btn btn-sm btn-primary" href=${threadLink(job)}>Open in T3 Code</a>`}
       ${prs.map((href) => html`<a key=${href} class="btn btn-sm" href=${href} target="_blank" rel="noopener noreferrer">${prLabel(href)}</a>`)}
-      ${ticket && (inFactory ? html`<${Button} size="sm" onClick=${() => openTicket(inFactory)}>Ticket<//>` : html`<a class="btn btn-sm" href=${ticket} target="_blank" rel="noopener noreferrer">Ticket</a>`)}
+      ${ticket && !embedded && (inFactory ? html`<${Button} size="sm" onClick=${() => openTicket(inFactory)}>Ticket<//>` : html`<a class="btn btn-sm" href=${ticket} target="_blank" rel="noopener noreferrer">Ticket</a>`)}
       <a class="btn btn-sm btn-ghost" href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow}>Cleanup review</a>
       ${project && html`<a class="btn btn-sm btn-ghost" href=${projectLink(c, project.kanvilId)} target="_blank" rel="noopener noreferrer">${project.name}</a>`}
     </div>

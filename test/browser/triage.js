@@ -56,6 +56,7 @@ window.fetch = async (url, init) => {
   }
   if (url.startsWith('/api/triage/reports/')) { decisions.push(url.slice(20)); return Response.json({ state: 'written' }); }
   if (url === '/api/triage/run') { runs++; return Response.json({ queued: true }); }
+  if (url.startsWith('/api/tickets/')) return Response.json({ message: 'Ticket not found' }, { status: 404 });
   if (url === '/api/triage/enabled') {
     const body = JSON.parse(init.body); posts.push(body);
     state.config.triage.enabled = body.enabled; state.status.triageEnabled = body.enabled;
@@ -94,6 +95,10 @@ async function run() {
   assert(visibleTag(info)?.textContent === 'needs-info' && info.textContent.includes('Needs more information') && info.textContent.includes('3 d') && info.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t12' && !info.querySelector('[aria-label^="Run "]'), 'a needs-info report says what it needs and how long it has waited, and opens its inbox ticket');
   assert(keys('In progress') === 'PIN-4,PIN-5,PIN-13' && visibleTag(row('PIN-13', 'In progress')).textContent === 'waiting' && !section('In progress').querySelector('.next-actions'), 'In progress lists the running report first, then the ones waiting on triage or promotion, with no actions');
   assert(['Needs you', 'In progress', 'History'].every((title, i, all) => !i || section(all[i - 1]).getBoundingClientRect().top < section(title).getBoundingClientRect().top), 'the lists follow a report from needing the owner to history');
+  // A report opens in Factory's ticket panel, not the tracker.
+  info.querySelector('a.next-ticket').click(); await pause(); await pause();
+  assert(new URLSearchParams(location.search).get('ticket') === 'PIN-12', `a report row opens the ticket panel: ${location.search}`);
+  history.back(); await pause(); await pause();
   // The owner's decisions: triage again where a second pass can change the result, and close after a confirmation.
   assert(button('Triage PIN-2 again') && button('Triage PIN-12 again') && !button('Triage PIN-6 again') && button('Close PIN-6'), 'a failed or needs-info report can be triaged again; a needs-owner report can only be closed');
   button('Triage PIN-2 again').click(); await pause(); await pause();

@@ -41,9 +41,9 @@ export const Stops = ({ n, tone, label }) =>
   html`<span class=${`stops ${tone ? `stops-${tone}` : ""}`} data-n=${n} role="img" aria-label=${label} title=${label}><i></i><i></i><i></i><i></i></span>`;
 
 // With `href` the tag is itself the link, opening in a new tab like `Link`.
-export const Tag = ({ tone, state, children, title, href }) => {
+export const Tag = ({ tone, state, children, title, href, onClick }) => {
   const cls = `tag ${(tone ?? toneOf(state)) ? `tag-${tone ?? toneOf(state)}` : ""}`, label = children ?? stateLabel(state);
-  return href ? html`<a class=${`${cls} tag-link`} href=${href} title=${title} target="_blank" rel="noopener noreferrer">${label}</a>` : html`<span class=${cls} title=${title}>${label}</span>`;
+  return href ? html`<a class=${`${cls} tag-link`} href=${href} title=${title} target="_blank" rel="noopener noreferrer" onClick=${onClick}>${label}</a>` : html`<span class=${cls} title=${title}>${label}</span>`;
 };
 
 export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;

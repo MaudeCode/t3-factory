@@ -41,7 +41,7 @@ window.fetch = async (url, init) => {
     reads.push(read[1]);
     if (read[1] === "APP-404") return Response.json({ message: "Ticket not found" }, { status: 404 });
     if (failing.has(read[1])) return Response.json({ message: "Could not read the ticket" }, { status: 500 });
-    return Response.json(detail(read[1], read[1] === "APP-3" ? { status: "done" } : {}));
+    return Response.json(detail(read[1], read[1] === "APP-3" ? { status: "done" } : read[1] === "IN-1" ? { inbox: true, projectId: "pin" } : {}));
   }
   return Response.json(state);
 };
@@ -60,6 +60,8 @@ const panel = () => document.querySelector("dialog.ticket-panel[open]");
 const link = (key) => [...root.querySelectorAll("a.next-ticket")].find((a) => a.querySelector(".key")?.textContent === key);
 const open = async (key) => { link(key).focus(); link(key).click(); await pause(120); };
 const button = (name) => [...panel().querySelectorAll("button, a.btn")].find((b) => b.textContent.trim() === name);
+const tab = (name) => [...panel().querySelectorAll('[aria-label="Ticket view"] [role="radio"]')].find((t) => t.textContent === name);
+const factory = async () => { tab("Factory").click(); await pause(200); };
 
 async function run() {
   await show();
@@ -76,7 +78,14 @@ async function run() {
   const text = panel().textContent;
   for (const part of ["APP-1", "Synthetic ticket APP-1", "To do", "high", "med", "feat", "First line.", "Last line.", "- first criterion", "APP-90", "A finished blocker", "APP-91", "A dependent", "Billing v2", "Up next: 1 of 3"]) assert(text.includes(part), `the panel shows ${part}`);
   assert(text.includes('<img src=x onerror="window.__ticketXss = true">') && !panel().querySelector("img, script") && !window.__ticketXss, "tracker text is shown as text and never parsed");
-  assert(panel().querySelector(".ticket-runs a").getAttribute("href") === "/runs/run-1", "the ticket's runs link to the run");
+  // The panel opens on the ticket; Factory's side of it, the latest run, is the second tab.
+  assert(tab("Ticket").getAttribute("aria-checked") === "true" && !panel().querySelector(".run-detail"), "the panel opens on the Ticket tab");
+  await factory();
+  const runView = panel().querySelector(".run-detail");
+  assert(runView && runView.querySelector("a.crumb").getAttribute("href") === "/runs/run-1" && runView.textContent.includes("APP-1") && panel().textContent.includes("Up next: 1 of 3"), "the Factory tab shows the scheduler's line and the ticket's latest run");
+  assert(![...runView.querySelectorAll("button, a.btn")].some((b) => b.textContent.trim() === "Ticket") && !panel().querySelector(".ticket-title"), "the run inside the panel offers no Ticket button and replaces the ticket text");
+  assert(runView.getBoundingClientRect().right <= panel().getBoundingClientRect().right && panel().scrollWidth <= panel().clientWidth, "the run fits the panel");
+  tab("Ticket").click(); await pause();
   assert(button("Open in tracker").getAttribute("href") === "https://tracker.example/projects/p/tickets/id-APP-1", "the tracker stays one link away");
   button("Done").click(); await pause(150);
   assert(!panel() && !location.search.includes("ticket=") && document.activeElement === link("APP-1"), "Done closes the panel, clears its address and returns focus to the row");
@@ -108,9 +117,19 @@ async function run() {
   await open("APP-3");
   assert(button("Run now").disabled && panel().querySelector(".ticket-line").textContent === "APP-3 is done.", "a finished ticket says why it cannot start");
   button("Done").click(); await pause(120);
-  // Opening one of the ticket's runs is one navigation: the panel closes and the run stays open.
-  await show(); await open("APP-1");
-  panel().querySelector(".ticket-runs a").click(); await pause(300);
+  // Another ticket opens on its Ticket tab again; a ticket with no runs says so.
+  await open("APP-1"); await factory(); button("Done").click(); await pause(150);
+  await open("APP-2");
+  assert(tab("Ticket").getAttribute("aria-checked") === "true" && panel().querySelector(".ticket-title"), "the next ticket opens on Ticket");
+  await factory();
+  assert(panel().textContent.includes("No runs yet.") && !panel().querySelector(".run-detail"), "a ticket with no runs says so");
+  button("Done").click(); await pause(150);
+  // An inbox report is read like a ticket but cannot be run.
+  await show("/queue?ticket=IN-1");
+  assert(panel().textContent.includes("Synthetic ticket IN-1") && !button("Run now") && button("Open in tracker"), "an inbox report shows without Run now");
+  // Opening the run's own page is one navigation: the panel closes and the run stays open.
+  await show(); await open("APP-1"); await factory();
+  panel().querySelector(".run-detail a.crumb").click(); await pause(300);
   assert(!panel() && location.pathname === "/runs/run-1" && !location.search.includes("ticket="), `a run link closes the panel and lands on the run: ${location.pathname}${location.search}`);
   // Not found and failed reads.
   await show("/queue?ticket=APP-404");
@@ -124,7 +143,18 @@ async function run() {
   assert(innerWidth <= 700 ? box.left === 0 && box.width === innerWidth : box.right === innerWidth && box.width <= 560, `the panel is a right drawer, or the whole screen on a phone: ${box.left},${box.width}`);
   assert(box.height === innerHeight && document.documentElement.scrollWidth <= innerWidth && panel().scrollWidth <= panel().clientWidth, "the panel fills the height without sideways scroll");
   if (matchMedia("(pointer: coarse)").matches) for (const b of panel().querySelectorAll("button, a.btn")) assert(b.getBoundingClientRect().height >= 44, `panel controls are touch targets: ${b.textContent.trim()}`);
-  button("Done").click(); await pause(120);
+  // A home-screen app in landscape on a touch screen draws under the live-activity pill in the top right corner.
+  // No browser here can be that display, so the rule is switched on to measure what it does.
+  const gap = (el) => innerWidth - el.getBoundingClientRect().right;
+  const corner = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).find((r) => r.media?.mediaText.includes("display-mode: standalone"));
+  assert(corner && /orientation: landscape/.test(corner.media.mediaText) && /pointer: coarse/.test(corner.media.mediaText), "the corner clearance applies to a standalone, landscape, touch display only");
+  const before = gap(button("Done")), condition = corner.media.mediaText;
+  corner.media.mediaText = "all"; await pause();
+  assert(gap(button("Done")) >= 76 && gap(button("Done")) > before, `the panel's Done button clears the pill: ${gap(button("Done"))}`);
+  button("Done").click(); await pause(150);
+  for (const el of root.querySelectorAll(".page-head > :last-child, .top > :last-child")) if (el.getClientRects().length) assert(gap(el) >= 76, `the page's top-right controls clear the pill: ${gap(el)}`);
+  corner.media.mediaText = condition;
+  assert(document.documentElement.scrollWidth <= innerWidth, "the clearance adds no sideways scroll");
   return { passed: true, viewport: [innerWidth, innerHeight], coarse: matchMedia("(pointer: coarse)").matches };
 }
 window.ticketTests = { show, run, open };
