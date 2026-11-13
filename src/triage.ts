@@ -215,14 +215,14 @@ const versionConflict = (error: unknown) => error instanceof Error && 'code' in 
  * Writes `changes(ticket)` at the ticket's version. When someone wrote the ticket meanwhile, refetches it and writes
  * the same intent once more on the fresh ticket, so its labels merge with the edit. Writes nothing when the ticket
  * was closed meanwhile, since that closure is the newer decision, or, with `sameReport`, when its report text changed,
- * since the intent was judged on the old text.
+ * since the intent was judged on the old text. `still` adds the caller's own condition on the fresh ticket.
  */
-async function updateWithReconcile(kanvil: TriageKanvil, ticket: Task, step: string, changes: (ticket: Task) => Record<string, unknown>, sameReport = true) {
+async function updateWithReconcile(kanvil: TriageKanvil, ticket: Task, step: string, changes: (ticket: Task) => Record<string, unknown>, sameReport = true, still: (fresh: Task) => boolean = () => true) {
   try { await kanvil.updateTicket(ticket.projectId, ticket.id, ticket.version!, changes(ticket), requestId(ticket, step)); }
   catch (error) {
     if (!versionConflict(error)) throw error;
     const fresh = await kanvil.task(ticket.id, ticket.projectId);
-    if (CLOSED.includes(fresh.status)) return 'closed';
+    if (CLOSED.includes(fresh.status) || !still(fresh)) return 'closed';
     if (sameReport && reportHash(fresh) !== reportHash(ticket)) return 'changed';
     await kanvil.updateTicket(fresh.projectId, fresh.id, fresh.version!, changes(fresh), requestId(fresh, step));
   }
@@ -610,6 +610,52 @@ export function promotedTickets(c: Pick<Config, 'projects'>, kanvil: Pick<Triage
     if (t) found[id] = { taskId: t.id, projectId: t.projectId, key: t.key ?? data.promoted, title: t.title, status: t.status, priority: t.priority, difficulty: t.difficulty ?? null, labels: names(t), automationReady: !!t.automationReady };
   }
   return found;
+}
+
+// Outcomes no later pass acts on: the report stays open in the inbox until the owner closes or relabels it.
+const OWNER_OUTCOMES = ['triage-failed', 'promotion-failed', 'needs-owner', 'promotion-blocked'], OWNER_VERDICTS = ['needs-info', 'duplicate', 'already-exists'];
+/**
+ * Every open report with the stage it is in, read from the live inbox projection so a report stays listed however many
+ * are triaged after it. `stage` is `owner` when no later pass acts on it and `working` while triage or promotion will.
+ * Each is shaped like its journal entry: the newest matching one in `results`, or one rebuilt from the report itself
+ * when it has no result yet or that entry has aged out.
+ */
+export function openReports(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanvil, 'cachedTickets'>, results: { id: number; time: string; kind: string; text: string; data: Record<string, unknown> }[], running: Task[] = []) {
+  return inboxes(c).flatMap(({ project, inbox }) => (kanvil.cachedTickets(inbox.kanvilId) ?? []).filter(t => open(t, inbox)).flatMap(t => {
+    const labels = names(t), verdict = labels.find(l => l.startsWith('verdict:'))?.slice(8);
+    const outcome = running.some(r => r.id === t.id) ? 'triaging' : needsTriage(t, inbox) ? 'waiting'
+      : OWNER_OUTCOMES.find(l => labels.includes(l)) ?? (labels.includes('triaged') && OWNER_VERDICTS.includes(verdict!) ? 'triaged'
+      : awaitingPromotion(t, inbox) ? labels.includes('promotion-queued') ? 'promotion-queued' : 'awaiting-promotion'
+      // An actionable report the operator put on hold is kept out of promotion until the hold is lifted.
+      : verdict === 'actionable' && t.holdReason ? 'held' : null);
+    if (!outcome) return [];
+    const stage = ['triaging', 'waiting', 'promotion-queued', 'awaiting-promotion'].includes(outcome) ? 'working' : 'owner';
+    const rebuilt = outcome === 'triaged' ? `triaged: ${verdict}` : outcome === 'waiting' ? 'waiting for triage' : outcome === 'awaiting-promotion' ? 'waiting for promotion'
+      : outcome === 'held' ? `on hold: ${t.holdReason}` : outcome.replaceAll('-', ' ');
+    const event = results.find(e => e.data.ticketId === t.id && e.data.outcome === outcome && (outcome !== 'triaged' || e.data.verdict === verdict))
+      ?? { id: 0, time: outcome === 'waiting' ? t.createdAt : t.updatedAt ?? t.createdAt, kind: 'triage', text: `${t.key} ${rebuilt}`, data: {} };
+    return [{ ...event, data: { ...event.data, outcome, ...(outcome === 'triaged' ? { verdict } : {}), stage, ticket: t.key, ticketId: t.id, inboxId: inbox.kanvilId, projectId: project.kanvilId, project: project.name } }];
+  }));
+}
+
+/**
+ * The owner's decision on an open report: `retry` clears its triage and promotion labels so the next pass triages it
+ * again, and `close` cancels it. Only a report open in a configured inbox is written; null for anything else.
+ */
+export async function resolveReport(c: Pick<Config, 'projects'>, kanvil: TriageKanvil, ticketId: string, action: 'retry' | 'close') {
+  for (const { inbox } of inboxes(c)) {
+    const ticket = kanvil.cachedTickets(inbox.kanvilId)?.find(t => t.id === ticketId);
+    if (!ticket || !open(ticket, inbox)) continue;
+    const state = await updateWithReconcile(kanvil, ticket, `owner-${action}`, current => action === 'close' ? { status: 'cancelled' } : {
+      labels: names(current).filter(name => !['triaged', 'triage-failed', ...PROMOTION_LABELS].includes(name) && !/^(verdict|validation):/.test(name)),
+      // The hold promotion placed goes with its label; an operator's own hold stays.
+      ...(current.holdReason?.startsWith('Promotion needs the owner: ') ? { holdReason: inbox.intakeHold ?? null } : {}),
+    }, false, fresh => open(fresh, inbox));
+    log('triage-owner', { ticket: ticket.key, action, state });
+    // A report archived, closed or moved out of the inbox since the projection was read is no longer the owner's to decide here.
+    return state === 'written' ? { ticket: ticket.key, action, state } : null;
+  }
+  return null;
 }
 
 /** Doctor: the exact sandbox must refuse a read outside it and a shell command. */

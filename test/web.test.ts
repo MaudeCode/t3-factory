@@ -193,6 +193,10 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal((await request("/api/triage/run", { method: "POST", headers: { Cookie: cookie, Origin: "https://attacker.example" }, body: "{}" })).status, 403);
     assert.equal((await request("/api/triage/run", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 200);
     assert.deepEqual(calls.at(-1)?.args, ["triage-run"], "Triage now asks the scheduler for one forced pass");
+    assert.equal((await request("/api/triage/reports/t-6/close", { method: "POST", headers: { Cookie: cookie, Origin: "https://attacker.example" }, body: "{}" })).status, 403);
+    assert.equal((await request("/api/triage/reports/t-6/retry", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 200);
+    assert.deepEqual(calls.at(-1)?.args, ["triage-retry", "t-6"], "the owner's decision on a report names the report and the action");
+    assert.equal((await request("/api/triage/reports/t-6/promote", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 404, "only retry and close are decisions");
     const id = randomUUID(),
       input = { ticket: "app-8", model: "astra", overrideLimits: true };
     const dispatch = () =>

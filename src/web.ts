@@ -400,6 +400,11 @@ export function createFactoryWeb(options: {
           const result = await run(["triage-run"]);
           return json(res, result.code ? 409 : 200, result.data);
         }
+        const report = path.match(/^\/api\/triage\/reports\/([\w-]{1,64})\/(retry|close)$/);
+        if (report && req.method === "POST") {
+          const result = await run([`triage-${report[2]}`, report[1]]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
         const plan = path.match(/^\/api\/plans\/([\w-]{1,64})\/cancel$/);
         if (plan && req.method === "POST") {
           const result = await run(["plan-cancel", plan[1]]);

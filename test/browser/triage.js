@@ -3,6 +3,7 @@ import { openSearch, checkPageHead } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
+import { confirmation, finishConfirmation } from '../../web/lib/confirmation.js';
 import { Triage } from '../../web/views/Triage.js';
 const root = document.querySelector('#root');
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
@@ -27,9 +28,18 @@ const state = {
     { id: 1, time: ago(90), kind: 'triage', text: 'PIN-1 promoted to EX-39', data: { ticket: 'PIN-1', ticketId: 't1', inboxId: 'pin', project: 'Example', outcome: 'promoted', promoted: 'EX-39' } },
     { id: 11, time: ago(20), kind: 'triage', text: 'PIN-9 closed during triage', data: { ticket: 'PIN-9', ticketId: 't9', inboxId: 'pin', project: 'Example', outcome: 'closed', reason: 'closed during triage' } },
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
+  ],
+  // Every open report with its stage. PIN-12 was triaged long before the 30 results above.
+  triageReports: [
+    { id: 5, time: ago(2), kind: 'triage', text: 'PIN-6 needs the owner: sensitive: workType sec', data: { ticket: 'PIN-6', ticketId: 't6', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'owner', outcome: 'needs-owner', reason: 'sensitive: workType sec' } },
+    { id: 0, time: ago(4400), kind: 'triage', text: 'PIN-12 triaged: needs-info', data: { ticket: 'PIN-12', ticketId: 't12', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'owner', outcome: 'triaged', verdict: 'needs-info' } },
+    { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'owner', outcome: 'triage-failed', reason: 'Timed out twice' } },
+    { id: 0, time: ago(185), kind: 'triage', text: 'PIN-13 waiting for triage', data: { ticket: 'PIN-13', ticketId: 't13', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'working', outcome: 'waiting' } },
+    { id: 0, time: ago(5), kind: 'triage', text: 'PIN-4 triaging', data: { ticket: 'PIN-4', ticketId: 't4', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'working', outcome: 'triaging' } },
+    { id: 4, time: ago(3), kind: 'triage', text: 'PIN-5 promotion queued: 2 promotions in the last 24 hours', data: { ticket: 'PIN-5', ticketId: 't5', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'working', outcome: 'promotion-queued', reason: '2 promotions in the last 24 hours' } },
   ] },
 };
-let posts = [], saves = [], dispatches = [], runs = 0;
+let posts = [], saves = [], dispatches = [], decisions = [], runs = 0;
 window.fetch = async (url, init) => {
   // A start is refused, as a quota refusal answers, so it lands in the notification area.
   if (url === '/api/dispatch') {
@@ -44,6 +54,7 @@ window.fetch = async (url, init) => {
     state.config = body.config;
     return Response.json(body.config);
   }
+  if (url.startsWith('/api/triage/reports/')) { decisions.push(url.slice(20)); return Response.json({ state: 'written' }); }
   if (url === '/api/triage/run') { runs++; return Response.json({ queued: true }); }
   if (url === '/api/triage/enabled') {
     const body = JSON.parse(init.body); posts.push(body);
@@ -53,32 +64,45 @@ window.fetch = async (url, init) => {
   return Response.json(state);
 };
 async function show() {
-  render(null, root); posts = []; saves = []; dispatches = []; operations.value = [];
+  render(null, root); posts = []; saves = []; dispatches = []; decisions = []; operations.value = [];
   state.config.projects[0].inbox.maxPromotionsPerDay = 10;
   state.config.triage.enabled = true; state.status.triageEnabled = true;
   applyState(state, true); render(html`<${Triage} />`, root); await pause();
 }
-// Section 0 is Inboxes; Tickets and Activity follow.
+// Section 0 is Inboxes; Needs you, In progress, Ready to start and History follow.
 const section = (title) => [...root.querySelectorAll('section.section')].find((s) => s.querySelector('h2')?.textContent.startsWith(title));
 const rows = (title) => [...((title ? section(title) : root)?.querySelectorAll('.next') ?? [])];
 const keys = (title) => rows(title).map((r) => r.querySelector('.key').textContent).join();
-const row = (key, title = key.startsWith('EX-') ? 'Tickets' : 'Activity') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
+const row = (key, title = key.startsWith('EX-') ? 'Ready to start' : 'History') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
-const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|queued|duplicate|failed|closed/.test(el.textContent));
+const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|needs-info|queued|duplicate|failed|closed|waiting|triaging/.test(el.textContent));
 async function settings() { button('Triage settings').click(); await pause(); return document.querySelector('dialog[open]'); }
 async function run() {
   await show();
   const text = () => root.textContent;
-  assert(/2 waiting, 1 failed, 3 promoted, 1 queued, 1 blocked, 1 need the owner, oldest 3 h \d+ min ago, triaging PIN-4/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear'), 'each inbox shows its queue on one line');
-  assert(keys('Tickets') === 'EX-40,EX-41', 'Tickets lists the promoted tickets still to start, newest first');
-  assert(keys('Activity') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-9,PIN-2,PIN-10,PIN-1,GONE-1', 'Activity lists every result as its report, newest first');
-  assert(!row('EX-42') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'a ticket that has run leaves Tickets and stays in Activity');
-  assert(row('PIN-7').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t40' && !row('PIN-7').querySelector('[aria-label^="Run "]'), 'a promoted result in Activity links its ticket and has no Start');
+  assert(/3 need you.*2 waiting, oldest 3 h \d+ min ago, triaging PIN-4, 1 queued, 3 promoted/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear') && !root.querySelectorAll('.triage-inbox')[1].textContent.includes('need'), 'each inbox shows its queue in pipeline order and how many reports need the owner');
+  assert(keys('Needs you') === 'PIN-6,PIN-2,PIN-12' && !keys('History').includes('PIN-12'), 'Needs you lists every open report waiting on the owner, including one older than the recent results');
+  const info = row('PIN-12', 'Needs you');
+  assert(visibleTag(info)?.textContent === 'needs-info' && info.textContent.includes('Needs more information') && info.textContent.includes('3 d') && info.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t12' && !info.querySelector('[aria-label^="Run "]'), 'a needs-info report says what it needs and how long it has waited, and opens its inbox ticket');
+  assert(keys('In progress') === 'PIN-4,PIN-5,PIN-13' && visibleTag(row('PIN-13', 'In progress')).textContent === 'waiting' && !section('In progress').querySelector('.next-actions'), 'In progress lists the running report first, then the ones waiting on triage or promotion, with no actions');
+  assert(['Needs you', 'In progress', 'Ready to start', 'History'].every((title, i, all) => !i || section(all[i - 1]).getBoundingClientRect().top < section(title).getBoundingClientRect().top), 'the lists follow a report from needing the owner to history');
+  // The owner's decisions: triage again where a second pass can change the result, and close after a confirmation.
+  assert(button('Triage PIN-2 again') && button('Triage PIN-12 again') && !button('Triage PIN-6 again') && button('Close PIN-6'), 'a failed or needs-info report can be triaged again; a needs-owner report can only be closed');
+  button('Triage PIN-2 again').click(); await pause(); await pause();
+  assert(decisions.join() === 't2/retry' && notice.value?.text === 'PIN-2 will be triaged again.', 'Triage again asks the scheduler to clear the result');
+  button('Close PIN-6').click(); await pause();
+  assert(decisions.length === 1 && confirmation.value?.title === 'Close PIN-6?', 'closing a report asks first');
+  finishConfirmation(true); await pause(); await pause();
+  assert(decisions.join() === 't2/retry,t6/close' && notice.value?.text === 'PIN-6 closed.', 'confirming closes the report');
+  assert(keys('Ready to start') === 'EX-40,EX-41', 'Ready to start lists the promoted tickets, newest first');
+  assert(keys('History') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-9,PIN-2,PIN-10,PIN-1,GONE-1', 'History lists every recent result as its report, newest first');
+  assert(!row('EX-42') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'a ticket that has run leaves Ready to start and stays in History');
+  assert(row('PIN-7').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t40' && !row('PIN-7').querySelector('[aria-label^="Run "]'), 'a promoted result in History links its ticket and has no Start');
   const ex40 = row('EX-40');
   assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
   assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
   assert(visibleTag(ex40)?.textContent === 'promoted' && button('Run EX-40 now'), 'the promoted tag and Start show');
-  assert(!section('Tickets').querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
+  assert(!section('Ready to start').querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
   assert(visibleTag(ex40).closest('.meta') && !visibleTag(ex40).closest('.next-actions'), 'the outcome tag leads the facet line, beside Start rather than above it');
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(visibleTag(row('PIN-9'))?.textContent === 'closed' && visibleTag(row('PIN-9')).classList.contains('tag-label') && row('PIN-9').textContent.includes('Closed during triage'), 'a report closed during triage shows a neutral closed tag, not an error');
@@ -94,18 +118,18 @@ async function run() {
   // Search, filters and selection, as on Session tickets.
   const search = await openSearch();
   search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(keys('Tickets') === 'EX-41' && keys('Activity') === 'PIN-8', 'search narrows both lists');
+  assert(keys('Needs you') === '' && keys('Ready to start') === 'EX-41' && keys('History') === 'PIN-8', 'search narrows every list');
   search.value = 'sensitive'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(keys('Tickets') === '' && keys('Activity') === 'PIN-6', 'search matches a report row by its outcome');
-  assert(section('Tickets').textContent.includes('No tickets match.'), 'an empty ticket list says the search matched nothing');
+  assert(keys('Needs you') === 'PIN-6' && keys('Ready to start') === '' && keys('History') === 'PIN-6', 'search matches a report row by its outcome');
+  assert(section('Ready to start').textContent.includes('No tickets match.'), 'an empty ticket list says the search matched nothing');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Oldest first"]').click(); await pause();
   search.value = 'pin-'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(keys('Activity') === 'PIN-1,PIN-10,PIN-2,PIN-9,PIN-8,PIN-3,PIN-5,PIN-6,PIN-7', 'oldest first reverses the results');
+  assert(keys('History') === 'PIN-1,PIN-10,PIN-2,PIN-9,PIN-8,PIN-3,PIN-5,PIN-6,PIN-7', 'oldest first reverses the results');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Newest first"]').click(); await pause();
   search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();
-  assert(keys('Tickets') === 'EX-40', 'filters narrow the tickets');
+  assert(keys('Ready to start') === 'EX-40', 'filters narrow the tickets');
   [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.textContent.trim() === 'Clear all').click(); await pause();
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
   button('Select tickets').click(); await pause();
@@ -136,7 +160,7 @@ async function run() {
 async function promotion() {
   await show();
   const text = () => root.textContent, lines = () => [...root.querySelectorAll('.triage-inbox')];
-  assert(/3 promoted, 1 queued, 1 blocked, 1 need the owner/.test(lines()[0].textContent), 'the first inbox shows its promotion counts');
+  assert(/1 queued, 3 promoted/.test(lines()[0].textContent), 'the first inbox shows its promotion counts');
   assert(lines()[0].textContent.includes('10 per day') && lines()[1].textContent.includes('Unlimited'), 'each inbox shows its limit next to its status');
   await settings();
   const rows = () => [...document.querySelectorAll('dialog[open] .triage-inbox-settings')];

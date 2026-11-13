@@ -14,7 +14,7 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
-import { admitTriage, inboxes, promotedTickets, triagePass, triageQueue } from './triage.ts';
+import { admitTriage, inboxes, openReports, resolveReport, promotedTickets, triagePass, triageQueue } from './triage.ts';
 
 const EVENT_SETTLE_MS = 25;
 /** Quota recovery retries after these delays, then every 30 seconds until a fresh reading arrives. */
@@ -198,11 +198,13 @@ export class FactoryService {
       const force = this.forceTriage;
       this.forceTriage = false;
       const c = this.configure();
-      if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); return; }
+      if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); this.store.set('triageReports', '[]'); return; }
       const kanvil = await this.ensureKanvil(c);
       const publish = (running?: Parameters<typeof triageQueue>[2]) => {
         this.store.set('triageStreams', JSON.stringify(triageQueue(c, kanvil, running)));
         this.store.set('triagePromoted', JSON.stringify(promotedTickets(c, kanvil, this.store.events(TRIAGE_RESULTS, undefined, 'triage'))));
+        // ponytail: a result older than the newest 500 triage entries loses its reason and shows its label alone.
+        this.store.set('triageReports', JSON.stringify(openReports(c, kanvil, this.store.events(500, undefined, 'triage'), running)));
         this.publishWork();
       };
       const results = await triagePass(c, this.store, kanvil, { force, budget: inFlight => admitTriage(this.configure(), this.t3, this.store, inFlight, force), signal: this.abort.signal, onRun: publish });
@@ -349,6 +351,11 @@ export class FactoryService {
     if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
     if (command.type === 'triage-run') { this.forceTriage = true; this.triage(); return { code: 0, data: { queued: true } }; }
+    if (command.type === 'triage-report') {
+      const c = this.configure(), result = await resolveReport(c, await this.ensureKanvil(c), command.ticketId, command.action);
+      this.triage();
+      return result ? { code: 0, data: result } : { code: 1, data: { message: 'That report is not open in a configured inbox' } };
+    }
     if (command.type === 'job-stop') {
       const result = await this.enqueue(() => this.store.exclusive([`job:${command.jobId}`], () => stopJob(this.configure(), this.store, this.t3, command.jobId)), true, { reason: 'job-stop' });
       this.wake('job-stop');
