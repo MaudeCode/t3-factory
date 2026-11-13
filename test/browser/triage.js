@@ -4,7 +4,7 @@ import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
 import { confirmation, finishConfirmation } from '../../web/lib/confirmation.js';
-import { Triage } from '../../web/views/Triage.js';
+import { Triage, ReadyReports } from '../../web/views/Triage.js';
 const root = document.querySelector('#root');
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
@@ -69,11 +69,13 @@ async function show() {
   state.config.triage.enabled = true; state.status.triageEnabled = true;
   applyState(state, true); render(html`<${Triage} />`, root); await pause();
 }
-// Section 0 is Inboxes; Needs you, In progress, Ready to start and History follow.
+// Promoted tickets waiting to start are the Queue page's Reports view.
+async function showReady() { await show(); render(null, root); render(html`<${ReadyReports} />`, root); await pause(); }
+// Section 0 is Inboxes; Needs you, In progress and History follow.
 const section = (title) => [...root.querySelectorAll('section.section')].find((s) => s.querySelector('h2')?.textContent.startsWith(title));
 const rows = (title) => [...((title ? section(title) : root)?.querySelectorAll('.next') ?? [])];
 const keys = (title) => rows(title).map((r) => r.querySelector('.key').textContent).join();
-const row = (key, title = key.startsWith('EX-') ? 'Ready to start' : 'History') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
+const row = (key, title = key.startsWith('EX-') ? undefined : 'History') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
 const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|needs-info|queued|duplicate|failed|closed|waiting|triaging/.test(el.textContent));
 async function settings() { button('Triage settings').click(); await pause(); return document.querySelector('dialog[open]'); }
@@ -85,7 +87,7 @@ async function run() {
   const info = row('PIN-12', 'Needs you');
   assert(visibleTag(info)?.textContent === 'needs-info' && info.textContent.includes('Needs more information') && info.textContent.includes('3 d') && info.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t12' && !info.querySelector('[aria-label^="Run "]'), 'a needs-info report says what it needs and how long it has waited, and opens its inbox ticket');
   assert(keys('In progress') === 'PIN-4,PIN-5,PIN-13' && visibleTag(row('PIN-13', 'In progress')).textContent === 'waiting' && !section('In progress').querySelector('.next-actions'), 'In progress lists the running report first, then the ones waiting on triage or promotion, with no actions');
-  assert(['Needs you', 'In progress', 'Ready to start', 'History'].every((title, i, all) => !i || section(all[i - 1]).getBoundingClientRect().top < section(title).getBoundingClientRect().top), 'the lists follow a report from needing the owner to history');
+  assert(['Needs you', 'In progress', 'History'].every((title, i, all) => !i || section(all[i - 1]).getBoundingClientRect().top < section(title).getBoundingClientRect().top), 'the lists follow a report from needing the owner to history');
   // The owner's decisions: triage again where a second pass can change the result, and close after a confirmation.
   assert(button('Triage PIN-2 again') && button('Triage PIN-12 again') && !button('Triage PIN-6 again') && button('Close PIN-6'), 'a failed or needs-info report can be triaged again; a needs-owner report can only be closed');
   button('Triage PIN-2 again').click(); await pause(); await pause();
@@ -94,51 +96,25 @@ async function run() {
   assert(decisions.length === 1 && confirmation.value?.title === 'Close PIN-6?', 'closing a report asks first');
   finishConfirmation(true); await pause(); await pause();
   assert(decisions.join() === 't2/retry,t6/close' && notice.value?.text === 'PIN-6 closed.', 'confirming closes the report');
-  assert(keys('Ready to start') === 'EX-40,EX-41', 'Ready to start lists the promoted tickets, newest first');
   assert(keys('History') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-9,PIN-2,PIN-10,PIN-1,GONE-1', 'History lists every recent result as its report, newest first');
-  assert(!row('EX-42') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'a ticket that has run leaves Ready to start and stays in History');
+  assert(!root.textContent.includes('Ready to start') && !root.querySelector('[aria-label^="Run "]') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'promoted tickets are started from the Queue; Triage keeps their results in History');
   assert(row('PIN-7').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t40' && !row('PIN-7').querySelector('[aria-label^="Run "]'), 'a promoted result in History links its ticket and has no Start');
-  const ex40 = row('EX-40');
-  assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
-  assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
-  assert(visibleTag(ex40)?.textContent === 'promoted' && button('Run EX-40 now'), 'the promoted tag and Start show');
-  assert(!section('Ready to start').querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
-  assert(visibleTag(ex40).closest('.meta') && !visibleTag(ex40).closest('.next-actions'), 'the outcome tag leads the facet line, beside Start rather than above it');
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(visibleTag(row('PIN-9'))?.textContent === 'closed' && visibleTag(row('PIN-9')).classList.contains('tag-label') && row('PIN-9').textContent.includes('Closed during triage'), 'a report closed during triage shows a neutral closed tag, not an error');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
   assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
   assert(row('GONE-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t38', 'a result from an inbox no longer configured keeps its recorded project');
-  // Start goes through the shared start path with the page's overrides; a refusal lands in the notification area.
-  button('Run EX-40 now').click(); await pause();
-  for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();
-  assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: 'EX-40', model: 'auto', overrideLimits: sessionOverrides.value }), 'Start dispatches the promoted key with the start options');
-  assert(issues.value.some((i) => i.source === 'Triage starts' && i.error.problems[0].title === "Couldn't start EX-40"), 'a refused start is reported as a Triage start');
-  operations.value = []; await pause();
-  // Search, filters and selection, as on Session tickets.
+  // Search and order.
   const search = await openSearch();
   search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(keys('Needs you') === '' && keys('Ready to start') === 'EX-41' && keys('History') === 'PIN-8', 'search narrows every list');
+  assert(keys('Needs you') === '' && keys('History') === 'PIN-8', 'search narrows every list');
   search.value = 'sensitive'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  assert(keys('Needs you') === 'PIN-6' && keys('Ready to start') === '' && keys('History') === 'PIN-6', 'search matches a report row by its outcome');
-  assert(section('Ready to start').textContent.includes('No tickets match.'), 'an empty ticket list says the search matched nothing');
+  assert(keys('Needs you') === 'PIN-6' && keys('History') === 'PIN-6', 'search matches a report row by its outcome');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Oldest first"]').click(); await pause();
   search.value = 'pin-'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   assert(keys('History') === 'PIN-1,PIN-10,PIN-2,PIN-9,PIN-8,PIN-3,PIN-5,PIN-6,PIN-7', 'oldest first reverses the results');
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Newest first"]').click(); await pause();
   search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
-  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
-  [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();
-  assert(keys('Ready to start') === 'EX-40', 'filters narrow the tickets');
-  [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.textContent.trim() === 'Clear all').click(); await pause();
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
-  button('Select tickets').click(); await pause();
-  assert(root.querySelectorAll('.next > .check').length === 2, 'only promoted tickets can be selected');
-  button('Select visible promoted tickets').click(); await pause();
-  button('Run selected tickets').click(); await pause();
-  for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();
-  assert(dispatches.slice(1).map((d) => d.ticket).sort().join() === 'EX-40,EX-41', 'Run selected starts each selected ticket');
-  operations.value = []; button('Done selecting tickets').click(); await pause();
   // The cog holds the triage switch.
   const dialog = await settings();
   const toggle = dialog?.querySelector('input[role="switch"][aria-label="Inbox triage"]');
@@ -151,10 +127,52 @@ async function run() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
   const height = (key) => row(key).getBoundingClientRect().height, left = (key) => visibleTag(row(key)).getBoundingClientRect().left;
-  assert(['PIN-6', 'PIN-3', 'PIN-9', 'PIN-2', 'PIN-1', 'EX-41'].every((key) => Math.abs(left(key) - left('EX-40')) < 1), 'outcome tags line up at the start of the facet line');
-  if (innerWidth > 900) assert(Math.abs(height('EX-40') - height('PIN-6')) < 1, 'a promoted row with Start is as tall as a report row');
+  assert(['PIN-3', 'PIN-9', 'PIN-2', 'PIN-1'].every((key) => Math.abs(left(key) - left('PIN-6')) < 1), 'outcome tags line up at the start of the facet line');
+  const reportHeight = height('PIN-6'), tagLeft = left('PIN-6');
+  const queue = await ready(reportHeight, tagLeft);
   const toggles = posts.length, limits = await promotion();
-  return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, dispatches: dispatches.length, ...limits };
+  return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, ...queue, ...limits };
+}
+// The Queue page's Reports view: promoted tickets, their start path, search, filters and selection.
+async function ready(reportHeight, tagLeft) {
+  await showReady();
+  assert(keys() === 'EX-40,EX-41', 'the Reports view lists the promoted tickets that have not started, newest first');
+  const ex40 = row('EX-40');
+  assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
+  assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');
+  assert(visibleTag(ex40)?.textContent === 'promoted' && button('Run EX-40 now'), 'the promoted tag and Start show');
+  assert(!root.querySelector('.next .tag-label') && ex40.textContent.includes('high') && ex40.textContent.includes('med'), 'promoted rows list priority and difficulty but not every label');
+  assert(visibleTag(ex40).closest('.meta') && !visibleTag(ex40).closest('.next-actions'), 'the outcome tag leads the facet line, beside Start rather than above it');
+  // Start goes through the shared start path with the page's overrides; a refusal lands in the notification area.
+  button('Run EX-40 now').click(); await pause();
+  for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();
+  assert(JSON.stringify(dispatches[0]) === JSON.stringify({ ticket: 'EX-40', model: 'auto', overrideLimits: sessionOverrides.value }), 'Start dispatches the promoted key with the start options');
+  assert(issues.value.some((i) => i.source === 'Triage starts' && i.error.problems[0].title === "Couldn't start EX-40"), 'a refused start is reported as a Triage start');
+  operations.value = []; await pause();
+  const search = await openSearch();
+  search.value = 'ex-41'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(keys() === 'EX-41', 'search narrows the tickets');
+  search.value = 'sensitive'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(keys() === '' && root.textContent.includes('No tickets match.'), 'an empty ticket list says the search matched nothing');
+  search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
+  [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();
+  assert(keys() === 'EX-40', 'filters narrow the tickets');
+  [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.textContent.trim() === 'Clear all').click(); await pause();
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
+  button('Select tickets').click(); await pause();
+  assert(root.querySelectorAll('.next > .check').length === 2, 'only promoted tickets can be selected');
+  button('Select visible promoted tickets').click(); await pause();
+  button('Run selected tickets').click(); await pause();
+  for (let n = 0; n < 100 && operations.value.some((op) => op.state !== 'done'); n++) await pause();
+  assert(dispatches.slice(1).map((d) => d.ticket).sort().join() === 'EX-40,EX-41', 'Run selected starts each selected ticket');
+  operations.value = []; button('Done selecting tickets').click(); await pause();
+  assert(document.documentElement.scrollWidth <= innerWidth, 'the Reports view stays within the viewport');
+  assert(Math.abs(visibleTag(row('EX-41')).getBoundingClientRect().left - visibleTag(row('EX-40')).getBoundingClientRect().left) < 1 && (innerWidth <= 900 || Math.abs(visibleTag(row('EX-40')).getBoundingClientRect().left - tagLeft) < 1), 'outcome tags line up at the start of the facet line');
+  if (innerWidth > 900) assert(Math.abs(row('EX-40').getBoundingClientRect().height - reportHeight) < 1, 'a promoted row with Start is as tall as a report row');
+  const result = { dispatches: dispatches.length };
+  await show();
+  return result;
 }
 // Each inbox row shows its promotion counts and limit, and edits the limit through the settings save.
 async function promotion() {
@@ -220,6 +238,6 @@ async function triageNow() {
     return { runs, viewport: [innerWidth, innerHeight] };
   } finally { streams.splice(0, streams.length, ...saved); }
 }
-async function phoneHeader() { await show(); return checkPageHead(); }
-window.triageTests = { phoneHeader, show, run, promotion, triageNow };
+async function phoneHeader() { await showReady(); return checkPageHead(); }
+window.triageTests = { phoneHeader, show, showReady, run, ready, promotion, triageNow };
 await show();

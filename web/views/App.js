@@ -10,7 +10,7 @@ import { OperationActions, Composer } from "./Deck.js";
 import { Now } from "./Now.js";
 import { TicketPanel } from "./TicketPanel.js";
 import { Runs, RunDetail } from "./Runs.js";
-import { SessionTickets } from "./SessionTickets.js";
+import { Queue } from "./Queue.js";
 import { Cleanup } from "./Cleanup.js";
 import { Activity } from "./Activity.js";
 import { Models } from "./Models.js";
@@ -19,7 +19,7 @@ import { Projects } from "./Projects.js";
 import { Upstream } from "./Upstream.js";
 import { Triage } from "./Triage.js";
 
-const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": RunDetail, "/session-tickets": SessionTickets, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream, "/triage": Triage };
+const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": RunDetail, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream, "/triage": Triage };
 const CONNECTION = { connecting: "Connecting", live: "Live", retrying: "Retrying", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.

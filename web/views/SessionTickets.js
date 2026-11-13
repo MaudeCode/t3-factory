@@ -9,7 +9,8 @@ import { RunFilters } from "./Runs.js";
 
 const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. Factory discovery and upstream release-review sessions are excluded. A ticket here still needs its readiness checks to start, and nothing starts on its own.";
 
-export function SessionTickets() {
+// The Queue page's Sessions view; `lead` is the Queue's view switch.
+export function SessionTickets({ lead } = {}) {
   clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
@@ -36,9 +37,10 @@ export function SessionTickets() {
   const project = (id) => c.projects.find((p) => p.kanvilId === id);
   const dismiss = (tickets) => {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
-    confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from Session tickets?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
+    confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from the session list?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} title="Session tickets" count=${s ? rows.length : null} hint=${HINT} actions=${html`<${StartOptions} /><${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} class="queue" title="Queue" count=${s ? rows.length : null} hint=${HINT} actions=${html`<${StartOptions} /><${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    ${lead}
     ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN && op.origin !== TRIAGE_ORIGIN)} />
     <${Section} class="list">

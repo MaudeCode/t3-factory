@@ -2714,6 +2714,11 @@ h1 .crumb::after {
     flex: none;
     flex-wrap: nowrap;
   }
+  /* The Queue's views carry different controls; a row of their own keeps the head, and the view switch under it,
+     at one height whichever view is open. */
+  .queue .page-actions {
+    flex-basis: 100%;
+  }
   .page-head .chips button,
   .page-head .slots button {
     min-width: 44px;

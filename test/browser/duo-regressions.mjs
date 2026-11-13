@@ -46,7 +46,7 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
         assert.equal(await page.locator("input.search").count(), 0, "Enter closes Search once without reopening it");
       }],
     ];
-    // The three ticket lists share one phone head; their measured heights must agree at each width.
+    // The Queue page's three ticket views share one phone head; their measured heights must agree at each width.
     const heads = {};
     for (const width of [360, 382, 594]) for (const [fixture, api] of [["queue", "queueTests"], ["session-tickets", "sessionTests"], ["triage", "triageTests"]]) {
       cases.push([`${fixture} phone header`, fixture, api, width, async page => {
