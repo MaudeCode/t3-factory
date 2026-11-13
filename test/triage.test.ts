@@ -1221,6 +1221,17 @@ const conflictOn = (f: ReturnType<typeof fixture>, key: string, edit: (t: Task) 
 };
 const seen = (t: Task) => ({ labels: [...t.labels!, { name: 'seen' }] });
 
+test('an owner decision is dropped when the report left the inbox after the projection was read', async t => {
+  const f = fixture(t), failed = { labels: [{ name: 'intake' }, { name: 'triage-failed' }] };
+  f.projects.TALIN.push(task('TALIN-6', failed), task('TALIN-7', failed));
+  conflictOn(f, 'TALIN-6', () => ({ archived: true }));
+  conflictOn(f, 'TALIN-7', t => ({ labels: t.labels!.filter(l => l.name !== 'intake') }));
+  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-6').id, 'close'), null);
+  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-7').id, 'retry'), null);
+  assert.equal(named(f, 'updateTicket').length, 2, 'neither write is repeated on the fresh ticket');
+  assert.deepEqual([current(f, 'TALIN-6').status, labelsOf(current(f, 'TALIN-7'))], ['todo', ['triage-failed']]);
+});
+
 test('a report closed while triage ran is left closed, with no failure and no saved plan', async t => {
   const f = fixture(t);
   conflictOn(f, 'TALIN-5', () => ({ status: 'cancelled' }));

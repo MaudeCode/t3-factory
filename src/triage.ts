@@ -215,14 +215,14 @@ const versionConflict = (error: unknown) => error instanceof Error && 'code' in 
  * Writes `changes(ticket)` at the ticket's version. When someone wrote the ticket meanwhile, refetches it and writes
  * the same intent once more on the fresh ticket, so its labels merge with the edit. Writes nothing when the ticket
  * was closed meanwhile, since that closure is the newer decision, or, with `sameReport`, when its report text changed,
- * since the intent was judged on the old text.
+ * since the intent was judged on the old text. `still` adds the caller's own condition on the fresh ticket.
  */
-async function updateWithReconcile(kanvil: TriageKanvil, ticket: Task, step: string, changes: (ticket: Task) => Record<string, unknown>, sameReport = true) {
+async function updateWithReconcile(kanvil: TriageKanvil, ticket: Task, step: string, changes: (ticket: Task) => Record<string, unknown>, sameReport = true, still: (fresh: Task) => boolean = () => true) {
   try { await kanvil.updateTicket(ticket.projectId, ticket.id, ticket.version!, changes(ticket), requestId(ticket, step)); }
   catch (error) {
     if (!versionConflict(error)) throw error;
     const fresh = await kanvil.task(ticket.id, ticket.projectId);
-    if (CLOSED.includes(fresh.status)) return 'closed';
+    if (CLOSED.includes(fresh.status) || !still(fresh)) return 'closed';
     if (sameReport && reportHash(fresh) !== reportHash(ticket)) return 'changed';
     await kanvil.updateTicket(fresh.projectId, fresh.id, fresh.version!, changes(fresh), requestId(fresh, step));
   }
@@ -650,9 +650,10 @@ export async function resolveReport(c: Pick<Config, 'projects'>, kanvil: TriageK
       labels: names(current).filter(name => !['triaged', 'triage-failed', ...PROMOTION_LABELS].includes(name) && !/^(verdict|validation):/.test(name)),
       // The hold promotion placed goes with its label; an operator's own hold stays.
       ...(current.holdReason?.startsWith('Promotion needs the owner: ') ? { holdReason: inbox.intakeHold ?? null } : {}),
-    }, false);
+    }, false, fresh => open(fresh, inbox));
     log('triage-owner', { ticket: ticket.key, action, state });
-    return { ticket: ticket.key, action, state };
+    // A report archived, closed or moved out of the inbox since the projection was read is no longer the owner's to decide here.
+    return state === 'written' ? { ticket: ticket.key, action, state } : null;
   }
   return null;
 }
