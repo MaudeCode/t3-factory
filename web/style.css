@@ -3029,9 +3029,14 @@ a.now-main:hover {
 }
 .now-more {
   display: block;
-  padding: var(--space-1) 0 0 22px;
-  color: var(--accent-text);
+  min-height: var(--control);
+  padding: 0 0 0 22px;
+  border: 0;
+  background: none;
+  font: inherit;
   font-size: 12.5px;
+  color: var(--accent-text);
+  cursor: pointer;
 }
 .now-more.narrow {
   display: none;
@@ -3049,7 +3054,7 @@ a.now-main:hover {
     margin-left: 0;
     flex-basis: 100%;
   }
-  .now-section li:nth-child(n + 3),
+  .now-section:not(.open) li:nth-child(n + 3),
   .now-more.wide {
     display: none;
   }

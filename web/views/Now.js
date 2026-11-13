@@ -1,5 +1,5 @@
 // Home: what the factory and each provider are doing right now, what waits on the owner, and what the owner queued.
-import { html } from "../lib/h.js";
+import { html, useState } from "../lib/h.js";
 import { status, jobs, issues, launchOperations, clock, serverNow, busy } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections } from "../lib/format.js";
@@ -55,11 +55,15 @@ function Plan({ plan }) {
     end=${html`<${CancelPlan} plan=${plan} title=${cancel} label=${epic ? "Cancel Epic" : plan.queued ? "Cancel queued run" : "Cancel chain"} icon="x" class="next-run" />`} />`;
 }
 
-function Section({ title, tone, items, more, empty, children }) {
-  const n = items.length, rest = (limit) => n > limit && html`<a class=${`now-more ${limit === LIMIT ? "wide" : "narrow"}`} href=${more} onClick=${follow}>${n - limit} more</a>`;
-  return html`<section class=${`now-section ${tone ?? ""}`}>
+// A section shows its first rows and expands in place, so every counted item and its action stays reachable here:
+// no other page lists reports, problems, requests and runs together.
+function Section({ title, tone, items, row, empty }) {
+  const [open, setOpen] = useState(false);
+  const n = items.length;
+  const more = (limit) => n > limit && html`<button type="button" class=${`now-more ${limit === LIMIT ? "wide" : "narrow"}`} aria-expanded=${open} onClick=${() => setOpen(!open)}>${open ? "Show fewer" : `${n - limit} more`}</button>`;
+  return html`<section class=${`now-section ${tone ?? ""}${open ? " open" : ""}`}>
     <h2>${title}<small>${n}</small></h2>
-    ${n ? html`<ul>${children}</ul>${rest(LIMIT)}${rest(NARROW)}` : html`<${Empty}>${empty}<//>`}
+    ${n ? html`<ul>${(open ? items : items.slice(0, LIMIT)).map(row)}</ul>${more(LIMIT)}${more(NARROW)}` : html`<${Empty}>${empty}<//>`}
   </section>`;
 }
 
@@ -68,12 +72,13 @@ export function Now({ initialTicket } = {}) {
   busy.value;
   const now = serverNow();
   const s = nowSections({ jobs: jobs.value, plans: status.value.plans ?? [], operations: launchOperations.value, reports: status.value.triageReports ?? [], issues: issues.value });
-  const newest = (list) => list.toSorted((a, b) => byNewest(a.job, b.job)).slice(0, LIMIT);
+  const newest = (list) => list.toSorted((a, b) => byNewest(a.job, b.job));
   const needsRow = (item) => item.kind === "run" ? html`<${Run} key=${item.id} job=${item.job} now=${now} needs />`
     : item.kind === "report" ? html`<${Report} key=${item.id} event=${item.event} />`
     : item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} needs />`
     : html`<${Problem} key=${item.id} item=${item} />`;
   const run = (item) => html`<${Run} key=${item.id} job=${item.job} now=${now} />`;
+  const queued = (item) => item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} />` : html`<${Plan} key=${item.id} plan=${item.plan} />`;
   const sentence = decisionSentence(status.value.decision);
   const count = (n, label, tone) => html`<span class=${tone && n ? tone : ""}><b>${n}</b>${label}</span>`;
   return html`<div class="now">
@@ -85,12 +90,10 @@ export function Now({ initialTicket } = {}) {
     ${sentence && html`<p class="now-decision">${sentence}</p>`}
     <div class="strip">${PROVIDERS.map((p) => html`<${Machine} key=${p.driver} provider=${p} />`)}</div>
     <div class="now-grid">
-      <${Section} title="Needs you" tone="attention" items=${s.needs} more="/runs?state=waiting" empty="Nothing needs you.">${s.needs.slice(0, LIMIT).map(needsRow)}<//>
-      <${Section} title="Working" items=${s.working} more="/runs" empty="Nothing is working.">${newest(s.working).map(run)}<//>
-      <${Section} title="CI" items=${s.ci} more="/runs" empty="Nothing is in CI.">${newest(s.ci).map(run)}<//>
-      <${Section} title="Your queue" items=${s.queue} more="/runs?state=next" empty="You have nothing queued.">
-        ${s.queue.slice(0, LIMIT).map((item) => item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} />` : html`<${Plan} key=${item.id} plan=${item.plan} />`)}
-      <//>
+      <${Section} title="Needs you" tone="attention" items=${s.needs} row=${needsRow} empty="Nothing needs you." />
+      <${Section} title="Working" items=${newest(s.working)} row=${run} empty="Nothing is working." />
+      <${Section} title="CI" items=${newest(s.ci)} row=${run} empty="Nothing is in CI." />
+      <${Section} title="Your queue" items=${s.queue} row=${queued} empty="You have nothing queued." />
     </div>
   </div>`;
 }

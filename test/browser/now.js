@@ -111,6 +111,13 @@ async function load() {
     assert(total > limit ? more.length === 1 && more[0].textContent === `${total - limit} more` : !more.length, `${name} links to the rest: ${more.map((m) => m.textContent)}`);
     assert(s[name].querySelector("h2 small").textContent === String(total), `${name} counts hidden rows too`);
   }
+  // Every counted item stays reachable here: the section expands in place, reports and their actions included.
+  const needs = s["Needs you"], expand = () => [...needs.querySelectorAll(".now-more")].find(visible);
+  expand().click(); await pause();
+  assert(rows(needs).length === 13 && expand().getAttribute("aria-expanded") === "true", `expanding Needs you shows every item: ${rows(needs).length}`);
+  assert(needs.querySelector('button[aria-label="Triage PIN-2 again"]') && needs.querySelector('button[aria-label="Close PIN-6"]'), "reports hidden behind the limit keep their actions once expanded");
+  expand().click(); await pause();
+  assert(rows(needs).length === limit, "the section collapses again");
   assert([...root.querySelectorAll(".now-counts span")].map((el) => el.textContent).join() === "16running,13need you,3in your queue", "header counts include rows behind N more");
   const grid = root.querySelector(".now-grid"), tops = new Set([...grid.children].map((el) => Math.round(el.getBoundingClientRect().top)));
   assert(tops.size === (width() > 1060 ? 1 : width() > 700 ? 2 : 4), `sections use four, two or one column by content width: ${tops.size} rows at ${width()}px`);
