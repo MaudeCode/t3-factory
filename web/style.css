@@ -2334,6 +2334,17 @@ h1 .crumb::after {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* On a phone the tags keep the first line and the queue summary wraps below them. */
+@media (max-width: 900px) {
+  .triage-inbox {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+  }
+  .triage-inbox > .muted {
+    flex-basis: 100%;
+    white-space: normal;
+  }
+}
 .triage-inbox-settings {
   border-top: 1px solid var(--line);
   padding-top: var(--space-3);

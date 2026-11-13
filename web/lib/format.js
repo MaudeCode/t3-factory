@@ -52,12 +52,11 @@ export const span = (seconds, compact = false) => {
 // Dates arrive as ISO strings from the server or as millisecond numbers computed here.
 const ms = (date) => (typeof date === "number" ? date : Date.parse(date));
 export const ago = (date, now = Date.now(), compact = false) => (date ? `${span(Math.max(0, (now - ms(date)) / 1000), compact)} ago` : "never");
-// One inbox queue row from status: waiting, failed, and the oldest waiting report's age.
+// One inbox queue row from status, in pipeline order: waiting and the oldest report's age, the running report, queued, promoted.
 export const triageSummary = (row, now = Date.now()) => {
   if (!row.synchronized) return "not synchronized";
-  return [`${row.untriaged} waiting`, row.failed && `${row.failed} failed`, row.promoted && `${row.promoted} promoted`, row.queued && `${row.queued} queued`,
-    row.blocked && `${row.blocked} blocked`, row.needsOwner && `${row.needsOwner} need the owner`,
-    row.oldestUntriagedAt && `oldest ${ago(row.oldestUntriagedAt, now)}`, row.running && `triaging ${row.running}`].filter(Boolean).join(", ");
+  return [`${row.untriaged} waiting`, row.oldestUntriagedAt && `oldest ${ago(row.oldestUntriagedAt, now)}`, row.running && `triaging ${row.running}`,
+    row.queued && `${row.queued} queued`, row.promoted && `${row.promoted} promoted`].filter(Boolean).join(", ");
 };
 // An inbox's daily promotion limit: null is unlimited and 0 pauses promotion.
 export const promotionLimit = (limit) => (limit == null ? "Unlimited" : limit === 0 ? "Paused" : `${limit} per day`);

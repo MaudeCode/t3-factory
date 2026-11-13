@@ -612,6 +612,51 @@ export function promotedTickets(c: Pick<Config, 'projects'>, kanvil: Pick<Triage
   return found;
 }
 
+// Outcomes no later pass acts on: the report stays open in the inbox until the owner closes or relabels it.
+const OWNER_OUTCOMES = ['triage-failed', 'promotion-failed', 'needs-owner', 'promotion-blocked'], OWNER_VERDICTS = ['needs-info', 'duplicate', 'already-exists'];
+/**
+ * Every open report with the stage it is in, read from the live inbox projection so a report stays listed however many
+ * are triaged after it. `stage` is `owner` when no later pass acts on it and `working` while triage or promotion will.
+ * Each is shaped like its journal entry: the newest matching one in `results`, or one rebuilt from the report itself
+ * when it has no result yet or that entry has aged out.
+ */
+export function openReports(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanvil, 'cachedTickets'>, results: { id: number; time: string; kind: string; text: string; data: Record<string, unknown> }[], running: Task[] = []) {
+  return inboxes(c).flatMap(({ project, inbox }) => (kanvil.cachedTickets(inbox.kanvilId) ?? []).filter(t => open(t, inbox)).flatMap(t => {
+    const labels = names(t), verdict = labels.find(l => l.startsWith('verdict:'))?.slice(8);
+    const outcome = running.some(r => r.id === t.id) ? 'triaging' : needsTriage(t, inbox) ? 'waiting'
+      : OWNER_OUTCOMES.find(l => labels.includes(l)) ?? (labels.includes('triaged') && OWNER_VERDICTS.includes(verdict!) ? 'triaged'
+      : awaitingPromotion(t, inbox) ? labels.includes('promotion-queued') ? 'promotion-queued' : 'awaiting-promotion'
+      // An actionable report the operator put on hold is kept out of promotion until the hold is lifted.
+      : verdict === 'actionable' && t.holdReason ? 'held' : null);
+    if (!outcome) return [];
+    const stage = ['triaging', 'waiting', 'promotion-queued', 'awaiting-promotion'].includes(outcome) ? 'working' : 'owner';
+    const rebuilt = outcome === 'triaged' ? `triaged: ${verdict}` : outcome === 'waiting' ? 'waiting for triage' : outcome === 'awaiting-promotion' ? 'waiting for promotion'
+      : outcome === 'held' ? `on hold: ${t.holdReason}` : outcome.replaceAll('-', ' ');
+    const event = results.find(e => e.data.ticketId === t.id && e.data.outcome === outcome && (outcome !== 'triaged' || e.data.verdict === verdict))
+      ?? { id: 0, time: outcome === 'waiting' ? t.createdAt : t.updatedAt ?? t.createdAt, kind: 'triage', text: `${t.key} ${rebuilt}`, data: {} };
+    return [{ ...event, data: { ...event.data, outcome, ...(outcome === 'triaged' ? { verdict } : {}), stage, ticket: t.key, ticketId: t.id, inboxId: inbox.kanvilId, projectId: project.kanvilId, project: project.name } }];
+  }));
+}
+
+/**
+ * The owner's decision on an open report: `retry` clears its triage and promotion labels so the next pass triages it
+ * again, and `close` cancels it. Only a report open in a configured inbox is written; null for anything else.
+ */
+export async function resolveReport(c: Pick<Config, 'projects'>, kanvil: TriageKanvil, ticketId: string, action: 'retry' | 'close') {
+  for (const { inbox } of inboxes(c)) {
+    const ticket = kanvil.cachedTickets(inbox.kanvilId)?.find(t => t.id === ticketId);
+    if (!ticket || !open(ticket, inbox)) continue;
+    const state = await updateWithReconcile(kanvil, ticket, `owner-${action}`, current => action === 'close' ? { status: 'cancelled' } : {
+      labels: names(current).filter(name => !['triaged', 'triage-failed', ...PROMOTION_LABELS].includes(name) && !/^(verdict|validation):/.test(name)),
+      // The hold promotion placed goes with its label; an operator's own hold stays.
+      ...(current.holdReason?.startsWith('Promotion needs the owner: ') ? { holdReason: inbox.intakeHold ?? null } : {}),
+    }, false);
+    log('triage-owner', { ticket: ticket.key, action, state });
+    return { ticket: ticket.key, action, state };
+  }
+  return null;
+}
+
 /** Doctor: the exact sandbox must refuse a read outside it and a shell command. */
 export async function triageCanary(command = 'claude', timeoutMs = TRIAGE_TIMEOUT_MS) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 't3-factory-triage-'))), outside = realpathSync(mkdtempSync(join(tmpdir(), 't3-factory-canary-')));

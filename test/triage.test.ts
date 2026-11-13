@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
-import { admitTriage, inboxes, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, promotedTickets, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
+import { admitTriage, inboxes, openReports, resolveReport, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, promotedTickets, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
 import { log, triageResults, triageRows } from '../src/scheduler.ts';
 import { FactoryService } from '../src/service.ts';
 import { Store } from '../src/store.ts';
@@ -857,6 +857,53 @@ test('Triage now runs one pass past the pause and reserve; the next automatic pa
   internal.triage();
   await lane();
   assert.equal(f.calls().length, 1, 'the next automatic pass stays paused');
+});
+
+test('every open report is listed with its stage from the inbox, with or without a journal entry', t => {
+  const f = fixture(t), at = '2026-01-01T00:00:00Z', labelled = (...labels: string[]) => ({ labels: ['intake', ...labels].map(name => ({ name })), createdAt: at, updatedAt: at });
+  f.projects.TALIN.push(
+    task('TALIN-6', labelled('triaged', 'verdict:needs-info')), task('TALIN-7', labelled('triaged', 'verdict:actionable', 'needs-owner')),
+    task('TALIN-8', labelled('triage-failed')), task('TALIN-9', labelled('triaged', 'verdict:duplicate')),
+    task('TALIN-10', labelled('triaged', 'verdict:actionable')), task('TALIN-11', labelled('triaged', 'verdict:actionable', 'promotion-queued')),
+    task('TALIN-12', { ...labelled('triaged', 'verdict:actionable'), holdReason: 'Asked the reporter' }), task('TALIN-13', labelled()),
+    // Closed and archived reports are in no stage.
+    task('TALIN-14', { ...labelled('triaged', 'verdict:needs-info'), status: 'done' }), task('TALIN-15', { ...labelled('triage-failed'), archived: true }));
+  const id = (key: string) => current(f, key).id, entry = (n: number, key: string, text: string, data: Record<string, unknown>) => ({ id: n, time: `2026-01-0${n}T00:00:00Z`, kind: 'triage', text, data: { ticketId: id(key), ...data } });
+  const rows = openReports(f.c, f.kanvil, [
+    entry(3, 'TALIN-7', 'TALIN-7 needs the owner: sensitive: workType sec', { outcome: 'needs-owner', reason: 'sensitive: workType sec' }),
+    // An earlier verdict for the same report is not its current state.
+    entry(2, 'TALIN-7', 'TALIN-7 triaged: actionable', { outcome: 'triaged', verdict: 'actionable' }),
+  ], [current(f, 'TALIN-13')]);
+  assert.deepEqual(rows.map(r => [r.data.ticket, r.data.stage, r.data.outcome, r.text, r.time]), [
+    ['TALIN-5', 'working', 'waiting', 'TALIN-5 waiting for triage', at],
+    ['TALIN-6', 'owner', 'triaged', 'TALIN-6 triaged: needs-info', at],
+    ['TALIN-7', 'owner', 'needs-owner', 'TALIN-7 needs the owner: sensitive: workType sec', '2026-01-03T00:00:00Z'],
+    ['TALIN-8', 'owner', 'triage-failed', 'TALIN-8 triage failed', at],
+    ['TALIN-9', 'owner', 'triaged', 'TALIN-9 triaged: duplicate', at],
+    ['TALIN-10', 'working', 'awaiting-promotion', 'TALIN-10 waiting for promotion', at],
+    ['TALIN-11', 'working', 'promotion-queued', 'TALIN-11 promotion queued', at],
+    ['TALIN-12', 'owner', 'held', 'TALIN-12 on hold: Asked the reporter', at],
+    ['TALIN-13', 'working', 'triaging', 'TALIN-13 triaging', at],
+  ]);
+  assert.deepEqual(rows[1].data, { outcome: 'triaged', verdict: 'needs-info', stage: 'owner', ticket: 'TALIN-6', ticketId: id('TALIN-6'), inboxId: 'TALIN', projectId: 'TAL', project: 'TAL' });
+  f.setCurrent(false);
+  assert.deepEqual(openReports(f.c, f.kanvil, []), [], 'nothing is listed while the projection is not current');
+});
+
+test('the owner sends a report through triage again or closes it; anything outside an inbox is refused', async t => {
+  const f = fixture(t), labels = (...names: string[]) => names.map(name => ({ name }));
+  f.projects.TALIN.push(task('TALIN-6', { labels: labels('intake', 'bug', 'triaged', 'verdict:actionable', 'validation:plausible', 'needs-owner'), holdReason: 'Promotion needs the owner: research' }),
+    task('TALIN-7', { labels: labels('intake', 'triaged', 'verdict:needs-info') }));
+  assert.deepEqual(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-6').id, 'retry'), { ticket: 'TALIN-6', action: 'retry', state: 'written' });
+  const again = current(f, 'TALIN-6');
+  assert.deepEqual([labelsOf(again), again.holdReason ?? null, again.status], [['intake', 'bug'], null, 'todo'], 'triage and promotion labels and the promotion hold are cleared');
+  assert.ok(needsTriage(again, inboxes(f.c)[0].inbox), 'the next pass triages it again');
+  assert.equal((await resolveReport(f.c, f.kanvil, current(f, 'TALIN-7').id, 'close'))?.state, 'written');
+  assert.equal(current(f, 'TALIN-7').status, 'cancelled');
+  const writes = named(f, 'updateTicket').length;
+  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TAL-10').id, 'close'), null, 'a delivery ticket is not a report');
+  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-7').id, 'retry'), null, 'a closed report is left alone');
+  assert.equal(named(f, 'updateTicket').length, writes);
 });
 
 test('a needs-owner report names the check in holdReason and promotes nothing', async t => {
