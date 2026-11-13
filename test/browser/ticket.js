@@ -28,6 +28,7 @@ const state = {
 let reads = [], dispatches = [], failing = new Set(), hang = false;
 window.fetch = async (url, init) => {
   if (url === "/api/history") return Response.json([]);
+  if (/^\/api\/jobs\/[\w-]+\/report$/.test(url)) return Response.json({ job: state.status.jobs[0], events: [], report: null });
   if (url === "/api/dispatch") {
     const input = JSON.parse(init.body);
     dispatches.push(input);
