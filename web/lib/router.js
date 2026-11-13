@@ -4,15 +4,15 @@ import { ticketKey } from "./format.js";
 
 // The sidebar's groups: [path, name, icon]. PAGES is the same list flat, for route matching.
 export const NAV = [
-  ["Operate", [["/", "Deck", "home"], ["/runs", "Runs", "play"], ["/triage", "Triage", "inbox"], ["/session-tickets", "Session tickets", "issueOpened"], ["/activity", "Activity", "pulse"]]],
+  ["Operate", [["/", "Now", "home"], ["/runs", "Runs", "play"], ["/triage", "Triage", "inbox"], ["/session-tickets", "Session tickets", "issueOpened"], ["/activity", "Activity", "pulse"]]],
   ["Maintain", [["/cleanup", "Cleanup", "trash"], ["/upstream", "Upstream", "gitBranch"]]],
   ["Configure", [["/projects", "Projects", "repo"], ["/models", "Models", "cpu"], ["/capacity", "Capacity", "meter"]]],
 ];
 export const PAGES = NAV.flatMap(([, pages]) => pages);
 // The phone's bottom bar; the rest of NAV is behind More.
-export const TABS = [["/", "Deck"], ["/runs", "Runs"], ["/triage", "Triage"], ["/session-tickets", "Tickets"]];
+export const TABS = [["/", "Now"], ["/runs", "Runs"], ["/triage", "Triage"], ["/session-tickets", "Tickets"]];
 
-// Resolve a path to { page, param }. Unknown paths fall back to the deck.
+// Resolve a path to { page, param }. Unknown paths fall back to Now.
 export function match(href) {
   const [path] = href.split("?");
   const query = href.slice(path.length + 1);

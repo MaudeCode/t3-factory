@@ -6,7 +6,8 @@ import { ago, until } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { Login } from "./Login.js";
-import { Deck, OperationActions, Composer } from "./Deck.js";
+import { OperationActions, Composer } from "./Deck.js";
+import { Now } from "./Now.js";
 import { Runs, RunDetail } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { Cleanup } from "./Cleanup.js";
@@ -17,7 +18,7 @@ import { Projects } from "./Projects.js";
 import { Upstream } from "./Upstream.js";
 import { Triage } from "./Triage.js";
 
-const pages = { "/": Deck, "/start": Deck, "/runs": Runs, "/runs/:id": RunDetail, "/session-tickets": SessionTickets, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream, "/triage": Triage };
+const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": RunDetail, "/session-tickets": SessionTickets, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/upstream": Upstream, "/triage": Triage };
 const CONNECTION = { connecting: "Connecting", live: "Live", retrying: "Retrying", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.
@@ -174,7 +175,7 @@ function Shell() {
   const badge = (path) => path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`;
   const signOut = auth.value.mode === "oidc" ? "Sign out" : "Disconnect";
   const leave = () => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout();
-  const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory deck"><img src="/icon.svg" width="24" height="24" alt="" /><span>Factory</span></a>`;
+  const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory: Now"><img src="/icon.svg" width="24" height="24" alt="" /><span>Factory</span></a>`;
   const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); follow(e); }} aria-current=${current(path) ? "page" : undefined}>
     <${Icon} name=${icon} /><span>${name}</span>${badge(path)}
   </a>`;

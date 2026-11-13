@@ -114,11 +114,10 @@ async function deckIsolation() {
   await show();
   const cleanup = { id: 'cleanup-fixture', kind: 'cleanup', input: { type: 'remove', targets: [{ projectId: 'p', path: items[6].path }] }, state: 'failed', result: { data: { state: 'failed', outcomes: [{ path: items[6].path, state: 'failed', message: 'Cleanup-only failure' }] } } };
   operations.value = [cleanup, { id: 'dispatch-fixture', input: { ticket: 'FIX-999', model: 'auto' }, state: 'failed', result: { data: { message: 'Dispatch-only failure' } } }];
-  route.value = { page: '/', path: '/', param: null }; await until(() => document.querySelector('.deck')); await pause(30);
+  route.value = { page: '/', path: '/', param: null }; await until(() => document.querySelector('.now')); await pause(30);
   assert(!document.querySelector('main').textContent.includes('Cleanup remove') && !document.querySelector('main').textContent.includes('Cleanup-only failure'), 'cleanup operations never render on the Deck');
-  assert(document.querySelector('main').textContent.includes('Dispatch-only failure'), 'dispatch feedback remains on the Deck');
+  assert(document.querySelector('main').textContent.includes('Dispatch-only failure'), 'dispatch feedback remains on Now');
   operations.value = [cleanup]; await pause(30);
-  assert(!document.querySelector('.deck .launch'), 'cleanup-only requests do not leave an empty launch section');
   route.value = { page: '/cleanup', path: '/cleanup', param: null }; await until(() => document.querySelector('.cleanup-row')); await pause(30);
   assert(document.body.textContent.includes('0 deleted') && document.body.textContent.includes('1 failed'), 'cleanup results remain visible on Cleanup');
   assert(operations.value.length === 1 && operations.value[0].id === cleanup.id, 'hiding cleanup feedback never deletes operation recovery state');
