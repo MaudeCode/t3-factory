@@ -652,3 +652,23 @@ test('launch feedback excludes cleanup operations without dropping their recover
     assert.equal(store.operations.value[0], cleanup);
   } finally { store.operations.value = []; }
 });
+
+test('tracker Markdown becomes elements, with HTML left as text and unsafe link targets left unlinked', async () => {
+  const { markdown } = await import('../web/lib/markdown.js');
+  // A vnode tree as tags around its text, so structure and escaping read in one string.
+  const show = (node: any): string => Array.isArray(node) ? node.map(show).join('')
+    : node == null || node === false ? '' : typeof node !== 'object' ? String(node)
+    : `<${node.type}${node.props.href ? ` href=${node.props.href}` : ''}${node.props.checked ? ' checked' : ''}>${show(node.props.children)}</${node.type}>`;
+  const render = (text: string) => show(markdown(text));
+  assert.equal(render('## Outcome\nOne **bold `code`** and *em* in src/*.ts and web/*.js.\nSecond line.\n\n#### Deep'),
+    '<h5>Outcome</h5><p>One <strong>bold <code>code</code></strong> and <em>em</em> in src/*.ts and web/*.js.\nSecond line.</p><h6>Deep</h6>');
+  assert.equal(render('- one\n  - nested\n- [x] done\n\n2. two\n3. three'),
+    '<ul><li>one<ul><li>nested</li></ul></li><li><input checked></input>done</li></ul><ol><li>two</li><li>three</li></ol>');
+  assert.equal(render('```ts\nconst a = "<b>";\n# not a heading\n```\n> quoted\n\n---\n| Key | State |\n| --- | --- |\n| A-1 | *open* |'),
+    '<pre><code>const a = "<b>";\n# not a heading</code></pre><blockquote><p>quoted</p></blockquote><hr></hr>'
+    + '<div><table><thead><tr><th>Key</th><th>State</th></tr></thead><tbody><tr><td>A-1</td><td><em>open</em></td></tr></tbody></table></div>');
+  assert.equal(render('````md\n```ts\nlet a;\n```\n````\nafter'), '<pre><code>```ts\nlet a;\n```</code></pre><p>after</p>');
+  assert.equal(render('See [the PR](https://example.test/pr/1), https://example.test/a. Not [this](javascript:alert(1)) or [that](http://example.test).'),
+    '<p>See <a href=https://example.test/pr/1>the PR</a>, <a href=https://example.test/a>https://example.test/a</a>. Not [this](javascript:alert(1)) or [that](http://example.test).</p>');
+  assert.equal(render('<img src=x onerror="alert(1)">\n<script>alert(1)</script>'), '<p><img src=x onerror="alert(1)">\n<script>alert(1)</script></p>');
+});

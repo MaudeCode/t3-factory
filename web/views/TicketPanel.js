@@ -7,13 +7,14 @@ import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, follow } from "../lib/router.js";
 import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest } from "../lib/format.js";
 import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Segmented } from "../ui/index.js";
+import { markdown } from "../lib/markdown.js";
 import { startHold, runNow, startOptions } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
 
 const CLOSED = ["done", "cancelled"];
 const STATUS = { backlog: "Backlog", todo: "To do", in_progress: "In progress", in_review: "In review", done: "Done", cancelled: "Cancelled" };
-// The tracker's text is untrusted: it is shown as text, with its line breaks, and never parsed as markup.
-const Text = ({ children }) => (children?.trim() ? html`<p class="ticket-text">${children}</p>` : html`<${Empty}>None written.<//>`);
+// The tracker's text is untrusted: `markdown` builds its elements from the text and never parses it as HTML.
+const Text = ({ children }) => (children?.trim() ? html`<div class="ticket-text">${markdown(children)}</div>` : html`<${Empty}>None written.<//>`);
 const Related = ({ list }) => html`<span class="ticket-related">${list.map((t) => html`<span key=${t.key} class=${t.done ? "done" : ""}><b class="key">${t.key}</b> ${t.title}${t.done && html` <${Tag} tone="ok">done<//>`}</span>`)}</span>`;
 
 function Detail({ ticket: t, tab }) {

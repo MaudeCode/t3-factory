@@ -10,7 +10,7 @@ const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 // The tracker's text is untrusted: this description would run script if it were ever parsed as markup.
-const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.';
+const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.\n\n## Outcome\n\nSet `mode` to **on**, see [the guide](https://docs.example/guide) or [this](javascript:window.__ticketXss=true).\n\n```\n' + "x".repeat(400) + '\n```';
 const detail = (key, extra = {}) => ({
   id: `id-${key}`, projectId: "p", key, title: `Synthetic ticket ${key}`, status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: ["feat", "web"], scopes: ["web"],
   description: HOSTILE, acceptanceCriteria: "- first criterion\n- second criterion", automationReady: true, holdReason: null, readiness: [],
@@ -76,8 +76,15 @@ async function run() {
   assert(panel() && location.pathname === path && new URLSearchParams(location.search).get("ticket") === "APP-1", "a ticket opens in a panel on the same page, addressed by ?ticket=");
   assert(reads.join() === "APP-1", "one read per opened ticket");
   const text = panel().textContent;
-  for (const part of ["APP-1", "Synthetic ticket APP-1", "To do", "high", "med", "feat", "First line.", "Last line.", "- first criterion", "APP-90", "A finished blocker", "APP-91", "A dependent", "Billing v2", "Up next: 1 of 3"]) assert(text.includes(part), `the panel shows ${part}`);
+  for (const part of ["APP-1", "Synthetic ticket APP-1", "To do", "high", "med", "feat", "First line.", "Last line.", "first criterion", "APP-90", "A finished blocker", "APP-91", "A dependent", "Billing v2", "Up next: 1 of 3"]) assert(text.includes(part), `the panel shows ${part}`);
   assert(text.includes('<img src=x onerror="window.__ticketXss = true">') && !panel().querySelector("img, script") && !window.__ticketXss, "tracker text is shown as text and never parsed");
+  // Its Markdown is formatted: a heading, code, bold, a list, and only the https link.
+  const body = panel().querySelector(".ticket-text"), links = [...panel().querySelectorAll(".ticket-text a")];
+  assert(body.querySelector("h5").textContent === "Outcome" && body.querySelector("p code").textContent === "mode" && body.querySelector("strong").textContent === "on" && !text.includes("## Outcome"), "a description's Markdown is formatted");
+  assert(links.length === 1 && links[0].href === "https://docs.example/guide" && links[0].target === "_blank" && text.includes("[this](javascript:"), "only an https link becomes a link");
+  assert(panel().querySelectorAll(".ticket-text li").length === 2, "criteria written as a list render as one");
+  const pre = body.querySelector("pre");
+  assert(pre.scrollWidth > pre.clientWidth && panel().scrollWidth <= panel().clientWidth && pre.getBoundingClientRect().right <= panel().getBoundingClientRect().right, "a long code line scrolls inside its block");
   // The panel opens on the ticket; Factory's side of it, the latest run, is the second tab.
   assert(tab("Ticket").getAttribute("aria-checked") === "true" && !panel().querySelector(".run-detail"), "the panel opens on the Ticket tab");
   await factory();
