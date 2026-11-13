@@ -69,7 +69,10 @@ async function run() {
     assert(location.pathname === "/runs/run-3" && Math.abs(scrollY - scrolled) < 2, `selecting a run keeps the list where it was scrolled: ${scrolled} -> ${scrollY}`);
     assert(rowLink("APP-3").getAttribute("aria-current") === "true" && [...list().querySelectorAll('[aria-current="true"]')].length === 1 && detail().textContent.includes("Synthetic ticket 3"), "the selected row is marked and its run is shown");
     assert(root.querySelector('[aria-label="Start order"] [aria-checked="true"]').getAttribute("aria-label") === "Oldest first", "selecting a run keeps the list's order and filters");
-    rowLink("APP-5").click(); await pause(200);
+    // The row's arrow opens the run the same way: in place, with the list where it was.
+    const arrow = list().querySelector('a[aria-label="Open run APP-5"]'), before = scrollY;
+    arrow.click(); await pause(200);
+    assert(location.pathname === "/runs/run-5" && Math.abs(scrollY - before) < 2 && rowLink("APP-5").getAttribute("aria-current") === "true", `the row's arrow keeps the list where it was scrolled: ${before} -> ${scrollY}`);
     history.back(); await pause(200);
     assert(location.pathname === "/runs/run-3" && rowLink("APP-3").getAttribute("aria-current") === "true" && detail().textContent.includes("Synthetic ticket 3"), "Back returns to the previously selected run");
   } else {
