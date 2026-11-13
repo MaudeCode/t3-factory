@@ -283,15 +283,16 @@ struct ChainCard: View {
     var body: some View {
         let target = plan["target"] as? [String: Any]
         let epic = plan["epic"] as? [String: Any]
+        let queued = plan["queued"] as? Bool == true
         let tickets = (plan["tickets"] as? [[String: Any]] ?? []) + (target.map { [$0] } ?? [])
         let hidden = epic?["restrictedCount"] as? Int ?? 0
         let byId = Dictionary(tickets.compactMap { t in (t["id"] as? String).map { ($0, t) } }, uniquingKeysWith: { a, _ in a })
         let done = tickets.filter { $0["done"] as? Bool == true }.count
         let openByTask = Dictionary(model.jobs.filter { !["complete", "dismissed"].contains($0["state"] as? String ?? "") }.compactMap { j in (j["taskId"] as? String).map { ($0, j) } }, uniquingKeysWith: { a, _ in a })
         VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(epic != nil ? "Epic \(epic?["title"] as? String ?? "")" : "Chain to \(target?["key"] as? String ?? "")", count: nil) {
-                Text("\(done) of \(tickets.count) done").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted)
-                Button(epic != nil ? "Cancel Epic" : "Cancel chain") { Task { await model.cancelChain(plan) } }.buttonStyle(QuietButton(color: Theme.danger)).disabled(model.busy != nil)
+            SectionTitle(epic != nil ? "Epic \(epic?["title"] as? String ?? "")" : "\(queued ? "Queued" : "Chain to") \(target?["key"] as? String ?? "")", count: nil) {
+                if !queued { Text("\(done) of \(tickets.count) done").font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.muted) }
+                Button(epic != nil ? "Cancel Epic" : queued ? "Cancel queued run" : "Cancel chain") { Task { await model.cancelChain(plan) } }.buttonStyle(QuietButton(color: Theme.danger)).disabled(model.busy != nil)
             }
             ForEach(Array(tickets.enumerated()), id: \.offset) { _, t in
                 let id = t["id"] as? String ?? ""
@@ -302,7 +303,7 @@ struct ChainCard: View {
                     : job != nil ? ((job?["state"] as? String == "waiting" ? "Needs you" : "Running"), job?["state"] as? String == "waiting" ? Theme.attention : Theme.accent, model.modelName(job!))
                     : isTarget && tickets.dropLast().contains(where: { $0["done"] as? Bool != true }) ? ("Last", Theme.muted, "after every ticket above")
                     : !ahead.isEmpty ? ("Waits", Theme.muted, "after " + ahead.joined(separator: ", "))
-                    : ("Next", Theme.attention, t["note"] as? String ?? "starts when a slot is free")
+                    : (queued ? "Queued" : "Next", Theme.attention, t["note"] as? String ?? "starts when a slot is free")
                 HStack(spacing: 8) {
                     Tag(text: state.0, color: state.1).frame(width: 72)
                     VStack(alignment: .leading, spacing: 1) {

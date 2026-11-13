@@ -155,7 +155,7 @@ export function PlanRows({ plan, show = () => true }) {
     const ahead = t.blockedBy.filter((id) => !byId.get(id)?.done).map((id) => byId.get(id)?.key ?? "?");
     if (t === plan.target && plan.tickets.some((x) => !x.done)) return ["Last", "", "after every ticket above"];
     if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
-    return ["Next", "attention", t.note ?? (plan.state ? "starts when a slot is free" : "")];
+    return [plan.queued ? "Queued" : "Next", "attention", t.note ?? (plan.state ? "starts when a slot is free" : "")];
   };
   const reasons = (t) => [
     t.runnable === false && "Its project is not included in the factory",
@@ -179,8 +179,8 @@ export const CancelPlan = ({ plan, title, label, icon, class: extra }) => html`<
 // Chains the user started. Epics have their own tab on the Runs page.
 export function Chains() {
   clock.value;
-  return (status.value.plans ?? []).filter((p) => p.state === "active" && !p.epic).map((p) => html`<${Section} key=${p.id} title=${`Chain to ${p.target.key}`} count=${planProgress(p)}
-    aside=${html`<${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" />`}>
+  return (status.value.plans ?? []).filter((p) => p.state === "active" && !p.epic).map((p) => html`<${Section} key=${p.id} title=${p.queued ? `Queued ${p.target.key}` : `Chain to ${p.target.key}`} count=${p.queued ? null : planProgress(p)}
+    aside=${html`<${CancelPlan} plan=${p} title=${p.queued ? `Cancel the queued run for ${p.target.key}?` : `Cancel the chain to ${p.target.key}?`} label=${p.queued ? "Cancel queued run" : "Cancel chain"} />`}>
     <${PlanRows} plan=${p} />
   <//>`);
 }

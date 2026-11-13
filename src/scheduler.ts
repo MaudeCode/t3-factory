@@ -708,17 +708,18 @@ function branchConflict(key: string, refs: string, released: Map<string, string>
 
 // Unnamed scheduling never takes a ticket from a running Epic, so the model and overrides chosen for the Epic always apply.
 const activeEpicPlans = (store: Store) => store.plans().filter(plan => plan.state === 'active' && plan.epic);
-function runningEpicHold(store: Store) {
+function runningPlanHold(store: Store) {
   const active = activeEpicPlans(store);
+  const queued = new Set(store.plans().filter(plan => plan.state === 'active' && plan.queued).flatMap(plan => planTickets(plan).map(ticket => ticket.id)));
   const epics = new Set(active.map(plan => plan.epic!.id)), tickets = new Set(active.flatMap(plan => plan.tickets.map(ticket => ticket.id)));
-  return (ticket: Pick<Task, 'id' | 'epicId'>) => tickets.has(ticket.id) || ticket.epicId && epics.has(ticket.epicId) ? 'Runs with its Epic' : '';
+  return (ticket: Pick<Task, 'id' | 'epicId'>) => queued.has(ticket.id) ? 'Waits for its queued run' : tickets.has(ticket.id) || ticket.epicId && epics.has(ticket.epicId) ? 'Runs with its Epic' : '';
 }
 // An archived Epic can never start, so its members are not held for it. An unreadable catalog holds every member.
 const unstartedEpicHold = (epics: Epic[] | undefined) => (ticket: Pick<Task, 'epicId'>) =>
   ticket.epicId && !epics?.find(epic => epic.id === ticket.epicId)?.archived ? 'Waits for its Epic to start' : '';
 // Why unnamed scheduling leaves a ticket to its Epic. `epics` is the catalog read when the setting is on.
 function epicHold(c: Config, store: Store, epics?: Epic[]) {
-  const running = runningEpicHold(store), unstarted = unstartedEpicHold(epics);
+  const running = runningPlanHold(store), unstarted = unstartedEpicHold(epics);
   return (ticket: Pick<Task, 'id' | 'epicId'>) => running(ticket) || (c.holdEpicTicketsUntilStarted ? unstarted(ticket) : '');
 }
 
@@ -956,12 +957,57 @@ function streamUpdate(store: Store, key: string, drivers = ['claudeAgent', 'code
   };
 }
 
+// Temporary policy holds retain manual intent; invalid requests and uncertain launches never retry.
+const limitHold = (reason: string) => ['label-limit', 'provider-disabled', 'provider-running', 'quota-reserve', 'quota-budget', 'waiting-for-idle', 'personal-provider-running', 'personal-provider-recently-active', 'gate-changed-before-dispatch', 'job-resumed-before-dispatch'].includes(reason);
+const queuedPlan = (store: Store, key: string) => store.plans().find(plan => plan.state === 'active' && plan.queued && plan.target?.key === key);
+
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
-  clients = { ...clients, decide: clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual }) };
   if (options.provider && (!options.manual || options.model && options.model !== 'auto')) throw new Error('A provider choice requires manual automatic model selection');
-  if (clients.github) githubClients.set(store, clients.github);
   if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
   if (options.epic && (!options.manual || options.ticket || options.chain || options.upstream)) throw new Error('An Epic start requires a manual request and no ticket, chain or upstream options');
+  clients = { ...clients, decide: clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual }) };
+  if (!options.manual || options.upstream || options.epic || options.chain || options.dryRun || options.doctor) return cycleNow(c, store, options, clients);
+  const run = () => queueManual(c, store, options, clients);
+  return options.ticket ? store.exclusive([`manual-ticket:${options.ticket.trim().toUpperCase()}`], run) : run();
+}
+
+async function queueManual(c: Config, store: Store, options: CycleOptions, clients: Clients): Promise<Decision> {
+  const queued = (plan: Plan): Decision => {
+    const result = { reason: 'plan-started', at: new Date().toISOString(), ticket: plan.target!.key, planId: plan.id, plan, message: `${plan.target!.key} queued: ${plan.target!.note ?? 'waiting for run limits'}` };
+    clients.decide!(result); log('decision', result); return result;
+  };
+  const existing = options.ticket && queuedPlan(store, options.ticket.trim().toUpperCase());
+  if (existing) return queued(existing);
+  const result = await cycleNow(c, store, options, clients);
+  const outcomes = [result, ...(result.dispatches as Decision[] | undefined ?? [])];
+  const hold = outcomes.find(outcome => limitHold(outcome.reason) || outcome.reason === 'no-ready-model' && (outcome.streams as { reason: string; models: { reason: string }[] }[] | undefined)?.some(stream => limitHold(stream.reason) || stream.models.some(model => limitHold(model.reason))));
+  if (readContext()?.launched || outcomes.some(outcome => outcome.reason === 'dispatched') || !hold) return result;
+  const t3 = clients.t3 ?? new T3(c.t3), kanvil = clients.kanvil ?? new Kanvil(c.kanvil, c.projects);
+  if (!clients.kanvil) await kanvil.connect();
+  try {
+    const [shell, providers] = await readAll([t3.shell(), t3.providers()]);
+    const instances = new Map(providers.map(provider => [provider.instanceId, provider.driver]));
+    const inventoryNow = await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
+    const models = c.models.filter(model => options.model && options.model !== 'auto' ? model.id === options.model : (model.automatic || !!options.provider) && (!options.provider || instances.get(model.model.instanceId) === options.provider));
+    // Provider capacity can refuse before quota is read; only existing hard allowance may become queued intent.
+    const compatible = models.filter(model => inventoryNow.ready.some(ticket => acceptsDifficulty(model, ticket)));
+    const quotas = (await readAll([...Map.groupBy(compatible, model => model.model.instanceId).values()].map(models => readModelQuotas(t3, c, store.jobSummaries(), models.map(model => model.id))))).flat();
+    const allowance = new Set(quotas.filter(result => result.quota?.hasAllowance).map(result => result.id));
+    const candidate = selectTicket(inventoryNow.ready.filter(ticket => models.some(model => allowance.has(model.id) && acceptsDifficulty(model, ticket))), store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
+    if (!candidate) return result;
+    const task = await kanvil.task(candidate.id), target = await taskReader(c, kanvil).node(task);
+    const prior = queuedPlan(store, target.key);
+    if (prior) return queued(prior);
+    // Recheck ownership after the reads, then save without yielding to another admission.
+    if (store.isLocked(`ticket:${target.id}`) || taskOwners(store.jobSummaries()).has(target.id) || automationHold(task)) return result;
+    target.note = String(hold.message ?? hold.reason);
+    const { plan } = await beginPlan(c, store, t3, kanvil, instances, shell.threads, options, skips(options), { target, tickets: [], queued: true }, clients.currentConfig, clients.decide);
+    return queued(plan);
+  } finally { if (!clients.kanvil) await kanvil.close(); }
+}
+
+async function cycleNow(c: Config, store: Store, options: CycleOptions, clients: Clients): Promise<Decision> {
+  if (clients.github) githubClients.set(store, clients.github);
   if (options.manual && !options.epic && options.model && options.model !== 'auto') return dispatchOne(c, store, options, undefined, clients);
   if (!options.manual && options.model && options.model !== 'auto') throw new Error('Explicit models require manual dispatch');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
@@ -1154,7 +1200,7 @@ function preparedInventory(c: Config, store: Store): Queue | undefined {
   const rows = z.object({ tickets: z.array(z.unknown()), held: z.array(z.object({ key: z.string(), reason: z.string() })) }).safeParse(value);
   if (!rows.success) return;
   const rowSchema = z.object({ id: z.string(), key: z.string(), projectId: z.string(), title: z.string(), priority: z.string(), createdAt: z.string(), difficulty: z.enum(['low', 'med', 'high']), automationReady: z.literal(true), labelRank: z.number().nullable().optional(), labels: z.array(z.string()), after: z.array(z.string()) });
-  const ready: Candidate[] = [], owned = taskOwners(store.jobSummaries()), running = runningEpicHold(store);
+  const ready: Candidate[] = [], owned = taskOwners(store.jobSummaries()), running = runningPlanHold(store);
   for (const row of rows.data.tickets) {
     const parsed = rowSchema.safeParse(row);
     if (!parsed.success) return; // Older projections are warmed once, not silently reinterpreted.
@@ -1200,6 +1246,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // A cancelled ticket counts as finished for an Epic, so a launch from one must agree with the plan that chose it.
     const cancelledFinished = !!(activePlanId && store.plan(activePlanId)?.epic);
     const driver = plan?.driver ?? instances.get(preset.model.instanceId);
+    const queued = ticketKey && queuedPlan(store, ticketKey);
+    if (queued && queued.id !== activePlanId) return decision('ticket-queued', { ticket: ticketKey, planId: queued.id, message: 'Ticket has a queued run. Cancel it before starting with different choices.' });
     if (driver && busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(driver)) return decision(c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running', { driver });
     const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
     if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
@@ -1492,12 +1540,12 @@ async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, in
   return decision('plan-started', { ticket: ticketKey, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Chain to ${ticketKey} started: ${started} of ${count} ticket${count === 1 ? '' : 's'} running now, the rest as they unblock.` });
 }
 // Durable before its first launch, and saved before the first await so a caller's checks stay atomic with it.
-async function beginPlan(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, contents: Pick<Plan, 'target' | 'epic' | 'tickets'>, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>) {
+async function beginPlan(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, contents: Pick<Plan, 'target' | 'epic' | 'tickets' | 'queued'>, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>) {
   const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), ...contents, model: options.model ?? 'auto', ...(options.provider ? { provider: options.provider } : {}), overrideLimits: [...skip], state: 'active' };
   const context = readContext();
   if (context) context.own({ planId: plan.id }, () => store.savePlan(plan));
   else store.savePlan(plan);
-  const dispatches = await runPlans(c, store, t3, kanvil, instances, threads, plan.id, undefined, currentConfig, decide);
+  const dispatches = contents.queued ? [] : await runPlans(c, store, t3, kanvil, instances, threads, plan.id, undefined, currentConfig, decide);
   return { plan, dispatches, started: dispatches.filter(d => d.reason === 'dispatched').length };
 }
 
@@ -1605,7 +1653,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     const limit = readLimiter();
     await readAll(all.filter(t => !refreshed?.has(t.id)).map(t => limit(async () => {
       try {
-        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic }), task = await reader.task(t.id); return { status: task.status, hold: automationHold(task) || undefined, done: await reader.done(task) }; });
+        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic }), { status, difficulty, hold, done } = await reader.node(await reader.task(t.id)); return { status, difficulty, hold, done }; });
         Object.assign(t, result);
       }
       catch (error) { t.note = safeError(error); }
@@ -1619,22 +1667,27 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       if (store.plan(plan.id)?.state !== 'active') break;
       if (providerDriver && plan.provider && providerDriver !== plan.provider) continue;
       if (!t.runnable) { t.note = 'Its project is not included in the factory'; continue; }
-      const preset = plan.model !== 'auto' ? c.models.find(model => model.id === plan.model)
-        : c.models.find(model => (model.automatic || !!plan.provider) && (!plan.provider || instances.get(model.model.instanceId) === plan.provider) && acceptsDifficulty(model, t as Candidate) && (!providerDriver || instances.get(model.model.instanceId) === providerDriver));
-      if (!preset) {
+      const models = c.models.filter(model => plan.model !== 'auto' ? model.id === plan.model
+        : (model.automatic || !!plan.provider) && (!plan.provider || instances.get(model.model.instanceId) === plan.provider) && acceptsDifficulty(model, t as Candidate) && (!providerDriver || instances.get(model.model.instanceId) === providerDriver));
+      const presets = plan.queued ? models : models.slice(0, 1);
+      if (!presets.length) {
         if (providerDriver && plan.model === 'auto' && c.models.some(model => model.automatic && acceptsDifficulty(model, t as Candidate))) continue;
         t.note = t.difficulty ? (plan.model === 'auto' ? 'No automatic model accepts this difficulty' : 'The chosen model is no longer configured') : 'Ticket needs a native difficulty before dispatch'; continue;
       }
-      const driver = instances.get(preset.model.instanceId) ?? 'claudeAgent';
-      if (providerDriver && driver !== providerDriver) continue;
-      if (busyProviders(jobs, threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned, { manual: true, overrideLimits: plan.overrideLimits }).has(driver)) { t.note = `Waiting for a free ${driver === 'codex' ? 'Codex' : 'Claude'} slot`; continue; }
+      const busy = busyProviders(jobs, threads, instances, c.monitoringTimeoutMinutes, c.concurrency, planned, { manual: true, overrideLimits: plan.overrideLimits });
+      const available = presets.filter(preset => (!providerDriver || instances.get(preset.model.instanceId) === providerDriver) && !busy.has(instances.get(preset.model.instanceId) ?? 'claudeAgent'));
+      if (!available.length) { const driver = instances.get(presets[0].model.instanceId); if (providerDriver && driver !== providerDriver) continue; t.note = `Waiting for a free ${driver === 'codex' ? 'Codex' : 'Claude'} slot`; continue; }
       if (store.isLocked(`ticket:${t.id}`)) continue;
-      planned.set(driver, (planned.get(driver) ?? 0) + 1);
+      for (const driver of new Set(available.map(preset => instances.get(preset.model.instanceId) ?? 'claudeAgent'))) planned.set(driver, (planned.get(driver) ?? 0) + 1);
       pending.push(independentOperation(() => store.exclusive([`ticket:${t.id}`], async () => {
         try {
-          const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
-          results.push(result);
-          t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
+          for (const preset of available) {
+            const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
+            results.push(result);
+            t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
+            if (plan.queued && result.reason === 'dispatched' && store.plan(plan.id)?.state === 'active') { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); }
+            if (!limitHold(result.reason) && !['quota-exhausted', 'codex-quota-exhausted'].includes(result.reason)) break;
+          }
         } catch (error) { t.note = safeError(error); results.push({ reason: 'error', at: new Date().toISOString(), ticket: t.key, message: t.note }); }
       })));
     }

@@ -224,7 +224,7 @@ test('racing manual admissions respect the last shared label slot', async t => {
   const runs = [1, 3].map(number => f.internal.handle({ type: 'dispatch', options: { ticket: `FIX-${number}`, model: 'sol' } }));
   try { await both.promise; } finally { release.resolve(); await Promise.all(runs); }
   assert.equal(f.launches.length, 1);
-  assert.ok((await Promise.all(runs)).some(result => result.data.reason === 'label-limit'));
+  assert.ok((await Promise.all(runs)).some(result => result.data.reason === 'plan-started'));
 });
 
 test('a delayed web handoff uses the original receipt deadline without launching', async t => {
@@ -763,4 +763,21 @@ test('an Epic started during an automatic pass final validation takes the ticket
   const result = await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets' });
   assert.equal(started, true);
   assert.equal(f.launches.length, 0, JSON.stringify(result));
+});
+
+test('the service accepts a limit-blocked request and its admission lane resumes it while automation is paused', async t => {
+  const f = serviceFixture(t);
+  f.c.enabled = false; f.c.projects[0].labelLimits = { med: 0 };
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const result = await f.internal.handle({ type: 'dispatch', options: { requestId: '85361558-2392-4b82-a7eb-73d8f1154c45', ticket: 'FIX-1', model: 'sol', overrideLimits: [] } });
+  assert.equal(result.code, 0, JSON.stringify(result));
+  assert.equal(result.data.reason, 'plan-started');
+  assert.equal(f.launches.length, 0);
+  f.internal.scheduleAdmissions('timer', 'chains'); await f.internal.idle;
+  assert.equal(f.launches.length, 0);
+  f.c.projects[0].labelLimits = {};
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  f.internal.scheduleAdmissions('config', 'chains'); await f.internal.idle;
+  assert.equal(f.launches.length, 1);
+  assert.equal(f.store.plan(result.data.planId)?.state, 'done');
 });

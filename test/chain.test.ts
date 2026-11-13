@@ -498,3 +498,128 @@ for (const joined of [false, true]) test(`whatever the setting, a running Epic k
   assert.deepEqual(titles(f), ['FIX-2'], 'other tickets still start');
   assert.match(heldReason(f), /Runs with its Epic/);
 });
+
+// Owns the durable manual-run contract; chains above own dependency ordering and override propagation.
+for (const gate of ['label', 'provider', 'reserve', 'idle'] as const) for (const named of [true, false]) test(`limit-blocked manual run queues and resumes: ${gate}, ${named ? 'named' : 'next'}`, async t => {
+  const f = dispatchFixture(t);
+  const claude = gate === 'idle' || gate === 'reserve';
+  if (claude) {
+    f.c.models[0].model = { instanceId: 'claudeAgent', model: 'fixture-claude', options: [] };
+    t.mock.method(f.t3, 'providers', async () => [f.provider('claudeAgent')]);
+  }
+  let held = true;
+  t.mock.method(f.t3, 'provider', async (id: string) => {
+    const provider = f.provider(id);
+    if (gate === 'reserve' && held) provider.usageLimits.windows[0].usedPercent = 40;
+    return provider;
+  });
+  t.mock.method(f.t3, 'detail', async () => ({ messages: [], responses: [] }));
+  if (gate === 'idle') f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', title: 'Personal work', providerInstanceId: 'claudeAgent', modelSelection: f.c.models[0].model, status: 'running', activeRunId: 'run', latestRunCompletedAt: null, updatedAt: '2020-01-01T00:00:00Z', latestUserMessageAt: '2020-01-01T00:00:00Z' }));
+  setConfig(f, () => {
+    f.c.enabled = false;
+    if (gate === 'label') f.c.projects[0].labelLimits = { med: 0 };
+    if (gate === 'provider') f.c.concurrency.codex = 0;
+    if (gate === 'reserve') f.c.quota.claude.fiveHour.minRemainingPercent = 80;
+  });
+  const choices = { manual: true, ...(named ? { ticket: 'FIX-1' } : {}), model: named ? 'sol' : 'auto', overrideLimits: [] as ('idle' | 'reserve' | 'labels' | 'providers')[] };
+  const result = await cycle(f.c, f.store, choices, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'plan-started', JSON.stringify(result));
+  assert.equal(f.launches.length, 0);
+  const plan = f.store.plan(result.planId as string)!;
+  assert.equal(plan.target?.key, 'FIX-1');
+  assert.deepEqual(plan.overrideLimits, []);
+  assert.equal(plan.model, choices.model);
+  assert.ok(plan.target?.note, 'the queued row explains its admission hold');
+  const restored = new Store(f.c.stateDir);
+  try {
+    assert.deepEqual(restored.plan(plan.id), plan, 'the request survives reopening the state store');
+    await runPlans(f.c, restored, f.t3, f.kanvil, new Map([[claude ? 'claudeAgent' : 'codex', claude ? 'claudeAgent' : 'codex']]), f.threads);
+    assert.equal(f.launches.length, 0, 'retry retains every unchecked override');
+    held = false; f.threads.splice(0);
+    if (gate === 'idle') { t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); t.mock.timers.tick((f.c.idleMinutes + 1) * 60_000); }
+    setConfig(f, () => { f.c.projects[0].labelLimits = {}; f.c.concurrency.codex = 1; });
+    await runPlans(f.c, restored, f.t3, f.kanvil, new Map([[claude ? 'claudeAgent' : 'codex', claude ? 'claudeAgent' : 'codex']]), f.threads);
+    assert.equal(f.launches.length, 1, 'the queued ticket starts once the gate clears, even with automation paused');
+    await runPlans(f.c, restored, f.t3, f.kanvil, new Map([[claude ? 'claudeAgent' : 'codex', claude ? 'claudeAgent' : 'codex']]), f.threads);
+    assert.equal(f.launches.length, 1, 'a settled queued run cannot launch twice');
+  } finally { restored.close(); }
+});
+
+test('queued automatic selection tries every available model and keeps a forced provider', async t => {
+  const f = dispatchFixture(t);
+  f.c.models.unshift({ ...structuredClone(f.c.models[0]), id: 'first', model: { instanceId: 'other-codex', model: 'fixture-sol', options: [] } });
+  t.mock.method(f.t3, 'providers', async () => [f.provider(), { ...f.provider(), instanceId: 'other-codex' }]);
+  t.mock.method(f.t3, 'provider', async (id: string) => {
+    const provider = { ...f.provider(), instanceId: id };
+    provider.usageLimits.windows[0].usedPercent = id === 'codex' ? 0 : 100;
+    return provider;
+  });
+  setConfig(f, () => { f.c.concurrency.codex = 0; f.c.enabled = false; });
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', provider: 'codex', model: 'auto', overrideLimits: ['idle'] }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'plan-started');
+  assert.equal(f.store.plan(result.planId as string)?.provider, 'codex');
+  setConfig(f, () => { f.c.concurrency.codex = 1; });
+  await runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex'], ['other-codex', 'codex']]), [], undefined, 'codex');
+  assert.equal(f.launches.length, 1, JSON.stringify(f.store.plan(result.planId as string)));
+  assert.equal((f.launches[0] as any).modelSelection.instanceId, 'codex');
+});
+
+test('queued ownership deduplicates concurrent requests, holds unnamed scheduling, and releases on cancellation', async t => {
+  const f = dispatchFixture(t);
+  setConfig(f, () => { f.c.projects[0].labelLimits = { med: 0 }; });
+  const options = { manual: true, ticket: 'FIX-1', model: 'sol', overrideLimits: ['idle'] as 'idle'[] };
+  const results = await Promise.all([cycle(f.c, f.store, options, { t3: f.t3, kanvil: f.kanvil }), cycle(f.c, f.store, options, { t3: f.t3, kanvil: f.kanvil })]);
+  assert.equal(results[0].reason, 'plan-started');
+  assert.equal(results[1].planId, results[0].planId);
+  assert.equal(f.store.plans().length, 1);
+  setConfig(f, () => { f.c.projects[0].labelLimits = {}; });
+  f.store.set('discoveryAfter:FIX', String(Date.now() + 3_600_000));
+  await cycle(f.c, f.store, {}, { t3: f.t3, kanvil: f.kanvil, workKind: 'tickets' });
+  assert.equal(f.launches.length, 0, 'unnamed automation leaves the saved request its model and override choices');
+  cancelPlan(f.store, results[0].planId as string);
+  await advance(f);
+  assert.equal(f.launches.length, 0, 'cancelled requests never resume');
+  assert.equal((await cycle(f.c, f.store, options, { t3: f.t3, kanvil: f.kanvil })).reason, 'dispatched', 'cancelling releases the ticket for a new manual start');
+});
+
+for (const invalid of ['unready', 'difficulty', 'owned', 'dry-run'] as const) test(`a limit hold never queues an unsafe request: ${invalid}`, async t => {
+  const f = dispatchFixture(t);
+  if (invalid === 'unready') f.tasks[0].automationReady = false;
+  if (invalid === 'difficulty') f.c.models[0].maxDifficulty = 'low';
+  if (invalid === 'owned') {
+    assert.equal((await f.run()).reason, 'dispatched');
+  }
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'sol', dryRun: invalid === 'dry-run' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(f.store.plans().length, 0);
+});
+
+for (const model of ['sol', 'auto']) for (const providerLimit of ['off', 'full', 'open'] as const) test(`exhausted allowance remains a refusal with provider ${providerLimit}: ${model}`, async t => {
+  const f = dispatchFixture(t);
+  let ticket = 'FIX-1';
+  if (providerLimit === 'full') {
+    assert.equal((await f.run()).reason, 'dispatched');
+    f.tasks.push(f.task('waiting', 3, 'todo')); ticket = 'FIX-3';
+  }
+  setConfig(f, () => { f.c.concurrency.codex = providerLimit === 'off' ? 0 : 1; });
+  t.mock.method(f.t3, 'provider', async () => { const provider = f.provider(); provider.usageLimits.windows[0].usedPercent = 100; return provider; });
+  const result = await cycle(f.c, f.store, { manual: true, ticket, model, overrideLimits: [] }, { t3: f.t3, kanvil: f.kanvil });
+  assert.notEqual(result.reason, 'plan-started', 'a provider hold cannot turn exhausted hard allowance into future launch intent');
+  assert.equal(f.store.plans().length, 0);
+});
+
+test('a queued automatic run selects from the ticket current difficulty after reclassification', async t => {
+  const f = dispatchFixture(t);
+  f.c.models[0].maxDifficulty = 'med';
+  f.c.models.push({ ...structuredClone(f.c.models[0]), id: 'high', maxDifficulty: 'high', model: { instanceId: 'codex', model: 'fixture-high', options: [] } });
+  t.mock.method(f.t3, 'provider', async () => { const provider = f.provider(); provider.models.push({ slug: 'fixture-high' }); return provider; });
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'auto', overrideLimits: [] }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'plan-started');
+  f.tasks[0].difficulty = 'high';
+  f.tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];
+  setConfig(f, () => { f.c.concurrency.codex = 1; });
+  await advance(f);
+  assert.equal(f.launches.length, 1, 'a preset that no longer fits cannot starve a compatible preset');
+  assert.equal((f.launches[0] as any).modelSelection.model, 'fixture-high');
+});
