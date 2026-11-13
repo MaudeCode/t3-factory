@@ -3153,9 +3153,92 @@ dialog.ticket-panel[open] {
   color: var(--muted);
 }
 .ticket-text {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.55;
+}
+.ticket-text > * {
+  margin: 0 0 var(--space-3);
+}
+.ticket-text > :last-child {
+  margin-bottom: 0;
+}
+.ticket-text p {
+  white-space: pre-line;
+}
+.ticket-text h5,
+.ticket-text h6 {
+  margin-top: var(--space-4);
+  font-size: 15px;
+  font-weight: 600;
+}
+.ticket-text h6 {
+  font-size: 14px;
+}
+.ticket-text > :first-child {
+  margin-top: 0;
+}
+.ticket-text ul,
+.ticket-text ol {
+  padding-left: 1.4em;
+}
+.ticket-text li > ul,
+.ticket-text li > ol,
+.ticket-text li > p {
+  margin: var(--space-1) 0 0;
+}
+.ticket-text li + li {
+  margin-top: var(--space-1);
+}
+.ticket-text li.task {
+  list-style: none;
+  margin-left: -1.4em;
+}
+.ticket-text li.task > input {
+  all: revert;
+  margin: 0 var(--space-2) 0 0;
+  accent-color: var(--accent);
+  vertical-align: -1px;
+}
+.ticket-text code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+}
+.ticket-text pre,
+.ticket-text .md-table {
+  overflow-x: auto;
+}
+.ticket-text pre {
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  line-height: 1.45;
+}
+.ticket-text pre code {
+  padding: 0;
+  background: none;
+}
+.ticket-text blockquote {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+}
+.ticket-text blockquote > :last-child {
+  margin-bottom: 0;
+}
+.ticket-text hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.ticket-text table {
+  border-collapse: collapse;
+}
+.ticket-text th,
+.ticket-text td {
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
 }
 .ticket-related {
   display: grid;

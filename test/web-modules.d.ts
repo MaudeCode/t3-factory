@@ -2,5 +2,6 @@
 declare module "*/web/lib/store.js";
 declare module "*/web/lib/api.js";
 declare module "*/web/lib/format.js";
+declare module "*/web/lib/markdown.js";
 declare module "*/web/lib/confirmation.js";
 declare module "*/web/lib/router.js";
