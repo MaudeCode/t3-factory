@@ -26,6 +26,7 @@ function Detail({ ticket: t }) {
   const line = position >= 0 ? `Up next: ${position + 1} of ${up.tickets.length} in the queue.` : held ? `Held back: ${held.reason}` : null;
   const seen = new Set(), runs = [...jobs.value, ...(history.value ?? [])].filter((j) => j.taskId === t.id && !seen.has(j.id) && seen.add(j.id));
   const tracker = safeLink(t.url);
+  // A run link is ordinary navigation: it leaves the panel's address, which closes the panel without a second history step.
   return html`<h3 class="ticket-title">${t.title}</h3>
     <${Meta} class="ticket-meta" project=${project?.name} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels}><${Tag}>${STATUS[t.status] ?? t.status}<//><//>
     <div class="ticket-actions">
@@ -45,7 +46,7 @@ function Detail({ ticket: t }) {
     ]} />
     <h4>Runs</h4>
     ${runs.length
-      ? html`<ul class="ticket-runs">${runs.map((j) => html`<li key=${j.id}><a href=${`/runs/${j.id}`} onClick=${(e) => { closeTicket(); follow(e); }}><${Tag} tone=${toneOf(j.state)}>${stateLabel(j.state)}<//> started ${ago(j.createdAt, now)}</a></li>`)}</ul>`
+      ? html`<ul class="ticket-runs">${runs.map((j) => html`<li key=${j.id}><a href=${`/runs/${j.id}`} onClick=${follow}><${Tag} tone=${toneOf(j.state)}>${stateLabel(j.state)}<//> started ${ago(j.createdAt, now)}</a></li>`)}</ul>`
       : html`<${Empty}>No runs yet.<//>`}`;
 }
 

@@ -107,6 +107,10 @@ async function run() {
   await open("APP-3");
   assert(button("Run now").disabled && panel().querySelector(".ticket-line").textContent === "APP-3 is done.", "a finished ticket says why it cannot start");
   button("Done").click(); await pause(120);
+  // Opening one of the ticket's runs is one navigation: the panel closes and the run stays open.
+  await show(); await open("APP-1");
+  panel().querySelector(".ticket-runs a").click(); await pause(300);
+  assert(!panel() && location.pathname === "/runs/run-1" && !location.search.includes("ticket="), `a run link closes the panel and lands on the run: ${location.pathname}${location.search}`);
   // Not found and failed reads.
   await show("/runs?state=next&ticket=APP-404");
   assert(panel().querySelector('[role="alert"]').textContent.includes("APP-404 was not found") && !button("Retry"), "an unknown ticket says so and offers no retry");
