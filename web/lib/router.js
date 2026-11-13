@@ -28,15 +28,39 @@ export function match(href) {
 const current = () => (globalThis.location?.pathname ?? "/") + (globalThis.location?.search ?? "");
 export const route = signal(match(current()));
 
+// The ticket panel is addressed by ?ticket=KEY on any page except the launch link, which owns that parameter.
+const panelKey = (href) => {
+  const [path] = href.split("?");
+  return path === "/start" ? "" : ticketKey(new URLSearchParams(href.slice(path.length + 1)).get("ticket") ?? "") || "";
+};
+export const ticketPanel = signal(panelKey(current()));
+const withTicket = (key) => {
+  const url = new URL(location.href);
+  if (key) url.searchParams.set("ticket", key); else url.searchParams.delete("ticket");
+  return url.pathname + url.search;
+};
+// Opening adds a history entry, so Back closes the panel; the page under it does not move.
+export function openTicket(key) {
+  history.pushState({ ticketPanel: true }, "", withTicket(key));
+  ticketPanel.value = key;
+}
+export function closeTicket() {
+  if (!ticketPanel.value) return;
+  if (history.state?.ticketPanel) return history.back();
+  history.replaceState(null, "", withTicket(""));
+  ticketPanel.value = "";
+}
+
 export function navigate(href, replace = false) {
   const query = href.includes("?") ? href.slice(href.indexOf("?") + 1) : "";
   const next = match(href);
   const target = next.path + (query ? `?${query}` : "");
   if (target !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", target);
   route.value = next;
+  ticketPanel.value = panelKey(target);
   window.scrollTo(0, 0);
 }
-globalThis.addEventListener?.("popstate", () => (route.value = match(current())));
+globalThis.addEventListener?.("popstate", () => { route.value = match(current()); ticketPanel.value = panelKey(current()); });
 
 // Click handler for internal links: same-tab navigation without a reload.
 export const follow = (event) => {

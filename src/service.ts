@@ -10,6 +10,7 @@ import { T3, Kanvil } from './clients.ts';
 import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
+import { ticketDetail } from './ticket-detail.ts';
 import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
@@ -355,6 +356,11 @@ export class FactoryService {
       const c = this.configure(), result = await resolveReport(c, await this.ensureKanvil(c), command.ticketId, command.action);
       this.triage();
       return result ? { code: 0, data: result } : { code: 1, data: { message: 'That report is not open in a configured inbox' } };
+    }
+    if (command.type === 'ticket') {
+      // A read for the web app's ticket panel; nothing is queued and no state changes.
+      const c = this.configure(), detail = await ticketDetail(c, await this.ensureKanvil(c), command.key);
+      return detail ? { code: 0, data: detail } : { code: 1, data: { notFound: true, message: 'Ticket not found' } };
     }
     if (command.type === 'job-stop') {
       const result = await this.enqueue(() => this.store.exclusive([`job:${command.jobId}`], () => stopJob(this.configure(), this.store, this.t3, command.jobId)), true, { reason: 'job-stop' });

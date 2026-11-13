@@ -45,7 +45,7 @@ export function Popover({ open, onClose, anchor, label, width = 300, children, c
 }
 
 // Native <dialog>; closes on Escape, backdrop click, or the Done button.
-export function Dialog({ open, onClose, title, children, actions, descriptionId }) {
+export function Dialog({ open, onClose, title, children, actions, descriptionId, class: extra }) {
   const ref = useRef();
   useEffect(() => {
     const d = ref.current;
@@ -54,6 +54,7 @@ export function Dialog({ open, onClose, title, children, actions, descriptionId 
   }, [open]);
   return html`<dialog
     ref=${ref}
+    class=${extra}
     onClose=${onClose}
     onClick=${(e) => isBackdropClick(e, ref.current) && ref.current.close()}
     aria-label=${title}

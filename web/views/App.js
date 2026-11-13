@@ -8,6 +8,7 @@ import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js"
 import { Login } from "./Login.js";
 import { OperationActions, Composer } from "./Deck.js";
 import { Now } from "./Now.js";
+import { TicketPanel } from "./TicketPanel.js";
 import { Runs, RunDetail } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { Cleanup } from "./Cleanup.js";
@@ -289,6 +290,7 @@ export function App() {
   if (!authenticated.value) return html`<${Login} />`;
   return html`
     ${config.value && html`<${Shell} />`}
+    <${TicketPanel} />
     <${Blocked} />
     <${Confirmation} />
     ${dirty.value && html`<${SaveBar} />`}
