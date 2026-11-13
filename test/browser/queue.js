@@ -358,7 +358,8 @@ async function runsHistory() {
 }
 async function runsHeader() {
   await showProjects();
-  const bounds = () => [...root.querySelectorAll('.page-head h1, .page-head [aria-label="Start provider"], .page-head [aria-label="Override limits"], .page-head [aria-label="Search"], .page-head [aria-label^="Filter runs"], [aria-label="State"], [aria-label="Queue view"]')].map(el => {
+  // The list's own head: on Runs the selected run beside it has a head too, and that one changes with the selection.
+  const bounds = () => [...(root.querySelector('.runs-list') ?? root).querySelectorAll('.page-head h1, .page-head [aria-label="Start provider"], .page-head [aria-label="Override limits"], .page-head [aria-label="Search"], .page-head [aria-label^="Filter runs"], [aria-label="State"], [aria-label="Queue view"]')].map(el => {
     const { x, y, height } = el.getBoundingClientRect();
     return [x, y, height];
   });

@@ -1,7 +1,7 @@
 // Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
 import { html, useRef, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
-import { follow, openTicket } from "../lib/router.js";
+import { follow, followRun, openTicket } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
   ago,
@@ -255,7 +255,8 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
 }
 
 // One run. Used on the deck, the runs page, and upstream reviews.
-export function RunRow({ job, now = serverNow(), showProject = true }) {
+// `selected` is set by the Runs list: true marks the row as the run shown beside it, and either value keeps the click in place.
+export function RunRow({ job, now = serverNow(), showProject = true, selected }) {
   const c = config.value,
     project = projectOf(c, job),
     ticket = ticketLink(c, job),
@@ -275,7 +276,7 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
   // Settling in T3 is the ordinary way a run ends, so only an unusual reason is worth a line.
   const note = waiting ? (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason) : job.state === "dismissed" && !/^Dismissed by settling/.test(job.reason ?? "") ? job.reason : "";
   return html`<${TicketRow} ticket=${{ ...job, id: job.taskId, key: job.label, title: job.thread?.title }} project=${project} plain
-    link=${{ href: `/runs/${job.id}`, onClick: follow }}
+    link=${{ href: `/runs/${job.id}`, onClick: selected === undefined ? follow : followRun, "aria-current": selected ? "true" : undefined }}
     meta=${{ project: showProject ? project?.name : undefined, difficulty: job.difficulty, kind: job.kind && job.kind !== "ticket" && (job.kind === "upstream" ? "review" : "discovery"), model: html`<span title=${`Model: ${providerName(providerOf(job))} ${modelName(c, job)}`}><${Icon} name=${providerIcon(providerOf(job))} /> ${modelName(c, job)}</span>` }}
     badge=${html`<${Tag} state=${job.state} title=${note || stateLabel(job.state)} />`}
     actions=${html`<a class="btn btn-sm btn-icon next-run" href=${`/runs/${job.id}`} onClick=${follow} aria-label=${`Open run ${job.label}`} title=${`Open run ${job.label}`}><${Icon} name="arrowRight" /><//>`}
@@ -287,9 +288,9 @@ export function RunRow({ job, now = serverNow(), showProject = true }) {
   <//>`;
 }
 
-export function RunList({ list, title, count, aside, now = serverNow() }) {
+export function RunList({ list, title, count, aside, now = serverNow(), selected }) {
   return html`<${Section} class="list" title=${title} count=${count} aside=${aside}>
-    ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} />`)}
+    ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} selected=${selected === undefined ? undefined : j.id === selected} />`)}
   <//>`;
 }
 
