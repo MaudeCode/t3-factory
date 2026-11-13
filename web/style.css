@@ -3204,11 +3204,8 @@ dialog.ticket-panel[open] {
   border-radius: 5px;
   background: var(--surface-2);
 }
-.ticket-text pre,
-.ticket-text .md-table {
-  overflow-x: auto;
-}
 .ticket-text pre {
+  white-space: pre-wrap;
   padding: var(--space-3);
   border-radius: var(--radius);
   background: var(--surface-2);

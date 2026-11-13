@@ -74,9 +74,9 @@ function blocks(lines) {
     else if (ITEM.test(line)) out.push(...lists(take((l, next = "") => ITEM.test(l) || INDENTED.test(l) || (!l.trim() && (ITEM.test(next) || INDENTED.test(next))))));
     else if (ROW.test(line) && DIVIDER.test(lines[i + 1] ?? "")) {
       const [head, , ...body] = take((l) => ROW.test(l));
-      out.push(h("div", { class: "md-table" }, h("table", null,
+      out.push(h("table", null,
         h("thead", null, h("tr", null, cells(head).map((cell) => h("th", null, inline(cell))))),
-        h("tbody", null, body.map((row) => h("tr", null, cells(row).map((cell) => h("td", null, inline(cell)))))))));
+        h("tbody", null, body.map((row) => h("tr", null, cells(row).map((cell) => h("td", null, inline(cell))))))));
     } else {
       i++;
       out.push(h("p", null, inline([line, ...take((l) => l.trim() && !starts(l))].join("\n"))));

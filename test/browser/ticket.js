@@ -11,7 +11,7 @@ const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 // The tracker's text is untrusted: this description would run script if it were ever parsed as markup.
-const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.\n\n## Outcome\n\nSet `mode` to **on**, see [the guide](https://docs.example/guide) or [this](javascript:window.__ticketXss=true).\n\n```\n' + "x".repeat(400) + '\n```';
+const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.\n\n## Outcome\n\nSet `mode` to **on**, see [the guide](https://docs.example/guide) or [this](javascript:window.__ticketXss=true).\n\n```\n' + "x".repeat(400) + '\n```\n\n| Ticket | Note |\n| --- | --- |\n| APP-90 | ' + "long cell text ".repeat(20) + '|';
 const detail = (key, extra = {}) => ({
   id: `id-${key}`, projectId: "p", key, title: `Synthetic ticket ${key}`, status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: ["feat", "web"], scopes: ["web"],
   description: HOSTILE, acceptanceCriteria: "- first criterion\n- second criterion", automationReady: true, holdReason: null, readiness: [],
@@ -87,7 +87,9 @@ async function run() {
   assert(links.length === 1 && links[0].href === "https://docs.example/guide" && links[0].target === "_blank" && text.includes("[this](javascript:"), "only an https link becomes a link");
   assert(panel().querySelectorAll(".ticket-text li").length === 2, "criteria written as a list render as one");
   const pre = body.querySelector("pre");
-  assert(pre.scrollWidth > pre.clientWidth && panel().scrollWidth <= panel().clientWidth && pre.getBoundingClientRect().right <= panel().getBoundingClientRect().right, "a long code line scrolls inside its block");
+  assert(pre.scrollWidth <= pre.clientWidth && pre.getBoundingClientRect().height > 60 && panel().scrollWidth <= panel().clientWidth, "a long code line wraps inside the panel");
+  const table = body.querySelector("table");
+  assert(table.getBoundingClientRect().right <= body.getBoundingClientRect().right + 1, "a table with long cells stays inside the panel");
   // The panel opens on the ticket; Factory's side of it, the latest run, is the second tab.
   assert(tab("Ticket").getAttribute("aria-checked") === "true" && !panel().querySelector(".run-detail"), "the panel opens on the Ticket tab");
   await factory();
