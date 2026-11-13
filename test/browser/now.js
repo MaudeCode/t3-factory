@@ -34,6 +34,7 @@ const base = (jobs) => ({
 let state, posts = [];
 window.fetch = async (url, init) => {
   if (url === "/api/history") return Response.json([]);
+  if (url.startsWith("/api/tickets/")) return Response.json({ message: "Ticket not found" }, { status: 404 });
   if (init?.method === "POST") { posts.push({ url, body: init.body ? JSON.parse(init.body) : null }); return Response.json(url === "/api/dispatch" ? { id: init.headers["Idempotency-Key"], state: "running" } : state); }
   return Response.json(state);
 };
@@ -85,6 +86,12 @@ async function run() {
   const dispatch = posts.find((p) => p.url === "/api/dispatch")?.body;
   assert(dispatch && dispatch.provider === "codex" && dispatch.overrideLimits === true && dispatch.model === "auto" && !dispatch.ticket, `Start anyway dispatches on that provider with limits overridden: ${JSON.stringify(dispatch)}`);
   assert(rows(sections()["Your queue"]).some((r) => r.textContent.includes("Next eligible ticket")), "the pending request joins Your queue");
+  // A ticket run opens its ticket in the panel on this page; its link still names the run's page.
+  await show();
+  const working = rows(sections()["Working"])[0].querySelector("a.now-main"), key = working.querySelector(".key").textContent;
+  working.click(); await pause(); await pause();
+  assert(document.querySelector("dialog.ticket-panel[open]") && location.pathname === "/" && new URLSearchParams(location.search).get("ticket") === key && /^\/runs\/j\d+$/.test(working.getAttribute("href")), `a ticket run opens the ticket panel: ${location.pathname}${location.search}`);
+  history.back(); await pause(); await pause();
   // Report decisions behave as on Triage.
   await show();
   if (width() > 700) {

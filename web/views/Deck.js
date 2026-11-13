@@ -1,7 +1,7 @@
 // Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
 import { html, useRef, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
-import { follow, followRun, openTicket } from "../lib/router.js";
+import { follow, followRun, ticketClick } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
   ago,
@@ -191,9 +191,8 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
   const c = config.value;
   const [open, setOpen] = useState(false), button = useRef();
   const label = `More actions for ${t.key}`;
-  // A ticket opens in Factory's own panel. A modified or middle click keeps the link's tracker tab, and a row that
-  // is not a ticket Factory can read (an inbox report) keeps the tracker link as it is.
-  const panel = !plain && ticketKey(t.key ?? "") ? (e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return; e.preventDefault(); openTicket(ticketKey(t.key)); } : undefined;
+  // A ticket or an inbox report opens in Factory's own panel; a modified or middle click keeps the link's tracker tab.
+  const panel = ticketClick(ticketKey(t.key ?? ""));
   const body = html`<${RowBody} title=${t.key ? html`<b class="key">${t.key}</b> ${t.title}` : t.title}>
     <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${(project?.priorityLabels ?? []).flat()} ...${meta}>${badge}${children}<//>
   <//>`;

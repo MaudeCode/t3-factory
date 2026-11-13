@@ -1,8 +1,8 @@
 // Home: what the factory and each provider are doing right now, what waits on the owner, and what the owner queued.
 import { html, useState } from "../lib/h.js";
-import { status, jobs, issues, launchOperations, clock, serverNow, busy } from "../lib/store.js";
-import { follow } from "../lib/router.js";
-import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections } from "../lib/format.js";
+import { config, status, jobs, issues, launchOperations, clock, serverNow, busy } from "../lib/store.js";
+import { follow, ticketClick } from "../lib/router.js";
+import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket } from "../lib/format.js";
 import { Icon, Empty } from "../ui/index.js";
 import { Machine, Composer, OperationActions, CancelPlan, planProgress, requestName } from "./Deck.js";
 import { decide, reportRow } from "./Triage.js";
@@ -11,12 +11,13 @@ import { decide, reportRow } from "./Triage.js";
 const LIMIT = 8, NARROW = 2;
 
 // One line: a leading glyph, an optional key, the title, a note, then the time or the row's one action.
-// `href` makes the text a link; the action stays outside it.
-function Row({ icon, iconLabel, tone, id, title, note, end, href, external }) {
+// `href` makes the text a link; the action stays outside it. A ticket run opens its ticket in the panel, where the
+// run is one tab away; its link still names the run's page for a new tab.
+function Row({ icon, iconLabel, tone, id, title, note, end, href, external, onClick = follow }) {
   const text = html`<span class=${`now-icon ${tone ?? ""}`}><${Icon} name=${icon} label=${iconLabel} /></span>
     ${id && html`<b class="key">${id}</b>`}<span class="now-title">${title}</span>${note && html`<span class="now-note">${note}</span>`}`;
   return html`<li class="now-row">
-    ${href ? html`<a class="now-main" href=${href} onClick=${external ? undefined : follow}>${text}</a>` : html`<span class="now-main">${text}</span>`}
+    ${href ? html`<a class="now-main" href=${href} onClick=${external ? undefined : onClick}>${text}</a>` : html`<span class="now-main">${text}</span>`}
     ${end}
   </li>`;
 }
@@ -27,7 +28,7 @@ function Run({ job, now, needs }) {
   const waited = job.lastExecutionAt ?? job.createdAt;
   // A waiting run says what it waits for; an active one, only how long it has run.
   const note = needs && (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason);
-  return html`<${Row} ...${runIcon(job)} tone=${needs ? "attention" : "ok"} id=${job.label} title=${job.thread?.title ?? ""} note=${note} href=${`/runs/${job.id}`}
+  return html`<${Row} ...${runIcon(job)} tone=${needs ? "attention" : "ok"} id=${job.label} title=${job.thread?.title ?? ""} note=${note} href=${`/runs/${job.id}`} onClick=${ticketClick(factoryTicket(config.value, job)) ?? follow}
     end=${needs && job.threadId
       ? html`<a class="btn btn-sm" href=${threadLink(job)} aria-label=${`Open ${job.label} in T3 Code`} title=${`Open ${job.label} in T3 Code`}>Open</a>`
       : time(duration(needs ? waited : job.createdAt, now), needs ? `Waiting for you since ${ago(waited, now)}` : `Running for ${duration(job.createdAt, now)}`)} />`;

@@ -3322,3 +3322,30 @@ dialog.ticket-panel[open] {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Ticket panel tabs: the run detail inside the panel lays out by the panel's width, not the window's. */
+.ticket-panel .dialog-body {
+  container: page / inline-size;
+}
+.ticket-panel .segmented {
+  margin-bottom: var(--space-4);
+}
+.ticket-panel .page {
+  padding: 0;
+}
+.ticket-panel .page-head h1 {
+  font-size: 17px;
+}
+
+/* A home-screen app in landscape on a touch screen draws under the live-activity pill, which sits in the top right
+   corner inside the safe area (about 69px in from the edge on the open Duo). Heads keep their controls clear of it. */
+@media (display-mode: standalone) and (orientation: landscape) and (pointer: coarse) {
+  main .page-head,
+  .now-head,
+  .ticket-panel > .dialog-head {
+    padding-right: 60px;
+  }
+  .top {
+    padding-right: calc(var(--gutter-right) + 60px);
+  }
+}

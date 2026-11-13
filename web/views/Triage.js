@@ -5,7 +5,7 @@ import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, 
 import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, Switch } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
-import { follow } from "../lib/router.js";
+import { follow, ticketClick } from "../lib/router.js";
 
 const HINT = "Untrusted inbox reports are checked against each project's tickets and code in a read-only sandbox. Actionable reports that pass the promotion checks become ready tickets in the project, written by factory code without the report's text. Every open report is listed once by what it waits on: under Needs you until you send it through triage again or close it, and under In progress while triage or promotion will act on it.";
 const verdictTone = { actionable: "on", "needs-info": "attention", duplicate: "ok", "already-exists": "ok", spam: "label" };
@@ -79,14 +79,14 @@ function Result({ row, now, selection, start, progress, decision }) {
     // Labels stay searchable and filterable but are not listed; the tag, priority and difficulty say enough.
     return html`<${TicketRow} ticket=${{ ...row, labels: [] }} project=${row.project} badge=${tag} selection=${selection}
       actions=${html`<${RunNow} ticket=${row} hold=${hold} origin=${ORIGIN} ...${start} />`}
-      secondaryActions=${html`<a class="btn btn-sm btn-icon next-run" href=${report} target="_blank" rel="noopener noreferrer" aria-label=${`Open the report ${d.ticket}`} title=${`Open the report ${d.ticket}`}><${Icon} name="arrowRight" /><span class="next-action-label">Open report</span></a>`}>
+      secondaryActions=${html`<a class="btn btn-sm btn-icon next-run" href=${report} target="_blank" rel="noopener noreferrer" onClick=${ticketClick(ticketKey(d.ticket))} aria-label=${`Open the report ${d.ticket}`} title=${`Open the report ${d.ticket}`}><${Icon} name="arrowRight" /><span class="next-action-label">Open report</span></a>`}>
       ${progress && html`<span class="row-progress" role="status"><i class="spinner"></i>${operationText(progress)}</span>`}
       <span>from ${d.ticket}</span>${when}
     <//>`;
   }
-  // A promoted result the scheduler could not read back links its tag to the promoted key in the inbox's project.
+  // A promoted result the scheduler could not read back links its tag to the promoted ticket.
   const promoted = d.promoted && row.projectId && kanvil(c, "projects", row.projectId, "tickets", d.promotedId ?? d.promoted);
-  const badge = promoted ? html`<${Tag} tone=${tone} href=${promoted} title=${`Open ${d.promoted} in Kanvil`}>${label}<//>` : tag;
+  const badge = promoted ? html`<${Tag} tone=${tone} href=${promoted} onClick=${ticketClick(ticketKey(d.promoted))} title=${`Open ${d.promoted}`}>${label}<//>` : tag;
   return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} ...${decision} plain>${when}<//>`;
 }
 

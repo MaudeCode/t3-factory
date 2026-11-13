@@ -68,6 +68,8 @@ export function openTicket(key) {
   history.pushState({ ticketPanel: true }, "", withTicket(key));
   ticketPanel.value = key;
 }
+// A link that opens the ticket panel on a plain click; a modified or middle click keeps the link's own address.
+export const ticketClick = (key) => key ? (e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return; e.preventDefault(); openTicket(key); } : undefined;
 export function closeTicket() {
   if (!ticketPanel.value) return;
   if (history.state?.ticketPanel) return history.back();
