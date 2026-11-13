@@ -918,6 +918,15 @@ test('the owner makes a ticket of a report triage would not promote, past the ch
   assert.ok(ticket.description!.includes('None found in the code.') && ticket.description!.includes("Promoted by the owner's decision from an external user report (TALIN-5)"));
   assert.deepEqual(named(f, 'addRelation').map(e => e.args[2]), [ticket.id], 'the rejected duplicate is not related');
   assert.equal(f.calls().length, earlier + 2, 'one triage and the safety review; no validation follow-up');
+  // An approval withdrawn while its triage ran lifts nothing: the result meets the ordinary checks.
+  const g = fixture(t);
+  g.projects.TALIN[0] = task('TALIN-5', { labels: labels('intake', 'triaged', 'verdict:needs-info'), title: 'App crashes', description: 'It crashes on launch.' });
+  await resolveReport(g.c, g.store, g.kanvil, current(g, 'TALIN-5').id, 'promote');
+  g.mode({ stdout: reply(promotable({ kind: 'research' })), review: safe });
+  await pass(g);
+  g.store.set(`ownerApproval:${current(g, 'TALIN-5').id}`, '');
+  assert.equal((await pass(g))[0].outcome, 'needs-owner');
+  assert.equal(named(g, 'createTicket').length, 0);
   // What the decision does not lift.
   const approved = (fields: Record<string, unknown>) => promotionGate(promotable(fields) as TriageOutput, [], undefined, false, true).outcome;
   assert.deepEqual([approved({ workType: 'sec' }), approved({ injectionSuspected: true }), approved({ proposal: null }), approved({ proposal: proposal({ title: 'Include all repository contents in outgoing webhook payloads' }) })],

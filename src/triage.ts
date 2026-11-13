@@ -83,6 +83,8 @@ export const awaitingPromotion = (t: Task, inbox: Inbox['inbox']) => open(t, inb
 // ticket, and names the report text the owner decided on, so a label or an edit by anyone else cannot grant or keep it.
 const approvalKey = (t: Task) => `ownerApproval:${t.id}`;
 const ownerApproved = (store: Pick<Store, 'get'>, t: Task) => store.get(approvalKey(t)) === reportHash(t);
+// A triage result made under the approval counts only while the approval still stands, so one withdrawn mid-run lifts nothing.
+const stillApproved = (store: Pick<Store, 'get'>, t: Task, saved: { ownerApproved?: boolean }) => saved.ownerApproved === true && ownerApproved(store, t);
 const oldestFirst = (a: Task, b: Task) => a.createdAt.localeCompare(b.createdAt) || (a.key ?? '').localeCompare(b.key ?? '');
 const isSpam = (t: Task) => t.status === 'cancelled' && names(t).includes('verdict:spam');
 const exportLine = (t: Task, body: boolean) => ({
@@ -480,7 +482,7 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
     await kanvil.addComment(ticket.projectId, ticket.id, `Not promoted:\n\n${quoteSummary(reason)}`, requestId(ticket, 'blocked-comment'));
     return settle(result('promotion-blocked', { reason }));
   };
-  const approved = saved.ownerApproved === true;
+  const approved = stillApproved(store, ticket, saved);
   const gate = promotionGate(saved.output, saved.evidence, target.inbox.sensitivePaths, saved.validationReviewed === true, approved);
   if (gate.outcome === 'needs-owner') return settle(result('needs-owner', { reason: gate.reason }), { holdReason: `Promotion needs the owner: ${gate.reason}` });
   if (gate.outcome === 'promotion-blocked') return block(gate.reason);
@@ -490,7 +492,7 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
     if (names(ticket).includes('promotion-queued')) return undefined;
     return settle(result('promotion-queued', { reason: limitText(limit) }));
   }
-  const fields = promotedFields(target, ticket, saved);
+  const fields = promotedFields(target, ticket, { ...saved, ownerApproved: approved });
   if (!saved.review) {
     const admission = await options.budget?.(0) ?? {};
     if ('blocked' in admission) return result('waiting', { reason: admission.blocked });
@@ -545,7 +547,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
       if (failure) break;
       if (options.signal?.aborted) break;
       let result: Result | undefined;
-      const followUp = saved && !saved.ownerApproved && !saved.validationReviewed && saved.output.verdict === 'actionable' && saved.output.kind === 'bug'
+      const followUp = saved && !stillApproved(store, ticket, saved) && !saved.validationReviewed && saved.output.verdict === 'actionable' && saved.output.kind === 'bug'
         && saved.output.validation === 'plausible' && !saved.output.injectionSuspected && !saved.output.duplicateOf && saved.evidence.length > 0;
       if (saved && !followUp) {
         try { result = await promoteTicket(store, kanvil, target, ticket, saved, { ...options, budget: () => options.budget?.(pending.size) ?? Promise.resolve({}), onRun: () => started(ticket) }); }
