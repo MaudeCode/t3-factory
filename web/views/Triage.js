@@ -108,9 +108,10 @@ export function Triage() {
   const startable = rows, picked = startable.filter((r) => selected.includes(r.id));
   const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
   const narrowed = query.trim() || Object.values(filters).some((value) => Array.isArray(value) && value.length);
+  const waiting = streams.some((row) => row.untriaged), triaging = streams.some((row) => row.running);
   return html`<${Page} title="Triage" hint=${HINT}
     actions=${html`<${StartOptions} /><${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...tickets, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
-    <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
+    <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on in settings.</p>`}
       ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} />`) : html`<p class="muted">No project has an inbox.</p>`}
     <//>

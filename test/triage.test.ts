@@ -9,6 +9,8 @@ import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
 import { admitTriage, inboxes, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, promotedTickets, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
 import { log, triageResults, triageRows } from '../src/scheduler.ts';
+import { FactoryService } from '../src/service.ts';
+import { Store } from '../src/store.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('/usr/bin/git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'f', GIT_AUTHOR_EMAIL: 'f@example.test', GIT_COMMITTER_NAME: 'f', GIT_COMMITTER_EMAIL: 'f@example.test' } }).toString().trim();
 const budget = { reservePercent: 0, minRemainingPercent: 0 };
@@ -422,6 +424,20 @@ test('each admission counts as Claude consumption, so the next report needs a ne
   assert.deepEqual(await admitTriage(f.c, t3, store, 1), { blocked: 'quota-before-triage-completion' }, 'a completion during the quota read cannot release headroom against the earlier snapshot');
 });
 
+test('a forced admission skips the pause, reserve and freshness gates but not an exhausted allowance', async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-05T00:00:00Z') });
+  let usedPercent = 97;
+  const checkedAt = new Date(Date.now() - 1000).toISOString(), provider = () => quotaProvider(checkedAt, usedPercent);
+  const t3 = { providers: async () => [provider()], provider: async () => provider(), peekProvider: () => undefined } as never;
+  const store = { ...f.store, jobSummaries: () => [] }, paused = { ...f.c, triage: { ...f.c.triage!, enabled: false } };
+  assert.deepEqual(await admitTriage(f.c, t3, store), { blocked: 'quota-budget' }, '3% remaining cannot cover a 5% run reservation');
+  assert.equal((await admitTriage(paused, t3, store, 2, true) as { model?: string }).model, 'fixture');
+  assert.equal((await admitTriage(paused, t3, store, 0, true) as { model?: string }).model, 'fixture', 'the same reading admits a second forced report');
+  usedPercent = 100;
+  assert.deepEqual(await admitTriage(paused, t3, store, 0, true), { blocked: 'quota-exhausted' });
+});
+
 test('pre-launch follow-up reservations hold quota while reading tickets', async t => {
   const f = fixture(t);
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-05T00:00:00Z') });
@@ -817,6 +833,30 @@ test('reviewed source-supported bugs retain every other promotion gate', () => {
   for (const fields of [{ kind: 'research' }, { workType: 'sec' }])
     assert.equal(gate({ validation: 'plausible', ...fields }, undefined, undefined, true).outcome, 'needs-owner');
   assert.equal(gate({ validation: 'plausible' }, [{ path: '.github/workflows/ci.yml', line: 1 }], undefined, true).outcome, 'needs-owner');
+});
+
+test('Triage now runs one pass past the pause and reserve; the next automatic pass is held again', async t => {
+  const f = fixture(t), paused = { ...f.c, triage: { ...f.c.triage!, enabled: false } };
+  const file = join(f.dir, 'config.jsonc'), service = new FactoryService(file), internal = service as any, store = new Store(f.c.stateDir);
+  writeFileSync(file, JSON.stringify(paused));
+  t.after(() => store.close());
+  const provider = () => quotaProvider(new Date(Date.now() - 1000).toISOString(), 97);
+  Object.assign(internal, { store, t3: { providers: async () => [provider()], provider: async () => provider(), peekProvider: () => undefined } });
+  t.mock.method(internal, 'configure', () => paused);
+  t.mock.method(internal, 'ensureKanvil', async () => f.kanvil);
+  t.mock.method(internal, 'publishWork', () => {});
+  const path = process.env.PATH;
+  process.env.PATH = `${f.bin}:${path}`;
+  t.after(() => { process.env.PATH = path; });
+  const lane = () => internal.lanes.get('inbox-triage')?.done;
+  // As the control socket answers: a thrown command is code 1.
+  assert.equal((await internal.handle({ type: 'triage-run' }).catch(() => ({ code: 1 }))).code, 0);
+  await lane();
+  assert.equal(f.calls().length, 1);
+  f.projects.TALIN.push(task('TALIN-6', { labels: [{ name: 'intake' }] }));
+  internal.triage();
+  await lane();
+  assert.equal(f.calls().length, 1, 'the next automatic pass stays paused');
 });
 
 test('a needs-owner report names the check in holdReason and promotes nothing', async t => {

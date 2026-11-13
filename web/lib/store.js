@@ -216,6 +216,12 @@ export const actions = {
       }
       message("Removed from Session tickets. Kanvil tickets are unchanged.");
     }),
+  // One forced triage pass in the scheduler, past the pause and the quota reserve.
+  triageNow: () =>
+    run(async () => {
+      await post("/api/triage/run", {});
+      message("Triage started for waiting reports.");
+    }),
   stopJob: (id) =>
     run(async () => {
       await post(`/api/jobs/${id}/stop`, {});

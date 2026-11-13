@@ -123,6 +123,11 @@ if (command === 'web') {
     if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
     else { const store = new Store(c.stateDir); console.log(JSON.stringify(dismissSessionTicket(store, process.argv[3] ?? ''))); writeStatus(c, store); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (command === 'triage-run') {
+  // Triage now: one forced pass in the running scheduler, past the pause and the quota reserve.
+  const forwarded = await callControl(loadConfig(configPath).stateDir, { type: 'triage-run' });
+  console.log(JSON.stringify(forwarded?.data ?? { message: 'The scheduler is not running. Start it to triage reports.' }));
+  process.exitCode = forwarded?.code ?? 1;
 } else if (command === 'web-pair') {
   try {
     const { config, secret, oidc } = webSettings();
@@ -228,6 +233,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

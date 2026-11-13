@@ -396,6 +396,10 @@ export function createFactoryWeb(options: {
           const result = await run(["session-dismiss", session[1]]);
           return json(res, result.code ? 409 : 200, result.data);
         }
+        if (path === "/api/triage/run" && req.method === "POST") {
+          const result = await run(["triage-run"]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
         const plan = path.match(/^\/api\/plans\/([\w-]{1,64})\/cancel$/);
         if (plan && req.method === "POST") {
           const result = await run(["plan-cancel", plan[1]]);

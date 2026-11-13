@@ -12,6 +12,7 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | `pause` / `resume` | Disables or enables new automatic ticket and discovery work. |
 | `upstream-pause` / `upstream-resume` | Disables or enables new upstream release reviews, independently of `pause` / `resume`. |
 | `triage-pause` / `triage-resume` | Disables or enables new inbox triage runs, independently of the other switches. A running report finishes. |
+| `triage-run` | Asks the running scheduler for one triage pass now, past the triage switch and the quota reserve. Concurrency, an exhausted allowance and promotion limits still apply. |
 | `run` | Runs the scheduler continuously. |
 | `model-catalog` | Reads the models and options advertised by T3. |
 | `config-get` | Prints validated scheduler configuration. |

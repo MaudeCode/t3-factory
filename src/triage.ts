@@ -54,7 +54,7 @@ export interface TriageKanvil {
 }
 // `budget` admits each model run: a switch flipped mid-pass stops the next run, and the run uses the model whose allowance was checked.
 export type Admission = { blocked: string } | { model?: string; settled?: () => void };
-export interface TriageOptions { command?: string; timeoutMs?: number; budget?: (inFlight: number) => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running: Task[]) => void; now?: () => number }
+export interface TriageOptions { force?: boolean; command?: string; timeoutMs?: number; budget?: (inFlight: number) => Promise<Admission>; model?: string; signal?: AbortSignal; onRun?: (running: Task[]) => void; now?: () => number }
 /** An inbox and the delivery project it feeds; the project supplies the repository and scopes. */
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
@@ -509,7 +509,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
   // Reads happen here, before any run; a run itself uses only the cached projections.
   const read = await Promise.all(all.map(async target => ({ target, tickets: (await Promise.all([kanvil.tasks(target.inbox.kanvilId, undefined, true), kanvil.tasks(target.project.kanvilId, undefined, true)]))[0] })));
   options.onRun?.([]);
-  if (!c.triage?.enabled) return [];
+  if (!c.triage || !c.triage.enabled && !options.force) return [];
   const queue = read.flatMap(({ target, tickets }) => tickets.flatMap(ticket =>
     needsTriage(ticket, target.inbox) ? [{ target, ticket, saved: null }] : awaitingPromotion(ticket, target.inbox) ? [{ target, ticket, saved: savedTriage(store, ticket) }] : []))
     .toSorted((a, b) => oldestFirst(a.ticket, b.ticket));
@@ -563,21 +563,22 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
  * Admits one report against the Claude allowance and returns the model to run.
  * A run creates no job, so each admission is recorded as consumption: the next one needs a
  * quota reading taken after it (forcing a refresh), and public reports cannot reuse one snapshot.
+ * A forced admission (Triage now) skips the pause, the reserve and that freshness wait, but never runs on an exhausted allowance.
  */
-export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }, inFlight = 0): Promise<Admission> {
+export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }, inFlight = 0, force = false): Promise<Admission> {
   try {
     // Triage takes no T3 run slot, so Claude T3 concurrency does not gate it; the quota reserve does.
-    if (!c.triage?.enabled) return { blocked: 'triage-disabled' };
+    if (!c.triage || !c.triage.enabled && !force) return { blocked: 'triage-disabled' };
     const providers = await t3.providers();
     const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
     if (!preset) return { blocked: 'No Claude model is configured' };
     const key = `triageAdmittedAt:${preset.model.instanceId}`, last = store.get(key);
-    const jobs = [...store.jobSummaries(), ...last ? [{ modelSelection: preset.model, createdAt: last } as Job] : []];
-    const quota = await readModelQuota(t3 as T3, c, jobs, preset.id, false, false, (inFlight + 1) * c.triage.quotaReservePercent);
+    const jobs = [...store.jobSummaries(), ...last && !force ? [{ modelSelection: preset.model, createdAt: last } as Job] : []];
+    const quota = await readModelQuota(t3 as T3, c, jobs, preset.id, force, false, force ? 0 : (inFlight + 1) * c.triage.quotaReservePercent);
     if (!quota.hasAllowance) return { blocked: 'quota-exhausted' };
-    if (!quota.allowed) return { blocked: 'quota-budget' };
+    if (!force && !quota.allowed) return { blocked: 'quota-budget' };
     const completed = store.get(key);
-    if (completed && Date.parse(quota.capturedAt) <= Date.parse(completed)) return { blocked: 'quota-before-triage-completion' };
+    if (!force && completed && Date.parse(quota.capturedAt) <= Date.parse(completed)) return { blocked: 'quota-before-triage-completion' };
     store.set(key, new Date().toISOString());
     return { model: preset.model.model, settled: () => store.set(key, new Date().toISOString()) };
   } catch (error) { return { blocked: safeError(error) }; }

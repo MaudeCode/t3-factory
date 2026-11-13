@@ -69,7 +69,7 @@ export const RowBody = ({ title, children }) => html`<span class="row-body"><spa
 // the title; `count` follows the title. A `collapsible` block is a closed disclosure unless `open` says otherwise.
 export const Section = ({ title, hint, count, aside, children, class: extra, collapsible = false, open, onToggle }) =>
   collapsible ? html`<details class=${`section disclosure ${extra ?? ""}`} open=${open} onToggle=${onToggle}><summary>${title}${count != null && html`<small>${count}</small>`}</summary><div>${children}</div></details>` : html`<section class=${`section ${extra ?? ""}`}>
-    ${title && html`<header><h2>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h2>${aside}</header>`}
+    ${title && html`<header><h2>${title}${count != null && html`<small>${count}</small>`}<${Help} text=${hint} /></h2>${aside && html`<div class="section-aside">${aside}</div>`}</header>`}
     ${children}
   </section>`;
 

@@ -47,6 +47,7 @@ export class FactoryService {
   private readonly cleanupVisited = new Set<string>();
   private readonly operations = new Map<symbol, { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string; done: Promise<unknown> }>();
   private readonly lanes = new Map<string, { again: boolean; done: Promise<void> }>();
+  private forceTriage = false;
   private statusTimer?: NodeJS.Timeout;
   private readonly eventLoop = monitorEventLoopDelay({ resolution: 20 });
   private readonly retiredClients = new Set<T3>();
@@ -185,8 +186,17 @@ export class FactoryService {
       await pendingReviews(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
-    // One pass owns the bounded triage workers. Publish the queue even while triage is off.
+    this.triage();
+    this.scheduleCleanup(true); this.scheduleCollection();
+    if (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory();
+  }
+
+  // One pass owns the bounded triage workers. Publish the queue even while triage is off.
+  // Triage now marks the next pass forced; a request during a pass forces the coalesced follow-up.
+  private triage() {
     this.runLane('inbox-triage', async () => {
+      const force = this.forceTriage;
+      this.forceTriage = false;
       const c = this.configure();
       if (!inboxes(c).length) { this.store.set('triageStreams', '[]'); return; }
       const kanvil = await this.ensureKanvil(c);
@@ -195,11 +205,9 @@ export class FactoryService {
         this.store.set('triagePromoted', JSON.stringify(promotedTickets(c, kanvil, this.store.events(TRIAGE_RESULTS, undefined, 'triage'))));
         this.publishWork();
       };
-      const results = await triagePass(c, this.store, kanvil, { budget: inFlight => admitTriage(this.configure(), this.t3, this.store, inFlight), signal: this.abort.signal, onRun: publish });
+      const results = await triagePass(c, this.store, kanvil, { force, budget: inFlight => admitTriage(this.configure(), this.t3, this.store, inFlight, force), signal: this.abort.signal, onRun: publish });
       if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
     });
-    this.scheduleCleanup(true); this.scheduleCollection();
-    if (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory();
   }
 
   private scheduleAdmissions(reason: string, workKind: NonNullable<Clients['workKind']>) {
@@ -340,6 +348,7 @@ export class FactoryService {
     if (command.type === 'health') return { code: 0, data: { ok: true, pid: process.pid, ...this.workStatus() } };
     if (this.stopped) return { code: 1, data: { message: 'The scheduler is stopping' } };
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
+    if (command.type === 'triage-run') { this.forceTriage = true; this.triage(); return { code: 0, data: { queued: true } }; }
     if (command.type === 'job-stop') {
       const result = await this.enqueue(() => this.store.exclusive([`job:${command.jobId}`], () => stopJob(this.configure(), this.store, this.t3, command.jobId)), true, { reason: 'job-stop' });
       this.wake('job-stop');
