@@ -46,10 +46,10 @@ export const issues = computed(() => {
     return list.length && { problems: list.map(startProblem) };
   };
   return [
-    { source: "Session tickets", href: "/session-tickets", error: status.value.sessionTickets?.error },
-    { source: "Epics", href: "/runs", error: status.value.epicsError },
-    { source: "Session ticket starts", href: "/session-tickets", note: "Not started", error: failed(SESSION_ORIGIN) },
-    { source: "Triage starts", href: "/triage", note: "Not started", error: failed(TRIAGE_ORIGIN) },
+    { source: "Session tickets", href: "/queue?origin=sessions", error: status.value.sessionTickets?.error },
+    { source: "Epics", href: "/queue?view=epics", error: status.value.epicsError },
+    { source: "Session ticket starts", href: "/queue?origin=sessions", note: "Not started", error: failed(SESSION_ORIGIN) },
+    { source: "Triage starts", href: "/queue?origin=reports", note: "Not started", error: failed(TRIAGE_ORIGIN) },
   ].filter((i) => i.error);
 });
 export const issuesOpen = signal(false);

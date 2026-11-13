@@ -4,13 +4,13 @@ import { ticketKey } from "./format.js";
 
 // The sidebar's groups: [path, name, icon]. PAGES is the same list flat, for route matching.
 export const NAV = [
-  ["Operate", [["/", "Now", "home"], ["/runs", "Runs", "play"], ["/triage", "Triage", "inbox"], ["/session-tickets", "Session tickets", "issueOpened"], ["/activity", "Activity", "pulse"]]],
+  ["Operate", [["/", "Now", "home"], ["/queue", "Queue", "checklist"], ["/runs", "Runs", "play"], ["/triage", "Triage", "inbox"], ["/activity", "Activity", "pulse"]]],
   ["Maintain", [["/cleanup", "Cleanup", "trash"], ["/upstream", "Upstream", "gitBranch"]]],
   ["Configure", [["/projects", "Projects", "repo"], ["/models", "Models", "cpu"], ["/capacity", "Capacity", "meter"]]],
 ];
 export const PAGES = NAV.flatMap(([, pages]) => pages);
 // The phone's bottom bar; the rest of NAV is behind More.
-export const TABS = [["/", "Now"], ["/runs", "Runs"], ["/triage", "Triage"], ["/session-tickets", "Tickets"]];
+export const TABS = [["/", "Now"], ["/queue", "Queue"], ["/runs", "Runs"], ["/triage", "Triage"]];
 
 // Resolve a path to { page, param }. Unknown paths fall back to Now.
 export function match(href) {
@@ -25,8 +25,25 @@ export function match(href) {
   return PAGES.some(([p]) => p === path) ? { page: path, param: null, path } : { page: "/", param: null, path: "/" };
 }
 
+// Pages that moved: an old address lands on its new place, keeping any other query it carried.
+export function moved(href) {
+  const [path] = href.split("?"), query = new URLSearchParams(href.slice(path.length + 1));
+  const to = (target, ...drop) => {
+    for (const key of drop) query.delete(key);
+    const rest = query.toString();
+    return rest ? `${target}${target.includes("?") ? "&" : "?"}${rest}` : target;
+  };
+  if (path === "/session-tickets") return to("/queue?origin=sessions");
+  if (path === "/runs" && query.get("state") === "next") return to("/queue", "state");
+  if (path === "/runs" && query.get("state") === "epics") return to("/queue?view=epics", "state");
+  return href;
+}
 const current = () => (globalThis.location?.pathname ?? "/") + (globalThis.location?.search ?? "");
-export const route = signal(match(current()));
+// An old address typed, bookmarked or reached by Back is rewritten in place.
+const settle = () => { const here = current(), there = moved(here); if (there !== here) history.replaceState(history.state, "", there); return there; };
+export const route = signal(match(globalThis.location ? settle() : "/"));
+// The query of the current address, for pages whose view is part of it.
+export const search = signal(globalThis.location?.search ?? "");
 
 // The ticket panel is addressed by ?ticket=KEY on any page except the launch link, which owns that parameter.
 const panelKey = (href) => {
@@ -52,15 +69,17 @@ export function closeTicket() {
 }
 
 export function navigate(href, replace = false) {
+  href = moved(href);
   const query = href.includes("?") ? href.slice(href.indexOf("?") + 1) : "";
   const next = match(href);
   const target = next.path + (query ? `?${query}` : "");
   if (target !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", target);
   route.value = next;
+  search.value = location.search;
   ticketPanel.value = panelKey(target);
   window.scrollTo(0, 0);
 }
-globalThis.addEventListener?.("popstate", () => { route.value = match(current()); ticketPanel.value = panelKey(current()); });
+globalThis.addEventListener?.("popstate", () => { const here = settle(); route.value = match(here); search.value = location.search; ticketPanel.value = panelKey(here); });
 
 // Click handler for internal links: same-tab navigation without a reload.
 export const follow = (event) => {

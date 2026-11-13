@@ -1,4 +1,4 @@
-// Real app shell, Runs page and ticket panel; synthetic state, ticket reads and dispatch only.
+// Real app shell, Queue page and ticket panel; synthetic state, ticket reads and dispatch only.
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import * as store from "../../web/lib/store.js";
@@ -45,7 +45,7 @@ window.fetch = async (url, init) => {
   }
   return Response.json(state);
 };
-async function show(path = "/runs?state=next") {
+async function show(path = "/queue") {
   render(null, root);
   reads = []; dispatches = []; failing = new Set(); hang = false;
   store.operations.value = [];
@@ -71,7 +71,7 @@ async function run() {
   link("APP-1").dispatchEvent(modified); await pause();
   assert(!panel() && !reads.length && link("APP-1").getAttribute("href").startsWith("https://tracker.example/") && link("APP-1").target === "_blank", "a modified click leaves the tracker link alone");
   await open("APP-1");
-  assert(panel() && location.pathname === path && new URLSearchParams(location.search).get("ticket") === "APP-1" && new URLSearchParams(location.search).get("state") === "next", "a ticket opens in a panel on the same page, addressed by ?ticket=");
+  assert(panel() && location.pathname === path && new URLSearchParams(location.search).get("ticket") === "APP-1", "a ticket opens in a panel on the same page, addressed by ?ticket=");
   assert(reads.join() === "APP-1", "one read per opened ticket");
   const text = panel().textContent;
   for (const part of ["APP-1", "Synthetic ticket APP-1", "To do", "high", "med", "feat", "First line.", "Last line.", "- first criterion", "APP-90", "A finished blocker", "APP-91", "A dependent", "Billing v2", "Up next: 1 of 3"]) assert(text.includes(part), `the panel shows ${part}`);
@@ -89,7 +89,7 @@ async function run() {
   const fromRow = dispatches.at(-1);
   assert(dispatches.length === 2 && fromPanel.ticket === "APP-1" && JSON.stringify({ ...fromPanel, ticket: "" }) === JSON.stringify({ ...fromRow, ticket: "" }), `the panel starts a run with the row's payload: ${JSON.stringify(fromPanel)} vs ${JSON.stringify(fromRow)}`);
   // With a request pending for the ticket, the panel refuses for the same reason the row does.
-  await show("/runs?state=next&ticket=APP-1");
+  await show("/queue?ticket=APP-1");
   assert(panel() && reads.join() === "APP-1", "the panel is reachable by URL");
   hang = true;
   button("Run now").click(); await pause();
@@ -113,7 +113,7 @@ async function run() {
   panel().querySelector(".ticket-runs a").click(); await pause(300);
   assert(!panel() && location.pathname === "/runs/run-1" && !location.search.includes("ticket="), `a run link closes the panel and lands on the run: ${location.pathname}${location.search}`);
   // Not found and failed reads.
-  await show("/runs?state=next&ticket=APP-404");
+  await show("/queue?ticket=APP-404");
   assert(panel().querySelector('[role="alert"]').textContent.includes("APP-404 was not found") && !button("Retry"), "an unknown ticket says so and offers no retry");
   await show(); failing.add("APP-2"); await open("APP-2");
   assert(panel().querySelector('[role="alert"]').textContent.includes("Could not read APP-2"), "a failed read is reported");

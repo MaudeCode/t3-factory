@@ -5,6 +5,10 @@ import "../../web/lib/theme.js";
 import { applyState, operations, status, history, setSessionProvider, setSessionOverrides, startRun } from "../../web/lib/store.js";
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
+import { Queue } from "../../web/views/Queue.js";
+import { navigate, route } from "../../web/lib/router.js";
+// Up next and Epics are on the Queue page, run history on Runs; the fixture shows whichever the address names.
+const Views = () => (route.value.page === "/queue" ? html`<${Queue} />` : html`<${Runs} />`);
 import { Confirmation } from "../../web/ui/index.js";
 
 const root = document.querySelector("#root");
@@ -127,9 +131,9 @@ async function showProjects() {
   operations.value = [];
   history.value = filterJobs;
   applyState({ ...filterState, status: { ...filterState.status, jobs: filterJobs } }, true);
-  window.history.replaceState(null, "", "?state=next");
+  navigate("/queue", true);
   render(null, root);
-  render(html`<${Runs} /><${Confirmation} />`, root);
+  render(html`<${Views} /><${Confirmation} />`, root);
   await pause();
   window.fetch = oldFetch;
 }
@@ -231,7 +235,12 @@ async function runProjects() {
     assert(queueKeys() === "" && heldKeys() === "APP-4", "search can match only a held ticket");
     assert(!root.textContent.includes("No tickets match."), "matching held tickets must not be described as no matches");
     search.value = ""; search.dispatchEvent(new Event("input", { bubbles: true })); await pause();
-    byText('[role="radio"]', "Open3").click(); await pause();
+    // Run history is its own page with its own filters.
+    navigate("/runs", true); await pause();
+    await openFilters();
+    await pickFilter("Tags", "bug"); await pickFilter("Tags", "web");
+    byText('[role="radio"]', "ALL", dialog()).click(); await pause();
+    await closeFilters();
     assert(root.querySelectorAll(".next").length === 1, "ordinary runs use the same metadata filters");
     assert([...root.querySelectorAll(".next .tag-label")].map(e => e.textContent).join() === "bug,web", "run rows show their tracker labels");
     await openFilters();
@@ -243,7 +252,7 @@ async function runProjects() {
     await pickFilter("Provider", "Claude");
     await closeFilters();
     assert(root.querySelectorAll(".next").length === 1, "provider filters actual recorded runs");
-    byText('[role="radio"]', "Up next4").click(); await pause();
+    navigate("/queue", true); await pause();
     await openFilters();
     await pickFilter("Project", "Empty");
     assert(queueKeys() === "" && heldKeys() === "" && root.textContent.includes("No tickets match."), "no matching project has an empty result");
@@ -313,7 +322,7 @@ async function runsControls() {
 }
 async function showRuns() {
   await showProjects();
-  byText('[role="radio"]', "Open3").click(); await pause();
+  navigate("/runs", true); await pause();
 }
 async function runsHistory() {
   await showRuns();
@@ -349,23 +358,25 @@ async function runsHistory() {
 }
 async function runsHeader() {
   await showProjects();
-  const bounds = () => [...root.querySelectorAll('.page-head h1, .page-head [aria-label="Start provider"], .page-head [aria-label="Override limits"], .page-head [aria-label="Search"], .page-head [aria-label^="Filter runs"], [aria-label="State"]')].map(el => {
+  const bounds = () => [...root.querySelectorAll('.page-head h1, .page-head [aria-label="Start provider"], .page-head [aria-label="Override limits"], .page-head [aria-label="Search"], .page-head [aria-label^="Filter runs"], [aria-label="State"], [aria-label="Queue view"]')].map(el => {
     const { x, y, height } = el.getBoundingClientRect();
     return [x, y, height];
   });
   const before = bounds();
-  const tabs = [...root.querySelector('[aria-label="State"]').querySelectorAll('button')];
-  for (const tab of [...tabs.slice(1), tabs[0]]) {
-    tab.click(); await pause();
-    assert(JSON.stringify(bounds()) === JSON.stringify(before), `Runs header stays in place on ${tab.textContent}`);
+  // Up next and Epics share one toolbar; Sessions and Reports bring their own.
+  const tabs = () => [...root.querySelector('[aria-label="Queue view"]').querySelectorAll('button')];
+  for (const index of [1, 0]) {
+    tabs()[index].click(); await pause();
+    assert(JSON.stringify(bounds()) === JSON.stringify(before), `Queue header stays in place on ${tabs()[index].textContent}`);
   }
-  const order = root.querySelector('[aria-label="Start order"]');
-  assert(order && [...order.querySelectorAll('button')].every(b => b.disabled), "queue retains disabled history order controls");
-  const keys = queueKeys();
-  order.querySelector('[aria-label="Oldest first"]').click();
-  order.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
-  await pause();
-  assert(queueKeys() === keys && order.querySelector('[aria-label="Newest first"]').getAttribute('aria-checked') === 'true', "queue order ignores disabled pointer and keyboard sorting");
+  navigate("/runs", true); await pause();
+  const runTabs = [...root.querySelector('[aria-label="State"]').querySelectorAll('button')], runsBefore = bounds();
+  for (const tab of [...runTabs.slice(1), runTabs[0]]) {
+    tab.click(); await pause();
+    assert(JSON.stringify(bounds()) === JSON.stringify(runsBefore), `Runs header stays in place on ${tab.textContent}`);
+  }
+  navigate("/queue", true); await pause();
+  assert(!root.querySelector('[aria-label="Start order"]'), "the queue is in scheduler order and offers no sort");
   assert(document.documentElement.scrollWidth <= innerWidth, "stable toolbar fits the viewport");
   return { passed: true };
 }
@@ -414,7 +425,7 @@ async function queueTransitions() {
   } finally { window.fetch = oldFetch; }
   return { passed: true };
 }
-async function phoneHeader() { await showRuns(); return checkPageHead(); }
+async function phoneHeader() { await showProjects(); return checkPageHead(); }
 // The real Runs page on its Epics tab: start, block, run, cancel, search and filter, with synthetic status.
 const epicTicket = (n, extra = {}) => ({ id: `e${n}`, key: `APP-${n}`, title: `Epic ticket ${n}`, projectId: "p", priority: "medium", difficulty: "med", labels: [], blockedBy: [], done: false, runnable: true, automationReady: true, ...extra });
 const notIncluded = "Epic Paused has unfinished tickets in projects the factory does not run: OTHER-5 (Other).";
@@ -447,9 +458,9 @@ async function showEpics(extra) {
   operations.value = [];
   history.value = [];
   applyState({ ...filterState, status: epicsStatus(extra) }, true);
-  window.history.replaceState(null, "", "?state=epics");
+  navigate("/queue?view=epics", true);
   render(null, root);
-  render(html`<${Runs} /><${Confirmation} />`, root);
+  render(html`<${Views} /><${Confirmation} />`, root);
   await pause();
   window.fetch = oldFetch;
 }
@@ -460,7 +471,7 @@ const epicTag = (title) => epicSection(title).querySelector(".next-toggle .tag")
 const epicIssue = (title) => epicSection(title).querySelector(".next-toggle .epic-issue")?.getAttribute("title");
 const epicCount = (title) => epicSection(title).querySelector(".epic-progress")?.textContent;
 const epicKeys = (title) => [...epicSection(title).querySelectorAll(".chain-row .key")].map(e => e.textContent).join();
-const stateTab = (name) => [...root.querySelectorAll('[aria-label="State"] [role="radio"]')].find(b => b.textContent.startsWith(name));
+const stateTab = (name) => [...root.querySelectorAll('[aria-label="Queue view"] [role="radio"]')].find(b => b.textContent.startsWith(name));
 const runEpic = (title) => epicSection(title).querySelector('button.epic-run');
 const epicToggle = (title) => epicSection(title).querySelector("button.next-toggle");
 async function setEpicOpen(title, open) {
@@ -498,7 +509,6 @@ async function epics() {
     assert(stateTab("Epics"), "Runs has an Epics tab");
     assert(stateTab("Epics").textContent === "Epics4", `the tab counts open Epics: ${stateTab("Epics").textContent}`);
     assert(stateTab("Epics").getAttribute("aria-checked") === "true", "the state link opens the tab");
-    assert([...root.querySelectorAll('[aria-label="Start order"] button')].every(b => b.disabled), "order stays visible and disabled");
     await openFilters();
     assert(!dialog().querySelector('[aria-label="Provider"]'), "Epics do not filter by provider");
     await closeFilters();

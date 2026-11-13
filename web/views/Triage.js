@@ -92,51 +92,78 @@ function Result({ row, now, selection, start, progress, decision }) {
   return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} ...${decision} plain>${when}<//>`;
 }
 
-export function Triage() {
+// Promoted tickets the scheduler still lists, each with the journal entry that created it.
+const promotedTickets = (c) => [...new Map((status.value.triageResults || []).filter((event) => event.promotedTicket?.listed).map((event) => {
+  const t = event.promotedTicket;
+  return [t.taskId, { ...t, id: t.taskId, promoted: true, project: c.projects.find((p) => p.kanvilId === t.projectId), event, createdAt: event.time }];
+})).values()];
+const pendingFor = (t) => launchOperations.value.find((op) => ["queued", "running"].includes(op.state) && ticketKey(op.input.ticket) === ticketKey(t.key));
+const narrowedBy = (filters, query) => query.trim() || Object.values(filters).some((value) => Array.isArray(value) && value.length);
+
+// Tickets promoted from inbox reports that have not started: the Queue page's Reports view. Each stays until a run
+// launches or it leaves the ready statuses. `lead` is the Queue's view switch.
+export function ReadyReports({ lead }) {
   clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState([]);
-  const [settings, setSettings] = useState(false);
-  const now = serverNow(), c = config.value;
-  const streams = status.value.triageStreams || [], results = status.value.triageResults || [];
-  const start = startOptions();
-  const requests = launchOperations.value;
-  const progress = (t) => requests.find((op) => ["queued", "running"].includes(op.state) && ticketKey(op.input.ticket) === ticketKey(t.key));
-  // Each open report is listed once from the inbox's live state, so newer results never push it out. Needs you: the
-  // reports no later pass acts on. In progress: the ones triage or promotion still will.
-  // Ready to start: each promoted ticket the scheduler still lists, until a run launches or it leaves the ready statuses.
-  // History: the recent results as their reports, titled with their outcome. A report row keeps the project its
-  // journal entry recorded; older entries use the inbox's current project.
-  const tickets = [...new Map(results.filter((event) => event.promotedTicket?.listed).map((event) => {
-    const t = event.promotedTicket;
-    return [t.taskId, { ...t, id: t.taskId, promoted: true, project: c.projects.find((p) => p.kanvilId === t.projectId), event, createdAt: event.time }];
-  })).values()];
-  const report = (event, id) => reportRow(event, id, c);
-  const open = (status.value.triageReports || []).map((event) => ({ ...report(event, `open-${event.data.ticketId}`), stage: event.data.stage }));
-  const attention = open.filter((row) => row.stage === "owner"), working = open.filter((row) => row.stage === "working");
-  const triagingNow = (row) => row.event.data.outcome === "triaging";
-  const activity = results.map((event) => report(event, `report-${event.id}`));
-  const starting = (row) => row.promoted && (!!progress(row) || openRun(row));
-  const shown = (list) => list.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
-  const rows = shown(tickets), history = shown(activity), owed = shown(attention), moving = shown(working).toSorted((a, b) => triagingNow(b) - triagingNow(a));
+  const now = serverNow(), start = startOptions(), tickets = promotedTickets(config.value);
+  const starting = (row) => !!pendingFor(row) || openRun(row);
+  const rows = tickets.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
   const visibleIds = JSON.stringify(rows.map((r) => r.id).toSorted());
   useEffect(() => {
     const visible = new Set(JSON.parse(visibleIds));
     setSelected((previous) => previous.every((id) => visible.has(id)) ? previous : previous.filter((id) => visible.has(id)));
   }, [visibleIds]);
+  const picked = rows.filter((r) => selected.includes(r.id));
+  const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
+  return html`<${Page} class="queue" title="Queue" count=${rows.length}
+    actions=${html`<${StartOptions} /><${OrderChoice} label="Promotion order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${tickets} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    ${lead}
+    <${Section} class="list">
+      ${selecting && !!rows.length && html`<div class="selection-bar">
+        <${Check} label="Select visible" aria-label="Select visible promoted tickets" checked=${picked.length === rows.length} indeterminate=${picked.length > 0 && picked.length < rows.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === rows.length ? [] : rows.map((r) => r.id))} />
+        <span class="muted">${picked.length} selected</span>
+        <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? `${overrideText(start.overrideLimits)} and start selected tickets.`} onClick=${() => { for (const r of picked) runNow(r, r.unavailable, ORIGIN, start); setSelected([]); }} />
+      </div>`}
+      ${rows.length
+        ? rows.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} start=${start} progress=${pendingFor(row)}
+            selection=${selecting && html`<${Check} aria-label=${`Select ${row.key}`} checked=${selected.includes(row.id)} disabled=${busy.value} onChange=${(e) => setSelected((previous) => e.target.checked ? [...previous, row.id] : previous.filter((id) => id !== row.id))} />`} />`)
+        : html`<${Empty}>${narrowedBy(filters, query) ? "No tickets match." : "No promoted tickets waiting to start."}<//>`}
+    <//>
+  <//>`;
+}
+export const readyReportCount = () => promotedTickets(config.value).length;
+
+export function Triage() {
+  clock.value;
+  const [filters, setFilters] = useState({});
+  const [query, setQuery] = useState("");
+  const [order, setOrder] = useState("newest");
+  const [settings, setSettings] = useState(false);
+  const now = serverNow(), c = config.value;
+  const streams = status.value.triageStreams || [], results = status.value.triageResults || [];
+  // Each open report is listed once from the inbox's live state, so newer results never push it out. Needs you: the
+  // reports no later pass acts on. In progress: the ones triage or promotion still will.
+  // History: the recent results as their reports, titled with their outcome. Promoted tickets waiting to start are
+  // on the Queue page.
+  const report = (event, id) => reportRow(event, id, c);
+  const open = (status.value.triageReports || []).map((event) => ({ ...report(event, `open-${event.data.ticketId}`), stage: event.data.stage }));
+  const attention = open.filter((row) => row.stage === "owner"), working = open.filter((row) => row.stage === "working");
+  const triagingNow = (row) => row.event.data.outcome === "triaging";
+  const activity = results.map((event) => report(event, `report-${event.id}`));
+  const shown = (list) => list.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => order === "oldest" ? byNewest(b, a) : byNewest(a, b));
+  const history = shown(activity), owed = shown(attention), moving = shown(working).toSorted((a, b) => triagingNow(b) - triagingNow(a));
   if (!c.triage && !streams.length)
     return html`<${Page} narrow title="Triage">
       <${Empty}>No inboxes. Add <code>inbox</code> and <code>scopes</code> to a project and a <code>triage</code> section to the config file to turn triage on.<//>
     <//>`;
-  const startable = rows, picked = startable.filter((r) => selected.includes(r.id));
-  const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
-  const narrowed = query.trim() || Object.values(filters).some((value) => Array.isArray(value) && value.length);
+  const narrowed = narrowedBy(filters, query);
   const waiting = streams.some((row) => row.untriaged), triaging = streams.some((row) => row.running);
   return html`<${Page} title="Triage" hint=${HINT}
-    actions=${html`<${StartOptions} /><${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...tickets, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    actions=${html`<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on in settings.</p>`}
       ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} owed=${attention.filter((r) => r.event.data.inboxId === row.inboxId).length} />`) : html`<p class="muted">No project has an inbox.</p>`}
@@ -149,17 +176,6 @@ export function Triage() {
     ${moving.length > 0 && html`<${Section} title="In progress" count=${moving.length}>
       ${moving.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} />`)}
     <//>`}
-    <${Section} title="Ready to start" count=${rows.length || null}>
-      ${selecting && !!startable.length && html`<div class="selection-bar">
-        <${Check} label="Select visible" aria-label="Select visible promoted tickets" checked=${picked.length === startable.length} indeterminate=${picked.length > 0 && picked.length < startable.length} disabled=${busy.value} onChange=${() => setSelected(picked.length === startable.length ? [] : startable.map((r) => r.id))} />
-        <span class="muted">${picked.length} selected</span>
-        <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? `${overrideText(start.overrideLimits)} and start selected tickets.`} onClick=${() => { for (const r of picked) runNow(r, r.unavailable, ORIGIN, start); setSelected([]); }} />
-      </div>`}
-      ${rows.length
-        ? rows.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} start=${start} progress=${progress(row)}
-            selection=${selecting && html`<${Check} aria-label=${`Select ${row.key}`} checked=${selected.includes(row.id)} disabled=${busy.value} onChange=${(e) => setSelected((previous) => e.target.checked ? [...previous, row.id] : previous.filter((id) => id !== row.id))} />`} />`)
-        : html`<${Empty}>${narrowed ? "No tickets match." : "No promoted tickets waiting to start."}<//>`}
-    <//>
     <${Section} title="History" count=${history.length || null}>
       ${history.length
         ? history.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} />`)

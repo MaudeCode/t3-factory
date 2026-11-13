@@ -3,7 +3,7 @@ import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import { applyState, operations, status, notice, blocked, serverNow, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
-import { route, match } from "../../web/lib/router.js";
+import { navigate, route, match } from "../../web/lib/router.js";
 import { openSearch, checkPageHead } from "./search.js";
 
 const root = document.querySelector("#root");
@@ -56,15 +56,16 @@ async function show(patch = {}) {
   Object.assign(state.status, patch);
   render(null, root);
   applyState(state, true);
-  route.value = match("/session-tickets");
+  navigate("/session-tickets", true); // the old address lands on the Queue page's Sessions view
   render(html`<${App} />`, root);
   await pause();
 }
 async function run() {
   calls = [];
   await show();
-  assert(root.querySelector("h1")?.textContent.includes("Session tickets"), "the page is reachable by its path");
-  assert(["Session tickets", "Tickets"].includes(root.querySelector('nav a[aria-current="page"]')?.textContent.trim()), "navigation marks the page");
+  assert(location.pathname + location.search === "/queue?origin=sessions" && root.querySelector("h1")?.textContent.includes("Queue"), "the old address lands on the Queue page");
+  assert(root.querySelector('[aria-label="Queue view"] [aria-checked="true"]')?.textContent.startsWith("Sessions"), "the Sessions view is selected");
+  assert(root.querySelector('nav a[aria-current="page"]')?.textContent.trim() === "Queue", "navigation marks the page");
   assert(keys().join() === "WEB-9,APP-2,APP-5,APP-1", "rows keep the scheduler's priority order");
   const first = root.querySelector(".next");
   assert(first.querySelector(".meta-project").textContent === "Other project" && first.textContent.includes("not configured in Factory"), "an unmapped project says why it cannot start");
