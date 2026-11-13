@@ -989,7 +989,11 @@ async function queueManual(c: Config, store: Store, options: CycleOptions, clien
     const instances = new Map(providers.map(provider => [provider.instanceId, provider.driver]));
     const inventoryNow = await inventory(c, kanvil, shell.threads, store.jobs(), store, options.ticket?.trim().toUpperCase());
     const models = c.models.filter(model => options.model && options.model !== 'auto' ? model.id === options.model : (model.automatic || !!options.provider) && (!options.provider || instances.get(model.model.instanceId) === options.provider));
-    const candidate = selectTicket(inventoryNow.ready.filter(ticket => models.some(model => acceptsDifficulty(model, ticket))), store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
+    // Provider capacity can refuse before quota is read; only existing hard allowance may become queued intent.
+    const compatible = models.filter(model => inventoryNow.ready.some(ticket => acceptsDifficulty(model, ticket)));
+    const quotas = (await readAll([...Map.groupBy(compatible, model => model.model.instanceId).values()].map(models => readModelQuotas(t3, c, store.jobSummaries(), models.map(model => model.id))))).flat();
+    const allowance = new Set(quotas.filter(result => result.quota?.hasAllowance).map(result => result.id));
+    const candidate = selectTicket(inventoryNow.ready.filter(ticket => models.some(model => allowance.has(model.id) && acceptsDifficulty(model, ticket))), store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
     if (!candidate) return result;
     const task = await kanvil.task(candidate.id), target = await taskReader(c, kanvil).node(task);
     const prior = queuedPlan(store, target.key);
@@ -1649,7 +1653,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     const limit = readLimiter();
     await readAll(all.filter(t => !refreshed?.has(t.id)).map(t => limit(async () => {
       try {
-        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic }), task = await reader.task(t.id); return { status: task.status, hold: automationHold(task) || undefined, done: await reader.done(task) }; });
+        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic }), { status, difficulty, hold, done } = await reader.node(await reader.task(t.id)); return { status, difficulty, hold, done }; });
         Object.assign(t, result);
       }
       catch (error) { t.note = safeError(error); }
