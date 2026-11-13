@@ -1701,6 +1701,12 @@ h1 .crumb::after {
   gap: var(--space-3);
   margin-bottom: 10px;
 }
+/* Several header controls stay together at the end of the title line. */
+.section-aside {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 /* Accent bar before every section title so headings read as headings, not as another row. */
 .section h2 {
   display: flex;

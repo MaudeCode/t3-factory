@@ -29,7 +29,7 @@ const state = {
     { id: 2, time: ago(30), kind: 'triage', text: 'PIN-2 triage failed: Timed out twice', data: { ticket: 'PIN-2', ticketId: 't2', inboxId: 'pin', project: 'Example', outcome: 'triage-failed', reason: 'Timed out twice' } },
   ] },
 };
-let posts = [], saves = [], dispatches = [];
+let posts = [], saves = [], dispatches = [], runs = 0;
 window.fetch = async (url, init) => {
   // A start is refused, as a quota refusal answers, so it lands in the notification area.
   if (url === '/api/dispatch') {
@@ -44,6 +44,7 @@ window.fetch = async (url, init) => {
     state.config = body.config;
     return Response.json(body.config);
   }
+  if (url === '/api/triage/run') { runs++; return Response.json({ queued: true }); }
   if (url === '/api/triage/enabled') {
     const body = JSON.parse(init.body); posts.push(body);
     state.config.triage.enabled = body.enabled; state.status.triageEnabled = body.enabled;
@@ -175,6 +176,26 @@ async function promotion() {
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   return { saves: saves.length, promotionPickersOnOneLine: true, viewport: [innerWidth, innerHeight] };
 }
+// Triage now: enabled only with waiting reports and no run in progress, beside the cog in the Inboxes header.
+async function triageNow() {
+  await show(); runs = 0;
+  const now = () => button('Triage waiting reports now'), streams = state.status.triageStreams, saved = streams.map((s) => ({ ...s }));
+  try {
+    assert(now()?.disabled && now().title === 'Triage is running', 'a running triage disables Triage now');
+    streams[0].running = null; applyState(state, true); await pause();
+    assert(!now().disabled, 'waiting reports enable Triage now');
+    const head = section('Inboxes').querySelector('h2').getBoundingClientRect(), play = now().getBoundingClientRect(), cog = button('Triage settings').getBoundingClientRect();
+    assert(Math.abs(play.top - cog.top) < 1 && play.right <= cog.left && cog.left - play.right < 16 && play.bottom > head.top && play.top < head.bottom && cog.right <= innerWidth, 'Triage now sits beside the cog on the Inboxes title line');
+    now().click(); await pause(); await pause();
+    assert(runs === 1 && notice.value?.text === 'Triage started for waiting reports.', 'Triage now asks for one pass and confirms it');
+    state.status.triageEnabled = false; state.config.triage.enabled = false; applyState(state, true); await pause();
+    assert(!now().disabled, 'Triage now works while triage is paused');
+    streams[0].untriaged = 0; applyState(state, true); await pause();
+    assert(now().disabled && now().title === 'No reports are waiting', 'no waiting reports disables Triage now');
+    assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
+    return { runs, viewport: [innerWidth, innerHeight] };
+  } finally { streams.splice(0, streams.length, ...saved); }
+}
 async function phoneHeader() { await show(); return checkPageHead(); }
-window.triageTests = { phoneHeader, show, run, promotion };
+window.triageTests = { phoneHeader, show, run, promotion, triageNow };
 await show();

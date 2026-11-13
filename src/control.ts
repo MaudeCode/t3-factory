@@ -15,6 +15,7 @@ export type ControlCommand =
   | { type: 'job-stop'; jobId: string }
   | { type: 'plan-cancel'; planId: string }
   | { type: 'session-dismiss'; taskId: string }
+  | { type: 'triage-run' }
   | { type: 'cleanup'; input: CleanupRequest; operator?: string }
   | { type: 'cleanup-cancel'; inspectionId: string }
   | { type: 'health' };
@@ -71,6 +72,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   if (args[0] === 'plan-cancel' && args[1]) return { type: 'plan-cancel', planId: args[1] };
   if (args[0] === 'cleanup-cancel' && args[1]) return { type: 'cleanup-cancel', inspectionId: args[1] };
   if (args[0] === 'session-dismiss' && args[1]) return { type: 'session-dismiss', taskId: args[1] };
+  if (args[0] === 'triage-run') return { type: 'triage-run' };
   if (args[0] !== 'dispatch') return undefined;
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
