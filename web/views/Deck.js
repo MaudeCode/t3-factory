@@ -38,18 +38,15 @@ import {
 } from "../lib/format.js";
 import { Button, Switch, Select, Segmented, Chips, Meter, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
-// Top bar: the automation switch, the start bar, and when the scheduler last looked.
+// What the scheduler last decided and when it looks again.
 function Status({ initialTicket }) {
   const on = live.value.enabled,
     d = status.value.decision,
     now = serverNow();
   const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
+  // The start bar lives in the sidebar; a launch link still shows its own, prefilled, where the link landed.
   return html`<section class="status">
-    <div class="status-main">
-      <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
-      <h1>${on ? "Automation on" : "Automation paused"}</h1>
-    </div>
-    <${Composer} initialTicket=${initialTicket} />
+    ${initialTicket !== undefined && html`<${Composer} initialTicket=${initialTicket} />`}
     <div class="status-meta">
       ${decisionSentence(d) && html`<p>${decisionSentence(d)}</p>`}
       <span>Last check ${ago(d?.at, now)}</span>

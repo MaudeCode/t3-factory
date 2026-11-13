@@ -64,7 +64,7 @@ async function run() {
   calls = [];
   await show();
   assert(root.querySelector("h1")?.textContent.includes("Session tickets"), "the page is reachable by its path");
-  assert(root.querySelector('nav a[aria-current="page"]')?.textContent.trim() === "Session tickets", "navigation marks the page");
+  assert(["Session tickets", "Tickets"].includes(root.querySelector('nav a[aria-current="page"]')?.textContent.trim()), "navigation marks the page");
   assert(keys().join() === "WEB-9,APP-2,APP-5,APP-1", "rows keep the scheduler's priority order");
   const first = root.querySelector(".next");
   assert(first.querySelector(".meta-project").textContent === "Other project" && first.textContent.includes("not configured in Factory"), "an unmapped project says why it cannot start");
@@ -169,7 +169,7 @@ async function density() {
   const inactiveBackground = getComputedStyle(button('Search')).backgroundColor;
   assert(root.querySelector('h1 small')?.textContent === '4', 'ticket count stays beside the page title');
   assert(!root.querySelector('.section.list > header'), 'the list has no repeated section heading');
-  if (innerWidth >= 800) assert(height <= 44.5, 'the title and collapsed toolbar share one row when they fit');
+  if ((root.querySelector('.content')?.clientWidth ?? innerWidth) >= 800) assert(height <= 44.5, 'the title and collapsed toolbar share one row when they fit');
   const input = await openSearch();
   assert(document.activeElement === input, 'opening search focuses the field');
   assert(Math.abs(head.getBoundingClientRect().height - height) < 1, 'opening search does not expand the toolbar');

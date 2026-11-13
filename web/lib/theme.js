@@ -3,13 +3,14 @@
 import { signal, effect } from "./h.js";
 import { T3_THEMES } from "./themes.js";
 
+// Ink: a muted plum-blue. Colour is kept for state, so the accent stays close to the ink.
 const FACTORY = {
   id: "factory",
   label: "Factory",
-  dark: { bg: "#171320", surface: "#1f1a2b", "surface-2": "#2a2438", ink: "#f5f1fa", muted: "#9b92ad", line: "#332c44", accent: "#bfd7ff", "accent-ink": "#171320", "accent-text": "#bfd7ff", attention: "#ffa36b", danger: "#ff7b86" },
-  light: { bg: "#f7f4fb", surface: "#ffffff", "surface-2": "#ebe6f4", ink: "#1d1828", muted: "#6b6380", line: "#dcd5e9", accent: "#3b5bdb", "accent-ink": "#ffffff", "accent-text": "#2f4ec2", attention: "#b45309", danger: "#c2283a" },
+  dark: { bg: "#14141d", surface: "#1b1b28", "surface-2": "#272738", ink: "#ecedf6", muted: "#9193ab", line: "#2b2b3e", accent: "#c4cae9", "accent-ink": "#14141d", "accent-text": "#b9c0e6", attention: "#dcae8e", danger: "#f0a0a8", ok: "#a2ccba" },
+  light: { bg: "#f3f4f9", surface: "#ffffff", "surface-2": "#e5e7f1", ink: "#1c1d2b", muted: "#63667e", line: "#d9dbe8", accent: "#3f4570", "accent-ink": "#ffffff", "accent-text": "#4a5296", attention: "#9a5b2e", danger: "#b3394a", ok: "#3d7a57" },
 };
-// T3 has no success role; one per appearance keeps Done and Live readable on every palette.
+// T3 has no success role; one per appearance keeps Done and Live readable on its palettes.
 const OK = { dark: "#9ee2b8", light: "#15803d" };
 
 export const THEMES = [FACTORY, ...T3_THEMES];
@@ -27,10 +28,10 @@ export function apply() {
     colors = themeOf(theme.value.id)[mode],
     root = document.documentElement;
   for (const [token, value] of Object.entries(colors)) root.style.setProperty(`--${token}`, value);
-  root.style.setProperty("--ok", OK[mode]);
+  if (!colors.ok) root.style.setProperty("--ok", OK[mode]);
   root.style.colorScheme = mode;
   document.querySelector("meta[name=theme-color]")?.setAttribute("content", colors.bg);
-  storage?.setItem("factoryTheme", JSON.stringify(theme.value));
+  try { storage?.setItem("factoryTheme", JSON.stringify(theme.value)); } catch { /* private window */ }
 }
 export function choose(patch) {
   theme.value = { ...theme.value, ...patch };

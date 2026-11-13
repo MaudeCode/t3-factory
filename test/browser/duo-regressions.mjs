@@ -15,7 +15,7 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
       }],
       ["touch header controls", "start", "startTests", 382, async page => {
         await page.evaluate(() => startTests.show("/"));
-        assert(await page.evaluate(() => [...document.querySelectorAll(".top .right button")].every(el => el.offsetWidth >= 44 && el.offsetHeight >= 44)), "header actions have 44px touch targets");
+        assert(await page.evaluate(() => { const controls = [...document.querySelectorAll(".top .right button, .tabbar a, .tabbar button")]; return controls.length >= 6 && controls.every(el => el.offsetWidth >= 44 && el.offsetHeight >= 44); }), "top bar and tab bar controls have 44px touch targets");
       }],
       ["medium provider columns", "start", "startTests", 669, async page => {
         await page.evaluate(() => startTests.show("/"));
@@ -31,7 +31,7 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
       }],
       ["one current page", "start", "startTests", 382, async page => {
         await page.evaluate(() => startTests.show("/"));
-        assert.equal(await page.locator('.top [aria-current="page"]').count(), 1, "only one navigation link is the current page");
+        assert.equal(await page.locator('.shell [aria-current="page"]').count(), 1, "only one navigation link is the current page");
       }],
       ["accessible connection text", "start", "startTests", 382, async page => {
         assert(await page.evaluate(() => { const live = document.querySelector('.top [role="status"]'), text = live.querySelector(".conn-label") ?? live, style = getComputedStyle(text); return !!live.textContent.trim() && style.display !== "none" && style.visibility !== "hidden"; }), "compact connection status remains readable live-region text");

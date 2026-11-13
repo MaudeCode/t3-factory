@@ -27,7 +27,8 @@ for (const [name, path] of Object.entries(modules)) {
 // Brand and UI glyphs as path data, so a view can draw one inline without a request per icon.
 const svgPath = (path: string) => readFileSync(join(root, "node_modules", path), "utf8").match(/<path d="([^"]+)"/)![1];
 const octicons = (await import("@primer/octicons")).default;
-const octicon = (name: string) => ({ box: 16, d: octicons[name].heights[16].path.match(/d="([^"]+)"/)![1] });
+// Some glyphs are drawn as several paths; joined, they fill as one.
+const octicon = (name: string) => ({ box: 16, d: [...octicons[name].heights[16].path.matchAll(/d="([^"]+)"/g)].map(m => m[1]).join("") });
 const icons = {
   claude: { box: 24, d: svgPath("@lobehub/icons-static-svg/icons/claude.svg") },
   openai: { box: 24, d: svgPath("@lobehub/icons-static-svg/icons/openai.svg") },
@@ -59,6 +60,16 @@ const icons = {
   meter: octicon("meter"),
   tag: octicon("tag"),
   versions: octicon("versions"),
+  // Navigation.
+  home: octicon("home"),
+  inbox: octicon("inbox"),
+  issueOpened: octicon("issue-opened"),
+  pulse: octicon("pulse"),
+  gitBranch: octicon("git-branch"),
+  repo: octicon("repo"),
+  cpu: octicon("cpu"),
+  sidebar: octicon("sidebar-collapse"),
+  kebab: octicon("kebab-horizontal"),
   // Difficulty as one, two or three rising bars.
   bars1: { box: 16, d: "M2 10h3v4H2z" },
   bars2: { box: 16, d: "M2 10h3v4H2zM6.5 6h3v8h-3z" },
