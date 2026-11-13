@@ -353,7 +353,7 @@ export class FactoryService {
     if (command.type === 'wake') { this.wake(command.reason ?? 'command'); return { code: 0, data: { ok: true } }; }
     if (command.type === 'triage-run') { this.forceTriage = true; this.triage(); return { code: 0, data: { queued: true } }; }
     if (command.type === 'triage-report') {
-      const c = this.configure(), result = await resolveReport(c, await this.ensureKanvil(c), command.ticketId, command.action);
+      const c = this.configure(), result = await resolveReport(c, this.store, await this.ensureKanvil(c), command.ticketId, command.action);
       this.triage();
       return result ? { code: 0, data: result } : { code: 1, data: { message: 'That report is not open in a configured inbox' } };
     }

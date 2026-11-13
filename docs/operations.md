@@ -13,7 +13,7 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | `upstream-pause` / `upstream-resume` | Disables or enables new upstream release reviews, independently of `pause` / `resume`. |
 | `triage-pause` / `triage-resume` | Disables or enables new inbox triage runs, independently of the other switches. A running report finishes. |
 | `triage-run` | Asks the running scheduler for one triage pass now, past the triage switch and the quota reserve. Concurrency, an exhausted allowance and promotion limits still apply. |
-| `triage-retry TICKET_ID` / `triage-close TICKET_ID` | The owner's decision on one open inbox report, by its tracker ticket ID, through the running scheduler. Retry clears the report's triage and promotion labels so the next pass triages it again; close cancels it. A ticket that is not an open report in a configured inbox is refused. |
+| `triage-retry TICKET_ID` / `triage-promote TICKET_ID` / `triage-close TICKET_ID` | The owner's decision on one open inbox report, by its tracker ticket ID, through the running scheduler. Retry clears the report's triage and promotion labels so the next pass triages it again; promote does the same and records the owner's approval of that report text in the scheduler's state, so that pass makes a ticket of it; close cancels it. A ticket that is not an open report in a configured inbox is refused. |
 | `ticket KEY` | Print one ticket as the web app's ticket panel shows it: an allowlisted, read-only view from the tracker |
 | `run` | Runs the scheduler continuously. |
 | `model-catalog` | Reads the models and options advertised by T3. |

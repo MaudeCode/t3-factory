@@ -199,7 +199,9 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal((await request("/api/triage/reports/t-6/close", { method: "POST", headers: { Cookie: cookie, Origin: "https://attacker.example" }, body: "{}" })).status, 403);
     assert.equal((await request("/api/triage/reports/t-6/retry", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 200);
     assert.deepEqual(calls.at(-1)?.args, ["triage-retry", "t-6"], "the owner's decision on a report names the report and the action");
-    assert.equal((await request("/api/triage/reports/t-6/promote", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 404, "only retry and close are decisions");
+    assert.equal((await request("/api/triage/reports/t-6/promote", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 200);
+    assert.deepEqual(calls.at(-1)?.args, ["triage-promote", "t-6"], "making a ticket of a report is the owner's third decision");
+    assert.equal((await request("/api/triage/reports/t-6/delete", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 404, "only retry, promote and close are decisions");
     const read = await request("/api/tickets/app-8", { headers: { Cookie: cookie } });
     assert.equal(read.status, 200);
     assert.deepEqual(await read.json(), { key: "APP-8", title: "Fixture ticket" }, "the ticket read returns the scheduler's allowlisted detail");

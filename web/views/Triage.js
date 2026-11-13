@@ -7,7 +7,7 @@ import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptio
 import { RunFilters } from "./Runs.js";
 import { follow, ticketClick } from "../lib/router.js";
 
-const HINT = "Untrusted inbox reports are checked against each project's tickets and code in a read-only sandbox. Actionable reports that pass the promotion checks become ready tickets in the project, written by factory code without the report's text. Every open report is listed once by what it waits on: under Needs you until you send it through triage again or close it, and under In progress while triage or promotion will act on it.";
+const HINT = "Untrusted inbox reports are checked against each project's tickets and code in a read-only sandbox. Actionable reports that pass the promotion checks become ready tickets in the project, written by factory code without the report's text. Every open report is listed once by what it waits on: under Needs you until you make a ticket of it, send it through triage again or close it, and under In progress while triage or promotion will act on it.";
 const verdictTone = { actionable: "on", "needs-info": "attention", duplicate: "ok", "already-exists": "ok", spam: "label" };
 // Tags for the outcomes other than a triage verdict.
 const outcomeTag = {
@@ -48,22 +48,35 @@ export function TriageSettings() {
 }
 
 // The report's own title is untrusted, so a report row is titled with its journal outcome instead.
-const outcomeText = (event) => {
+export const outcomeText = (event) => {
   const verdict = event.data.outcome === "triaged" && verdictTitle[event.data.verdict];
   if (verdict) return verdict(event.data);
   const key = event.data.ticket, raw = event.text.startsWith(`${key} `) ? event.text.slice(key.length + 1) : event.text;
   return raw[0].toUpperCase() + raw.slice(1);
 };
 
-// The owner's two decisions on an open report, as a row's action props. Closing cancels the tracker ticket, so it asks
-// first. With both on offer, Close is the secondary action, which folds into the row menu on a phone.
-export function decide(row) {
-  const d = row.event.data, key = d.ticket;
-  const ask = () => confirmAction({ title: `Close ${key}?`, message: `${key} is cancelled in its inbox and leaves this page. Nothing is created from it.`, label: "Close report" }, () => actions.triageReport(d.ticketId, key, "close"));
-  const close = html`<${Button} size="sm" icon class="next-run" aria-label=${`Close ${key}`} title="Close the report" disabled=${busy.value} onClick=${ask}><${Icon} name="x" /><span class="next-action-label">Close report</span><//>`;
-  if (!RETRY.includes(d.outcome)) return { actions: close };
-  return { secondaryActions: close, actions: html`<${Button} size="sm" icon class="next-run" aria-label=${`Triage ${key} again`} title="Triage again: clears this result so the next pass reads the report afresh" disabled=${busy.value} onClick=${() => actions.triageReport(d.ticketId, key, "retry")}><${Icon} name="sync" /><//>` };
+// What the owner can do with an open report, the likeliest first. Making a ticket sends the report through triage
+// again with the owner's decision, so it is promoted past the checks that only exist to ask the owner. Closing cancels
+// the tracker ticket. Both of those ask first. Rows and the ticket panel show the same list.
+const PROMOTE = ["triaged", "promotion-blocked", "needs-owner"];
+const promoteLabel = { duplicate: "Not a duplicate", "already-exists": "Not in the code", "needs-owner": "Approve" }, closeLabel = { duplicate: "Confirm duplicate", "already-exists": "Confirm and close" };
+export function decisions(d) {
+  const key = d.ticket, send = (action) => () => actions.triageReport(d.ticketId, key, action), state = d.outcome === "triaged" ? d.verdict : d.outcome;
+  return [
+    PROMOTE.includes(d.outcome) && { id: "promote", icon: "plus", label: promoteLabel[state] ?? "Create ticket anyway", name: `Make a ticket of ${key}`,
+      run: () => confirmAction({ title: `Make a ticket of ${key}?`, message: `${key} is triaged again with your decision and becomes a ticket in ${d.project} that automation can start. It is still stopped if it reads as spam or fails the safety review.`, label: "Create ticket" }, send("promote")) },
+    RETRY.includes(d.outcome) && { id: "retry", icon: "sync", label: "Triage again", name: `Triage ${key} again`, run: send("retry") },
+    { id: "close", icon: "x", label: closeLabel[state] ?? "Close report", name: `Close ${key}`,
+      run: () => confirmAction({ title: `Close ${key}?`, message: `${key} is cancelled in its inbox and leaves this page. Nothing is created from it.`, label: "Close report" }, send("close")) },
+  ].filter(Boolean);
 }
+// The decisions as a row's action props: the first stays on the row, the rest fold into its menu on a phone.
+export function decide(row) {
+  const [first, ...rest] = decisions(row.event.data).map((a) => html`<${Button} key=${a.id} size="sm" icon class="next-run" aria-label=${a.name} title=${a.label} disabled=${busy.value} onClick=${a.run}><${Icon} name=${a.icon} /><span class="next-action-label">${a.label}</span><//>`);
+  return rest.length ? { actions: first, secondaryActions: rest } : { actions: first };
+}
+// The ticket a duplicate verdict names, opened in the ticket panel.
+export const DuplicateLink = ({ of: key }) => key && html`<a href=${`?ticket=${encodeURIComponent(key)}`} onClick=${ticketClick(ticketKey(key))}>Open ${key}</a>`;
 
 // A report as a row's data. It keeps the project its journal entry recorded; older entries use the inbox's current project.
 export const reportRow = (event, id, c = config.value) => ({ id, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? c.projects.find((p) => p.inbox?.kanvilId === event.data.inboxId)?.kanvilId, createdAt: event.time });
@@ -87,7 +100,7 @@ function Result({ row, now, selection, start, progress, decision }) {
   // A promoted result the scheduler could not read back links its tag to the promoted ticket.
   const promoted = d.promoted && row.projectId && kanvil(c, "projects", row.projectId, "tickets", d.promotedId ?? d.promoted);
   const badge = promoted ? html`<${Tag} tone=${tone} href=${promoted} onClick=${ticketClick(ticketKey(d.promoted))} title=${`Open ${d.promoted}`}>${label}<//>` : tag;
-  return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} ...${decision} plain>${when}<//>`;
+  return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} ...${decision} plain>${d.outcome === "triaged" && html`<${DuplicateLink} of=${d.duplicateOf} />`}${when}<//>`;
 }
 
 // Promoted tickets the scheduler still lists, each with the journal entry that created it.

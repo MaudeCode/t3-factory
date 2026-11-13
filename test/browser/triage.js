@@ -100,10 +100,18 @@ async function run() {
   assert(new URLSearchParams(location.search).get('ticket') === 'PIN-12', `a report row opens the ticket panel: ${location.search}`);
   history.back(); await pause(); await pause();
   // The owner's decisions: triage again where a second pass can change the result, and close after a confirmation.
-  assert(button('Triage PIN-2 again') && button('Triage PIN-12 again') && !button('Triage PIN-6 again') && button('Close PIN-6'), 'a failed or needs-info report can be triaged again; a needs-owner report can only be closed');
+  const labelled = (name) => root.querySelector(`[aria-label="${name}"]`);
+  assert(button('Triage PIN-2 again') && labelled('Triage PIN-12 again') && !labelled('Triage PIN-6 again') && labelled('Close PIN-6') && !labelled('Make a ticket of PIN-2'), 'a failed or needs-info report can be triaged again; a failed one cannot be made a ticket');
+  // Making a ticket of a report triage would not promote is the first action, and asks first.
+  assert(button('Make a ticket of PIN-12').textContent === 'Create ticket anyway' && button('Make a ticket of PIN-6').textContent === 'Approve', 'a needs-info or needs-owner report can be made a ticket');
+  button('Make a ticket of PIN-12').click(); await pause();
+  assert(!decisions.length && confirmation.value?.title === 'Make a ticket of PIN-12?' && confirmation.value.message.includes('Example'), 'making a ticket asks first and names the project');
+  finishConfirmation(true); await pause(); await pause();
+  assert(decisions.join() === 't12/promote' && notice.value?.text === 'PIN-12 will become a ticket.', 'confirming posts the decision');
+  decisions = [];
   button('Triage PIN-2 again').click(); await pause(); await pause();
   assert(decisions.join() === 't2/retry' && notice.value?.text === 'PIN-2 will be triaged again.', 'Triage again asks the scheduler to clear the result');
-  button('Close PIN-6').click(); await pause();
+  labelled('Close PIN-6').click(); await pause();
   assert(decisions.length === 1 && confirmation.value?.title === 'Close PIN-6?', 'closing a report asks first');
   finishConfirmation(true); await pause(); await pause();
   assert(decisions.join() === 't2/retry,t6/close' && notice.value?.text === 'PIN-6 closed.', 'confirming closes the report');
@@ -113,6 +121,10 @@ async function run() {
   assert(row('PIN-6').textContent.includes('Needs the owner: sensitive: workType sec') && !button('Run PIN-6 now'), 'other results show their outcome and cannot start');
   assert(visibleTag(row('PIN-9'))?.textContent === 'closed' && visibleTag(row('PIN-9')).classList.contains('tag-label') && row('PIN-9').textContent.includes('Closed during triage'), 'a report closed during triage shows a neutral closed tag, not an error');
   assert(row('PIN-3').querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t3', 'a report row links to its inbox ticket');
+  // The ticket a duplicate result names opens from its own link, not the report the row opens.
+  [...row('PIN-3').querySelectorAll('a')].find((a) => a.textContent === 'Open EX-12').click(); await pause(); await pause();
+  assert(new URLSearchParams(location.search).get('ticket') === 'EX-12', `a duplicate's link opens the named ticket, not the report: ${location.search}`);
+  history.back(); await pause(); await pause();
   assert(row('PIN-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/EX-39', 'a promoted result without its ticket links the tag by key');
   assert(row('GONE-1').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t38', 'a result from an inbox no longer configured keeps its recorded project');
   // Search and order.

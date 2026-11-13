@@ -407,7 +407,7 @@ export function createFactoryWeb(options: {
           const data = result.data as { notFound?: boolean } | undefined;
           return json(res, result.code === 0 ? 200 : data?.notFound ? 404 : 502, result.code === 0 ? data : { message: data?.notFound ? "Ticket not found" : "Could not read the ticket" });
         }
-        const report = path.match(/^\/api\/triage\/reports\/([\w-]{1,64})\/(retry|close)$/);
+        const report = path.match(/^\/api\/triage\/reports\/([\w-]{1,64})\/(retry|close|promote)$/);
         if (report && req.method === "POST") {
           const result = await run([`triage-${report[2]}`, report[1]]);
           return json(res, result.code ? 409 : 200, result.data);
