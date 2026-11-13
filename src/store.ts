@@ -59,7 +59,7 @@ export interface PlanTicket {
   difficulty?: Difficulty; automationReady?: boolean; labels?: string[]; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
   outside?: boolean; hold?: string; umbrella?: boolean; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
 }
-export interface Plan { requestId?: string; id: string; createdAt: string; target?: PlanTicket; epic?: { id: string; title: string; restrictedCount?: number; error?: string }; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
+export interface Plan { queued?: boolean; requestId?: string; id: string; createdAt: string; target?: PlanTicket; epic?: { id: string; title: string; restrictedCount?: number; error?: string }; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 // Every ticket of a plan, with any target last.
 export const planTickets = (plan: Pick<Plan, 'target' | 'tickets'>) => plan.target ? [...plan.tickets, plan.target] : plan.tickets;
 export interface FactoryEvent { id: number; time: string; kind: string; jobId: string | null; text: string; data: Record<string, unknown> }
@@ -217,9 +217,9 @@ export class Store {
     if (before && before.state !== 'active' && plan.state === 'active') return;
     this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(plan.id, JSON.stringify(plan));
     const detail = { planId: plan.id, ticketKey: plan.target?.key, epicId: plan.epic?.id, tickets: plan.tickets.map(t => t.key) };
-    const name = plan.epic ? `Epic ${plan.epic.title}` : `Chain to ${plan.target!.key}`, count = `${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'}`;
-    if (!before) this.record('plan.created', `${name} started with ${count}${plan.epic ? '' : ' ahead of it'}`, detail);
-    else if (before.state !== plan.state) this.record('plan.state', `${name} ${plan.state === 'done' ? 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
+    const name = plan.queued ? `Run ${plan.target!.key}` : plan.epic ? `Epic ${plan.epic.title}` : `Chain to ${plan.target!.key}`, count = `${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'}`;
+    if (!before) this.record('plan.created', plan.queued ? `${name} queued` : `${name} started with ${count}${plan.epic ? '' : ' ahead of it'}`, detail);
+    else if (before.state !== plan.state) this.record('plan.state', `${name} ${plan.state === 'done' ? plan.queued && !plan.target?.done ? 'dispatched' : 'finished' : 'cancelled'}`, { ...detail, state: plan.state });
   }
   sessionThreads(): SessionThread[] { return this.statement('SELECT data FROM session_threads ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   sessionThread(id: string): SessionThread | undefined { const row = this.statement('SELECT data FROM session_threads WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }

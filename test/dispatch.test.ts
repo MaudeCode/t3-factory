@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { configSchema, type Config } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
-import { cycle } from '../src/scheduler.ts';
+import { cycle, cancelPlan } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { mockLaunchConnection, dispatchFixture, deferred } from './dispatch-fixture.ts';
@@ -33,7 +33,7 @@ for (const overrideLimits of [false, ['providers'], true] as const) test(`explic
   f.c.concurrency.codex = 0;
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'sol', overrideLimits: typeof overrideLimits === 'boolean' ? overrideLimits : [...overrideLimits] }, { t3: f.t3, kanvil: f.kanvil });
-  assert.equal(result.reason, overrideLimits === false ? 'provider-disabled' : 'dispatched');
+  assert.equal(result.reason, overrideLimits === false ? 'plan-started' : 'dispatched');
   assert.equal(f.launches.length, overrideLimits === false ? 0 : 1);
 });
 
@@ -48,7 +48,8 @@ for (const model of ['auto', 'sol']) test(`manual ${model} rechecks provider cap
   const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model, overrideLimits: ['idle', 'reserve', 'labels'] }, { t3: f.t3, kanvil: f.kanvil });
   assert.ok(occupied, 'the last slot is taken during final reads');
   assert.equal(f.launches.length, 0);
-  assert.equal(model === 'auto' ? (result as any).dispatches?.[0]?.reason : result.reason, 'job-resumed-before-dispatch');
+  assert.equal(result.reason, 'plan-started');
+  assert.equal(f.store.plan(result.planId as string)?.target?.key, 'FIX-1');
 });
 
 for (const provider of ['codex', 'claudeAgent'] as const) test(`manual provider choice selects only ${provider} presets and preserves difficulty`, async t => {
@@ -233,16 +234,22 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
             assert.equal(attempts.length, 4, 'a full label holds its remaining tickets');
             assert.ok((next as any).streams.some((s: any) => s.reason === 'label-limit'));
             const waitingApp = () => ['FIX-1', 'FIX-2', 'FIX-3', 'FIX-4'].filter(k => !store.jobs().some(j => j.ticketKey === k));
-            for (const options of [{ model: 'auto' }, { model: 'astra' }, { model: 'astra', overrideLimits: ['idle', 'reserve'] as ('idle' | 'reserve')[] }, { model: 'astra', ticket: waitingApp()[0] }, { model: 'auto', ticket: waitingApp()[0] }])
-              assert.equal((await cycle(c, store, { manual: true, ...options })).reason, 'label-limit', `a manual start respects label limits: ${JSON.stringify(options)}`);
+            for (const options of [{ model: 'auto' }, { model: 'astra' }, { model: 'astra', overrideLimits: ['idle', 'reserve'] as ('idle' | 'reserve')[] }, { model: 'astra', ticket: waitingApp()[0] }, { model: 'auto', ticket: waitingApp()[0] }]) {
+              const held = await cycle(c, store, { manual: true, ...options });
+              assert.equal(held.reason, 'plan-started', `a manual start queues under label limits: ${JSON.stringify(options)}`);
+              cancelPlan(store, held.planId as string);
+            }
             assert.equal(attempts.length, 4);
             c.projects[0].labelLimits = { app: { limit: 2, mode: 'full' } };
             writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));
             for (const job of store.jobs().filter(j => j.labels?.includes('app'))) { job.state = 'waiting'; store.save(job); }
             await cycle(c, store);
             assert.equal(attempts.length, 4, 'two waiting app runs retain both full-block resource slots');
-            for (const model of ['auto', 'astra'])
-              assert.equal((await cycle(c, store, { manual: true, model, ticket: waitingApp()[0] })).reason, 'label-limit', 'manual starts also respect full blocks');
+            for (const model of ['auto', 'astra']) {
+              const held = await cycle(c, store, { manual: true, model, ticket: waitingApp()[0] });
+              assert.equal(held.reason, 'plan-started', 'full label blocks queue manual starts');
+              cancelPlan(store, held.planId as string);
+            }
             assert.equal((await cycle(c, store, { manual: true, model: 'astra', ticket: waitingApp()[0], overrideLimits: ['labels'] })).reason, 'dispatched', 'overriding label limits exceeds a full label');
             c.projects[0].labelLimits = { app: { limit: 2, mode: 'running' } };
             writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(c));

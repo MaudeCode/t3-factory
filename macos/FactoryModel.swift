@@ -547,7 +547,7 @@ struct RunRequest: Identifiable, Codable {
         do {
             let result = try await execute(["plan-cancel", id])
             guard result.code == 0 else { throw failure(result) }
-            notice = "Chain cancelled. Tickets already running finish on their own."; error = nil; refreshStatus()
+            notice = "Cancelled. Tickets already running finish on their own."; error = nil; refreshStatus()
         } catch { self.error = error.localizedDescription }
     }
     private func failure(_ result: CommandResult) -> NSError {

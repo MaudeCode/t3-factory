@@ -129,7 +129,7 @@ async function showProjects() {
   applyState({ ...filterState, status: { ...filterState.status, jobs: filterJobs } }, true);
   window.history.replaceState(null, "", "?state=next");
   render(null, root);
-  render(html`<${Runs} />`, root);
+  render(html`<${Runs} /><${Confirmation} />`, root);
   await pause();
   window.fetch = oldFetch;
 }
@@ -394,6 +394,24 @@ async function queueTransitions() {
   assert(heldKeys() === 'WEB-5', 'active target chain replaces a stale held row by ticket key');
   status.value = { ...filterState.status, plans: [{ ...plan, state: 'cancelled' }] }; await pause();
   assert(queueKeys() === 'APP-1,WEB-2,APP-3' && heldKeys() === 'APP-4,WEB-5', 'settled jobs and cancelled chains restore queue snapshot');
+  await showQueued();
+  assert(root.textContent.includes('Queued APP-1') && root.querySelector('.chain-row').textContent.includes('Waiting for a free app slot'), 'a queued single run names its ticket and waiting reason');
+  assert(queueKeys() === 'WEB-2,APP-3', 'its plan replaces the stale queue row');
+  assert(root.querySelectorAll('.chain-row').length === 1, 'the single run reuses the shared plan row');
+  const cancel = [...root.querySelectorAll('button')].find(button => button.textContent === 'Cancel queued run');
+  assert(cancel, 'the queued run has its own cancel action');
+  cancel.click(); await pause();
+  assert(document.querySelector('dialog[open]')?.textContent.includes('Cancel the queued run for APP-1?'), 'cancellation identifies the saved request');
+  const oldFetch = window.fetch, cancelled = [];
+  window.fetch = async (url) => {
+    if (url === '/api/plans/queued-run/cancel') { cancelled.push(url); return Response.json({ ok: true }); }
+    return Response.json({ ...filterState, status: { ...filterState.status, plans: [] } });
+  };
+  try {
+    [...document.querySelector('dialog[open]').querySelectorAll('button')].find(button => button.textContent === 'Cancel queued run').click();
+    for (let n = 0; n < 100 && !button(1); n++) await pause();
+    assert(cancelled.length === 1 && button(1), 'cancel posts the saved plan ID and restores the ticket row');
+  } finally { window.fetch = oldFetch; }
   return { passed: true };
 }
 async function phoneHeader() { await showRuns(); return checkPageHead(); }
@@ -643,7 +661,13 @@ async function epics() {
     return { passed: true, viewport: [innerWidth, innerHeight], coarse };
   } finally { window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]); }
 }
-window.queueTests = { epics, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+async function showQueued() {
+  await showProjects();
+  status.value = { ...filterState.status, plans: [{ id: 'queued-run', queued: true, state: 'active', model: 'preset-sol', overrideLimits: [], tickets: [], target: { ...filterState.status.upNext.tickets[0], blockedBy: [], runnable: true, note: 'Waiting for a free app slot' } }] };
+  await pause();
+}
+
+window.queueTests = { showQueued, epics, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

@@ -205,7 +205,7 @@ export const actions = {
     run(async () => {
       await post(`/api/plans/${id}/cancel`, {});
       await load();
-      message("Chain cancelled. Tickets already running finish on their own.");
+      message("Cancelled. Tickets already running finish on their own.");
     }),
   dismissSessionTicket: (ids) =>
     run(async () => {
