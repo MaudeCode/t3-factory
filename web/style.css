@@ -2791,6 +2791,10 @@ h1 .crumb::after {
     min-height: 44px;
     min-width: 44px;
   }
+  /* A small dropdown is small for pointers only. */
+  .select-sm > button {
+    min-height: 44px;
+  }
   /* A linked tag keeps its size; its tap area grows to 44px. */
   .tag-link::after {
     content: "";
@@ -3276,4 +3280,45 @@ dialog.ticket-panel[open] {
 }
 .source-run:hover {
   text-decoration: none;
+}
+
+/* Settings ---------------------------------------------------------------- */
+/* One row per setting: its name on the left, its control on the right. Rows are grouped under a section title and
+   separated by space, not boxes. Fields in a dialog or popover keep their stacked form. */
+.settings-page .section .field,
+.settings-page .section .toggle {
+  display: grid;
+  grid-template-columns: minmax(160px, 280px) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-5);
+  align-items: center;
+  margin: 0;
+  padding: var(--space-2) 0;
+  border-bottom: 0;
+}
+.settings-page .section .field > .field-label,
+.settings-page .section .toggle b {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.settings-page .section .toggle .switch {
+  justify-self: start;
+}
+.settings-page dialog .field {
+  display: block;
+  margin-bottom: var(--space-3);
+  padding: 0;
+}
+.settings-page dialog .field > .field-label {
+  margin-bottom: var(--space-1);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+@container page (max-width: 700px) {
+  .settings-page .section .field,
+  .settings-page .section .toggle {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -12,13 +12,11 @@ import { TicketPanel } from "./TicketPanel.js";
 import { Runs } from "./Runs.js";
 import { Queue } from "./Queue.js";
 import { Sources } from "./Sources.js";
+import { Settings } from "./Settings.js";
 import { Cleanup } from "./Cleanup.js";
 import { Activity } from "./Activity.js";
-import { Models } from "./Models.js";
-import { Capacity } from "./Capacity.js";
-import { Projects } from "./Projects.js";
 
-const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": Runs, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/models": Models, "/capacity": Capacity, "/projects": Projects, "/sources": Sources };
+const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": Runs, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/settings": Settings, "/sources": Sources };
 const CONNECTION = { connecting: "Connecting", live: "Live", retrying: "Retrying", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.
@@ -194,7 +192,7 @@ function Shell() {
       </aside>`}
     <div class="content">
       <div ref=${ptr} class="ptr" aria-live="polite"></div>
-      <main key=${page.startsWith("/runs") ? "/runs" : page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>
+      <main key=${page.startsWith("/runs") ? "/runs" : page === "/settings" ? page : page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>
     </div>
     ${phone && html`<nav class="tabbar" aria-label="Pages">
       ${TABS.map(([path, name]) => link([path, name, NAV.flatMap(([, list]) => list).find(([p]) => p === path)[2]]))}

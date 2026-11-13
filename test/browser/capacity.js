@@ -182,7 +182,7 @@ async function labelModes() {
 }
 async function settingsLayout() {
   const check = title => {
-    assert(root.querySelector('h1')?.textContent.includes(title), `${title} renders its real settings view`);
+    assert(root.querySelector('h1')?.textContent.includes('Settings') && root.querySelector('[aria-label="Settings"] [aria-checked="true"]')?.textContent === title, `${title} renders its real settings tab`);
     assert(document.documentElement.scrollWidth <= innerWidth, `${title} fits the viewport`);
     for (const el of root.querySelectorAll('.detail input, .detail .select, .detail .slots, .detail .segmented')) {
       const r = el.getBoundingClientRect();
@@ -196,6 +196,9 @@ async function settingsLayout() {
     }
   };
   await showLabels(); scrollTo(0, 0); await pause();
+  check('Projects');
+  // The name is on the Setup sub-tab; the label fixture opens on Scheduling.
+  [...root.querySelectorAll('[aria-label="Project settings"] button')].find(b => b.textContent.startsWith('Setup')).click(); await pause();
   check('Projects');
   const projectName = root.querySelector('.detail input[type="text"]');
   projectName.value = 'Updated project'; projectName.dispatchEvent(new Event('input', { bubbles: true })); await pause();

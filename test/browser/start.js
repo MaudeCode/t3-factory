@@ -208,13 +208,13 @@ async function duoLayout() {
     assert(tabs.length === 5 && tabs.every(el => bounds(el).width >= 44 && bounds(el).height >= 44), 'five tab-bar destinations with touch targets');
     tabs.at(-1).click(); await pause();
     const more = root.querySelector('dialog[open][aria-label="More"]');
-    assert(more && new Set(hrefs()).size === 9, 'More holds every page the tab bar leaves out');
+    assert(more && new Set(hrefs()).size === 7, 'More holds every page the tab bar leaves out');
     assert([...more.querySelectorAll('.more-list button')].map(el => el.textContent.trim()).join() === 'Appearance,Sign out', 'More offers Appearance and Sign out');
     more.querySelector('a[href="/activity"]').click(); await pause();
     assert(!root.querySelector('dialog[open]') && tabs.at(-1).getAttribute('aria-current') === 'page', 'a page from More closes it and marks More current');
   } else {
-    assert(hrefs().length === 9, 'every page is a direct sidebar link');
-    assert([...root.querySelectorAll('.side nav')].map(n => n.getAttribute('aria-label')).join() === 'Operate,Maintain,Configure', 'pages are grouped');
+    assert(hrefs().length === 7, 'every page is a direct sidebar link');
+    assert([...root.querySelectorAll('.side nav')].map(n => n.getAttribute('aria-label')).join() === 'Work,Upkeep', 'pages are grouped');
     navigate('/activity'); await pause();
     assert(root.querySelector('.side a[aria-current="page"]').getAttribute('href') === '/activity', 'navigation marks the active page');
     // Collapse to icons and back; the choice is stored.
@@ -230,7 +230,7 @@ async function duoLayout() {
     assert(shell.classList.contains('rail') === was, 'the sidebar toggles back');
     localStorage.removeItem('factoryRail');
   }
-  assert(root.querySelector('h1').textContent.includes('Activity'), 'a secondary destination uses the ordinary page route');
+  assert(root.querySelector('h1').textContent.includes('Log'), 'a secondary destination uses the ordinary page route');
   if (phone) { root.querySelector('.tabbar button').click(); await pause(); [...root.querySelectorAll('.more-list button')][0].click(); await pause(); }
   else root.querySelector('button[aria-label="Appearance"]').click();
   await pause();

@@ -37,7 +37,7 @@ function Editor({ index }) {
       <${Button} variant="danger" size="sm" disabled=${inUse || config.value.models.length === 1} icon="trash" label=${inUse ? "A run is still using this model" : "Remove model"} onClick=${() => actions.removeModel(index)} />
     </div>
     <${Toggle} path=${[...p, "automatic"]} label="Takes tickets automatically" hint=${m.automatic ? "The scheduler may pick this model when it is next in priority and inside its allowance." : "Only used when you start a run and choose it."} />
-    <div class="grid-2">
+    <div>
       <${Field} label="Name"><${Input} path=${[...p, "name"]} /><//>
       <${Field} group label="Hardest ticket it may take" hint="Tickets carry a difficulty label. Applies to automatic and manual runs."><${Segmented} label="Hardest ticket" path=${[...p, "maxDifficulty"]} options=${DIFFICULTIES} /><//>
       <${Field} label="Provider"><${Select} label="Provider" value=${m.model.instanceId} options=${providerOptions} onChange=${(v) => chooseModel(index, v, "")} /><//>
@@ -55,12 +55,14 @@ function Editor({ index }) {
   </div>`;
 }
 
-export function Models() {
+// The Settings area's Models tab; `lead` is its tab strip.
+export function Models({ lead } = {}) {
   useEffect(actions.ensureCatalog, []);
   const list = config.value.models;
   const index = Math.min(selectedModel.value, list.length - 1);
-  return html`<${Page} title="Models" hint="Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket."
+  return html`<${Page} class="settings-page" title="Settings" hint="Drag to set priority. The first model that is automatic, within its difficulty ceiling, and inside its allowance takes the next ticket."
     actions=${html`<${Button} variant="ghost" size="sm" icon="sync" label="Refresh catalog" onClick=${actions.catalog} /><${Button} variant="primary" size="sm" icon="plus" label="Add model" onClick=${actions.addModel} />`}>
+    ${lead}
     <div class="split">
       <${SortableList}
         label="Models by priority"
