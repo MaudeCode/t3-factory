@@ -1768,6 +1768,8 @@ body:has(.save-bar) .now-grid {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* As tall as a row of controls even without one, so a view switch under it does not move between views. */
+  min-height: calc(var(--control) + 2px);
   margin-bottom: var(--space-3);
 }
 .page-head > div:first-child {
@@ -3262,4 +3264,16 @@ dialog.ticket-panel[open] {
   .runs-split .runs-detail {
     --runs-crumb: none;
   }
+}
+
+/* Sources ----------------------------------------------------------------- */
+.source-run {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  font-size: 12.5px;
+}
+.source-run:hover {
+  text-decoration: none;
 }

@@ -48,13 +48,15 @@ function WatchDialog({ edit, onClose }) {
   <//>`;
 }
 
-export function Upstream() {
+// The Sources page's Upstream releases view; `lead` is its view switch.
+export function Upstream({ lead } = {}) {
   clock.value;
   const [edit, setEdit] = useState(null);
   const now = serverNow();
   const c = config.value;
   if (!c.upstream)
-    return html`<${Page} narrow title="Upstream">
+    return html`<${Page} narrow title="Sources">
+      ${lead}
       <${Empty}>No watched repositories. Add <code>upstream</code> with a prompt file to the config file to turn reviews on.<//>
     <//>`;
   const byRepo = Object.fromEntries((status.value.upstreams || []).map((r) => [r.repo, r]));
@@ -62,8 +64,9 @@ export function Upstream() {
   const requests = operations.value.filter(op => op.input.upstream);
   const reviews = jobs.value.filter((j) => j.kind === "upstream").sort(byNewest),
     minutesDefault = c.upstream.checkMinutes;
-  return html`<${Page} title="Upstream" hint="Each new release of a watched repository gets a review run that files tickets for anything worth adopting."
+  return html`<${Page} title="Sources" hint="Each new release of a watched repository gets a review run that files tickets for anything worth adopting."
     actions=${html`<label class="automation"><${Switch} label="Upstream reviews" checked=${live.value.upstream} disabled=${busy.value} onChange=${() => actions.toggle("upstream")} /><b>${live.value.upstream ? "Reviews on" : "Reviews paused"}</b></label>`}>
+    ${lead}
     <${WatchDialog} key=${edit ? `${edit.project}-${edit.index ?? "new"}` : "closed"} edit=${edit} onClose=${() => setEdit(null)} />
     ${requests.length > 0 && html`<${Section}><${Operations} list=${requests} /><//>`}
     <div class="cols">

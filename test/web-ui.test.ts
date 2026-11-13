@@ -97,14 +97,17 @@ test('launch links select exactly one named ticket and never submit during routi
   assert.equal(match('/queue?origin=sessions').page, '/queue');
 });
 
-test('addresses of pages that moved into the Queue land on their new place and keep the rest of their query', async () => {
+test('addresses of pages that moved into Queue and Sources land on their new place and keep the rest of their query', async () => {
   const { moved, match, NAV, TABS } = await import('../web/lib/router.js');
   assert.equal(moved('/session-tickets'), '/queue?origin=sessions');
   assert.equal(moved('/session-tickets?ticket=APP-1'), '/queue?origin=sessions&ticket=APP-1');
   assert.equal(moved('/runs?state=next'), '/queue');
   assert.equal(moved('/runs?state=next&ticket=APP-1'), '/queue?ticket=APP-1');
   assert.equal(moved('/runs?state=epics'), '/queue?view=epics');
-  for (const kept of ['/runs', '/runs?state=waiting', '/runs/abc', '/queue?view=epics', '/', '/start?ticket=APP-1']) assert.equal(moved(kept), kept, `${kept} did not move`);
+  assert.equal(moved('/triage'), '/sources');
+  assert.equal(moved('/upstream'), '/sources?view=upstream');
+  assert.equal(moved('/triage?ticket=APP-1'), '/sources?ticket=APP-1');
+  for (const kept of ['/runs', '/runs?state=waiting', '/runs/abc', '/queue?view=epics', '/sources?view=discovery', '/', '/start?ticket=APP-1']) assert.equal(moved(kept), kept, `${kept} did not move`);
   // No navigation entry points at a page that no longer exists: each one resolves to itself.
   for (const [path] of [...NAV.flatMap(([, pages]: [string, string[][]]) => pages), ...TABS]) assert.equal(match(moved(path)).page, path, `${path} is a page`);
 });

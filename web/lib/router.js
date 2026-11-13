@@ -4,13 +4,13 @@ import { ticketKey } from "./format.js";
 
 // The sidebar's groups: [path, name, icon]. PAGES is the same list flat, for route matching.
 export const NAV = [
-  ["Operate", [["/", "Now", "home"], ["/queue", "Queue", "checklist"], ["/runs", "Runs", "play"], ["/triage", "Triage", "inbox"], ["/activity", "Activity", "pulse"]]],
-  ["Maintain", [["/cleanup", "Cleanup", "trash"], ["/upstream", "Upstream", "gitBranch"]]],
+  ["Operate", [["/", "Now", "home"], ["/queue", "Queue", "checklist"], ["/runs", "Runs", "play"], ["/sources", "Sources", "inbox"], ["/activity", "Activity", "pulse"]]],
+  ["Maintain", [["/cleanup", "Cleanup", "trash"]]],
   ["Configure", [["/projects", "Projects", "repo"], ["/models", "Models", "cpu"], ["/capacity", "Capacity", "meter"]]],
 ];
 export const PAGES = NAV.flatMap(([, pages]) => pages);
 // The phone's bottom bar; the rest of NAV is behind More.
-export const TABS = [["/", "Now"], ["/queue", "Queue"], ["/runs", "Runs"], ["/triage", "Triage"]];
+export const TABS = [["/", "Now"], ["/queue", "Queue"], ["/runs", "Runs"], ["/sources", "Sources"]];
 
 // Resolve a path to { page, param }. Unknown paths fall back to Now.
 export function match(href) {
@@ -36,6 +36,8 @@ export function moved(href) {
   if (path === "/session-tickets") return to("/queue?origin=sessions");
   if (path === "/runs" && query.get("state") === "next") return to("/queue", "state");
   if (path === "/runs" && query.get("state") === "epics") return to("/queue?view=epics", "state");
+  if (path === "/triage") return to("/sources");
+  if (path === "/upstream") return to("/sources?view=upstream");
   return href;
 }
 const current = () => (globalThis.location?.pathname ?? "/") + (globalThis.location?.search ?? "");
