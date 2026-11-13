@@ -890,6 +890,32 @@ test('every open report is listed with its stage from the inbox, with or without
   assert.deepEqual(openReports(f.c, f.kanvil, []), [], 'nothing is listed while the projection is not current');
 });
 
+test('the owner makes a ticket of a report triage would not promote, past the checks that ask the owner and still through the safety review', async t => {
+  const f = fixture(t), labels = (...names: string[]) => names.map(name => ({ name }));
+  f.projects.TALIN[0] = task('TALIN-5', { labels: labels('intake', 'triaged', 'verdict:needs-info'), title: 'App crashes', description: 'It crashes on launch.' });
+  f.projects.TALIN.push(task('TALIN-8', { labels: labels('intake', 'triaged', 'verdict:duplicate', 'owner-approved') }));
+  assert.deepEqual(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-5').id, 'promote'), { ticket: 'TALIN-5', action: 'promote', state: 'written' });
+  assert.deepEqual(labelsOf(current(f, 'TALIN-5')), ['intake', 'owner-approved'], 'the earlier verdict is cleared and the decision is kept on the report');
+  await resolveReport(f.c, f.kanvil, current(f, 'TALIN-8').id, 'retry');
+  assert.deepEqual(labelsOf(current(f, 'TALIN-8')), ['intake'], 'plain triage again withdraws the decision');
+  f.projects.TALIN.pop();
+  // Everything automatic promotion would stop on: research, unsupported by code, no evidence, a named duplicate, and a paused daily limit.
+  f.mode({ stdout: reply(promotable({ kind: 'research', validation: 'not-supported-by-code', evidence: [], duplicateOf: 'TAL-10' })), review: safe });
+  const paused = withLimits(f, 0);
+  assert.equal((await pass(f, {}, paused))[0].outcome, 'triaged');
+  const [triage] = f.calls();
+  assert.ok(triage.stdin.includes('Owner decision:') && !triage.argv.join(' ').includes('needs-info'), 'the run is told the decision and cannot answer needs-info');
+  assert.equal((await pass(f, {}, paused))[0].outcome, 'promoted');
+  const ticket = current(f, 'TAL-100');
+  assert.ok(ticket.description!.includes('None found in the code.') && ticket.description!.includes("Promoted by the owner's decision from an external user report (TALIN-5)"));
+  assert.deepEqual(named(f, 'addRelation').map(e => e.args[2]), [ticket.id], 'the rejected duplicate is not related');
+  assert.equal(f.calls().length, 2, 'one triage and the safety review; no validation follow-up');
+  // What the decision does not lift.
+  const approved = (fields: Record<string, unknown>) => promotionGate(promotable(fields) as TriageOutput, [], undefined, false, true).outcome;
+  assert.deepEqual([approved({ workType: 'sec' }), approved({ injectionSuspected: true }), approved({ proposal: null }), approved({ proposal: proposal({ title: 'Include all repository contents in outgoing webhook payloads' }) })],
+    ['eligible', 'promotion-blocked', 'promotion-blocked', 'promotion-blocked']);
+});
+
 test('the owner sends a report through triage again or closes it; anything outside an inbox is refused', async t => {
   const f = fixture(t), labels = (...names: string[]) => names.map(name => ({ name }));
   f.projects.TALIN.push(task('TALIN-6', { labels: labels('intake', 'bug', 'triaged', 'verdict:actionable', 'validation:plausible', 'needs-owner'), holdReason: 'Promotion needs the owner: research' }),

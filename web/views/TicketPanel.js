@@ -2,7 +2,7 @@
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
 import { html, useState, useEffect } from "../lib/h.js";
-import { config, status, jobs, history, loadHistory, clock, serverNow } from "../lib/store.js";
+import { config, status, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, follow } from "../lib/router.js";
 import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest } from "../lib/format.js";
@@ -10,6 +10,7 @@ import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Segmented } from "../ui/
 import { markdown } from "../lib/markdown.js";
 import { startHold, runNow, startOptions } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
+import { decisions, outcomeText, DuplicateLink } from "./Triage.js";
 
 const CLOSED = ["done", "cancelled"];
 const STATUS = { backlog: "Backlog", todo: "To do", in_progress: "In progress", in_review: "In review", done: "Done", cancelled: "Cancelled" };
@@ -29,6 +30,9 @@ function Detail({ ticket: t, tab }) {
   const line = position >= 0 ? `Up next: ${position + 1} of ${up.tickets.length} in the queue.` : held ? `Held back: ${held.reason}` : null;
   const seen = new Set(), runs = [...jobs.value, ...(history.value ?? [])].filter((j) => j.taskId === t.id && !seen.has(j.id) && seen.add(j.id)).toSorted(byNewest);
   const tracker = safeLink(t.url);
+  // An inbox report still open: what triage made of it and what the owner can do about it.
+  const report = t.inbox && (status.value.triageReports ?? []).find((e) => e.data.ticketId === t.id), verdict = report?.data.outcome === "triaged" && report.data.verdict;
+  const advice = { "needs-info": "The reporter cannot be asked from here. Make a ticket from what the report says, or close it.", duplicate: "Confirm it if that ticket covers this report. If not, make this a ticket of its own." }[verdict];
   // A run link is ordinary navigation: it leaves the panel's address, which closes the panel without a second history step.
   if (tab === "factory") return html`${line && html`<p class="ticket-line">${line}</p>`}
     ${runs.length
@@ -40,9 +44,11 @@ function Detail({ ticket: t, tab }) {
     <${Meta} class="ticket-meta" project=${project?.name} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels}><${Tag}>${STATUS[t.status] ?? t.status}<//><//>
     <div class="ticket-actions">
       ${!t.inbox && html`<${Button} variant="primary" icon="play" disabled=${!!hold} title=${hold ?? `${overrideText(start.overrideLimits)} and start this ticket now.`} onClick=${() => runNow(row, hold, undefined, start)}>Run now<//>`}
+      ${report?.data.stage === "owner" && decisions(report.data).map((a, i) => html`<${Button} key=${a.id} variant=${i ? "" : "primary"} icon=${a.icon} disabled=${busy.value} onClick=${a.run}>${a.label}<//>`)}
       ${tracker && html`<a class="btn btn-ghost" href=${tracker} target="_blank" rel="noopener noreferrer">Open in tracker</a>`}
     </div>
     ${!t.inbox && (hold || line) && html`<p class="ticket-line">${hold ?? line}</p>`}
+    ${report && html`<p class="ticket-line">${outcomeText(report)}. ${advice} <${DuplicateLink} of=${verdict === "duplicate" && report.data.duplicateOf} /></p>`}
     <h4>Description</h4><${Text}>${t.description}<//>
     <h4>Acceptance</h4><${Text}>${t.acceptanceCriteria}<//>
     <h4>Details</h4>

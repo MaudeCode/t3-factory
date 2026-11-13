@@ -222,12 +222,12 @@ export const actions = {
       await post("/api/triage/run", {});
       message("Triage started for waiting reports.");
     }),
-  // The owner's decision on one open inbox report: "retry" sends it through triage again, "close" cancels it.
+  // The owner's decision on one open inbox report: "retry" sends it through triage again, "promote" does so with the decision that it becomes a ticket, "close" cancels it.
   triageReport: (ticketId, key, action) =>
     run(async () => {
       await post(`/api/triage/reports/${encodeURIComponent(ticketId)}/${action}`, {});
       await load();
-      message(action === "retry" ? `${key} will be triaged again.` : `${key} closed.`);
+      message({ retry: `${key} will be triaged again.`, promote: `${key} will become a ticket.`, close: `${key} closed.` }[action]);
     }),
   stopJob: (id) =>
     run(async () => {

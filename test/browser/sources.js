@@ -74,12 +74,10 @@ async function run() {
   if (root.querySelector(".tabbar")) assert([...root.querySelectorAll(".tabbar a, .tabbar button")].map((el) => el.textContent.trim().replace(/\d+$/, "")).join() === "Now,Queue,Runs,Sources,More", "the phone tab bar reads Now, Queue, Runs, Sources, More");
   // Inbox triage: the inboxes, what waits on the owner, and the same decisions as before.
   assert(main().querySelector(".triage-inbox").textContent.includes("2 need you") && [...section("Needs you").querySelectorAll(".key")].map((k) => k.textContent).join() === "PIN-12,PIN-6", "a needs-info report older than the recent results stays under Needs you");
-  button("Triage PIN-12 again").click(); await pause();
-  assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-12/retry"), "Triage again posts the retry decision");
-  button("Close PIN-6").click(); await pause();
-  assert(confirmation.value?.title === "Close PIN-6?" && !posts.some((p) => p.url.endsWith("/close")), "Close asks first");
+  button("Make a ticket of PIN-12").click(); await pause();
+  assert(confirmation.value?.title === "Make a ticket of PIN-12?" && !posts.some((p) => p.url.endsWith("/promote")), "making a ticket asks first");
   finishConfirmation(true); await pause();
-  assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-6/close"), "confirming posts the close decision");
+  assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-12/promote"), "confirming posts the decision");
   button("Triage waiting reports now").click(); await pause();
   assert(posts.some((p) => p.url === "/api/triage/run"), "Triage now asks for a pass");
   assert(button("Triage settings").getAttribute("href") === "/settings/sources", "the cog leads to the Settings area");

@@ -129,7 +129,7 @@ if (command === 'web') {
   const forwarded = await callControl(loadConfig(configPath).stateDir, { type: 'triage-run' });
   console.log(JSON.stringify(forwarded?.data ?? { message: 'The scheduler is not running. Start it to triage reports.' }));
   process.exitCode = forwarded?.code ?? 1;
-} else if (command === 'triage-retry' || command === 'triage-close') {
+} else if (command === 'triage-retry' || command === 'triage-close' || command === 'triage-promote') {
   // The owner's decision on one open inbox report, by its tracker ticket ID.
   const owner = commandFor(process.argv.slice(2)), forwarded = owner ? await callControl(loadConfig(configPath).stateDir, owner) : null;
   console.log(JSON.stringify(forwarded?.data ?? { message: owner ? 'The scheduler is not running. Start it to change reports.' : `Usage: t3-factory ${command} TICKET_ID` }));
@@ -255,6 +255,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID | triage-close TICKET_ID | ticket KEY | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID | triage-promote TICKET_ID | triage-close TICKET_ID | ticket KEY | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

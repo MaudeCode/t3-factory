@@ -4,6 +4,7 @@ import "../../web/lib/theme.js";
 import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
+import { finishConfirmation } from "../../web/lib/confirmation.js";
 
 const root = document.querySelector("#root");
 const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,11 +24,13 @@ const state = {
   status: {
     jobs: [{ id: "run-1", label: "APP-1", taskId: "id-APP-1", projectId: "p", state: "complete", createdAt: ago(300), completedAt: ago(200), thread: { title: "Earlier run" } }],
     journal: [], upNext: { at: ago(1), tickets: [ticket(1), ticket(2), ticket(3)], held: [{ key: "APP-4", reason: "No difficulty set" }] },
+    triageReports: [{ id: 3, time: ago(50), kind: "triage", text: "IN-1 triaged: duplicate, duplicate of APP-2", data: { ticket: "IN-1", ticketId: "id-IN-1", inboxId: "pin", projectId: "p", project: "Example", stage: "owner", outcome: "triaged", verdict: "duplicate", duplicateOf: "APP-2" } }],
   },
 };
-let reads = [], dispatches = [], failing = new Set(), hang = false;
+let reads = [], dispatches = [], decided = [], failing = new Set(), hang = false;
 window.fetch = async (url, init) => {
   if (url === "/api/history") return Response.json([]);
+  if (url.startsWith("/api/triage/reports/")) { decided.push(url); return Response.json({ state: "written" }); }
   if (/^\/api\/jobs\/[\w-]+\/report$/.test(url)) return Response.json({ job: state.status.jobs[0], events: [], report: null });
   if (url === "/api/dispatch") {
     const input = JSON.parse(init.body);
@@ -134,6 +137,13 @@ async function run() {
   // An inbox report is read like a ticket but cannot be run.
   await show("/queue?ticket=IN-1");
   assert(panel().textContent.includes("Synthetic ticket IN-1") && !button("Run now") && button("Open in tracker"), "an inbox report shows without Run now");
+  // An open report carries triage's result and the owner's decisions; the ticket a duplicate verdict names opens here.
+  assert(panel().querySelector(".ticket-line").textContent.includes("Duplicate of APP-2") && ["Not a duplicate", "Triage again", "Confirm duplicate"].every(button), "an open report shows its result and the decisions");
+  button("Not a duplicate").click(); await pause();
+  finishConfirmation(true); await pause(150);
+  assert(decided.join() === "/api/triage/reports/id-IN-1/promote", `Not a duplicate posts the decision: ${decided}`);
+  [...panel().querySelectorAll(".ticket-line a")].find((a) => a.textContent === "Open APP-2").click(); await pause(150);
+  assert(new URLSearchParams(location.search).get("ticket") === "APP-2" && panel().textContent.includes("Synthetic ticket APP-2") && !button("Confirm duplicate"), "the named duplicate opens in the panel");
   // Opening the run's own page is one navigation: the panel closes and the run stays open.
   await show(); await open("APP-1"); await factory();
   panel().querySelector(".run-detail a.crumb").click(); await pause(300);

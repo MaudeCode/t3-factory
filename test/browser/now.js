@@ -99,10 +99,10 @@ async function run() {
     failed.querySelector('button[aria-label="Triage PIN-2 again"]').click(); await pause();
     assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-2/retry"), "Triage again posts the retry decision");
     const owner = rows(sections()["Needs you"]).find((r) => r.textContent.includes("PIN-6"));
-    owner.querySelector('button[aria-label="Close PIN-6"]').click(); await pause();
-    assert(confirmation.value && !posts.some((p) => p.url.endsWith("/close")), "Close asks before it posts");
+    owner.querySelector('button[aria-label="Make a ticket of PIN-6"]').click(); await pause();
+    assert(confirmation.value && !posts.some((p) => p.url.endsWith("/promote")), "making a ticket asks before it posts");
     finishConfirmation(true); await pause();
-    assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-6/close"), "confirming Close posts the close decision");
+    assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-6/promote"), "confirming posts the decision");
   }
   noOverflow();
   return { passed: true, viewport: [innerWidth, innerHeight], content: width() };
