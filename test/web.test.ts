@@ -29,6 +29,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
         return new Promise((resolve) => {
           finish = resolve;
         });
+      if (args[0] === "ticket") return args[1] === "APP-404" ? { code: 1, data: { notFound: true, message: "Ticket not found" } } : args[1] === "APP-500" ? { code: 1, data: { message: "Kanvil connection failed" } } : { code: 0, data: { key: args[1], title: "Fixture ticket" } };
       return { code: 0, data: { ok: true } };
     },
   });
@@ -82,6 +83,8 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal(calls.length, 0, 'launch GETs cannot dispatch');
     assert.equal((await request("/api/state")).status, 401);
     assert.equal((await request('/api/threads/mcp%3Athread/open')).status, 401, 'thread links require authentication');
+    assert.equal((await request("/api/tickets/APP-8")).status, 401, "ticket reads require authentication");
+    assert.ok(!calls.some((c) => c.args[0] === "ticket"), "an unauthenticated ticket read never reaches the scheduler");
     assert.equal((await request("/api/pair", { method: "POST" })).status, 401);
     assert.equal(
       (await request("/api/state", { headers: { Host: "attacker.example" } }))
@@ -197,6 +200,17 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal((await request("/api/triage/reports/t-6/retry", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 200);
     assert.deepEqual(calls.at(-1)?.args, ["triage-retry", "t-6"], "the owner's decision on a report names the report and the action");
     assert.equal((await request("/api/triage/reports/t-6/promote", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 404, "only retry and close are decisions");
+    const read = await request("/api/tickets/app-8", { headers: { Cookie: cookie } });
+    assert.equal(read.status, 200);
+    assert.deepEqual(await read.json(), { key: "APP-8", title: "Fixture ticket" }, "the ticket read returns the scheduler's allowlisted detail");
+    assert.deepEqual(calls.at(-1)?.args, ["ticket", "APP-8"], "the key is normalised before it reaches the scheduler");
+    assert.equal((await request("/api/tickets/APP-404", { headers: { Cookie: cookie } })).status, 404, "an unknown ticket or project is not found");
+    const failed = await request("/api/tickets/APP-500", { headers: { Cookie: cookie } });
+    assert.equal(failed.status, 502);
+    assert.deepEqual(await failed.json(), { message: "Could not read the ticket" }, "a failed read does not relay the scheduler's diagnostics");
+    const ticketReads = calls.filter((c) => c.args[0] === "ticket").length;
+    for (const bad of ["/api/tickets/APP", "/api/tickets/APP-8/extra", "/api/tickets/..%2Fstate", "/api/tickets/APP-8%20--chain"]) assert.equal((await request(bad, { headers: { Cookie: cookie } })).status, 404, `${bad} is not a ticket key`);
+    assert.equal(calls.filter((c) => c.args[0] === "ticket").length, ticketReads, "a malformed key never reaches the scheduler");
     const id = randomUUID(),
       input = { ticket: "app-8", model: "astra", overrideLimits: true };
     const dispatch = () =>

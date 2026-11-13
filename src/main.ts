@@ -15,6 +15,7 @@ import { saveSettings } from './settings.ts';
 import type { CycleOptions } from './scheduler.ts';
 import { z, ZodError } from 'zod';
 import { T3, Kanvil } from './clients.ts';
+import { ticketDetail } from './ticket-detail.ts';
 import { createFactoryWeb, runFactory, webSettings } from './web.ts';
 
 import { loadEnvironment } from './env.ts';
@@ -133,6 +134,22 @@ if (command === 'web') {
   const owner = commandFor(process.argv.slice(2)), forwarded = owner ? await callControl(loadConfig(configPath).stateDir, owner) : null;
   console.log(JSON.stringify(forwarded?.data ?? { message: owner ? 'The scheduler is not running. Start it to change reports.' : `Usage: t3-factory ${command} TICKET_ID` }));
   process.exitCode = forwarded?.code ?? 1;
+} else if (command === 'ticket') {
+  // One ticket as the web app shows it. The running scheduler answers from its client; without one, read directly.
+  try {
+    const c = loadConfig(configPath), key = process.argv[3] ?? '';
+    const forwarded = await callControl(c.stateDir, { type: 'ticket', key });
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else {
+      const kanvil = new Kanvil(c.kanvil, c.projects);
+      try {
+        await kanvil.connect();
+        const detail = await ticketDetail(c, kanvil, key);
+        console.log(JSON.stringify(detail ?? { notFound: true, message: 'Ticket not found' }));
+        process.exitCode = detail ? 0 : 1;
+      } finally { await kanvil.close(); }
+    }
+  } catch (e) { console.log(JSON.stringify({ message: safeError(e) })); process.exitCode = 1; }
 } else if (command === 'web-pair') {
   try {
     const { config, secret, oidc } = webSettings();
@@ -238,6 +255,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID | triage-close TICKET_ID | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID | triage-close TICKET_ID | ticket KEY | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }
