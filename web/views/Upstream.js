@@ -1,8 +1,9 @@
 import { html, useState } from "../lib/h.js";
 import { config, status, live, busy, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
-import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody } from "../ui/index.js";
+import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody, Icon } from "../ui/index.js";
 import { RunGroup, Operations } from "./Deck.js";
+import { follow } from "../lib/router.js";
 
 const minutes = (n) => span(n * 60);
 const nextCheck = (checkedAt, every, now) => {
@@ -69,9 +70,9 @@ export function Upstream({ lead } = {}) {
     ${lead}
     <${WatchDialog} key=${edit ? `${edit.project}-${edit.index ?? "new"}` : "closed"} edit=${edit} onClose=${() => setEdit(null)} />
     ${requests.length > 0 && html`<${Section}><${Operations} list=${requests} /><//>`}
-    <div class="cols">
+    <div>
       <div>
-        <${Section} title="Watched releases">
+        <${Section} title="Watched releases" aside=${html`<a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Upstream settings" title="Upstream settings"><${Icon} name="gear" /></a>`}>
           ${watched.length
             ? watched.map(
                 ({ entry: u, live: r, ...w }) => html`<div class="release" key=${u.repo}>
@@ -93,12 +94,6 @@ export function Upstream({ lead } = {}) {
           <${Button} size="sm" style="margin-top:8px" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })}>Watch a repository<//>
         <//>
         <${RunGroup} title="Reviews" list=${reviews} empty="No reviews yet." />
-      </div>
-      <div>
-        <${Section} title="Settings">
-          <${Field} label="Prompt file on your Mac" hint="Read for each review run."><${Input} mono path=${["upstream", "promptFile"]} /><//>
-          <${Field} label="Check for releases every" hint="A repository can set its own interval."><${Range} label="Check interval" path=${["upstream", "checkMinutes"]} min="15" max="1440" step="15" format=${minutes} /><//>
-        <//>
       </div>
     </div>
   <//>`;

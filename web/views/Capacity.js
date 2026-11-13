@@ -22,12 +22,14 @@ function Allowance({ provider, title, windows }) {
   <//>`;
 }
 
-export function Capacity() {
+// The Settings area's Limits tab; `lead` is its tab strip.
+export function Capacity({ lead } = {}) {
   clock.value;
   const running = Object.fromEntries(PROVIDERS.map((p) => [p.driver, jobs.value.filter((j) => providerOf(j) === p.driver && isActive(j)).length]));
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
   const limit = config.value.maxWaitingPRs;
-  return html`<${Page} title="Capacity" hint="Running work always finishes; limits only decide what may start.">
+  return html`<${Page} class="settings-page" title="Settings" hint="Running work always finishes; limits only decide what may start.">
+    ${lead}
     <div class="cols">
       <div>
         <${Section} title="Runs at once" hint="Filled slots are running now. Runs waiting for you free their slot. A run you start by hand may exceed the limit.">

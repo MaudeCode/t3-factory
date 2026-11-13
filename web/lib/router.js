@@ -4,9 +4,8 @@ import { ticketKey } from "./format.js";
 
 // The sidebar's groups: [path, name, icon]. PAGES is the same list flat, for route matching.
 export const NAV = [
-  ["Operate", [["/", "Now", "home"], ["/queue", "Queue", "checklist"], ["/runs", "Runs", "play"], ["/sources", "Sources", "inbox"], ["/activity", "Activity", "pulse"]]],
-  ["Maintain", [["/cleanup", "Cleanup", "trash"]]],
-  ["Configure", [["/projects", "Projects", "repo"], ["/models", "Models", "cpu"], ["/capacity", "Capacity", "meter"]]],
+  ["Work", [["/", "Now", "home"], ["/queue", "Queue", "checklist"], ["/runs", "Runs", "play"], ["/sources", "Sources", "inbox"]]],
+  ["Upkeep", [["/activity", "Log", "pulse"], ["/cleanup", "Storage", "trash"], ["/settings", "Settings", "gear"]]],
 ];
 export const PAGES = NAV.flatMap(([, pages]) => pages);
 // The phone's bottom bar; the rest of NAV is behind More.
@@ -20,6 +19,9 @@ export function match(href) {
     const tickets = new URLSearchParams(query).getAll("ticket");
     return { page: path, param: tickets.length === 1 ? ticketKey(tickets[0]) : "", path };
   }
+  // Settings has one tab per area; the bare address opens the first.
+  const settings = path.match(/^\/settings(?:\/(projects|models|limits|sources))?$/);
+  if (settings) return { page: "/settings", param: settings[1] ?? "projects", path };
   const run = path.match(/^\/runs\/([\w-]+)$/);
   if (run) return { page: "/runs/:id", param: run[1], path };
   return PAGES.some(([p]) => p === path) ? { page: path, param: null, path } : { page: "/", param: null, path: "/" };
@@ -38,6 +40,9 @@ export function moved(href) {
   if (path === "/runs" && query.get("state") === "epics") return to("/queue?view=epics", "state");
   if (path === "/triage") return to("/sources");
   if (path === "/upstream") return to("/sources?view=upstream");
+  if (path === "/projects") return to("/settings/projects");
+  if (path === "/models") return to("/settings/models");
+  if (path === "/capacity") return to("/settings/limits");
   return href;
 }
 const current = () => (globalThis.location?.pathname ?? "/") + (globalThis.location?.search ?? "");

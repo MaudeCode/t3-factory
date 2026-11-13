@@ -1,10 +1,10 @@
-// Real Triage view, settings dialog and start path; synthetic state, toggle, config and dispatch endpoints only.
+// Real Triage view, its settings and start path; synthetic state, toggle, config and dispatch endpoints only.
 import { openSearch, checkPageHead } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
 import { confirmation, finishConfirmation } from '../../web/lib/confirmation.js';
-import { Triage, ReadyReports } from '../../web/views/Triage.js';
+import { Triage, ReadyReports, TriageSettings } from '../../web/views/Triage.js';
 const root = document.querySelector('#root');
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
@@ -78,7 +78,13 @@ const keys = (title) => rows(title).map((r) => r.querySelector('.key').textConte
 const row = (key, title = key.startsWith('EX-') ? undefined : 'History') => rows(title).find((r) => r.querySelector('.key')?.textContent === key);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find((el) => el.getClientRects().length);
 const visibleTag = (r) => [...r.querySelectorAll('.tag')].find((el) => el.getClientRects().length && /promoted|needs owner|needs-info|queued|duplicate|failed|closed|waiting|triaging/.test(el.textContent));
-async function settings() { button('Triage settings').click(); await pause(); return document.querySelector('dialog[open]'); }
+// Triage's settings live in the Settings area; the fixture mounts them under the view, in a settings page's section.
+async function settings() {
+  render(null, root);
+  render(html`<${Triage} /><div class="page settings-page"><section class="section"><${TriageSettings} /></section></div>`, root);
+  await pause();
+  return root.querySelector('.settings-page');
+}
 async function run() {
   await show();
   const text = () => root.textContent;
@@ -116,13 +122,12 @@ async function run() {
   root.querySelector('[role="radiogroup"][aria-label="Result order"] [aria-label="Newest first"]').click(); await pause();
   search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   // The cog holds the triage switch.
-  const dialog = await settings();
-  const toggle = dialog?.querySelector('input[role="switch"][aria-label="Inbox triage"]');
-  assert(toggle && toggle.checked, 'the triage switch is in the settings dialog');
+  assert(button('Triage settings').getAttribute('href') === '/settings/sources', 'the cog leads to the Settings area');
+  const toggle = root.querySelector('.page-head input[role="switch"][aria-label="Inbox triage"]');
+  assert(toggle && toggle.checked, 'the triage switch sits with the view\'s controls');
   toggle.click(); await pause(); await pause();
   assert(posts.length === 1 && posts[0].enabled === false, 'the switch posts triage.enabled = false');
   assert(text().includes('Triage is paused'), 'the page warns that triage is paused');
-  dialog.close(); await pause();
   // Layout: promoted rows are no taller than two lines plus Start, and nothing overflows.
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
@@ -181,7 +186,7 @@ async function promotion() {
   assert(/1 queued, 3 promoted/.test(lines()[0].textContent), 'the first inbox shows its promotion counts');
   assert(lines()[0].textContent.includes('10 per day') && lines()[1].textContent.includes('Unlimited'), 'each inbox shows its limit next to its status');
   await settings();
-  const rows = () => [...document.querySelectorAll('dialog[open] .triage-inbox-settings')];
+  const rows = () => [...root.querySelectorAll('.settings-page .triage-inbox-settings')];
   assert(text().includes('Promoted to EX-39') && text().includes('needs owner') && text().includes('sensitive: workType sec') && text().includes('queued'), 'promotion outcomes are listed');
   // The shared limit picker: Paused, 5, 10, 20, 40, Other for any number, and Unlimited.
   const group = (row) => rows()[row].querySelector('[role="radiogroup"]');

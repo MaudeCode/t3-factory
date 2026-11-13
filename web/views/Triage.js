@@ -2,9 +2,10 @@ import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, live, busy, clock, serverNow, actions, launchOperations, TRIAGE_ORIGIN as ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, ticketKey, triageSummary } from "../lib/format.js";
-import { Button, Toggle, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, Dialog } from "../ui/index.js";
+import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, Switch } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
+import { follow } from "../lib/router.js";
 
 const HINT = "Untrusted inbox reports are checked against each project's tickets and code in a read-only sandbox. Actionable reports that pass the promotion checks become ready tickets in the project, written by factory code without the report's text. Every open report is listed once by what it waits on: under Needs you until you send it through triage again or close it, and under In progress while triage or promotion will act on it.";
 const verdictTone = { actionable: "on", "needs-info": "attention", duplicate: "ok", "already-exists": "ok", spam: "label" };
@@ -32,12 +33,10 @@ function InboxLine({ row, now, owed }) {
   </div>`;
 }
 
-// The settings behind the cog: the triage switch, each inbox's daily promotion limit, and the prompt file.
-function Settings({ open, onClose, rows }) {
-  const c = config.value;
-  return html`<${Dialog} open=${open} onClose=${onClose} title="Triage settings">
-    ${c.triage && html`<${Toggle} label="Inbox triage" hint="Paused leaves new reports waiting; promotion and the results below are unchanged." checked=${live.value.triage} disabled=${busy.value} onChange=${() => actions.toggle("triage")} />`}
-    ${rows.map((row) => {
+// Triage's settings, for the Settings area: each inbox's daily promotion limit and the prompt file.
+export function TriageSettings() {
+  const c = config.value, rows = status.value.triageStreams || [];
+  return html`${rows.map((row) => {
       const index = c.projects.findIndex((p) => p.kanvilId === row.projectId && p.inbox?.kanvilId === row.inboxId);
       return html`<div class="triage-inbox-settings" key=${row.inboxId}>
         <h3>${row.project} <span class="muted"><${Link} href=${projectLink(c, row.inboxId)}>Inbox<//>, ${row.label} label</span></h3>
@@ -45,8 +44,7 @@ function Settings({ open, onClose, rows }) {
           <${Slots} label=${`${row.project} promotions per day`} path=${["projects", index, "inbox", "maxPromotionsPerDay"]} picks=${[5, 10, 20, 40]} unit="per day" offLabel="Paused" unlimited="Unlimited" /><//>`}
       </div>`;
     })}
-    <${Field} label="Prompt file on your Mac" hint="Read for each triage run. The project name, scopes, ticket key and report are filled in."><${Input} mono path=${["triage", "promptFile"]} /><//>
-  <//>`;
+    <${Field} label="Prompt file on your Mac" hint="Read for each triage run. The project name, scopes, ticket key and report are filled in."><${Input} mono path=${["triage", "promptFile"]} /><//>`;
 }
 
 // The report's own title is untrusted, so a report row is titled with its journal outcome instead.
@@ -143,7 +141,6 @@ export function Triage({ lead } = {}) {
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
-  const [settings, setSettings] = useState(false);
   const now = serverNow(), c = config.value;
   const streams = status.value.triageStreams || [], results = status.value.triageResults || [];
   // Each open report is listed once from the inbox's live state, so newer results never push it out. Needs you: the
@@ -165,10 +162,10 @@ export function Triage({ lead } = {}) {
   const narrowed = narrowedBy(filters, query);
   const waiting = streams.some((row) => row.untriaged), triaging = streams.some((row) => row.running);
   return html`<${Page} title="Sources" hint=${HINT}
-    actions=${html`<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
+    actions=${html`${c.triage && html`<label class="automation"><${Switch} label="Inbox triage" checked=${live.value.triage} disabled=${busy.value} onChange=${() => actions.toggle("triage")} /><b>${live.value.triage ? "Triage on" : "Triage paused"}</b></label>`}<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
     ${lead}
-    <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><${Button} size="sm" icon="gear" label="Triage settings" onClick=${() => setSettings(true)} />`}>
-      ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on in settings.</p>`}
+    <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Triage settings" title="Triage settings"><${Icon} name="gear" /></a>`}>
+      ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on.</p>`}
       ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} owed=${attention.filter((r) => r.event.data.inboxId === row.inboxId).length} />`) : html`<p class="muted">No project has an inbox.</p>`}
     <//>
     <${Section} title="Needs you" count=${owed.length || null}>
@@ -184,6 +181,5 @@ export function Triage({ lead } = {}) {
         ? history.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} />`)
         : html`<${Empty}>${narrowed ? "No results match." : "No reports triaged yet."}<//>`}
     <//>
-    <${Settings} open=${settings} onClose=${() => setSettings(false)} rows=${streams} />
   <//>`;
 }

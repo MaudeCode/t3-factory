@@ -129,7 +129,7 @@ function Setup({ index, project }) {
   const pathMismatch = t3Project && t3Project.workspaceRoot !== project.repoPath;
   const columns = columnOptions(project.kanvilId);
   return html`<${Section} title="Repository">
-      <div class="grid-2">
+      <div>
         <${Field} label="Name"><${Input} path=${[...p, "name"]} /><//>
         <${Field} label="GitHub owner/repo"><${Input} mono path=${[...p, "githubRepo"]} /><//>
         <${Field} label="T3 project" hint="T3 creates each run's worktree from this project."><${Select} label="T3 project" value=${project.t3Id} options=${t3Options(project.t3Id)} onChange=${(v) => actions.linkT3(index, v)} /><//>
@@ -140,7 +140,7 @@ function Setup({ index, project }) {
         <${Button} variant="ghost" size="sm" onClick=${() => set([...p, "repoPath"], t3Project.workspaceRoot)}>Use T3's path<//></p>`}
     <//>
     <${Section} title="Tickets">
-      <div class="grid-2">
+      <div>
         <${KanvilPicker} value=${project.kanvilId} workspaceId=${project.kanvilWorkspaceId ?? config.value.kanvil.workspaceId} onChange=${(v) => actions.linkKanvil(index, v)} />
         <${Field} label="Ticket prefix"><${Input} mono path=${[...p, "key"]} /><//>
       </div>
@@ -165,7 +165,8 @@ const Releases = ({ project }) => html`<${Section} title="Watched releases" hint
 
 const views = { setup: Setup, scheduling: Scheduling, releases: Releases };
 
-export function Projects() {
+// The Settings area's Projects tab; `lead` is its tab strip.
+export function Projects({ lead } = {}) {
   clock.value;
   useEffect(actions.ensureSources, []);
   const [adding, setAdding] = useState(false);
@@ -191,7 +192,8 @@ export function Projects() {
   const pathMismatch = t3Project && t3Project.workspaceRoot !== current.repoPath;
   const ranks = (current.priorityLabels ?? []).length, limits = Object.keys(current.labelLimits ?? {}).length;
   const View = views[view];
-  return html`<${Page} title="Projects" hint="A project pairs a T3 project with a Kanvil project." actions=${html`<${Button} variant="primary" size="sm" icon="plus" label="Add project" onClick=${() => setAdding(true)} />`}>
+  return html`<${Page} class="settings-page" title="Settings" hint="A project pairs a T3 project with a Kanvil project." actions=${html`<${Button} variant="primary" size="sm" icon="plus" label="Add project" onClick=${() => setAdding(true)} />`}>
+    ${lead}
     <${AddProject} open=${adding} onClose=${() => setAdding(false)} />
     <div class="split">
       <div class="list" role="listbox" aria-label="Projects">
@@ -231,11 +233,5 @@ export function Projects() {
         <${View} index=${i} project=${current} />
       </div>
     </div>
-    <${Section} title="Discovery" hint="When no tickets are eligible, a free provider investigates one included project for new work and files tickets. Tickets waiting for classification are skipped, not replaced.">
-      <div class="grid-2">
-        <${Field} label="Prompt file on your Mac" hint="Read for each discovery run."><${Input} mono path=${["discovery", "promptFile"]} /><//>
-        <${Field} label="After finding nothing, leave a project alone for"><${Range} label="Discovery cooldown" path=${["discovery", "emptyCooldownHours"]} min="1" max="168" step="1" format=${(h) => span(h * 3600)} /><//>
-      </div>
-    <//>
   <//>`;
 }

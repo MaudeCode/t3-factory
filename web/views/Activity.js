@@ -20,7 +20,7 @@ export function Activity() {
   const known = new Set([...jobs.value, ...(history.value ?? [])].map((j) => j.id));
   const text = (e) =>
     e.jobId && known.has(e.jobId) ? html`<a href=${`/runs/${e.jobId}`} onClick=${follow}>${e.text}</a>` : e.text;
-  return html`<${Page} narrow title="Activity" hint="A check is recorded when its outcome changes." actions=${html`<${Segmented} label="Kind" value=${kind} onChange=${setKind} options=${KINDS} />`}>
+  return html`<${Page} narrow title="Log" hint="A check is recorded when its outcome changes." actions=${html`<${Segmented} label="Kind" value=${kind} onChange=${setKind} options=${KINDS} />`}>
     ${list.length ? html`<${Timeline} events=${list} renderText=${text} />` : html`<${Empty}>Nothing recorded yet.<//>`}
   <//>`;
 }

@@ -82,11 +82,10 @@ async function run() {
   assert(posts.some((p) => p.url === "/api/triage/reports/r-PIN-6/close"), "confirming posts the close decision");
   button("Triage waiting reports now").click(); await pause();
   assert(posts.some((p) => p.url === "/api/triage/run"), "Triage now asks for a pass");
-  button("Triage settings").click(); await pause();
-  const toggle = document.querySelector('dialog[open] input[role="switch"][aria-label="Inbox triage"]');
+  assert(button("Triage settings").getAttribute("href") === "/settings/sources", "the cog leads to the Settings area");
+  const toggle = main().querySelector('.page-head input[role="switch"][aria-label="Inbox triage"]');
   toggle.click(); await pause(150);
   assert(posts.some((p) => p.url === "/api/triage/enabled" && p.body.enabled === false), "the triage switch posts triage.enabled = false");
-  document.querySelector("dialog[open]").close(); await pause();
   // Discovery: every project, with its last look, its rest, or why it is skipped.
   tab("Discovery").click(); await pause(150);
   assert(here() === "/sources?view=discovery", "each view has its address");
