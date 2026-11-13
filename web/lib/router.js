@@ -2,18 +2,15 @@
 import { signal } from "./h.js";
 import { ticketKey } from "./format.js";
 
-export const PAGES = [
-  ["/", "Deck"],
-  ["/runs", "Runs"],
-  ["/session-tickets", "Session tickets"],
-  ["/activity", "Activity"],
-  ["/cleanup", "Cleanup"],
-  ["/models", "Models"],
-  ["/capacity", "Capacity"],
-  ["/projects", "Projects"],
-  ["/upstream", "Upstream"],
-  ["/triage", "Triage"],
+// The sidebar's groups: [path, name, icon]. PAGES is the same list flat, for route matching.
+export const NAV = [
+  ["Operate", [["/", "Deck", "home"], ["/runs", "Runs", "play"], ["/triage", "Triage", "inbox"], ["/session-tickets", "Session tickets", "issueOpened"], ["/activity", "Activity", "pulse"]]],
+  ["Maintain", [["/cleanup", "Cleanup", "trash"], ["/upstream", "Upstream", "gitBranch"]]],
+  ["Configure", [["/projects", "Projects", "repo"], ["/models", "Models", "cpu"], ["/capacity", "Capacity", "meter"]]],
 ];
+export const PAGES = NAV.flatMap(([, pages]) => pages);
+// The phone's bottom bar; the rest of NAV is behind More.
+export const TABS = [["/", "Deck"], ["/runs", "Runs"], ["/triage", "Triage"], ["/session-tickets", "Tickets"]];
 
 // Resolve a path to { page, param }. Unknown paths fall back to the deck.
 export function match(href) {

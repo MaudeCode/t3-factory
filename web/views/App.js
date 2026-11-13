@@ -1,12 +1,12 @@
-import { html, useState, useEffect, useRef } from "../lib/h.js";
-import { authenticated, auth, connection, config, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
-import { route, PAGES, follow } from "../lib/router.js";
-import { Button, Dialog, Confirmation, Toast, Segmented, Tag, Meta, RowBody, Popover } from "../ui/index.js";
-import { ago } from "../lib/format.js";
+import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
+import { authenticated, auth, connection, config, status, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
+import { route, NAV, TABS, follow } from "../lib/router.js";
+import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover } from "../ui/index.js";
+import { ago, until } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { Login } from "./Login.js";
-import { Deck, OperationActions } from "./Deck.js";
+import { Deck, OperationActions, Composer } from "./Deck.js";
 import { Runs, RunDetail } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { Cleanup } from "./Cleanup.js";
@@ -122,43 +122,91 @@ function usePullToRefresh(onRefresh) {
   return ref;
 }
 
+// Sidebar expanded or collapsed to icons. A stored choice wins; without one, wide windows start expanded.
+const RAIL = "factoryRail";
+const storedRail = () => { try { return globalThis.localStorage?.getItem(RAIL) ?? null; } catch { return null; } };
+const rail = signal(storedRail() ? storedRail() === "collapsed" : (globalThis.innerWidth ?? 1200) < 900);
+const setRail = (collapsed) => {
+  rail.value = collapsed;
+  try { globalThis.localStorage?.setItem(RAIL, collapsed ? "collapsed" : "expanded"); } catch { /* private window: the choice lasts until reload */ }
+};
+// At phone width the sidebar gives way to a top bar and a bottom tab bar.
+const PHONE = "(max-width: 600px)";
+function usePhone() {
+  const [phone, setPhone] = useState(() => !!globalThis.matchMedia?.(PHONE).matches);
+  useEffect(() => {
+    const media = matchMedia(PHONE), change = () => setPhone(media.matches);
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+  return phone;
+}
+
+// The automation switch, with its state and when the scheduler looks next. `bare` is the switch alone.
+function Automation({ bare }) {
+  clock.value;
+  const on = live.value.enabled, d = status.value.decision, now = serverNow();
+  const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
+  return html`<div class="auto" title=${on ? "Automation on" : "Automation paused"}>
+    <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
+    ${!bare && html`<span class="auto-text"><b>${on ? "Automation on" : "Automation paused"}</b>
+      <small>${on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`}</small></span>`}
+  </div>`;
+}
+
+// Start a run from any page: the start bar in a panel under its button.
+function Start() {
+  const anchor = useRef(), [open, setOpen] = useState(false);
+  return html`<span ref=${anchor} class="start">
+    <${Button} variant="primary" icon="play" class="start-btn" aria-label="Start a run" title="Start a run" aria-expanded=${open} onClick=${() => setOpen(!open)}><span>Start a run</span><//>
+    <${Popover} class="start-pop" open=${open} onClose=${() => setOpen(false)} anchor=${anchor} label="Start a run" width=${480}><${Composer} /><//>
+  </span>`;
+}
+
 function Shell() {
   const { page, param } = route.value;
-  const [picking, setPicking] = useState(false);
-  const nav = useRef();
-  useEffect(() => {
-    const reveal = () => {
-      const strip = nav.current, active = strip.querySelector('[aria-current="page"]');
-      if (!active) return;
-      const left = active.offsetLeft, right = left + active.offsetWidth;
-      if (left < strip.scrollLeft) strip.scrollLeft = left;
-      else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth;
-    };
-    reveal();
-    window.addEventListener("resize", reveal);
-    return () => window.removeEventListener("resize", reveal);
-  }, [page, param]);
+  const [picking, setPicking] = useState(false), [more, setMore] = useState(false);
+  const phone = usePhone();
   const ptr = usePullToRefresh(actions.refresh);
   const Page = pages[page];
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
   const current = (path) => page === path || (path === "/" && page === "/start") || (path === "/runs" && page === "/runs/:id");
-  const pageLink = ([path, name]) => html`<a key=${path} href=${path} onClick=${follow} aria-current=${current(path) ? "page" : undefined}>
-    ${name}${path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`}
+  const badge = (path) => path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`;
+  const signOut = auth.value.mode === "oidc" ? "Sign out" : "Disconnect";
+  const leave = () => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout();
+  const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory deck"><img src="/icon.svg" width="24" height="24" alt="" /><span>Factory</span></a>`;
+  const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); follow(e); }} aria-current=${current(path) ? "page" : undefined}>
+    <${Icon} name=${icon} /><span>${name}</span>${badge(path)}
   </a>`;
-  return html`<header class="top">
-    <a class="wordmark" href="/" onClick=${follow} aria-label="Factory deck"><img src="/icon.svg" width="28" height="28" alt="" /><span>FACTORY</span></a>
-    <nav ref=${nav} aria-label="Pages">
-      ${PAGES.map(pageLink)}
+  const tabbed = new Set(TABS.map(([path]) => path));
+  const inMore = NAV.flatMap(([, list]) => list).filter(([path]) => !tabbed.has(path));
+  return html`<div class=${`shell${phone ? " phone" : rail.value ? " rail" : ""}`}>
+    ${phone
+      ? html`<header class="top">${wordmark}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
+      : html`<aside class="side" aria-label="Sidebar">
+        <div class="side-head">${wordmark}<${Button} variant="ghost" size="sm" icon="sidebar" label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
+        <${Automation} /><${Start} />
+        ${NAV.map(([group, list]) => html`<nav key=${group} aria-label=${group}><h2>${group}</h2>${list.map(link)}</nav>`)}
+        <div class="side-foot"><${Updates} />
+          <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
+          <${Button} variant="ghost" size="sm" icon="signOut" label=${signOut} onClick=${leave} /></div>
+      </aside>`}
+    <div class="content">
+      <div ref=${ptr} class="ptr" aria-live="polite"></div>
+      <main key=${page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>
+    </div>
+    ${phone && html`<nav class="tabbar" aria-label="Pages">
+      ${TABS.map(([path, name]) => link([path, name, NAV.flatMap(([, list]) => list).find(([p]) => p === path)[2]]))}
+      <button type="button" aria-expanded=${more} aria-current=${inMore.some(([path]) => current(path)) ? "page" : undefined} onClick=${() => setMore(true)}><${Icon} name="kebab" /><span>More</span></button>
+    </nav>`}
+  </div>
+  <${Dialog} open=${more} onClose=${() => setMore(false)} title="More">
+    <nav class="more-list" aria-label="More pages">${inMore.map(link)}
+      <button type="button" onClick=${() => { setMore(false); setPicking(true); }}><${Icon} name="paintbrush" /><span>Appearance</span></button>
+      <button type="button" onClick=${() => { setMore(false); leave(); }}><${Icon} name="signOut" /><span>${signOut}</span></button>
     </nav>
-    <span class="right">
-      <${Updates} />
-      <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
-      <${Button} variant="ghost" size="sm" icon="signOut" label=${auth.value.mode === "oidc" ? "Sign out" : "Disconnect"} onClick=${() => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout()} />
-    </span>
-  </header>
-  <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />
-  <div ref=${ptr} class="ptr" aria-live="polite"></div>
-  <main key=${page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>`;
+  <//>
+  <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />`;
 }
 
 // A ticket that waits on other tickets: run the first one that can start, or the whole chain and then the ticket.
