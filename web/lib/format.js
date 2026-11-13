@@ -145,6 +145,32 @@ export const toneOf = (state) => ({ dispatching: "on", running: "on", waiting: "
 export const isActive = (job) => ["running", "dispatching"].includes(job.state);
 export const isOpen = (job) => !job.historyOnly && !["complete", "dismissed"].includes(job.state);
 export const isFinished = (job) => !isOpen(job);
+// A provider held back by its allowance: nothing starts on it until the window resets or the owner overrides.
+export const QUOTA_HOLDS = ["quota-exhausted", "quota-budget", "quota-reserve"];
+// What the Now page lists, by section. Needs you: waiting runs, inbox reports only the owner can move, background
+// problems, and requests that ended without starting. Working and CI: active runs, split on whether a pull request
+// exists yet. Your queue: what the owner started that has not finished starting. Nothing else belongs on the page.
+export function nowSections({ jobs = [], plans = [], operations = [], reports = [], issues = [] }) {
+  const listed = new Set(), problem = (source, href, p) => ({ kind: "problem", id: `problem-${source}-${p.op?.id ?? p.title}`, source, href, problem: p });
+  const needs = [
+    ...jobs.filter((j) => !j.historyOnly && j.state === "waiting").map((job) => ({ kind: "run", id: job.id, job })),
+    ...reports.filter((event) => event.data.stage === "owner").map((event) => ({ kind: "report", id: `report-${event.data.ticketId}`, event })),
+    ...issues.flatMap((i) => (i.error.problems ?? [{ title: i.error.message }]).map((p) => { if (p.op) listed.add(p.op.id); return problem(i.source, i.href, p); })),
+  ];
+  const pending = (op) => ["queued", "running"].includes(op.state);
+  for (const op of operations) if (!pending(op) && !listed.has(op.id)) needs.push({ kind: "request", id: op.id, op });
+  const active = jobs.filter((j) => !j.historyOnly && isActive(j)).map((job) => ({ kind: "run", id: job.id, job }));
+  return {
+    needs,
+    working: active.filter((r) => !r.job.prUrls?.length),
+    ci: active.filter((r) => r.job.prUrls?.length > 0),
+    queue: [
+      ...operations.filter(pending).map((op) => ({ kind: "request", id: op.id, op })),
+      ...plans.filter((p) => p.state === "active").map((plan) => ({ kind: plan.epic ? "epic" : "plan", id: plan.id, plan })),
+    ],
+  };
+}
+
 export const PENDING_KINDS = { approval: "waiting for an approval", question: "asked a question", input: "waiting for input" };
 
 export function safeLink(url) {

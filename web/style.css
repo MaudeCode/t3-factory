@@ -1261,8 +1261,8 @@ body,
 }
 .tabbar .badge {
   position: absolute;
-  top: 2px;
-  left: 54%;
+  top: 0;
+  left: 60%;
   margin: 0;
 }
 .more-list {
@@ -1364,37 +1364,7 @@ button.conn[aria-expanded="true"] {
   transition: height 0.15s;
 }
 
-/* Deck -------------------------------------------------------------------- */
-.status {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-4);
-  padding: var(--space-3) var(--gutter-right) var(--space-3) var(--gutter-left);
-}
-.status .status-meta {
-  margin-left: auto;
-  flex: 1;
-  min-width: 0;
-}
-.status .composer {
-  flex-shrink: 0;
-}
-.status p {
-  color: var(--muted);
-  max-width: 70ch;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.status-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  font-size: 12.5px;
-  color: var(--muted);
-  white-space: nowrap;
-  padding-top: 0;
-}
+/* Providers and runs ------------------------------------------------------ */
 .strip {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1452,12 +1422,6 @@ button.conn[aria-expanded="true"] {
   margin-left: 4px;
 }
 
-.deck {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(280px, 1.2fr);
-  gap: 0 var(--space-6);
-  padding: var(--space-2) var(--gutter-right) calc(var(--space-4) + env(safe-area-inset-bottom)) var(--gutter-left);
-}
 /* One joined bar: ticket, model, override, start. The play button is the only label it needs. */
 .composer {
   display: inline-flex;
@@ -1786,9 +1750,6 @@ dialog .chain {
   color: var(--attention);
   border-color: var(--attention);
 }
-.deck-side .timeline {
-  font-size: 12.5px;
-}
 
 /* Pages ------------------------------------------------------------------- */
 .page {
@@ -1797,7 +1758,7 @@ dialog .chain {
 }
 /* Room under the content only while the floating save bar is up. */
 body:has(.save-bar) .page,
-body:has(.save-bar) .deck {
+body:has(.save-bar) .now-grid {
   padding-bottom: calc(var(--save-bar-height, 60px) + var(--space-5) + env(safe-area-inset-bottom));
 }
 .page.narrow {
@@ -1960,8 +1921,7 @@ h1 .crumb::after {
   margin: calc(var(--space-2) * -1) 0 var(--space-3);
 }
 .split > *,
-.cols > *,
-.deck > * {
+.cols > * {
   min-width: 0;
 }
 .split {
@@ -2678,29 +2638,9 @@ h1 .crumb::after {
     width: auto;
     max-width: none;
   }
-  .status {
-    flex-wrap: wrap;
-  }
-  .status .composer {
-    order: 1;
-    flex: 1 0 100%;
-  }
-  .status .status-meta {
-    order: 2;
-    flex-basis: 100%;
-    margin-left: 0;
-  }
-  .status-meta {
-    align-items: flex-start;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: var(--space-1) var(--space-4);
-    padding-left: 0;
-  }
   .cols,
   .split,
   .grid-2,
-  .deck,
   .facts {
     grid-template-columns: 1fr;
   }
@@ -2915,15 +2855,218 @@ h1 .crumb::after {
     calc(var(--space-2) * -1) 0 0 var(--surface),
     var(--space-2) 0 0 var(--surface);
 }
-/* With the start bar in the sidebar, the status line reads left to right. */
-.status > .status-meta:first-child {
-  margin-left: 0;
-  flex-direction: row;
+.section {
+  border-top-color: transparent;
+}
+
+/* Now --------------------------------------------------------------------- */
+.now {
+  max-width: 1480px;
+}
+.now-head,
+.now-grid,
+.now-decision,
+.now > .composer {
+  margin-left: var(--gutter-left);
+  margin-right: var(--gutter-right);
+}
+.now-head {
+  display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-1) var(--space-4);
-  white-space: normal;
+  padding: var(--space-4) 0 var(--space-3);
 }
-.section {
-  border-top-color: transparent;
+.now-head h1 {
+  font-family: var(--display);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.now-head p,
+.now-decision {
+  color: var(--muted);
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Under the start form, so a long message never moves the form it reports on. */
+.now-decision {
+  padding-bottom: var(--space-3);
+}
+.now-counts {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-5);
+}
+.now-counts b {
+  font-family: var(--display);
+  font-size: 17px;
+  color: var(--ink);
+  margin-right: 5px;
+}
+.now-counts .tone-attention,
+.now-counts .tone-attention b {
+  color: var(--attention);
+}
+.now > .composer {
+  margin-bottom: var(--space-3);
+}
+.now .machine header .btn {
+  flex: none;
+}
+.now .machine header {
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
+}
+.now .machine h2,
+.now .machine .reason {
+  white-space: nowrap;
+}
+.now .machine .reason {
+  margin-left: auto;
+}
+.now-row a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.now-row a.btn:hover {
+  text-decoration: none;
+}
+.now-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4) var(--space-6);
+  padding: var(--space-4) 0 calc(var(--space-5) + env(safe-area-inset-bottom));
+}
+.now-section h2 {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.now-section h2 small {
+  font-size: 13px;
+  font-weight: 400;
+}
+.now-section.attention h2 {
+  color: var(--attention);
+}
+.now-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.now-section .empty {
+  padding: var(--space-1) 0;
+  font-size: 13px;
+}
+.now-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  margin: 0 calc(var(--space-2) * -1);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius);
+}
+.now-row:hover {
+  background: var(--surface);
+}
+.now-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-2);
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--ink);
+}
+a.now-main:hover {
+  text-decoration: none;
+}
+.now-icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+.now-icon.ok {
+  color: var(--ok);
+}
+.now-icon.attention {
+  color: var(--attention);
+}
+.now-title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-note {
+  flex-basis: 100%;
+  padding-left: 22px;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.now-time {
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.now-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+}
+.now-more {
+  display: block;
+  min-height: var(--control);
+  padding: 0 0 0 22px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.now-more.narrow {
+  display: none;
+}
+@container page (max-width: 1060px) {
+  .now-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container page (max-width: 700px) {
+  .now-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .now-counts {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+  .now-section:not(.open) li:nth-child(n + 3),
+  .now-more.wide {
+    display: none;
+  }
+  .now-more.narrow {
+    display: block;
+  }
+  .now-note {
+    white-space: normal;
+  }
+}
+@media (pointer: coarse) {
+  .now-row {
+    min-height: 44px;
+  }
 }

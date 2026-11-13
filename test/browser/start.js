@@ -89,7 +89,7 @@ async function run() {
     assert(calls[0].id, 'dispatch retains an idempotency key');
   } finally { release?.(); }
   await pause();
-  assert(root.querySelector('.operation')?.textContent.includes('quota-exhausted'), 'existing request row shows refusals');
+  assert(root.querySelector('.now-section.attention')?.textContent.includes('quota-exhausted'), 'a refused request is listed under Needs you with its reason');
   await whitespace();
   await paste();
   await statusLayout();
@@ -157,13 +157,13 @@ async function statusLayout() {
   ]) {
     store.status.value = { ...store.status.value, decision: { ...decision, at: new Date().toISOString() } };
     await pause();
-    const after = input(), form = root.querySelector('.status .composer').getBoundingClientRect();
-    const message = root.querySelector('.status p'), bounds = message.getBoundingClientRect();
+    const after = input(), form = root.querySelector('.now > .composer').getBoundingClientRect();
+    const message = root.querySelector('.now-decision'), bounds = message.getBoundingClientRect();
     assert(Math.abs(before.x - after.x) < 1 && Math.abs(before.width - after.width) < 1 && Math.abs(before.y - after.y) < 1, 'decision feedback does not shift or resize the ticket input');
     assert(message.textContent.includes(decision.reason === 'error' ? decision.message : 'Started'), 'complete decision feedback remains visible');
-    assert(contentWidth() <= 900 ? bounds.top >= form.bottom : bounds.left >= form.right, 'decision feedback follows the form on desktop and stacks below it on mobile');
+    assert(bounds.top >= form.bottom, 'decision feedback follows the start form');
     assert(bounds.left >= 0 && bounds.right <= innerWidth && message.scrollWidth <= message.clientWidth + 1, 'long decision feedback wraps within the viewport');
-    assert(document.documentElement.scrollWidth <= innerWidth, 'status header does not overflow the viewport');
+    assert(document.documentElement.scrollWidth <= innerWidth, 'decision feedback does not overflow the viewport');
   }
   await showDecision();
   return { passed: true, viewport: [innerWidth, innerHeight], decisions: 3 };
@@ -179,7 +179,7 @@ async function duoLayout() {
   const phone = innerWidth <= 600;
   const shell = root.querySelector('.shell'), bar = root.querySelector(phone ? '.top' : '.side');
   assert(!!root.querySelector('.tabbar') === phone && !!root.querySelector('.side') === !phone, 'the sidebar gives way to the top bar and tab bar at phone width');
-  assert(shell.querySelectorAll('[aria-current="page"]').length === 1, 'only the Deck link marks the current page');
+  assert(shell.querySelectorAll('[aria-current="page"]').length === 1, 'only the Now link marks the current page');
   const priorConnection = store.connection.value, priorStatus = store.status.value;
   for (const withIssue of [false, true]) {
     store.status.value = withIssue ? { ...priorStatus, sessionTickets: { error: { message: 'Fixture connection problem' } } } : priorStatus;

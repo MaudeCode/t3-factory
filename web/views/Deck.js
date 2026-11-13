@@ -1,6 +1,6 @@
-// Home: what the factory is doing right now, why, and what needs you.
-import { html, useEffect, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, journal, history, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, loadHistory, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
+// Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
+import { html, useRef, useState } from "../lib/h.js";
+import { config, status, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { follow } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -11,7 +11,7 @@ import {
   WINDOW_NAMES,
   PENDING_KINDS,
   streamReason,
-  decisionSentence,
+  QUOTA_HOLDS,
   providerOf,
   providerName,
   providerIcon,
@@ -28,34 +28,15 @@ import {
   projectOf,
   matchesRunFilters,
   hasRunFilters,
-  byNewest,
-  byFinished,
-  isFinished,
   isOpen,
   OVERRIDES,
   overrideText,
   operationText,
 } from "../lib/format.js";
-import { Button, Switch, Select, Segmented, Chips, Meter, Icon, Tag, Link, Empty, Timeline, Help, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
+import { Button, Select, Segmented, Chips, Meter, Icon, Tag, Empty, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
 
-// What the scheduler last decided and when it looks again.
-function Status({ initialTicket }) {
-  const on = live.value.enabled,
-    d = status.value.decision,
-    now = serverNow();
-  const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
-  // The start bar lives in the sidebar; a launch link still shows its own, prefilled, where the link landed.
-  return html`<section class="status">
-    ${initialTicket !== undefined && html`<${Composer} initialTicket=${initialTicket} />`}
-    <div class="status-meta">
-      ${decisionSentence(d) && html`<p>${decisionSentence(d)}</p>`}
-      <span>Last check ${ago(d?.at, now)}</span>
-      ${next && on && html`<span title="Sooner when a T3 thread or the config changes">Next check ${next > now + 1000 ? until(next, now) : "due now"} at the latest</span>`}
-    </div>
-  </section>`;
-}
 
-function Machine({ provider }) {
+export function Machine({ provider }) {
   const now = serverNow();
   const stream = (status.value.streams || []).find((s) => s.driver === provider.driver) || {};
   const active = jobs.value.filter((j) => providerOf(j) === provider.driver && isActive(j)).length;
@@ -65,11 +46,15 @@ function Machine({ provider }) {
   const fable = quota?.factoryRouting?.fableRemainingPercent;
   if (fable != null) windows.push({ label: "Fable", value: fable, marker: config.value.quota?.claude?.fable?.minRemainingPercent });
   const reason = !live.value.enabled && !active ? "paused" : streamReason(stream.reason);
+  // Held back by its allowance: say so beside the name and offer the one way past it.
+  const held = live.value.enabled && QUOTA_HOLDS.includes(stream.reason);
+  const anyway = { model: "auto", provider: provider.driver, overrideLimits: true };
   const assigned = quota?.factoryRouting?.modelId && config.value.models.find((m) => m.id === quota.factoryRouting.modelId)?.name;
   return html`<section class="machine ready">
     <header>
-      <h2><${Icon} name=${providerIcon(provider.driver)} /> ${provider.name} <span class="load" title="Running now of the automatic limit"><b>${active}</b>${limit ? ` / ${limit}` : ""}</span></h2>
-      <span class="reason">${reason}${quota?.capturedAt && html`<span class="muted" title=${`Allowance read ${ago(quota.capturedAt, now)}`}> · ${ago(quota.capturedAt, now)}</span>`}</span>
+      <h2><${Icon} name=${providerIcon(provider.driver)} /> ${provider.name} <span class="load" title="Running now of the automatic limit"><b>${active}</b>${limit ? ` of ${limit}` : ""} ${limit === 1 ? "slot" : "slots"}</span></h2>
+      <span class=${`reason${held ? " tone-attention" : ""}`}>${reason}${quota?.capturedAt && html`<span class="muted" title=${`Allowance read ${ago(quota.capturedAt, now)}`}> · ${ago(quota.capturedAt, now)}</span>`}</span>
+      ${held && html`<${Button} size="sm" disabled=${busy.value} title=${`Start the next eligible ticket on ${provider.name}, overriding its limits`} onClick=${() => startRun(anyway)}>Start anyway<//>`}
     </header>
     ${windows.length
       ? windows.map((w) => html`<${Meter} key=${w.label} label=${w.label} value=${w.value} marker=${w.marker} note=${w.reset ? until(w.reset, now) : ""} noteTitle=${w.reset ? `Resets ${until(w.reset, now)}` : ""} />`)
@@ -82,7 +67,7 @@ function Machine({ provider }) {
 }
 
 // What a request starts. An Epic request carries only its ID, so its name comes from the current status.
-const requestName = ({ upstream, ticket, epic }) => {
+export const requestName = ({ upstream, ticket, epic }) => {
   if (!epic) return upstream || ticket;
   const known = [...(status.value.epics ?? []), ...(status.value.plans ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
   return `Epic ${known?.title ?? epic}`;
@@ -312,37 +297,4 @@ export function RunGroup({ title, list, limit = 8, empty, children }) {
     ${list.length ? html`<${RunList} list=${visible} title=${title} count=${list.length} aside=${children} />` : empty && html`<${Empty}>${empty}<//>`}
     ${!all && list.length > limit && html`<${Button} variant="ghost" size="sm" onClick=${() => setAll(true)}>Show all ${list.length}<//>`}
   <//>`;
-}
-
-export function Deck({ initialTicket } = {}) {
-  useEffect(() => {
-    if (!history.value) loadHistory().catch(() => {});
-  }, []);
-  clock.value; // re-render every second for relative times
-  const list = jobs.value;
-  const waiting = list.filter((j) => j.state === "waiting").sort(byNewest);
-  const running = list.filter(isActive).sort(byNewest);
-  // Settled runs leave the live status, so the finished list comes from history.
-  const done = (history.value ?? list).filter(isFinished).sort(byFinished);
-  return html`
-    <${Status} initialTicket=${initialTicket} />
-    <div class="strip">${PROVIDERS.map((p) => html`<${Machine} key=${p.driver} provider=${p} />`)}</div>
-    <div class="deck">
-      <div class="deck-main">
-        ${launchOperations.value.length > 0 && html`<${Section} class="launch"><${Operations} /><//>`}
-        <${RunGroup} title="Open" list=${[...waiting, ...running]} empty="Nothing is running.">
-          ${waiting.length > 0 && html`<span class="tone-attention">${waiting.length} need${waiting.length === 1 ? "s" : ""} you</span>`}
-        <//>
-        <${Chains} />
-        <${UpNext}><${More} href="/runs?state=next" label="Whole queue" onClick=${follow} /><//>
-        <${RunGroup} title="Finished recently" list=${done} limit=${5} empty="Nothing has finished yet.">
-          <${More} href="/runs" label="All runs" onClick=${follow} />
-        <//>
-      </div>
-      <aside class="deck-side">
-        <${Section} title="Activity" aside=${html`<${More} href="/activity" label="All activity" onClick=${follow} />`}>
-          ${journal.value.length ? html`<${Timeline} events=${journal.value.slice(0, 12)} />` : html`<${Empty}>Nothing recorded yet.<//>`}
-        <//>
-      </aside>
-    </div>`;
 }

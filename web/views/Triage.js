@@ -59,13 +59,16 @@ const outcomeText = (event) => {
 
 // The owner's two decisions on an open report, as a row's action props. Closing cancels the tracker ticket, so it asks
 // first. With both on offer, Close is the secondary action, which folds into the row menu on a phone.
-function decide(row) {
+export function decide(row) {
   const d = row.event.data, key = d.ticket;
   const ask = () => confirmAction({ title: `Close ${key}?`, message: `${key} is cancelled in its inbox and leaves this page. Nothing is created from it.`, label: "Close report" }, () => actions.triageReport(d.ticketId, key, "close"));
   const close = html`<${Button} size="sm" icon class="next-run" aria-label=${`Close ${key}`} title="Close the report" disabled=${busy.value} onClick=${ask}><${Icon} name="x" /><span class="next-action-label">Close report</span><//>`;
   if (!RETRY.includes(d.outcome)) return { actions: close };
   return { secondaryActions: close, actions: html`<${Button} size="sm" icon class="next-run" aria-label=${`Triage ${key} again`} title="Triage again: clears this result so the next pass reads the report afresh" disabled=${busy.value} onClick=${() => actions.triageReport(d.ticketId, key, "retry")}><${Icon} name="sync" /><//>` };
 }
+
+// A report as a row's data. It keeps the project its journal entry recorded; older entries use the inbox's current project.
+export const reportRow = (event, id, c = config.value) => ({ id, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? c.projects.find((p) => p.inbox?.kanvilId === event.data.inboxId)?.kanvilId, createdAt: event.time });
 
 // A report as a list row: the promoted ticket, which can be started, or the report with its outcome.
 function Result({ row, now, selection, start, progress, decision }) {
@@ -107,12 +110,11 @@ export function Triage() {
   // Ready to start: each promoted ticket the scheduler still lists, until a run launches or it leaves the ready statuses.
   // History: the recent results as their reports, titled with their outcome. A report row keeps the project its
   // journal entry recorded; older entries use the inbox's current project.
-  const inboxProject = (id) => c.projects.find((p) => p.inbox?.kanvilId === id);
   const tickets = [...new Map(results.filter((event) => event.promotedTicket?.listed).map((event) => {
     const t = event.promotedTicket;
     return [t.taskId, { ...t, id: t.taskId, promoted: true, project: c.projects.find((p) => p.kanvilId === t.projectId), event, createdAt: event.time }];
   })).values()];
-  const report = (event, id) => ({ id, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? inboxProject(event.data.inboxId)?.kanvilId, createdAt: event.time });
+  const report = (event, id) => reportRow(event, id, c);
   const open = (status.value.triageReports || []).map((event) => ({ ...report(event, `open-${event.data.ticketId}`), stage: event.data.stage }));
   const attention = open.filter((row) => row.stage === "owner"), working = open.filter((row) => row.stage === "working");
   const triagingNow = (row) => row.event.data.outcome === "triaging";
