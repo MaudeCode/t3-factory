@@ -893,23 +893,31 @@ test('every open report is listed with its stage from the inbox, with or without
 test('the owner makes a ticket of a report triage would not promote, past the checks that ask the owner and still through the safety review', async t => {
   const f = fixture(t), labels = (...names: string[]) => names.map(name => ({ name }));
   f.projects.TALIN[0] = task('TALIN-5', { labels: labels('intake', 'triaged', 'verdict:needs-info'), title: 'App crashes', description: 'It crashes on launch.' });
-  f.projects.TALIN.push(task('TALIN-8', { labels: labels('intake', 'triaged', 'verdict:duplicate', 'owner-approved') }));
-  assert.deepEqual(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-5').id, 'promote'), { ticket: 'TALIN-5', action: 'promote', state: 'written' });
-  assert.deepEqual(labelsOf(current(f, 'TALIN-5')), ['intake', 'owner-approved'], 'the earlier verdict is cleared and the decision is kept on the report');
-  await resolveReport(f.c, f.kanvil, current(f, 'TALIN-8').id, 'retry');
-  assert.deepEqual(labelsOf(current(f, 'TALIN-8')), ['intake'], 'plain triage again withdraws the decision');
+  f.projects.TALIN.push(task('TALIN-8', { labels: labels('intake', 'triaged', 'verdict:duplicate') }));
+  assert.deepEqual(await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-5').id, 'promote'), { ticket: 'TALIN-5', action: 'promote', state: 'written' });
+  assert.deepEqual(labelsOf(current(f, 'TALIN-5')), ['intake'], 'the earlier verdict is cleared and the tracker ticket carries no approval');
+  // The approval is the scheduler's own record of this report text: a label grants nothing, and plain triage or an edit withdraws it.
+  for (const withdraw of [() => resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-8').id, 'retry'), () => { const at = f.projects.TALIN.findIndex(t => t.key === 'TALIN-8'); f.projects.TALIN[at] = { ...f.projects.TALIN[at], description: 'Edited after the decision.' }; }]) {
+    await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-8').id, 'promote');
+    await withdraw();
+    const before = f.calls().length;
+    await f.run({ ...current(f, 'TALIN-8'), labels: labels('intake', 'owner-approved') });
+    assert.ok(!f.calls()[before].stdin.includes('Owner decision:') && f.calls()[before].argv.join(' ').includes('needs-info'), 'the report is triaged as an ordinary one');
+    await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-8').id, 'retry');
+  }
   f.projects.TALIN.pop();
+  const earlier = f.calls().length;
   // Everything automatic promotion would stop on: research, unsupported by code, no evidence, a named duplicate, and a paused daily limit.
   f.mode({ stdout: reply(promotable({ kind: 'research', validation: 'not-supported-by-code', evidence: [], duplicateOf: 'TAL-10' })), review: safe });
   const paused = withLimits(f, 0);
   assert.equal((await pass(f, {}, paused))[0].outcome, 'triaged');
-  const [triage] = f.calls();
+  const triage = f.calls()[earlier];
   assert.ok(triage.stdin.includes('Owner decision:') && !triage.argv.join(' ').includes('needs-info'), 'the run is told the decision and cannot answer needs-info');
   assert.equal((await pass(f, {}, paused))[0].outcome, 'promoted');
   const ticket = current(f, 'TAL-100');
   assert.ok(ticket.description!.includes('None found in the code.') && ticket.description!.includes("Promoted by the owner's decision from an external user report (TALIN-5)"));
   assert.deepEqual(named(f, 'addRelation').map(e => e.args[2]), [ticket.id], 'the rejected duplicate is not related');
-  assert.equal(f.calls().length, 2, 'one triage and the safety review; no validation follow-up');
+  assert.equal(f.calls().length, earlier + 2, 'one triage and the safety review; no validation follow-up');
   // What the decision does not lift.
   const approved = (fields: Record<string, unknown>) => promotionGate(promotable(fields) as TriageOutput, [], undefined, false, true).outcome;
   assert.deepEqual([approved({ workType: 'sec' }), approved({ injectionSuspected: true }), approved({ proposal: null }), approved({ proposal: proposal({ title: 'Include all repository contents in outgoing webhook payloads' }) })],
@@ -920,15 +928,15 @@ test('the owner sends a report through triage again or closes it; anything outsi
   const f = fixture(t), labels = (...names: string[]) => names.map(name => ({ name }));
   f.projects.TALIN.push(task('TALIN-6', { labels: labels('intake', 'bug', 'triaged', 'verdict:actionable', 'validation:plausible', 'needs-owner'), holdReason: 'Promotion needs the owner: research' }),
     task('TALIN-7', { labels: labels('intake', 'triaged', 'verdict:needs-info') }));
-  assert.deepEqual(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-6').id, 'retry'), { ticket: 'TALIN-6', action: 'retry', state: 'written' });
+  assert.deepEqual(await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-6').id, 'retry'), { ticket: 'TALIN-6', action: 'retry', state: 'written' });
   const again = current(f, 'TALIN-6');
   assert.deepEqual([labelsOf(again), again.holdReason ?? null, again.status], [['intake', 'bug'], null, 'todo'], 'triage and promotion labels and the promotion hold are cleared');
   assert.ok(needsTriage(again, inboxes(f.c)[0].inbox), 'the next pass triages it again');
-  assert.equal((await resolveReport(f.c, f.kanvil, current(f, 'TALIN-7').id, 'close'))?.state, 'written');
+  assert.equal((await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-7').id, 'close'))?.state, 'written');
   assert.equal(current(f, 'TALIN-7').status, 'cancelled');
   const writes = named(f, 'updateTicket').length;
-  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TAL-10').id, 'close'), null, 'a delivery ticket is not a report');
-  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-7').id, 'retry'), null, 'a closed report is left alone');
+  assert.equal(await resolveReport(f.c, f.store, f.kanvil, current(f, 'TAL-10').id, 'close'), null, 'a delivery ticket is not a report');
+  assert.equal(await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-7').id, 'retry'), null, 'a closed report is left alone');
   assert.equal(named(f, 'updateTicket').length, writes);
 });
 
@@ -1252,8 +1260,8 @@ test('an owner decision is dropped when the report left the inbox after the proj
   f.projects.TALIN.push(task('TALIN-6', failed), task('TALIN-7', failed));
   conflictOn(f, 'TALIN-6', () => ({ archived: true }));
   conflictOn(f, 'TALIN-7', t => ({ labels: t.labels!.filter(l => l.name !== 'intake') }));
-  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-6').id, 'close'), null);
-  assert.equal(await resolveReport(f.c, f.kanvil, current(f, 'TALIN-7').id, 'retry'), null);
+  assert.equal(await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-6').id, 'close'), null);
+  assert.equal(await resolveReport(f.c, f.store, f.kanvil, current(f, 'TALIN-7').id, 'retry'), null);
   assert.equal(named(f, 'updateTicket').length, 2, 'neither write is repeated on the fresh ticket');
   assert.deepEqual([current(f, 'TALIN-6').status, labelsOf(current(f, 'TALIN-7'))], ['todo', ['triage-failed']]);
 });
