@@ -52,31 +52,37 @@ export const route = signal(match(globalThis.location ? settle() : "/"));
 // The query of the current address, for pages whose view is part of it.
 export const search = signal(globalThis.location?.search ?? "");
 
-// The ticket panel is addressed by ?ticket=KEY on any page except the launch link, which owns that parameter.
-const panelKey = (href) => {
-  const [path] = href.split("?");
-  return path === "/start" ? "" : ticketKey(new URLSearchParams(href.slice(path.length + 1)).get("ticket") ?? "") || "";
-};
-export const ticketPanel = signal(panelKey(current()));
-const withTicket = (key) => {
-  const url = new URL(location.href);
-  if (key) url.searchParams.set("ticket", key); else url.searchParams.delete("ticket");
-  return url.pathname + url.search;
-};
+// A side panel is addressed by a query parameter on any page except the launch link, which owns `ticket`.
 // Opening adds a history entry, so Back closes the panel; the page under it does not move.
-export function openTicket(key) {
-  history.pushState({ ticketPanel: true }, "", withTicket(key));
-  ticketPanel.value = key;
+const panels = [];
+function panel(name, parse) {
+  const mark = `${name}Panel`;
+  const read = (href) => { const [path] = href.split("?"); return path === "/start" ? "" : parse(new URLSearchParams(href.slice(path.length + 1)).get(name) ?? "") || ""; };
+  const value = signal(read(current()));
+  const address = (key) => {
+    const url = new URL(location.href);
+    if (key) url.searchParams.set(name, key); else url.searchParams.delete(name);
+    return url.pathname + url.search;
+  };
+  panels.push((href) => { value.value = read(href); });
+  return {
+    value,
+    open(key) { history.pushState({ [mark]: true }, "", address(key)); value.value = key; },
+    close() {
+      if (!value.value) return;
+      if (history.state?.[mark]) return history.back();
+      history.replaceState(null, "", address(""));
+      value.value = "";
+    },
+  };
 }
-// A link that opens the ticket panel on a plain click; a modified or middle click keeps the link's own address.
-// A ticket link inside a row keeps the click, so the row's own link does not open its ticket over it.
-export const ticketClick = (key) => key ? (e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return; e.preventDefault(); e.stopPropagation(); openTicket(key); } : undefined;
-export function closeTicket() {
-  if (!ticketPanel.value) return;
-  if (history.state?.ticketPanel) return history.back();
-  history.replaceState(null, "", withTicket(""));
-  ticketPanel.value = "";
-}
+// A link that opens a panel on a plain click; a modified or middle click keeps the link's own address.
+// A panel link inside a row keeps the click, so the row's own link does not open over it.
+const panelClick = (open) => (key) => key ? (e) => { if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return; e.preventDefault(); e.stopPropagation(); open(key); } : undefined;
+// ?ticket=KEY is one ticket; ?epic=ID is an Epic, which stays under a ticket opened from it.
+const ticket = panel("ticket", ticketKey), epic = panel("epic", (id) => /^[\w-]{1,64}$/.test(id) && id);
+export const ticketPanel = ticket.value, openTicket = ticket.open, closeTicket = ticket.close, ticketClick = panelClick(ticket.open);
+export const epicPanel = epic.value, closeEpic = epic.close, epicClick = panelClick(epic.open);
 
 export function navigate(href, replace = false, keepScroll = false) {
   href = moved(href);
@@ -86,10 +92,10 @@ export function navigate(href, replace = false, keepScroll = false) {
   if (target !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", target);
   route.value = next;
   search.value = location.search;
-  ticketPanel.value = panelKey(target);
+  for (const sync of panels) sync(target);
   if (!keepScroll) window.scrollTo(0, 0);
 }
-globalThis.addEventListener?.("popstate", () => { const here = settle(); route.value = match(here); search.value = location.search; ticketPanel.value = panelKey(here); });
+globalThis.addEventListener?.("popstate", () => { const here = settle(); route.value = match(here); search.value = location.search; for (const sync of panels) sync(here); });
 
 // A run chosen from the Runs list. Where the list and the run sit side by side, the list stays where it is scrolled;
 // where the run replaces the list, the page starts at its top like any other navigation.

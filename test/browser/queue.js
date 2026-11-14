@@ -6,7 +6,8 @@ import { applyState, operations, status, history, setSessionProvider, setSession
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
 import { Queue } from "../../web/views/Queue.js";
-import { navigate, route, ticketPanel, closeTicket } from "../../web/lib/router.js";
+import { navigate, route, ticketPanel, closeTicket, epicPanel, closeEpic } from "../../web/lib/router.js";
+import { TicketPanel } from "../../web/views/TicketPanel.js";
 // Up next and Epics are on the Queue page, run history on Runs; the fixture shows whichever the address names.
 const Views = () => (route.value.page === "/queue" ? html`<${Queue} />` : html`<${Runs} />`);
 import { Confirmation } from "../../web/ui/index.js";
@@ -461,15 +462,15 @@ async function showEpics(extra) {
   applyState({ ...filterState, status: epicsStatus(extra) }, true);
   navigate("/queue?view=epics", true);
   render(null, root);
-  render(html`<${Views} /><${Confirmation} />`, root);
+  render(html`<${Views} /><${TicketPanel} /><${Confirmation} />`, root);
   await pause();
   window.fetch = oldFetch;
 }
-const epicTitleOf = (row) => row.querySelector(".next-toggle .row-body > span").firstChild.textContent;
+const epicTitleOf = (row) => row.querySelector(".next-wrap .row-body > span").firstChild.textContent;
 const epicSection = (title) => [...root.querySelectorAll(".epic")].find(row => epicTitleOf(row) === title);
 const epicTitles = () => [...root.querySelectorAll(".epic")].map(epicTitleOf).join();
-const epicTag = (title) => epicSection(title).querySelector(".next-toggle .tag").textContent;
-const epicIssue = (title) => epicSection(title).querySelector(".next-toggle .epic-issue")?.getAttribute("title");
+const epicTag = (title) => epicSection(title).querySelector(".next-wrap .tag").textContent;
+const epicIssue = (title) => epicSection(title).querySelector(".next-wrap .epic-issue")?.getAttribute("title");
 const epicCount = (title) => epicSection(title).querySelector(".epic-progress")?.textContent;
 const epicKeys = (title) => [...epicSection(title).querySelectorAll(".chain-row .key")].map(e => e.textContent).join();
 const stateTab = (name) => [...root.querySelectorAll('[aria-label="Queue view"] [role="radio"]')].find(b => b.textContent.startsWith(name));
@@ -482,6 +483,55 @@ async function epicSearch(value) {
   const input = await openSearch();
   input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); await pause();
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await pause();
+}
+// The Epic side panel: the title opens it, its controls act on that Epic, and its tickets open over it.
+async function epicPanelTest() {
+  setSessionProvider("auto"); setSessionOverrides(["labels"]);
+  const oldFetch = window.fetch, oldUrl = location.href, posts = [], dispatches = [];
+  window.fetch = async (url, init) => {
+    if (url === "/api/history") return Response.json([]);
+    if (url === "/api/dispatch") { const input = JSON.parse(init.body); dispatches.push(input); return Response.json({ id: init.headers["Idempotency-Key"], input, state: "done", result: { data: { reason: "dispatched" } } }); }
+    if (url.startsWith?.("/api/plans/")) { posts.push([url, JSON.parse(init.body)]); return Response.json({ ok: true }); }
+    if (url.startsWith?.("/api/tickets/")) return Response.json({ message: "Ticket not found" }, { status: 404 });
+    return Response.json({ ...filterState, status: status.value });
+  };
+  try {
+    await showEpics();
+    const panel = () => document.querySelector("dialog.ticket-panel[open]"), title = (name) => epicSection(name).querySelector("a.next-ticket");
+    const chip = (name) => panel().querySelector(`[aria-label^="Override ${name}"]`);
+    const fits = () => { const r = panel().getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && [...panel().querySelectorAll(".btn, .chips, .chain-row")].every((el) => el.getBoundingClientRect().right <= r.right + 0.5); };
+    assert(!panel(), "no panel is open to start with");
+    title("Moving").click(); await pause(); await pause();
+    assert(epicPanel.value === "moving" && panel()?.querySelector(".ticket-title").textContent === "Moving", "an Epic's title opens it in the side panel");
+    assert(new URLSearchParams(location.search).get("epic") === "moving", "the panel is in the address");
+    assert(!epicSection("Moving").querySelector(".chain-row") && epicToggle("Moving").getAttribute("aria-expanded") === "false", "the panel leaves the row closed; the chevron opens it in place");
+    assert(panel().querySelectorAll(".chain-row").length === 4 && panel().textContent.includes("2 tickets"), "the panel lists the Epic's tickets and what keeps it open");
+    // A running Epic's overrides are its plan's own, not the page's start choices.
+    assert(chip("label limits").getAttribute("aria-pressed") === "true" && chip("quota reserve").getAttribute("aria-pressed") === "false" && !panel().querySelector('[aria-label="Start provider"]'), "a running Epic shows the limits it overrides and no start provider");
+    assert(fits(), "the panel and its controls stay inside the viewport");
+    chip("quota reserve").click(); await pause(); await pause();
+    assert(JSON.stringify(posts) === JSON.stringify([["/api/plans/moving-plan/overrides", { overrideLimits: ["labels", "reserve"] }]]), `changing a chip saves the plan's overrides: ${JSON.stringify(posts)}`);
+    chip("label limits").click(); await pause(); await pause();
+    assert(JSON.stringify(posts[1][1]) === JSON.stringify({ overrideLimits: [] }), `the last override can be turned off: ${JSON.stringify(posts[1])}`);
+    assert(byText("button", "Cancel Epic", panel()), "a running Epic can be cancelled from its panel");
+    // A ticket opens over the Epic and closing it returns to the Epic.
+    panel().querySelector(".chain-row").click(); await pause(); await pause();
+    assert(ticketPanel.value === "APP-7" && epicPanel.value === "moving", `a ticket in the panel opens over the Epic: ${ticketPanel.value}`);
+    // Dismissed the way Done, Escape and the backdrop do it: the native dialog closes first.
+    panel().close(); await pause(); await pause();
+    assert(!ticketPanel.value && panel()?.querySelector(".ticket-title")?.textContent === "Moving", "closing the ticket returns to the Epic, open again");
+    closeEpic(); await pause(); await pause();
+    assert(!epicPanel.value && !panel() && !new URLSearchParams(location.search).has("epic"), "closing the panel clears it from the address");
+    // An Epic that has not started: Run with the page's own start choices.
+    title("Launch").click(); await pause(); await pause();
+    assert(panel().querySelector('[aria-label="Start provider"]') && chip("label limits").getAttribute("aria-pressed") === "true", "an Epic not yet started offers the page's start choices");
+    assert(fits(), "the start controls stay inside the viewport");
+    byText("button", "Run Epic", panel()).click(); await pause(); await pause();
+    assert(JSON.stringify(dispatches) === JSON.stringify([{ epic: "launch", model: "auto", overrideLimits: ["labels"] }]), `Run Epic dispatches the Epic: ${JSON.stringify(dispatches)}`);
+    assert(posts.length === 2, "starting an Epic changes no plan");
+    closeEpic(); await pause(); await pause();
+    return { passed: true, viewport: [innerWidth, innerHeight] };
+  } finally { if (ticketPanel.value) closeTicket(); if (epicPanel.value) closeEpic(); window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]); }
 }
 async function epics() {
   setSessionProvider("auto"); setSessionOverrides(["labels"]);
@@ -496,6 +546,7 @@ async function epics() {
       return Response.json({ id, input, state: "done", result: { data: { reason: "epic-project-not-included", message: "Epic Launch changed: OTHER-9 is in a project the factory does not run." } } });
     }
     if (url.startsWith?.("/api/plans/")) { cancels.push(url); return Response.json({ ok: true }); }
+    if (url.startsWith?.("/api/tickets/")) return Response.json({ message: "Ticket not found" }, { status: 404 });
     return Response.json({ ...filterState, status: status.value });
   };
   const settled = async () => { for (let n = 0; n < 100 && operations.value.some(op => ["queued", "running"].includes(op.state)); n++) await pause(); };
@@ -674,7 +725,7 @@ async function showQueued() {
   await pause();
 }
 
-window.queueTests = { showQueued, epics, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+window.queueTests = { showQueued, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

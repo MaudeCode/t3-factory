@@ -1,16 +1,17 @@
-// One ticket, opened in place from any ticket row: what it asks for, what it waits on, its runs, and Run now.
+// One ticket, or one Epic, opened in place. A ticket, from any ticket row: what it asks for, what it waits on, its runs, and Run now.
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
 import { html, useState, useEffect } from "../lib/h.js";
 import { config, status, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
 import { api } from "../lib/api.js";
-import { ticketPanel, closeTicket, follow } from "../lib/router.js";
+import { ticketPanel, closeTicket, epicPanel, closeEpic, follow } from "../lib/router.js";
 import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest } from "../lib/format.js";
 import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Segmented } from "../ui/index.js";
 import { markdown } from "../lib/markdown.js";
 import { startHold, runNow, startOptions } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
 import { decisions, outcomeText, DuplicateLink } from "./Triage.js";
+import { epicById, EpicDetail } from "./Queue.js";
 
 const CLOSED = ["done", "cancelled"];
 const STATUS = { backlog: "Backlog", todo: "To do", in_progress: "In progress", in_review: "In review", done: "Done", cancelled: "Cancelled" };
@@ -73,7 +74,13 @@ export function TicketPanel() {
   };
   useEffect(() => { if (key) { load(key); setTab("ticket"); } }, [key]);
   const mine = read.key === key ? read : { loading: true };
-  return html`<${Dialog} class="ticket-panel" open=${!!key} onClose=${closeTicket} title=${key}>
+  // An Epic shows while no ticket is open; a ticket opened from it sits on top and Back returns to the Epic.
+  const epic = !key && epicPanel.value ? epicById(epicPanel.value) : undefined;
+  // Each kind is its own dialog: dismissing a ticket closes the native dialog, and the Epic under it has to open one again.
+  if (!key && epicPanel.value) return html`<${Dialog} key="epic" class="ticket-panel" open onClose=${closeEpic} title="Epic">
+    ${epic ? html`<${EpicDetail} epic=${epic} />` : html`<${Empty}>This Epic is not listed. It may have finished or been closed.<//>`}
+  <//>`;
+  return html`<${Dialog} key="ticket" class="ticket-panel" open=${!!key} onClose=${closeTicket} title=${key}>
     ${mine.ticket
       ? html`<${Segmented} label="Ticket view" value=${tab} onChange=${setTab} options=${[["ticket", "Ticket"], ["factory", "Factory"]]} />
           <${Detail} ticket=${mine.ticket} tab=${tab} />`

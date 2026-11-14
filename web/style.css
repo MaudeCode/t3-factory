@@ -1667,12 +1667,47 @@ button.next-toggle:disabled:hover {
 .next-toggle:not([aria-expanded]) > .icon {
   visibility: hidden;
 }
-.next-toggle .row-body > span {
+.next-wrap .row-body > span {
   font-weight: 600;
   white-space: normal;
 }
-.next-toggle .row-body > small {
+.next-wrap .row-body > small {
   white-space: normal;
+}
+/* The chevron alone opens the row in place; the title beside it is the row's link. */
+button.next-chevron {
+  flex: none;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 var(--space-1);
+  color: inherit;
+}
+button.next-chevron > .icon {
+  margin-top: 0;
+}
+@media (pointer: coarse) {
+  /* A full touch target whose symbol still sits at the list's edge. */
+  button.next-chevron {
+    justify-content: center;
+    margin-left: -14px;
+  }
+}
+button.next-chevron:not(:disabled):hover > .icon {
+  color: var(--ink);
+}
+.next:has(> .next-chevron) {
+  gap: 0;
+}
+.next:has(> .next-chevron) > .next-actions {
+  margin-left: var(--space-3);
+}
+.epic-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ticket-panel .epic-tickets {
+  margin-left: 0;
 }
 /* Touch-sized controls would otherwise sit on the row's separators. */
 .epic .next-actions {
@@ -2772,6 +2807,7 @@ h1 .crumb::after {
     min-height: 44px;
   }
   .btn-icon.btn-sm,
+  .next-chevron,
   .wordmark,
   .segmented button,
   .chips button,
