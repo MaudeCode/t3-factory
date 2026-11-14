@@ -14,7 +14,7 @@ const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.\n\n## Outcome\n\nSet `mode` to **on**, see [the guide](https://docs.example/guide) or [this](javascript:window.__ticketXss=true).\n\n```\n' + "x".repeat(400) + '\n```\n\n| Ticket | Note |\n| --- | --- |\n| APP-90 | ' + "long cell text ".repeat(20) + '|';
 const detail = (key, extra = {}) => ({
   id: `id-${key}`, projectId: "p", key, title: `Synthetic ticket ${key}`, status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: ["feat", "web"], scopes: ["web"],
-  description: HOSTILE, acceptanceCriteria: "- first criterion\n- second criterion", automationReady: true, holdReason: null, readiness: [],
+  inbox: false, description: HOSTILE, acceptanceCriteria: "- first criterion\n- second criterion", automationReady: true, holdReason: null, readiness: [],
   blockedBy: [{ key: "APP-90", title: "A finished blocker", done: true }], blocks: [{ key: "APP-91", title: "A dependent", done: false }], epic: "Billing v2", createdAt: ago(600),
   url: `https://tracker.example/projects/p/tickets/id-${key}`, ...extra,
 });
@@ -167,9 +167,11 @@ async function run() {
   const gap = (el) => innerWidth - el.getBoundingClientRect().right;
   const corner = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).find((r) => r.media?.mediaText.includes("display-mode: standalone"));
   assert(corner && /orientation: landscape/.test(corner.media.mediaText) && /pointer: coarse/.test(corner.media.mediaText), "the corner clearance applies to a standalone, landscape, touch display only");
-  const before = gap(button("Done")), condition = corner.media.mediaText;
+  // The panel keeps Done at its inner edge beside the key, so that corner holds no control on any display.
+  const done = button("Done").getBoundingClientRect(), keyBox = panel().querySelector(".dialog-head h2").getBoundingClientRect();
+  assert(gap(button("Done")) >= 76 && done.left - box.left < 40 && keyBox.left > done.right, `the panel's Done button sits at its inner edge, clear of the pill: ${gap(button("Done"))}`);
+  const condition = corner.media.mediaText;
   corner.media.mediaText = "all"; await pause();
-  assert(gap(button("Done")) >= 76 && gap(button("Done")) > before, `the panel's Done button clears the pill: ${gap(button("Done"))}`);
   button("Done").click(); await pause(150);
   for (const el of root.querySelectorAll(".page-head > :last-child, .top > :last-child")) if (el.getClientRects().length) assert(gap(el) >= 76, `the page's top-right controls clear the pill: ${gap(el)}`);
   corner.media.mediaText = condition;
