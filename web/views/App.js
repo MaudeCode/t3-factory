@@ -5,6 +5,7 @@ import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta
 import { ago, until } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
+import { display } from "../lib/display.js";
 import { Login } from "./Login.js";
 import { OperationActions, Composer } from "./Deck.js";
 import { Now } from "./Now.js";
@@ -33,6 +34,7 @@ function ThemePicker({ open, onClose }) {
         </button>`;
       })}
     </div>
+    <p class="display-facts">${display.value}</p>
   <//>`;
 }
 
