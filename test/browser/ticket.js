@@ -3,6 +3,7 @@ import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
+import { measure } from "../../web/lib/display.js";
 import { App } from "../../web/views/App.js";
 import { finishConfirmation } from "../../web/lib/confirmation.js";
 
@@ -171,11 +172,14 @@ async function run() {
   assert(before < 40 && panel().querySelector(".dialog-head h2").getBoundingClientRect().right < button("Done").getBoundingClientRect().left, `Done sits at the panel's outer edge, after the key: ${before}`);
   corner.media.mediaText = "all"; await pause();
   assert(gap(button("Done")) >= 76, `the panel's Done button clears the pill: ${gap(button("Done"))}`);
-  // A system column over the right edge: the pill sits in it, so the clearance goes and the panel's surface runs under it.
-  assert(rootStyle.getPropertyValue("--covered-right") === "0px" && !rootStyle.getPropertyValue("--corner"), "a window the system does not cover measures no column");
-  rootStyle.setProperty("--corner", "0px"); rootStyle.setProperty("--covered-right", "83px"); await pause();
-  assert(gap(button("Done")) === before && getComputedStyle(panel()).boxShadow.includes("83px"), `a covered edge drops the clearance and extends the panel: ${gap(button("Done"))}, ${getComputedStyle(panel()).boxShadow}`);
-  rootStyle.removeProperty("--corner"); rootStyle.setProperty("--covered-right", "0px"); await pause();
+  // A window narrower than the screen sits beside the system's column, so nothing floats over its corner.
+  assert(!rootStyle.getPropertyValue("--corner"), "a window as wide as the screen keeps the clearance");
+  const outer = Object.getOwnPropertyDescriptor(window, "outerWidth");
+  Object.defineProperty(window, "outerWidth", { value: innerWidth + 84, configurable: true }); measure(); await pause();
+  assert(rootStyle.getPropertyValue("--corner") === "0px" && gap(button("Done")) === before, `a window beside the column drops the clearance: ${gap(button("Done"))}`);
+  if (outer) Object.defineProperty(window, "outerWidth", outer); else delete window.outerWidth;
+  measure(); await pause();
+  assert(!rootStyle.getPropertyValue("--corner") && gap(button("Done")) >= 76, "the clearance returns with a full-width window");
   button("Done").click(); await pause(150);
   for (const el of root.querySelectorAll(".page-head > :last-child, .top > :last-child")) if (el.getClientRects().length) assert(gap(el) >= 76, `the page's top-right controls clear the pill: ${gap(el)}`);
   corner.media.mediaText = condition;
