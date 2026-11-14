@@ -218,8 +218,10 @@ export const startOptions = () => {
   const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
   return { provider, overrideLimits: sessionOverrides.value };
 };
-export function StartOptions() {
-  return html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: use selected overrides`])]} /><${Chips} label="Override limits" value=${sessionOverrides.value} onChange=${setSessionOverrides} options=${OVERRIDES.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
+// `limits` narrows the overrides to the ones a page's actions use, and drops the provider choice with them.
+export function StartOptions({ limits } = {}) {
+  const shown = OVERRIDES.filter(([key]) => !limits || limits.includes(key)), keys = shown.map(([key]) => key);
+  return html`${!limits && html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: use selected overrides`])]} />`}<${Chips} label="Override limits" value=${sessionOverrides.value.filter((key) => keys.includes(key))} onChange=${(value) => setSessionOverrides([...sessionOverrides.value.filter((key) => !keys.includes(key)), ...value])} options=${shown.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
 }
 
 // Newest or oldest first, for ticket and run lists.

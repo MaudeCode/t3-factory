@@ -54,7 +54,7 @@ window.fetch = async (url, init) => {
     state.config = body.config;
     return Response.json(body.config);
   }
-  if (url.startsWith('/api/triage/reports/')) { decisions.push(url.slice(20)); return Response.json({ state: 'written' }); }
+  if (url.startsWith('/api/triage/reports/')) { decisions.push(url.slice(20) + (JSON.parse(init.body).override ? '+override' : '')); return Response.json({ state: 'written' }); }
   if (url === '/api/triage/run') { runs++; return Response.json({ queued: true }); }
   if (url.startsWith('/api/tickets/')) return Response.json({ message: 'Ticket not found' }, { status: 404 });
   if (url === '/api/triage/enabled') {
@@ -107,14 +107,22 @@ async function run() {
   button('Make a ticket of PIN-12').click(); await pause();
   assert(!decisions.length && confirmation.value?.title === 'Make a ticket of PIN-12?' && confirmation.value.message.includes('Example'), 'making a ticket asks first and names the project');
   finishConfirmation(true); await pause(); await pause();
-  assert(decisions.join() === 't12/promote' && notice.value?.text === 'PIN-12 will become a ticket.', 'confirming posts the decision');
+  assert(decisions.join() === 't12/promote+override' && notice.value?.text === 'PIN-12 will become a ticket.', 'confirming posts the decision');
   decisions = [];
+  // The page's one override decides whether a decision runs past the reserve; the start provider is not a triage choice.
+  const override = root.querySelector('.page-head [aria-label="Override limits"]');
+  assert(override.querySelectorAll('button').length === 1 && button('Override quota reserve').getAttribute('aria-pressed') === 'true' && !root.querySelector('[aria-label="Start provider"]'), 'the Sources page offers the quota reserve override alone');
+  button('Override quota reserve').click(); await pause();
+  assert(sessionOverrides.value.includes('idle') && !sessionOverrides.value.includes('reserve'), 'turning it off keeps the other start overrides');
   button('Triage PIN-2 again').click(); await pause(); await pause();
   assert(decisions.join() === 't2/retry' && notice.value?.text === 'PIN-2 will be triaged again.', 'Triage again asks the scheduler to clear the result');
   labelled('Close PIN-6').click(); await pause();
   assert(decisions.length === 1 && confirmation.value?.title === 'Close PIN-6?', 'closing a report asks first');
   finishConfirmation(true); await pause(); await pause();
   assert(decisions.join() === 't2/retry,t6/close' && notice.value?.text === 'PIN-6 closed.', 'confirming closes the report');
+  button('Override quota reserve').click(); await pause();
+  labelled('Triage PIN-12 again').click(); await pause(); await pause();
+  assert(decisions.at(-1) === 't12/retry+override', 'with the override selected, Triage again runs past the reserve');
   assert(keys('History') === 'PIN-7,PIN-6,PIN-5,PIN-3,PIN-8,PIN-9,PIN-2,PIN-10,PIN-1,GONE-1', 'History lists every recent result as its report, newest first');
   assert(!root.textContent.includes('Ready to start') && !root.querySelector('[aria-label^="Run "]') && row('PIN-10').textContent.includes('Promoted to EX-42'), 'promoted tickets are started from the Queue; Triage keeps their results in History');
   assert(row('PIN-7').querySelector('a.tag')?.href === 'https://kanvil.example.test/projects/p/tickets/t40' && !row('PIN-7').querySelector('[aria-label^="Run "]'), 'a promoted result in History links its ticket and has no Start');
