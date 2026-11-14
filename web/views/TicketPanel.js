@@ -31,7 +31,7 @@ function Detail({ ticket: t, tab }) {
   const seen = new Set(), runs = [...jobs.value, ...(history.value ?? [])].filter((j) => j.taskId === t.id && !seen.has(j.id) && seen.add(j.id)).toSorted(byNewest);
   const tracker = safeLink(t.url);
   // An inbox report still open: what triage made of it and what the owner can do about it.
-  const report = t.inbox && (status.value.triageReports ?? []).find((e) => e.data.ticketId === t.id), verdict = report?.data.outcome === "triaged" && report.data.verdict;
+  const report = t.inbox ? (status.value.triageReports ?? []).find((e) => e.data.ticketId === t.id) : undefined, verdict = report?.data.outcome === "triaged" && report.data.verdict;
   const advice = { "needs-info": "The reporter cannot be asked from here. Make a ticket from what the report says, or close it.", duplicate: "Confirm it if that ticket covers this report. If not, make this a ticket of its own." }[verdict];
   // A run link is ordinary navigation: it leaves the panel's address, which closes the panel without a second history step.
   if (tab === "factory") return html`${line && html`<p class="ticket-line">${line}</p>`}

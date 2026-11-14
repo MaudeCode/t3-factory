@@ -3103,6 +3103,12 @@ dialog.ticket-panel[open] {
     transform: translateX(24px);
   }
 }
+/* Done sits at the panel's inner edge, beside the key: the top right corner belongs to the system on a foldable. */
+.ticket-panel > .dialog-head {
+  flex-direction: row-reverse;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
 .ticket-panel .dialog-head h2 {
   font-family: var(--mono);
   font-size: 13px;
@@ -3421,8 +3427,7 @@ dialog.ticket-panel[open] {
    corner inside the safe area (about 69px in from the edge on the open Duo). Heads keep their controls clear of it. */
 @media (display-mode: standalone) and (orientation: landscape) and (pointer: coarse) {
   main .page-head,
-  .now-head,
-  .ticket-panel > .dialog-head {
+  .now-head {
     padding-right: 60px;
   }
   .top {
