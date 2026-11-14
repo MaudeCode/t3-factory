@@ -52,6 +52,8 @@ export const webConfigSchema = z
   }, "The address must be HTTPS, or HTTP on your private network");
 type WebConfig = z.infer<typeof webConfigSchema>;
 type Result = { code: number; data: any };
+// The CLI's spelling of a set of overridden limits; none means every limit is respected.
+const overrideFlags = (limits: z.infer<typeof overrideLimitsSchema> | undefined) => limits === true ? ["--override-limits"] : limits && limits.length ? ["--override", limits.join(",")] : [];
 const dispatchSchema = z
   .object({
     ticket: z
@@ -418,6 +420,12 @@ export function createFactoryWeb(options: {
           const result = await run(["plan-cancel", plan[1]]);
           return json(res, result.code ? 409 : 200, result.data);
         }
+        const limits = path.match(/^\/api\/plans\/([\w-]{1,64})\/overrides$/);
+        if (limits && req.method === "POST") {
+          const { overrideLimits } = z.object({ overrideLimits: overrideLimitsSchema }).strict().parse(await body(req));
+          const result = await run(["plan-override", limits[1], ...overrideFlags(overrideLimits)]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
         if ((path === "/api/models" || path === "/api/sources") && req.method === "GET") {
           const result = await run([path === "/api/models" ? "model-catalog" : "sources"]);
           return json(res, result.code ? 503 : 200, result.data);
@@ -512,7 +520,7 @@ export function createFactoryWeb(options: {
             ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
             ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
             ...(dispatch.epic ? ["--epic", dispatch.epic] : []),
-            ...(dispatch.overrideLimits === true ? ["--override-limits"] : dispatch.overrideLimits && dispatch.overrideLimits.length ? ["--override", dispatch.overrideLimits.join(",")] : []),
+            ...overrideFlags(dispatch.overrideLimits),
             ...(dispatch.chain ? ["--chain", dispatch.chain] : []),
           ];
           const finish = (result: Result) => {

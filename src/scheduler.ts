@@ -1697,6 +1697,13 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
   }
   return results;
 }
+// The limits an active plan overrides, changed after it started. Every later launch of the plan reads them.
+export function setPlanOverrides(store: Store, id: string, overrideLimits: OverrideLimits = []) {
+  const plan = store.plan(id);
+  if (!plan || plan.state !== 'active') throw new Error('That chain is not active');
+  plan.overrideLimits = [...skips({ manual: true, overrideLimits })]; store.savePlan(plan);
+  return { ok: true, planId: id, overrideLimits: plan.overrideLimits };
+}
 export function cancelPlan(store: Store, id: string) {
   const plan = store.plan(id);
   if (!plan || plan.state !== 'active') throw new Error('That chain is not active');

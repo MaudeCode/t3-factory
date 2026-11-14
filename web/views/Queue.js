@@ -1,14 +1,14 @@
 // Everything that can start: what the owner queued, the scheduler's Up next list, Epics, and the tickets that came
 // from T3 sessions and inbox reports. The automatic queue and the owner's own stay visibly apart.
 import { html, signal, useState } from "../lib/h.js";
-import { config, status, jobs, clock, actions, message, startRun, pendingEpic } from "../lib/store.js";
+import { config, status, jobs, clock, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
 import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText } from "../lib/format.js";
 import { Button, Segmented, Tag, Icon, Empty, Page, Section } from "../ui/index.js";
-import { UpNext, Chains, Operations, StartOptions, startOptions, PlanRows, planProgress, CancelPlan, TicketRow } from "./Deck.js";
+import { UpNext, Chains, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { ReadyReports, readyReportCount } from "./Triage.js";
-import { search, navigate } from "../lib/router.js";
+import { search, navigate, epicClick } from "../lib/router.js";
 
 // Every Epic the tab can list. A running Epic reads from its plan, which keeps finished members and notes;
 // the rest come from status.epics with the scheduler's answer on whether they can start.
@@ -41,10 +41,14 @@ function matchEpics(list, filters, query) {
   });
 }
 // The page's provider and override controls decide how an Epic starts; its model is automatic.
-function EpicStart({ epic }) {
+// `panel` is the side panel's labelled button; a list row has the icon.
+function EpicStart({ epic, panel }) {
   const { provider, overrideLimits } = startOptions();
   const hold = epic.startBlock?.message ?? (pendingEpic(epic.id) ? "A request for this Epic is already pending." : null);
-  return html`<${Button} size="sm" icon="play" class="next-run epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${() => startRun({ epic: epic.id, model: "auto", ...(provider ? { provider } : {}), overrideLimits })} />`;
+  const run = () => startRun({ epic: epic.id, model: "auto", ...(provider ? { provider } : {}), overrideLimits });
+  return panel
+    ? html`<${Button} variant="primary" icon="play" disabled=${!!hold} title=${hold ?? `${overrideText(overrideLimits)} and start this Epic.`} onClick=${run}>Run Epic<//>`
+    : html`<${Button} size="sm" icon="play" class="next-run epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${run} />`;
 }
 // What an Epic's row says about it: one state tag, then how far along it is and, while it runs, what its runs are doing.
 function epicSummary(epic) {
@@ -56,25 +60,47 @@ function epicSummary(epic) {
   const progress = [epic.tickets.length && planProgress(epic), running && active && `${active} running`, running && waiting && `${waiting} waiting for you`].filter(Boolean).join(" · ");
   return { label, tone, progress };
 }
+// A row in status.epics and the plan it becomes on start share the Epic's ID.
+const epicId = (epic) => epic.epic?.id ?? epic.id;
+// What a started Epic runs on, and what keeps an Epic from starting or finishing.
+const epicModel = (epic) => epic.provider ? providerName(epic.provider) : epic.model === "auto" ? "Auto" : config.value.models.find((m) => m.id === epic.model)?.name ?? epic.model;
+const epicNote = (epic) => {
+  const hidden = epic.restrictedCount ?? 0;
+  return epic.state ? epic.state === "active" && hidden > 0 && `${hidden} ticket${hidden === 1 ? "" : "s"} in projects Factory cannot read keep this Epic open.` : epic.startBlock?.message;
+};
 function EpicRow({ epic, show, narrowed }) {
-  // A row in status.epics and the plan it becomes on start share the Epic's ID.
-  const id = epic.epic?.id ?? epic.id;
-  const running = epic.state === "active", started = !!epic.state, hidden = epic.restrictedCount ?? 0;
-  const model = epic.provider ? providerName(epic.provider) : epic.model === "auto" ? "Auto" : config.value.models.find((m) => m.id === epic.model)?.name ?? epic.model;
-  const note = started ? running && hidden > 0 && `${hidden} ticket${hidden === 1 ? "" : "s"} in projects Factory cannot read keep this Epic open.` : epic.startBlock?.message;
+  const id = epicId(epic);
+  const running = epic.state === "active", started = !!epic.state;
+  const note = epicNote(epic);
   const { label, tone, progress } = epicSummary(epic);
   // The symbol means one thing: the scheduler will refuse to start this Epic.
   const block = !started && epic.startBlock?.message, opens = epic.tickets.length > 0 || !!note, open = opens && (narrowed || openEpics.value.has(id));
   return html`<div class="epic">
     <${TicketRow} ticket=${{ id, title: html`${epic.title}${block && html`<span class="epic-issue" title=${block}><${Icon} name="alert" label=${block} /></span>`}` }} plain meta=${{ project: undefined }}
-      toggle=${{ expanded: opens ? open : undefined, disabled: !opens || narrowed, onClick: () => toggleEpic(id) }}
+      toggle=${{ expanded: opens ? open : undefined, disabled: !opens || narrowed, onClick: () => toggleEpic(id), label: `${open ? "Hide" : "Show"} the tickets of ${epic.title}` }}
+      link=${{ href: `?epic=${encodeURIComponent(id)}`, onClick: epicClick(id) }}
       badge=${html`<${Tag} tone=${tone}>${label}<//>`}
       actions=${!started ? html`<${EpicStart} epic=${epic} />` : running && html`<${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" icon="x" class="next-run" />`}>
       ${progress && html`<span class="epic-progress">${progress}</span>`}
-      ${running && html`<span class="epic-choice">${model} · ${overrideText(epic.overrideLimits)}</span>`}
+      ${running && html`<span class="epic-choice">${epicModel(epic)} · ${overrideText(epic.overrideLimits)}</span>`}
     <//>
     ${open && html`<div class="epic-tickets">${note && html`<p class="hint tone-attention epic-note">${note}</p>`}<${PlanRows} plan=${epic} show=${show} /></div>`}
   </div>`;
+}
+// One Epic in the side panel: its state, its start or the controls of its run, and its tickets, which open over it.
+// A running Epic's overrides are its plan's own and can be changed; one not started uses the page's start choices.
+export const epicById = (id) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epicId(epic) === id); };
+export function EpicDetail({ epic }) {
+  clock.value;
+  const running = epic.state === "active", note = epicNote(epic), { label, tone, progress } = epicSummary(epic);
+  return html`<h3 class="ticket-title">${epic.title}</h3>
+    <p class="ticket-meta epic-state"><${Tag} tone=${tone}>${label}<//>${progress && html`<span class="muted">${progress}</span>`}</p>
+    ${!epic.state && html`<div class="ticket-actions"><${EpicStart} epic=${epic} panel /><${StartOptions} /></div>`}
+    ${running && html`<div class="ticket-actions"><${OverrideChips} value=${epic.overrideLimits} disabled=${busy.value} onChange=${(limits) => actions.planOverrides(epic.id, limits)} /><${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" /></div>
+      <p class="ticket-line">${epicModel(epic)} · ${overrideText(epic.overrideLimits)}. A change applies to the tickets this Epic starts next.</p>`}
+    ${note && html`<p class="ticket-line tone-attention">${note}</p>`}
+    <h4>Tickets</h4>
+    ${epic.tickets.length ? html`<div class="epic-tickets"><${PlanRows} plan=${epic} /></div>` : html`<${Empty}>No tickets Factory can read.<//>`}`;
 }
 function Epics({ filters, query }) {
   const { open, finished } = epicLists();

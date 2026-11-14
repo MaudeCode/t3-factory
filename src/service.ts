@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, setPlanOverrides, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -377,6 +377,12 @@ export class FactoryService {
     }
     if (command.type === 'plan-cancel') {
       const result = await this.enqueue(async () => { const r = cancelPlan(this.store, command.planId); this.publishWork(); return r; });
+      return { code: 0, data: result };
+    }
+    if (command.type === 'plan-override') {
+      // Queued behind the pass in flight, so that pass cannot save its older copy of the plan over the change.
+      const result = await this.enqueue(async () => { const r = setPlanOverrides(this.store, command.planId, command.overrideLimits); this.publishWork(); return r; });
+      this.wake('plan-override');
       return { code: 0, data: result };
     }
     if (command.type === 'cleanup-cancel') { this.inspections.get(command.inspectionId)?.abort(); return { code: 0, data: { cancelled: this.inspections.has(command.inspectionId) } }; }

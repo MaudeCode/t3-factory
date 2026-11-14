@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
-import { cycle, runPlans, cancelPlan, refreshInventory, writeStatus } from '../src/scheduler.ts';
+import { cycle, runPlans, cancelPlan, setPlanOverrides, refreshInventory, writeStatus } from '../src/scheduler.ts';
 import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -88,6 +88,11 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     const started = await cycle(c, store, { manual: true, ticket: 'FIX-50', model: 'auto', overrideLimits: ['idle', 'reserve', 'labels'], chain: 'all' });
     assert.equal(started.reason, 'plan-started', JSON.stringify(started));
     const planId = started.planId as string;
+    // What a running chain overrides can be changed; its later launches read the plan.
+    assert.deepEqual(setPlanOverrides(store, planId, ['providers']).overrideLimits, ['providers']);
+    assert.deepEqual(setPlanOverrides(store, planId).overrideLimits, [], 'no limit named respects them all');
+    assert.deepEqual(store.plan(planId)!.overrideLimits, []);
+    setPlanOverrides(store, planId, ['idle', 'reserve', 'labels']);
     assert.deepEqual(launches.slice(1).map(l => l.title), ['Factory: FIX-48', 'Factory: FIX-47'], 'two Claude slots: the two highest-priority unblocked blockers; FIX-47 runs despite lacking the ready label');
     assert.doesNotMatch(launches[2].initialMessage.text, /readiness label/);
     assert.match(launches[2].workspaceStrategy.branch, /^fix\/FIX-47-factory-[0-9a-f]{8}$/, 'a bug ticket gets a fix branch');
@@ -108,6 +113,7 @@ test('a blocked manual ticket offers its chain, runs the first blocker, or runs 
     await runPlans(c, store, new T3(c.t3), new Kanvil(c.kanvil), instances, threads);
     assert.equal(store.plan(planId)!.state, 'done');
     assert.throws(() => cancelPlan(store, planId), /not active/);
+    assert.throws(() => setPlanOverrides(store, planId, true), /not active/, 'a finished chain keeps the overrides it ran with');
     assert.deepEqual(store.events(20).filter(e => e.kind.startsWith('plan.')).map(e => e.text).toReversed(), ['Chain to FIX-50 started with 3 tickets ahead of it', 'Chain to FIX-50 finished']);
   } finally {
     store.close();

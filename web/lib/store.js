@@ -207,6 +207,13 @@ export const actions = {
       await load();
       message("Cancelled. Tickets already running finish on their own.");
     }),
+  // The limits a running chain or Epic overrides from its next start on.
+  planOverrides: (id, overrideLimits) =>
+    run(async () => {
+      await post(`/api/plans/${id}/overrides`, { overrideLimits });
+      await load();
+      message("Overrides saved. They apply to the tickets started next.");
+    }),
   dismissSessionTicket: (ids) =>
     run(async () => {
       try {

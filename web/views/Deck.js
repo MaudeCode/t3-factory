@@ -188,6 +188,7 @@ export function startHold(t) {
 // `badge`, such as a triage outcome, leads the facet line, so the row stays as tall as any other.
 // A `plain` row is not a startable ticket, so it has no difficulty to warn about. `toggle` makes the row's body a
 // disclosure button instead of a link; `expanded` is left unset when there is nothing to open.
+// With a `link` as well, the chevron alone is the disclosure and the body stays the link.
 export function TicketRow({ ticket: t, project, children, actions, secondaryActions, selection, badge, plain, link, meta, toggle }) {
   const c = config.value;
   const [open, setOpen] = useState(false), button = useRef();
@@ -199,8 +200,10 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
   <//>`;
   return html`<div class="next" key=${t.id}>
     ${selection}
-    ${toggle
-      ? html`<button type="button" class="next-ticket next-toggle" aria-expanded=${toggle.expanded} disabled=${toggle.disabled} onClick=${toggle.onClick}><${Icon} name="chevronRight" />${body}</button>`
+    ${toggle && link
+      ? html`<button type="button" class="next-toggle next-chevron" aria-label=${toggle.label} title=${toggle.label} aria-expanded=${toggle.expanded} disabled=${toggle.disabled} onClick=${toggle.onClick}><${Icon} name="chevronRight" /></button><a class="next-ticket next-wrap" ...${link}>${body}</a>`
+      : toggle
+      ? html`<button type="button" class="next-ticket next-toggle next-wrap" aria-expanded=${toggle.expanded} disabled=${toggle.disabled} onClick=${toggle.onClick}><${Icon} name="chevronRight" />${body}</button>`
       : html`<a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer", onClick: panel }}>${body}</a>`}
     ${actions && html`<div class="next-actions">${actions}
       ${secondaryActions && html`<div class="next-secondary">${secondaryActions}</div>
@@ -218,10 +221,16 @@ export const startOptions = () => {
   const provider = sessionProvider.value === "auto" ? undefined : sessionProvider.value;
   return { provider, overrideLimits: sessionOverrides.value };
 };
-// `limits` narrows the overrides to the ones a page's actions use, and drops the provider choice with them.
-export function StartOptions({ limits } = {}) {
+// The limits a manual start overrides, as chips. `limits` narrows them to the ones the caller's actions use;
+// `value` may be `true`, which is every limit.
+export function OverrideChips({ value, onChange, limits, disabled }) {
   const shown = OVERRIDES.filter(([key]) => !limits || limits.includes(key)), keys = shown.map(([key]) => key);
-  return html`${!limits && html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: use selected overrides`])]} />`}<${Chips} label="Override limits" value=${sessionOverrides.value.filter((key) => keys.includes(key))} onChange=${(value) => setSessionOverrides([...sessionOverrides.value.filter((key) => !keys.includes(key)), ...value])} options=${shown.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
+  const all = OVERRIDES.map(([key]) => key).filter((key) => value === true || value?.includes(key));
+  return html`<${Chips} label="Override limits" disabled=${disabled} value=${all.filter((key) => keys.includes(key))} onChange=${(next) => onChange([...all.filter((key) => !keys.includes(key)), ...next])} options=${shown.map(([key, name, icon]) => [key, html`<${Icon} name=${icon} />`, `Override ${name.toLowerCase()}${key === "providers" ? ", including providers set to Off" : ""}`])} />`;
+}
+// `limits` drops the provider choice with the overrides a page's actions do not use.
+export function StartOptions({ limits } = {}) {
+  return html`${!limits && html`<${Segmented} icons=${Object.fromEntries([["auto", "zap"], ...PROVIDERS.map(p => [p.driver, providerIcon(p.driver)])])} label="Start provider" value=${sessionProvider.value} onChange=${setSessionProvider} options=${[["auto", "Auto: use selected overrides"], ...[...PROVIDERS].reverse().map(p => [p.driver, `${p.name}: use selected overrides`])]} />`}<${OverrideChips} value=${sessionOverrides.value} onChange=${setSessionOverrides} limits=${limits} />`;
 }
 
 // Newest or oldest first, for ticket and run lists.
