@@ -210,6 +210,8 @@ export class FactoryService {
       };
       const results = await triagePass(c, this.store, kanvil, { force, budget: inFlight => admitTriage(this.configure(), this.t3, this.store, inFlight, force), signal: this.abort.signal, onRun: publish });
       if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
+      // What the owner sent by hand goes on to promotion past the same limits: a forced pass that leaves an actionable report forces the next.
+      if (force && results.some(r => r.outcome === 'triaged' && r.verdict === 'actionable')) { this.forceTriage = true; this.triage(); }
     });
   }
 

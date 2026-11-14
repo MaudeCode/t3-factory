@@ -1,7 +1,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, live, busy, clock, serverNow, actions, launchOperations, TRIAGE_ORIGIN as ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, ticketKey, triageSummary } from "../lib/format.js";
+import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, streamReason, ticketKey, triageSummary } from "../lib/format.js";
 import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, Switch } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
@@ -82,7 +82,7 @@ export const DuplicateLink = ({ of: key }) => key && html`<a href=${`?ticket=${e
 export const reportRow = (event, id, c = config.value) => ({ id, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? c.projects.find((p) => p.inbox?.kanvilId === event.data.inboxId)?.kanvilId, createdAt: event.time });
 
 // A report as a list row: the promoted ticket, which can be started, or the report with its outcome.
-function Result({ row, now, selection, start, progress, decision }) {
+function Result({ row, now, selection, start, progress, decision, held }) {
   const c = config.value, d = row.event.data;
   const [tone, label] = d.outcome === "triaged" ? [verdictTone[d.verdict] ?? "", d.verdict] : outcomeTag[d.outcome] ?? ["attention", "error"];
   const tag = html`<${Tag} tone=${tone}>${label}<//>`;
@@ -100,7 +100,7 @@ function Result({ row, now, selection, start, progress, decision }) {
   // A promoted result the scheduler could not read back links its tag to the promoted ticket.
   const promoted = d.promoted && row.projectId && kanvil(c, "projects", row.projectId, "tickets", d.promotedId ?? d.promoted);
   const badge = promoted ? html`<${Tag} tone=${tone} href=${promoted} onClick=${ticketClick(ticketKey(d.promoted))} title=${`Open ${d.promoted}`}>${label}<//>` : tag;
-  return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} ...${decision} plain>${d.outcome === "triaged" && html`<${DuplicateLink} of=${d.duplicateOf} />`}${when}<//>`;
+  return html`<${TicketRow} ticket=${{ id: d.ticketId, projectId: d.inboxId, key: d.ticket, title: row.title }} project=${{ name: d.project }} badge=${badge} selection=${selection} ...${decision} plain>${d.outcome === "triaged" && html`<${DuplicateLink} of=${d.duplicateOf} />`}${held && html`<b class="tone-attention">${streamReason(held)}</b>`}${when}<//>`;
 }
 
 // Promoted tickets the scheduler still lists, each with the journal entry that created it.
@@ -173,7 +173,12 @@ export function Triage({ lead } = {}) {
       <${Empty}>No inboxes. Add <code>inbox</code> and <code>scopes</code> to a project and a <code>triage</code> section to the config file to turn triage on.<//>
     <//>`;
   const narrowed = narrowedBy(filters, query);
-  const waiting = streams.some((row) => row.untriaged), triaging = streams.some((row) => row.running);
+  // A report triaged but not yet a ticket is work for Triage now too; one queued behind the daily limit is not.
+  const waiting = streams.some((row) => row.untriaged) || working.some((row) => row.event.data.outcome === "awaiting-promotion"), triaging = streams.some((row) => row.running);
+  // The last pass stops at the first report it could not admit, so that reason holds every report still waiting.
+  // Any other wait, such as a report edited during triage, belongs to its own report.
+  const waits = (status.value.triageDecision?.results ?? []).filter((r) => r.outcome === "waiting");
+  const heldRow = (row) => ["waiting", "awaiting-promotion"].includes(row.event.data.outcome) ? (waits.find((r) => r.ticket === row.event.data.ticket) ?? waits.find((r) => r.admission))?.reason : undefined;
   return html`<${Page} title="Sources" hint=${HINT}
     actions=${html`${c.triage && html`<label class="automation"><${Switch} label="Inbox triage" checked=${live.value.triage} disabled=${busy.value} onChange=${() => actions.toggle("triage")} /><b>${live.value.triage ? "Triage on" : "Triage paused"}</b></label>`}<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
     ${lead}
@@ -187,7 +192,7 @@ export function Triage({ lead } = {}) {
         : html`<${Empty}>${narrowed ? "No reports match." : "No open report needs you."}<//>`}
     <//>
     ${moving.length > 0 && html`<${Section} title="In progress" count=${moving.length}>
-      ${moving.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} />`)}
+      ${moving.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} held=${heldRow(row)} />`)}
     <//>`}
     <${Section} title="History" count=${history.length || null}>
       ${history.length

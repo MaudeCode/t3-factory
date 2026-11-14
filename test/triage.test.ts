@@ -212,7 +212,7 @@ test('a pass reads projections first; the run itself makes no Kanvil reads and a
 
 test('an exhausted Claude budget holds every run', async t => {
   const f = fixture(t);
-  assert.deepEqual(await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
+  assert.deepEqual(await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget', admission: true }]);
   assert.equal(f.calls().length, 0);
   assert.deepEqual(writes(f.log), []);
 });
@@ -849,6 +849,7 @@ test('Triage now runs one pass past the pause and reserve; the next automatic pa
   process.env.PATH = `${f.bin}:${path}`;
   t.after(() => { process.env.PATH = path; });
   const lane = () => internal.lanes.get('inbox-triage')?.done;
+  f.mode({ stdout: reply(output({ verdict: 'needs-info' })) });
   // As the control socket answers: a thrown command is code 1.
   assert.equal((await internal.handle({ type: 'triage-run' }).catch(() => ({ code: 1 }))).code, 0);
   await lane();
@@ -857,6 +858,12 @@ test('Triage now runs one pass past the pause and reserve; the next automatic pa
   internal.triage();
   await lane();
   assert.equal(f.calls().length, 1, 'the next automatic pass stays paused');
+  // An actionable report the owner sent is promoted in the same request, past the same pause and reserve.
+  f.mode({ stdout: reply(promotable()), review: safe });
+  await internal.handle({ type: 'triage-run' });
+  await lane();
+  assert.deepEqual(JSON.parse(store.get('triageDecision')!).results.map((r: { ticket: string; outcome: string }) => `${r.ticket} ${r.outcome}`), ['TALIN-6 promoted'], 'the forced pass carries its report through promotion');
+  assert.equal(named(f, 'createTicket').length, 1);
 });
 
 test('every open report is listed with its stage from the inbox, with or without a journal entry', t => {
@@ -985,7 +992,7 @@ test('a plausible bug gets a budgeted source follow-up before confirmed promotio
   const f = fixture(t);
   f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
   await pass(f);
-  assert.deepEqual(await pass(f, { budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
+  assert.deepEqual(await pass(f, { budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget', admission: true }]);
   assert.equal(f.calls().length, 1);
   const customPrompt = join(f.dir, 'custom-triage.md');
   writeFileSync(customPrompt, 'Existing operator triage instructions\n{{report}}');
