@@ -409,7 +409,8 @@ export function createFactoryWeb(options: {
         }
         const report = path.match(/^\/api\/triage\/reports\/([\w-]{1,64})\/(retry|close|promote)$/);
         if (report && req.method === "POST") {
-          const result = await run([`triage-${report[2]}`, report[1]]);
+          const { override } = z.object({ override: z.boolean().optional() }).parse(await body(req));
+          const result = await run([`triage-${report[2]}`, report[1], ...override ? ["--override-limits"] : []]);
           return json(res, result.code ? 409 : 200, result.data);
         }
         const plan = path.match(/^\/api\/plans\/([\w-]{1,64})\/cancel$/);

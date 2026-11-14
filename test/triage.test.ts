@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configSchema } from '../src/config.ts';
 import { Kanvil, type Task } from '../src/clients.ts';
+import { commandFor } from '../src/control.ts';
 import { admitTriage, inboxes, openReports, resolveReport, needsTriage, promotionGate, quoteSummary, rememberTriage, VERIFYING_HOLD, triageCanary, promotedTickets, triagePass, triagePrompt, triageQueue, triageTicket, type TriageKanvil, type TriageOutput } from '../src/triage.ts';
 import { log, triageResults, triageRows } from '../src/scheduler.ts';
 import { FactoryService } from '../src/service.ts';
@@ -860,9 +861,15 @@ test('Triage now runs one pass past the pause and reserve; the next automatic pa
   assert.equal(f.calls().length, 1, 'the next automatic pass stays paused');
   // An actionable report the owner sent is promoted in the same request, past the same pause and reserve.
   f.mode({ stdout: reply(promotable()), review: safe });
-  await internal.handle({ type: 'triage-run' });
+  await internal.handle({ type: 'triage-report', ticketId: current(f, 'TALIN-6').id, action: 'retry' });
   await lane();
-  assert.deepEqual(JSON.parse(store.get('triageDecision')!).results.map((r: { ticket: string; outcome: string }) => `${r.ticket} ${r.outcome}`), ['TALIN-6 promoted'], 'the forced pass carries its report through promotion');
+  assert.equal(f.calls().length, 1, "the owner's decision on a report stays paused without the override");
+  assert.equal((await internal.handle(commandFor(['triage-retry', 'not-a-report', '--override-limits']))).code, 1);
+  await lane();
+  assert.equal(f.calls().length, 1, 'a refused decision forces nothing');
+  await internal.handle(commandFor(['triage-retry', current(f, 'TALIN-6').id, '--override-limits']));
+  await lane();
+  assert.deepEqual(JSON.parse(store.get('triageDecision')!).results.map((r: { ticket: string; outcome: string }) => `${r.ticket} ${r.outcome}`), ['TALIN-6 promoted'], 'a forced pass, from Triage now or an overriding decision, carries its report through promotion');
   assert.equal(named(f, 'createTicket').length, 1);
 });
 

@@ -223,9 +223,10 @@ export const actions = {
       message("Triage started for waiting reports.");
     }),
   // The owner's decision on one open inbox report: "retry" sends it through triage again, "promote" does so with the decision that it becomes a ticket, "close" cancels it.
+  // With the quota reserve override selected, the first two run past the pause and the reserve, like Triage now.
   triageReport: (ticketId, key, action) =>
     run(async () => {
-      await post(`/api/triage/reports/${encodeURIComponent(ticketId)}/${action}`, {});
+      await post(`/api/triage/reports/${encodeURIComponent(ticketId)}/${action}`, action !== "close" && sessionOverrides.value.includes("reserve") ? { override: true } : {});
       await load();
       message({ retry: `${key} will be triaged again.`, promote: `${key} will become a ticket.`, close: `${key} closed.` }[action]);
     }),
