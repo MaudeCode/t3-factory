@@ -167,11 +167,15 @@ async function run() {
   const gap = (el) => innerWidth - el.getBoundingClientRect().right;
   const corner = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).find((r) => r.media?.mediaText.includes("display-mode: standalone"));
   assert(corner && /orientation: landscape/.test(corner.media.mediaText) && /pointer: coarse/.test(corner.media.mediaText), "the corner clearance applies to a standalone, landscape, touch display only");
-  // The panel keeps Done at its inner edge beside the key, so that corner holds no control on any display.
-  const done = button("Done").getBoundingClientRect(), keyBox = panel().querySelector(".dialog-head h2").getBoundingClientRect();
-  assert(gap(button("Done")) >= 76 && done.left - box.left < 40 && keyBox.left > done.right, `the panel's Done button sits at its inner edge, clear of the pill: ${gap(button("Done"))}`);
-  const condition = corner.media.mediaText;
+  const rootStyle = document.documentElement.style, before = gap(button("Done")), condition = corner.media.mediaText;
+  assert(before < 40 && panel().querySelector(".dialog-head h2").getBoundingClientRect().right < button("Done").getBoundingClientRect().left, `Done sits at the panel's outer edge, after the key: ${before}`);
   corner.media.mediaText = "all"; await pause();
+  assert(gap(button("Done")) >= 76, `the panel's Done button clears the pill: ${gap(button("Done"))}`);
+  // A system column over the right edge: the pill sits in it, so the clearance goes and the panel's surface runs under it.
+  assert(rootStyle.getPropertyValue("--covered-right") === "0px" && !rootStyle.getPropertyValue("--corner"), "a window the system does not cover measures no column");
+  rootStyle.setProperty("--corner", "0px"); rootStyle.setProperty("--covered-right", "83px"); await pause();
+  assert(gap(button("Done")) === before && getComputedStyle(panel()).boxShadow.includes("83px"), `a covered edge drops the clearance and extends the panel: ${gap(button("Done"))}, ${getComputedStyle(panel()).boxShadow}`);
+  rootStyle.removeProperty("--corner"); rootStyle.setProperty("--covered-right", "0px"); await pause();
   button("Done").click(); await pause(150);
   for (const el of root.querySelectorAll(".page-head > :last-child, .top > :last-child")) if (el.getClientRects().length) assert(gap(el) >= 76, `the page's top-right controls clear the pill: ${gap(el)}`);
   corner.media.mediaText = condition;
