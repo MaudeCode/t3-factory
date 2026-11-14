@@ -1648,6 +1648,9 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     await backgroundCheckpoint();
     const plan = store.plan(original.id)!;
     if (plan.state !== 'active') continue;
+    // The owner can change the plan's overrides while this pass waits on reads and launches. Each launch and each
+    // save takes them from the stored plan first, so the pass never uses or writes back the ones it started with.
+    const stored = () => { const now = store.plan(plan.id); if (now) plan.overrideLimits = now.overrideLimits; return now; };
     const refreshed = plan.epic ? await refreshEpicPlan(c, store, kanvil, plan) : undefined;
     const all = planTickets(plan);
     const limit = readLimiter();
@@ -1658,13 +1661,13 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       }
       catch (error) { t.note = safeError(error); }
     })));
-    if (store.plan(plan.id)?.state !== 'active') continue;
+    if (stored()?.state !== 'active') continue;
     // An Epic also waits for a good read of its members and for any tickets hidden from the factory.
     if (all.every(t => t.done) && !plan.epic?.error && !plan.epic?.restrictedCount) { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); continue; }
     const pending: Promise<void>[] = [], planned = new Map<string, number>();
     const jobs = store.jobSummaries();
     for (const t of chainReady(plan, jobs)) {
-      if (store.plan(plan.id)?.state !== 'active') break;
+      if (stored()?.state !== 'active') break;
       if (providerDriver && plan.provider && providerDriver !== plan.provider) continue;
       if (!t.runnable) { t.note = 'Its project is not included in the factory'; continue; }
       const models = c.models.filter(model => plan.model !== 'auto' ? model.id === plan.model
@@ -1682,10 +1685,11 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
       pending.push(independentOperation(() => store.exclusive([`ticket:${t.id}`], async () => {
         try {
           for (const preset of available) {
+            stored();
             const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
             results.push(result);
             t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
-            if (plan.queued && result.reason === 'dispatched' && store.plan(plan.id)?.state === 'active') { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); }
+            if (plan.queued && result.reason === 'dispatched' && stored()?.state === 'active') { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); }
             if (!limitHold(result.reason) && !['quota-exhausted', 'codex-quota-exhausted'].includes(result.reason)) break;
           }
         } catch (error) { t.note = safeError(error); results.push({ reason: 'error', at: new Date().toISOString(), ticket: t.key, message: t.note }); }
@@ -1693,7 +1697,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     }
     await readAll(pending);
     if (plan.epic?.error) for (const t of plan.tickets) if (!t.done) t.note = plan.epic.error;
-    if (store.plan(plan.id)?.state === 'active') store.savePlan(plan);
+    if (stored()?.state === 'active') store.savePlan(plan);
   }
   return results;
 }

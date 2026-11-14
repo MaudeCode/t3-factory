@@ -517,8 +517,9 @@ async function epicPanelTest() {
     // A ticket opens over the Epic and closing it returns to the Epic.
     panel().querySelector(".chain-row").click(); await pause(); await pause();
     assert(ticketPanel.value === "APP-7" && epicPanel.value === "moving", `a ticket in the panel opens over the Epic: ${ticketPanel.value}`);
-    closeTicket(); await pause(); await pause();
-    assert(!ticketPanel.value && panel()?.querySelector(".ticket-title").textContent === "Moving", "closing the ticket returns to the Epic");
+    // Dismissed the way Done, Escape and the backdrop do it: the native dialog closes first.
+    panel().close(); await pause(); await pause();
+    assert(!ticketPanel.value && panel()?.querySelector(".ticket-title")?.textContent === "Moving", "closing the ticket returns to the Epic, open again");
     closeEpic(); await pause(); await pause();
     assert(!epicPanel.value && !panel() && !new URLSearchParams(location.search).has("epic"), "closing the panel clears it from the address");
     // An Epic that has not started: Run with the page's own start choices.

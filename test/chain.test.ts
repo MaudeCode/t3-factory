@@ -238,6 +238,17 @@ test('cancelling a chain during suspended final validation cannot launch or rest
   assert.equal(results[0].reason, 'plan-cancelled-before-dispatch');
 });
 
+test("overrides changed while a pass advances the plan are kept, not written back", async t => {
+  const f = dispatchFixture(t), { ReadContext } = await import('../src/read-context.ts');
+  const target = { ...f.tasks[0], key: 'FIX-1', projectId: 'FIX', difficulty: 'med' as const, labels: [], runnable: true, blockedBy: [], done: false };
+  f.store.savePlan({ id: 'chain', createdAt: new Date().toISOString(), target, tickets: [], model: 'sol', overrideLimits: ['idle', 'reserve'], state: 'active' });
+  let changed = false;
+  f.hooks.quota = async () => { if (!changed) { setPlanOverrides(f.store, 'chain', ['labels']); changed = true; } };
+  await new ReadContext().run(() => runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), []));
+  assert.equal(changed, true);
+  assert.deepEqual(f.store.plan('chain')!.overrideLimits, ['labels'], "the pass saves the plan with the owner's change");
+});
+
 // Epics: a plan with no target that follows its members. Every scenario starts through the real dispatch path.
 const epicFixture = (t: test.TestContext, ...members: string[]) => {
   const f = dispatchFixture(t);

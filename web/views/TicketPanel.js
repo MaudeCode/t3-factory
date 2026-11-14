@@ -76,10 +76,11 @@ export function TicketPanel() {
   const mine = read.key === key ? read : { loading: true };
   // An Epic shows while no ticket is open; a ticket opened from it sits on top and Back returns to the Epic.
   const epic = !key && epicPanel.value ? epicById(epicPanel.value) : undefined;
-  if (!key && epicPanel.value) return html`<${Dialog} class="ticket-panel" open onClose=${closeEpic} title="Epic">
+  // Each kind is its own dialog: dismissing a ticket closes the native dialog, and the Epic under it has to open one again.
+  if (!key && epicPanel.value) return html`<${Dialog} key="epic" class="ticket-panel" open onClose=${closeEpic} title="Epic">
     ${epic ? html`<${EpicDetail} epic=${epic} />` : html`<${Empty}>This Epic is not listed. It may have finished or been closed.<//>`}
   <//>`;
-  return html`<${Dialog} class="ticket-panel" open=${!!key} onClose=${closeTicket} title=${key}>
+  return html`<${Dialog} key="ticket" class="ticket-panel" open=${!!key} onClose=${closeTicket} title=${key}>
     ${mine.ticket
       ? html`<${Segmented} label="Ticket view" value=${tab} onChange=${setTab} options=${[["ticket", "Ticket"], ["factory", "Factory"]]} />
           <${Detail} ticket=${mine.ticket} tab=${tab} />`

@@ -380,7 +380,7 @@ export class FactoryService {
       return { code: 0, data: result };
     }
     if (command.type === 'plan-override') {
-      // Queued behind the pass in flight, so that pass cannot save its older copy of the plan over the change.
+      // A pass in flight takes the plan's overrides from the store at each launch and save, so it keeps this change.
       const result = await this.enqueue(async () => { const r = setPlanOverrides(this.store, command.planId, command.overrideLimits); this.publishWork(); return r; });
       this.wake('plan-override');
       return { code: 0, data: result };
