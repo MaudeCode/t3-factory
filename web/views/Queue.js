@@ -3,8 +3,8 @@
 import { html, signal, useState } from "../lib/h.js";
 import { config, status, jobs, clock, actions, message, startRun, pendingEpic } from "../lib/store.js";
 import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText } from "../lib/format.js";
-import { Button, Select, Segmented, Tag, Icon, Empty, Page, Section } from "../ui/index.js";
-import { UpNext, Chains, Operations, StartOptions, startOptions, PlanRows, planProgress, CancelPlan, modelOptions, TicketRow } from "./Deck.js";
+import { Button, Segmented, Tag, Icon, Empty, Page, Section } from "../ui/index.js";
+import { UpNext, Chains, Operations, StartOptions, startOptions, PlanRows, planProgress, CancelPlan, TicketRow } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { ReadyReports, readyReportCount } from "./Triage.js";
@@ -40,14 +40,11 @@ function matchEpics(list, filters, query) {
     return epic.tickets.some(show) || !narrowed ? [{ epic, show, narrowed }] : [];
   });
 }
+// The page's provider and override controls decide how an Epic starts; its model is automatic.
 function EpicStart({ epic }) {
-  const [model, setModel] = useState("auto");
   const { provider, overrideLimits } = startOptions();
   const hold = epic.startBlock?.message ?? (pendingEpic(epic.id) ? "A request for this Epic is already pending." : null);
-  // /api/dispatch refuses a provider with a pinned model. The pick comes back with Auto.
-  const chosen = provider ? "auto" : model;
-  return html`<${Select} label=${`Model for ${epic.title}`} value=${chosen} onChange=${setModel} options=${modelOptions()} disabled=${!!provider} />
-    <${Button} size="sm" icon="play" class="next-run epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${() => startRun({ epic: epic.id, model: chosen, ...(provider ? { provider } : {}), overrideLimits })} />`;
+  return html`<${Button} size="sm" icon="play" class="next-run epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${() => startRun({ epic: epic.id, model: "auto", ...(provider ? { provider } : {}), overrideLimits })} />`;
 }
 // What an Epic's row says about it: one state tag, then how far along it is and, while it runs, what its runs are doing.
 function epicSummary(epic) {
