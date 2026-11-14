@@ -356,8 +356,8 @@ export class FactoryService {
     if (command.type === 'triage-run') { this.forceTriage = true; this.triage(); return { code: 0, data: { queued: true } }; }
     if (command.type === 'triage-report') {
       const c = this.configure(), result = await resolveReport(c, this.store, await this.ensureKanvil(c), command.ticketId, command.action);
-      // A decision sent with the override is forced like Triage now, so the report reaches its ticket past the pause and the reserve.
-      if (command.override && command.action !== 'close') this.forceTriage = true;
+      // A decision that was written and sent with the override is forced like Triage now, so the report reaches its ticket past the pause and the reserve.
+      if (result && command.override && command.action !== 'close') this.forceTriage = true;
       this.triage();
       return result ? { code: 0, data: result } : { code: 1, data: { message: 'That report is not open in a configured inbox' } };
     }
