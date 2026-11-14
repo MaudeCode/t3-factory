@@ -60,7 +60,8 @@ export interface TriageOptions { force?: boolean; command?: string; timeoutMs?: 
 export type Inbox = { project: Project; inbox: NonNullable<Project['inbox']>; scopes: string[] };
 export const inboxes = (c: Pick<Config, 'projects'>): Inbox[] => c.projects.flatMap(project => project.inbox ? [{ project, inbox: project.inbox, scopes: project.scopes ?? [] }] : []);
 type Store = { get(key: string): string | null; set(key: string, value: string): void; record?(kind: string, text: string, data?: Record<string, unknown>): void };
-type Result = { ticket?: string; outcome: string; verdict?: string; duplicateOf?: string | null; reason?: string; promoted?: string; promotedId?: string };
+// `admission` marks a `waiting` result whose reason stopped the whole pass, so it holds every report still waiting.
+type Result = { ticket?: string; outcome: string; verdict?: string; duplicateOf?: string | null; reason?: string; promoted?: string; promotedId?: string; admission?: true };
 // One journal entry per finished report, so the Triage and Activity pages can show what happened.
 const outcomeTexts: Record<string, (r: Result) => string> = {
   triaged: r => `triaged: ${r.verdict}${r.duplicateOf ? `, duplicate of ${r.duplicateOf}` : ''}`, 'triage-failed': r => `triage failed: ${r.reason}`,
@@ -495,7 +496,7 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
   const fields = promotedFields(target, ticket, { ...saved, ownerApproved: approved });
   if (!saved.review) {
     const admission = await options.budget?.(0) ?? {};
-    if ('blocked' in admission) return result('waiting', { reason: admission.blocked });
+    if ('blocked' in admission) return result('waiting', { reason: admission.blocked, admission: true });
     try {
       options.onRun?.([ticket]);
       saved.review = await safetyReview(fields, ticket, { ...options, model: admission.model ?? options.model });
@@ -558,7 +559,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
         if (result.outcome === 'waiting') break;
       } else {
         const admission = await options.budget?.(pending.size) ?? {};
-        if ('blocked' in admission) { record(index, ticket, target, { ticket: ticket.key, outcome: 'waiting', reason: admission.blocked }); break; }
+        if ('blocked' in admission) { record(index, ticket, target, { ticket: ticket.key, outcome: 'waiting', reason: admission.blocked, admission: true }); break; }
         if (options.signal?.aborted) { admission.settled?.(); break; }
         const work = (async () => {
           if (followUp && !awaitingPromotion(await kanvil.task(ticket.id, ticket.projectId), target.inbox)) return;

@@ -212,7 +212,7 @@ test('a pass reads projections first; the run itself makes no Kanvil reads and a
 
 test('an exhausted Claude budget holds every run', async t => {
   const f = fixture(t);
-  assert.deepEqual(await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
+  assert.deepEqual(await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget', admission: true }]);
   assert.equal(f.calls().length, 0);
   assert.deepEqual(writes(f.log), []);
 });
@@ -992,7 +992,7 @@ test('a plausible bug gets a budgeted source follow-up before confirmed promotio
   const f = fixture(t);
   f.mode({ stdout: reply(promotable({ validation: 'plausible' })), review: safe });
   await pass(f);
-  assert.deepEqual(await pass(f, { budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget' }]);
+  assert.deepEqual(await pass(f, { budget: async () => ({ blocked: 'quota-budget' }) }), [{ ticket: 'TALIN-5', outcome: 'waiting', reason: 'quota-budget', admission: true }]);
   assert.equal(f.calls().length, 1);
   const customPrompt = join(f.dir, 'custom-triage.md');
   writeFileSync(customPrompt, 'Existing operator triage instructions\n{{report}}');

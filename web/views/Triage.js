@@ -175,9 +175,10 @@ export function Triage({ lead } = {}) {
   const narrowed = narrowedBy(filters, query);
   // A report triaged but not yet a ticket is work for Triage now too; one queued behind the daily limit is not.
   const waiting = streams.some((row) => row.untriaged) || working.some((row) => row.event.data.outcome === "awaiting-promotion"), triaging = streams.some((row) => row.running);
-  // The last pass stops at the first report it could not admit, so its reason holds every report still waiting.
-  const held = status.value.triageDecision?.results?.find((r) => r.outcome === "waiting")?.reason;
-  const heldRow = (row) => ["waiting", "awaiting-promotion"].includes(row.event.data.outcome) ? held : undefined;
+  // The last pass stops at the first report it could not admit, so that reason holds every report still waiting.
+  // Any other wait, such as a report edited during triage, belongs to its own report.
+  const waits = (status.value.triageDecision?.results ?? []).filter((r) => r.outcome === "waiting");
+  const heldRow = (row) => ["waiting", "awaiting-promotion"].includes(row.event.data.outcome) ? (waits.find((r) => r.ticket === row.event.data.ticket) ?? waits.find((r) => r.admission))?.reason : undefined;
   return html`<${Page} title="Sources" hint=${HINT}
     actions=${html`${c.triage && html`<label class="automation"><${Switch} label="Inbox triage" checked=${live.value.triage} disabled=${busy.value} onChange=${() => actions.toggle("triage")} /><b>${live.value.triage ? "Triage on" : "Triage paused"}</b></label>`}<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
     ${lead}

@@ -259,11 +259,14 @@ async function triageNow() {
     // A report triaged but not yet a ticket: Triage now covers it, and its row says what the last pass waited on.
     const reports = state.status.triageReports, row = (key) => [...section('In progress').querySelectorAll('.next')].find((el) => el.querySelector('.key')?.textContent === key);
     reports.push({ id: 0, time: ago(20), kind: 'triage', text: 'PIN-14 waiting for promotion', data: { ticket: 'PIN-14', ticketId: 't14', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'working', outcome: 'awaiting-promotion' } });
-    state.status.triageDecision = { at: ago(1), results: [{ ticket: 'PIN-14', outcome: 'waiting', reason: 'quota-budget' }] };
+    state.status.triageDecision = { at: ago(1), results: [{ ticket: 'PIN-13', outcome: 'waiting', reason: 'report changed during triage' }, { ticket: 'PIN-14', outcome: 'waiting', reason: 'quota-budget', admission: true }] };
     try {
       applyState(state, true); await pause();
       assert(!now().disabled, 'a report waiting to be promoted enables Triage now');
-      assert(row('PIN-14').textContent.includes('waiting for budget') && row('PIN-13').textContent.includes('waiting for budget'), 'a waiting report names what the last pass waited on');
+      assert(row('PIN-14').textContent.includes('waiting for budget'), 'a waiting report names what stopped the last pass');
+      assert(row('PIN-13').textContent.includes('report changed during triage') && !row('PIN-13').textContent.includes('waiting for budget'), "a report's own wait shows on that report alone");
+      state.status.triageDecision.results.shift(); applyState(state, true); await pause();
+      assert(row('PIN-13').textContent.includes('waiting for budget'), 'the reason that stopped the pass holds every other waiting report');
       assert(!row('PIN-5').textContent.includes('waiting for budget') && !section('Needs you').textContent.includes('waiting for budget'), 'only reports the next pass acts on carry it');
       assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
     } finally { reports.pop(); delete state.status.triageDecision; }
