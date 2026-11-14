@@ -256,6 +256,17 @@ async function triageNow() {
     assert(!now().disabled, 'Triage now works while triage is paused');
     streams[0].untriaged = 0; applyState(state, true); await pause();
     assert(now().disabled && now().title === 'No reports are waiting', 'no waiting reports disables Triage now');
+    // A report triaged but not yet a ticket: Triage now covers it, and its row says what the last pass waited on.
+    const reports = state.status.triageReports, row = (key) => [...section('In progress').querySelectorAll('.next')].find((el) => el.querySelector('.key')?.textContent === key);
+    reports.push({ id: 0, time: ago(20), kind: 'triage', text: 'PIN-14 waiting for promotion', data: { ticket: 'PIN-14', ticketId: 't14', inboxId: 'pin', projectId: 'p', project: 'Example', stage: 'working', outcome: 'awaiting-promotion' } });
+    state.status.triageDecision = { at: ago(1), results: [{ ticket: 'PIN-14', outcome: 'waiting', reason: 'quota-budget' }] };
+    try {
+      applyState(state, true); await pause();
+      assert(!now().disabled, 'a report waiting to be promoted enables Triage now');
+      assert(row('PIN-14').textContent.includes('waiting for budget') && row('PIN-13').textContent.includes('waiting for budget'), 'a waiting report names what the last pass waited on');
+      assert(!row('PIN-5').textContent.includes('waiting for budget') && !section('Needs you').textContent.includes('waiting for budget'), 'only reports the next pass acts on carry it');
+      assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
+    } finally { reports.pop(); delete state.status.triageDecision; }
     assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
     return { runs, viewport: [innerWidth, innerHeight] };
   } finally { streams.splice(0, streams.length, ...saved); }

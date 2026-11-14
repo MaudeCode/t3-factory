@@ -849,6 +849,7 @@ test('Triage now runs one pass past the pause and reserve; the next automatic pa
   process.env.PATH = `${f.bin}:${path}`;
   t.after(() => { process.env.PATH = path; });
   const lane = () => internal.lanes.get('inbox-triage')?.done;
+  f.mode({ stdout: reply(output({ verdict: 'needs-info' })) });
   // As the control socket answers: a thrown command is code 1.
   assert.equal((await internal.handle({ type: 'triage-run' }).catch(() => ({ code: 1 }))).code, 0);
   await lane();
@@ -857,6 +858,12 @@ test('Triage now runs one pass past the pause and reserve; the next automatic pa
   internal.triage();
   await lane();
   assert.equal(f.calls().length, 1, 'the next automatic pass stays paused');
+  // An actionable report the owner sent is promoted in the same request, past the same pause and reserve.
+  f.mode({ stdout: reply(promotable()), review: safe });
+  await internal.handle({ type: 'triage-run' });
+  await lane();
+  assert.deepEqual(JSON.parse(store.get('triageDecision')!).results.map((r: { ticket: string; outcome: string }) => `${r.ticket} ${r.outcome}`), ['TALIN-6 promoted'], 'the forced pass carries its report through promotion');
+  assert.equal(named(f, 'createTicket').length, 1);
 });
 
 test('every open report is listed with its stage from the inbox, with or without a journal entry', t => {
