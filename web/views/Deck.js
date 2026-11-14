@@ -147,7 +147,8 @@ export function PlanRows({ plan, show = () => true }) {
     const job = jobByTask.get(t.id), [label, tone, note] = state(t, job);
     // The scheduler writes the same not-included note, so a repeated reason shows once.
     const detail = [...new Set([note || (job ? modelName(config.value, job) : ""), t.outside && "outside this Epic", ...(t.done || job ? [] : reasons(t))])].filter(Boolean).join(" · ");
-    return html`<${job ? "a" : "div"} class="chain-row" key=${t.id} href=${job ? `/runs/${job.id}` : undefined} onClick=${job ? follow : undefined}>
+    // The row opens the ticket in Factory's panel, which lists its runs; a modified or middle click keeps the tracker tab.
+    return html`<a class="chain-row" key=${t.id} href=${ticketLink(config.value, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer" onClick=${ticketClick(ticketKey(t.key))}>
       <${Tag} tone=${tone}>${label}<//><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${(detail || t.automationReady === true) && html`<${Meta} automationReady=${t.automationReady}>${detail}<//>`}<//>
     <//>`;
   });

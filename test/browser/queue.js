@@ -6,7 +6,7 @@ import { applyState, operations, status, history, setSessionProvider, setSession
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
 import { Queue } from "../../web/views/Queue.js";
-import { navigate, route } from "../../web/lib/router.js";
+import { navigate, route, ticketPanel, closeTicket } from "../../web/lib/router.js";
 // Up next and Epics are on the Queue page, run history on Runs; the fixture shows whichever the address names.
 const Views = () => (route.value.page === "/queue" ? html`<${Queue} />` : html`<${Runs} />`);
 import { Confirmation } from "../../web/ui/index.js";
@@ -478,11 +478,6 @@ const epicToggle = (title) => epicSection(title).querySelector("button.next-togg
 async function setEpicOpen(title, open) {
   if ((epicToggle(title).getAttribute("aria-expanded") === "true") !== open) { epicToggle(title).click(); await pause(); }
 }
-const modelPicker = (title) => epicSection(title).querySelector('[role="combobox"]');
-async function pickEpicModel(title, name) {
-  modelPicker(title).click(); await pause();
-  byText('[role="option"]', name, epicSection(title)).click(); await pause();
-}
 async function epicSearch(value) {
   const input = await openSearch();
   input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); await pause();
@@ -530,7 +525,7 @@ async function epics() {
     const rowHeight = launch.querySelector(".next").offsetHeight, controls = matchMedia("(pointer: coarse)").matches ? 44 : 32;
     assert(innerWidth < 500 || rowHeight <= controls + 22, `a collapsed Epic is one list row, not a section: ${rowHeight}px`);
     assert(epicToggle("Launch").getAttribute("aria-expanded") === "false", "the title reports its collapsed state");
-    assert(runEpic("Launch") && modelPicker("Launch"), "a collapsed Epic can still start");
+    assert(runEpic("Launch") && !root.querySelector('.epic [role="combobox"]'), "a collapsed Epic can still start, with no model picker of its own");
     assert(!root.querySelector(".epic-note"), "a collapsed Epic has no explanatory text");
     assert(epicIssue("Paused") === notIncluded && epicIssue("Hidden") === cannotRead, "a blocked Epic's symbol carries its reason");
     assert(!epicIssue("Launch") && !epicIssue("Moving") && !epicIssue("Shipped") && !epicIssue("Stopped"), "only an Epic that cannot start has the symbol");
@@ -547,13 +542,17 @@ async function epics() {
     assert(!launch.textContent.includes("starts when a slot is free"), "an Epic that has not started promises nothing");
     assert(Deck.openRun({ id: "e2", key: "APP-2" }) === false, "a target-less plan does not read as a ticket's open run");
     // Start: exact payload, duplicate protection, refusal feedback.
-    assert(modelPicker("Launch").getAttribute("aria-label").endsWith("Auto"), "the model defaults to Auto");
+    // A ticket row opens the ticket in the panel; the panel's history entry is undone before the next step.
+    const firstRow = launch.querySelector(".chain-row");
+    firstRow.click(); await pause();
+    assert(ticketPanel.value === "APP-1" && new URLSearchParams(location.search).get("ticket") === "APP-1", `a ticket row opens its ticket: ${ticketPanel.value}`);
+    closeTicket(); for (let n = 0; n < 50 && ticketPanel.value; n++) await pause();
+    assert(!ticketPanel.value && epicSection("Launch").querySelectorAll(".chain-row").length === 4, "closing the ticket returns to the open Epic");
     assert(runEpic("Launch").getAttribute("aria-label") === "Run Epic Launch" && !runEpic("Launch").textContent.trim() && runEpic("Launch").querySelector(".icon-play"), "Run is an icon-only button named for the Epic");
-    await pickEpicModel("Launch", "Sol");
     let release; hold = new Promise(resolve => { release = resolve; });
     const run = runEpic("Launch");
     run.click(); await pause();
-    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "preset-sol", overrideLimits: ["labels"] }), `Run submits the choices: ${JSON.stringify(dispatches[0])}`);
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "auto", overrideLimits: ["labels"] }), `Run submits the page's choices with the automatic model: ${JSON.stringify(dispatches[0])}`);
     assert(root.querySelector(".operation")?.textContent.includes("Epic Launch"), "the request row names the Epic");
     assert(runEpic("Launch").disabled, "a pending start disables Run");
     run.click(); await pause();
@@ -569,13 +568,10 @@ async function epics() {
     operations.value = []; dispatches.length = 0;
     // A provider means automatic model selection.
     setSessionProvider("codex"); await pause();
-    assert(modelPicker("Launch").disabled, "the model Select is disabled while a provider is forced");
-    assert(modelPicker("Launch").getAttribute("aria-label").endsWith("Auto"), "a forced provider shows Auto");
     runEpic("Launch").click(); await pause(); await settled();
-    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "auto", provider: "codex", overrideLimits: ["labels"] }), `a provider sends no pinned model and keeps selected overrides: ${JSON.stringify(dispatches[0])}`);
+    assert(JSON.stringify(dispatches[0]) === JSON.stringify({ epic: "launch", model: "auto", provider: "codex", overrideLimits: ["labels"] }), `a provider is sent with the selected overrides: ${JSON.stringify(dispatches[0])}`);
     operations.value = [];
     setSessionProvider("auto"); await pause();
-    assert(!modelPicker("Launch").disabled && modelPicker("Launch").getAttribute("aria-label").endsWith("Sol"), "Auto restores the picked model");
     // A start block is the scheduler's answer, and it lifts on a status update.
     const paused = () => epicSection("Paused");
     assert(runEpic("Paused").disabled && runEpic("Paused").getAttribute("aria-label").includes(notIncluded) && runEpic("Paused").title.includes(notIncluded), "a blocked Run states the reason");
