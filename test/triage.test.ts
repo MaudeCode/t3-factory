@@ -900,8 +900,24 @@ test('every open report is listed with its stage from the inbox, with or without
     ['TALIN-13', 'working', 'triaging', 'TALIN-13 triaging', at],
   ]);
   assert.deepEqual(rows[1].data, { outcome: 'triaged', verdict: 'needs-info', stage: 'owner', ticket: 'TALIN-6', ticketId: id('TALIN-6'), inboxId: 'TALIN', projectId: 'TAL', project: 'TAL' });
+  const active = [current(f, 'TALIN-13'), f.report, otherReport(at)];
+  f.projects.OTHIN.push(active[2]);
+  const working = () => openReports(f.c, f.kanvil, [], active).filter(r => r.data.outcome === 'triaging');
+  assert.equal(working().length, 3, 'active reports appear once when also in the live projection');
   f.setCurrent(false);
+  assert.deepEqual(working().map(r => [r.data.ticket, r.data.inboxId, r.data.stage]), [
+    ['TALIN-13', 'TALIN', 'working'], ['TALIN-5', 'TALIN', 'working'], ['OTHIN-9', 'OTHIN', 'working'],
+  ], 'active reports remain visible across an inbox projection refresh');
+  assert.deepEqual(openReports(f.c, f.kanvil, [], active.slice(1)).map(r => r.data.ticket), ['TALIN-5', 'OTHIN-9'], 'a settled worker leaves the fallback without hiding its siblings');
   assert.deepEqual(openReports(f.c, f.kanvil, []), [], 'nothing is listed while the projection is not current');
+  f.setCurrent(true);
+  assert.deepEqual(openReports(f.c, f.kanvil, []).find(r => r.data.ticket === 'TALIN-6')?.data.outcome, 'triaged', 'recovery restores the live owner outcome');
+  for (const change of [{ status: 'done' }, { status: 'cancelled' }, { archived: true }, { projectId: 'OTHIN' }, { labels: [] }]) {
+    f.projects.TALIN = f.projects.TALIN.map(t => t.id === active[0].id ? { ...active[0], ...change } : t);
+    assert.ok(!working().some(r => r.data.ticket === 'TALIN-13'), 'fresh tracker state overrides an older worker snapshot');
+  }
+  f.projects.TALIN = [];
+  assert.deepEqual(working().map(r => r.data.ticket), ['OTHIN-9'], 'a current empty inbox cannot resurrect active snapshots');
 });
 
 test('the owner makes a ticket of a report triage would not promote, past the checks that ask the owner and still through the safety review', async t => {
