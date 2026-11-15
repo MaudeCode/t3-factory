@@ -638,10 +638,11 @@ const OWNER_OUTCOMES = ['triage-failed', 'promotion-failed', 'needs-owner', 'pro
  * Every open report with the stage it is in, read from the live inbox projection so a report stays listed however many
  * are triaged after it. `stage` is `owner` when no later pass acts on it and `working` while triage or promotion will.
  * Each is shaped like its journal entry: the newest matching one in `results`, or one rebuilt from the report itself
- * when it has no result yet or that entry has aged out.
+ * when it has no result yet or that entry has aged out. While a projection refreshes, only the pass's active reports
+ * supply fallback rows; a current projection always wins over those older worker snapshots.
  */
 export function openReports(c: Pick<Config, 'projects'>, kanvil: Pick<TriageKanvil, 'cachedTickets'>, results: { id: number; time: string; kind: string; text: string; data: Record<string, unknown> }[], running: Task[] = []) {
-  return inboxes(c).flatMap(({ project, inbox }) => (kanvil.cachedTickets(inbox.kanvilId) ?? []).filter(t => open(t, inbox)).flatMap(t => {
+  return inboxes(c).flatMap(({ project, inbox }) => (kanvil.cachedTickets(inbox.kanvilId) ?? running).filter(t => open(t, inbox)).flatMap(t => {
     const labels = names(t), verdict = labels.find(l => l.startsWith('verdict:'))?.slice(8);
     const outcome = running.some(r => r.id === t.id) ? 'triaging' : needsTriage(t, inbox) ? 'waiting'
       : OWNER_OUTCOMES.find(l => labels.includes(l)) ?? (labels.includes('triaged') && OWNER_VERDICTS.includes(verdict!) ? 'triaged'
