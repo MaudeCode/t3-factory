@@ -1753,6 +1753,16 @@ a.chain-row:hover {
   background: var(--surface);
   text-decoration: none;
 }
+/* A queued run: its plan row, then the button that cancels it. */
+.queued-run {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.queued-run > .chain-row {
+  flex: 1;
+  min-width: 0;
+}
 dialog .chain {
   margin-top: var(--space-3);
 }
@@ -2825,7 +2835,8 @@ h1 .crumb::after {
   input.mono {
     font-size: 16px;
   }
-  .next-actions .next-run {
+  .next-actions .next-run,
+  .queued-run .next-run {
     min-height: 44px;
     min-width: 44px;
   }

@@ -408,11 +408,13 @@ async function queueTransitions() {
   status.value = { ...filterState.status, plans: [{ ...plan, state: 'cancelled' }] }; await pause();
   assert(queueKeys() === 'APP-1,WEB-2,APP-3' && heldKeys() === 'APP-4,WEB-5', 'settled jobs and cancelled chains restore queue snapshot');
   await showQueued();
-  assert(root.textContent.includes('Queued APP-1') && root.querySelector('.chain-row').textContent.includes('Waiting for a free app slot'), 'a queued single run names its ticket and waiting reason');
-  assert(queueKeys() === 'WEB-2,APP-3', 'its plan replaces the stale queue row');
-  assert(root.querySelectorAll('.chain-row').length === 1, 'the single run reuses the shared plan row');
-  const cancel = [...root.querySelectorAll('button')].find(button => button.textContent === 'Cancel queued run');
-  assert(cancel, 'the queued run has its own cancel action');
+  const queuedSections = () => [...root.querySelectorAll('section h2')].filter(h => h.textContent.startsWith('Queued'));
+  assert(queuedSections().length === 1 && queuedSections()[0].querySelector('small').textContent === '2', 'queued runs share one counted section');
+  assert(root.querySelector('.chain-row').textContent.includes('APP-1') && root.querySelector('.chain-row').textContent.includes('Waiting for a free app slot'), 'a queued single run names its ticket and waiting reason');
+  assert(queueKeys() === 'APP-3', 'the plans replace the stale queue rows');
+  assert(root.querySelectorAll('.chain-row').length === 2, 'each run reuses the shared plan row');
+  const cancel = root.querySelector('.queued-run button[aria-label="Cancel queued run"]');
+  assert(cancel && root.querySelectorAll('.queued-run button').length === 2, 'each queued run has its own cancel action');
   cancel.click(); await pause();
   assert(document.querySelector('dialog[open]')?.textContent.includes('Cancel the queued run for APP-1?'), 'cancellation identifies the saved request');
   const oldFetch = window.fetch, cancelled = [];
@@ -721,7 +723,8 @@ async function epics() {
 }
 async function showQueued() {
   await showProjects();
-  status.value = { ...filterState.status, plans: [{ id: 'queued-run', queued: true, state: 'active', model: 'preset-sol', overrideLimits: [], tickets: [], target: { ...filterState.status.upNext.tickets[0], blockedBy: [], runnable: true, note: 'Waiting for a free app slot' } }] };
+  const queued = (id, n) => ({ id, queued: true, state: 'active', model: 'preset-sol', overrideLimits: [], tickets: [], target: { ...filterState.status.upNext.tickets[n], blockedBy: [], runnable: true, note: 'Waiting for a free app slot' } });
+  status.value = { ...filterState.status, plans: [queued('queued-run', 0), queued('queued-run-2', 1)] };
   await pause();
 }
 
