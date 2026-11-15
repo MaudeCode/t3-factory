@@ -526,7 +526,7 @@ async function promoteTicket(store: Store, kanvil: TriageKanvil, target: Inbox, 
 export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, options: TriageOptions = {}) {
   const all = inboxes(c);
   if (!all.length) return [];
-  // Reads happen here, before any run; a run itself uses only the cached projections.
+  // Reads happen in the pass, here and before each run it starts; a run itself uses only the cached projections.
   const read = await Promise.all(all.map(async target => ({ target, tickets: (await Promise.all([kanvil.tasks(target.inbox.kanvilId, undefined, true), kanvil.tasks(target.project.kanvilId, undefined, true)]))[0] })));
   options.onRun?.([]);
   if (!c.triage || !c.triage.enabled && !options.force) return [];
@@ -565,6 +565,9 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
           if (followUp && !awaitingPromotion(await kanvil.task(ticket.id, ticket.projectId), target.inbox)) return;
           options.signal?.throwIfAborted();
           started(ticket);
+          // An earlier report's write in this pass leaves the projections unsettled, and a run on them is skipped without a result.
+          // Settle them here; a read that fails leaves the run to wait as before.
+          await Promise.all([kanvil.tasks(target.inbox.kanvilId, undefined, true), kanvil.tasks(target.project.kanvilId, undefined, true)]).catch(() => {});
           return triageTicket(c, store, kanvil, target, ticket, { ...options, model: admission.model ?? options.model }, !!followUp);
         })()
           .catch(error => ({ ticket: ticket.key, outcome: 'error', reason: safeError(error) }))

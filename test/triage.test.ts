@@ -172,8 +172,9 @@ test('a pass reads projections first; the run itself makes no Kanvil reads and a
   t.after(() => { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude') });
   assert.deepEqual(results, [{ ticket: 'TALIN-5', outcome: 'triaged', verdict: 'actionable', duplicateOf: null }]);
-  assert.deepEqual(f.log.slice(0, 4).map(e => e.name), ['tasks', 'tasks', 'tasks', 'tasks']);
-  assert.deepEqual(f.log.slice(4).map(e => e.name), ['cachedTickets', 'cachedTickets', 'addComment', 'updateTicket']);
+  // Four reads open the pass and two settle the report's projections before its run.
+  assert.deepEqual(f.log.slice(0, 6).map(e => e.name), ['tasks', 'tasks', 'tasks', 'tasks', 'tasks', 'tasks']);
+  assert.deepEqual(f.log.slice(6).map(e => e.name), ['cachedTickets', 'cachedTickets', 'addComment', 'updateTicket']);
 
   const [call] = f.calls();
   // The exact sandbox flags, cwd and environment.
@@ -343,6 +344,18 @@ test('a scope valid for one project is rejected for the other', async t => {
   const third = task('OTHIN-3', { labels: [{ name: 'report' }] });
   f.projects.OTHIN.push(third);
   assert.equal((await f.run(third, undefined, f.oth)).outcome, 'triage-failed', 'app is not an OTH scope');
+});
+
+test('a report started after another report\'s write in the same pass is triaged, not skipped', async t => {
+  const f = fixture(t);
+  f.c.triage!.concurrency = 1;
+  f.inbox.push(task('TALIN-6', { labels: [{ name: 'intake' }], title: 'Second report', description: 'Another one.', createdAt: new Date(Date.parse(f.report.createdAt) + 1000).toISOString() }));
+  // The live projection is unsettled after a write until the next read settles it.
+  const { updateTicket, tasks } = f.kanvil;
+  f.kanvil.updateTicket = async (...args) => { f.setCurrent(false); return updateTicket(...args); };
+  f.kanvil.tasks = async (...args) => { f.setCurrent(true); return tasks(...args); };
+  const results = await triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude') });
+  assert.deepEqual(results.map(r => [r.ticket, r.outcome]), [['TALIN-5', 'triaged'], ['TALIN-6', 'triaged']]);
 });
 
 test('a mid-pass stop starts no further report', async t => {
