@@ -18,7 +18,8 @@ export async function checkPageHead() {
   const search = head?.querySelector('button[aria-label="Search"]');
   assert(title && search, 'the head has a title and a Search button');
   const buttons = [...head.querySelectorAll('button')].filter(el => el.getClientRects().length);
-  const t = r(title), h = r(head);
+  // One row is a control plus the segmented group's border: 34px for a mouse, 46px with touch targets.
+  const t = r(title), h = r(head), oneRow = parseFloat(getComputedStyle(head).getPropertyValue('--control')) + 2.5;
   if (innerWidth <= 900) {
     assert(r(search).top < t.bottom && r(search).bottom > t.top, 'Search shares the title row');
     assert(tools && strip, 'the head has a tools group and an actions strip');
@@ -40,10 +41,10 @@ export async function checkPageHead() {
       strip.scrollLeft = 0; await frame();
     }
     const wrapped = s.top >= toolRow.bottom - 1;
-    assert(wrapped ? Math.abs(h.bottom - s.bottom) <= 1 && s.top - h.top <= 56 : h.height <= 44.5, 'the head is the title row plus at most one strip row');
+    assert(wrapped ? Math.abs(h.bottom - s.bottom) <= 1 && s.top - h.top <= 56 : h.height <= oneRow, 'the head is the title row plus at most one strip row');
   } else {
     assert(tools && strip, 'the head has a tools group and an actions strip');
-    assert(buttons.every(button => r(button).top >= h.top - 1 && r(button).bottom <= h.bottom + 1) && h.height <= 44.5, 'the title and every control share one row');
+    assert(buttons.every(button => r(button).top >= h.top - 1 && r(button).bottom <= h.bottom + 1) && h.height <= oneRow, 'the title and every control share one row');
   }
   assert(document.documentElement.scrollWidth <= innerWidth, 'the head fits the viewport');
   if (matchMedia('(pointer: coarse)').matches) assert(buttons.every(button => r(button).width >= 44 && r(button).height >= 44), 'head controls keep 44px touch targets');

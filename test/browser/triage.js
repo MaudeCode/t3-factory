@@ -156,15 +156,18 @@ async function run() {
   // Layout: promoted rows are no taller than two lines plus Start, and nothing overflows.
   assert(document.documentElement.scrollWidth <= innerWidth, 'page stays within viewport');
   for (const r of rows()) assert(r.getBoundingClientRect().right <= innerWidth, `row ${r.querySelector('.key').textContent} stays within the viewport`);
-  const height = (key) => row(key).getBoundingClientRect().height, left = (key) => visibleTag(row(key)).getBoundingClientRect().left;
+  const left = (key) => visibleTag(row(key)).getBoundingClientRect().left;
   assert(['PIN-3', 'PIN-9', 'PIN-2', 'PIN-1'].every((key) => Math.abs(left(key) - left('PIN-6')) < 1), 'outcome tags line up at the start of the facet line');
-  const reportHeight = height('PIN-6'), tagLeft = left('PIN-6');
-  const queue = await ready(reportHeight, tagLeft);
+  const queue = await ready(reportRow());
   const toggles = posts.length, limits = await promotion();
   return { passed: true, viewport: [innerWidth, innerHeight], posts: toggles, ...queue, ...limits };
 }
+// A report row's height and outcome-tag start, which the Reports view's rows must match.
+const reportRow = () => ({ reportHeight: row('PIN-6').getBoundingClientRect().height, tagLeft: visibleTag(row('PIN-6')).getBoundingClientRect().left });
 // The Queue page's Reports view: promoted tickets, their start path, search, filters and selection.
-async function ready(reportHeight, tagLeft) {
+// Run on its own, it measures the report row from a fresh Inbox triage view.
+async function ready({ reportHeight, tagLeft } = {}) {
+  if (tagLeft === undefined) { await show(); ({ reportHeight, tagLeft } = reportRow()); }
   await showReady();
   assert(keys() === 'EX-40,EX-41', 'the Reports view lists the promoted tickets that have not started, newest first');
   const ex40 = row('EX-40');
