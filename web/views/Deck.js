@@ -159,13 +159,17 @@ export const planProgress = (plan) => {
 };
 export const CancelPlan = ({ plan, title, label, icon, class: extra }) => html`<${Button} variant="ghost" size="sm" icon=${icon} label=${icon && label} class=${extra} disabled=${busy.value} onClick=${() => confirmAction({ title, message: "Tickets already running finish on their own.", label }, () => actions.cancelPlan(plan.id))}>${!icon && label}<//>`;
 
-// Chains the user started. Epics have their own tab on the Runs page.
+// What the user started that has not finished starting: every queued run in one section, then each chain in its own.
+// Epics have their own tab.
 export function Chains() {
   clock.value;
-  return (status.value.plans ?? []).filter((p) => p.state === "active" && !p.epic).map((p) => html`<${Section} key=${p.id} title=${p.queued ? `Queued ${p.target.key}` : `Chain to ${p.target.key}`} count=${p.queued ? null : planProgress(p)}
-    aside=${html`<${CancelPlan} plan=${p} title=${p.queued ? `Cancel the queued run for ${p.target.key}?` : `Cancel the chain to ${p.target.key}?`} label=${p.queued ? "Cancel queued run" : "Cancel chain"} />`}>
+  const plans = (status.value.plans ?? []).filter((p) => p.state === "active" && !p.epic), queued = plans.filter((p) => p.queued);
+  return [queued.length > 0 && html`<${Section} key="queued" title="Queued" count=${queued.length}>
+    ${queued.map((p) => html`<div class="queued-run" key=${p.id}><${PlanRows} plan=${p} /><${CancelPlan} plan=${p} title=${`Cancel the queued run for ${p.target.key}?`} label="Cancel queued run" icon="x" class="next-run" /></div>`)}
+  <//>`, ...plans.filter((p) => !p.queued).map((p) => html`<${Section} key=${p.id} title=${`Chain to ${p.target.key}`} count=${planProgress(p)}
+    aside=${html`<${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" />`}>
     <${PlanRows} plan=${p} />
-  <//>`);
+  <//>`)];
 }
 
 // A ticket that already has an open run or is the target of an active chain.
