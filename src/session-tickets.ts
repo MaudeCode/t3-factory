@@ -142,6 +142,12 @@ export function createdTicketId(item: unknown): string | null {
 
 // A Factory start counts once T3 has the thread; a dispatch that was only prepared, or whose outcome is unknown, does not.
 export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
+// A ticket the start lists no longer offer: a run launched for it, or it waits as the target of a queued run or a chain.
+// A queued run or chain that is cancelled lists the ticket again.
+export function startedTickets(store: Pick<Store, 'jobSummaries' | 'plans'>) {
+  const jobs = store.jobSummaries(), targets = new Set(store.plans().flatMap(plan => plan.state === 'active' && plan.target ? [plan.target.id] : []));
+  return (taskId: string) => targets.has(taskId) || jobs.some(j => j.taskId === taskId && launched(j));
+}
 
 // Job ownership and stored origin/title evidence cover current and legacy Factory sessions.
 function sessionSourceFilter(jobs: Pick<Job, 'kind' | 'threadId'>[], sessions: SessionThread[]) {
@@ -471,9 +477,9 @@ export const projectUnavailable = (project: Project | undefined) => !project ? '
 
 // The list as the page shows it: actionable, not dismissed, not consumed by a confirmed Factory start, in priority order.
 export function sessionTicketStatus(c: Config, store: Store) {
-  const jobs = store.jobSummaries(), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
+  const started = startedTickets(store), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
   const includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
-  const rows = store.sessionTickets().filter(r => !r.archived && !r.missing && !r.dismissedAt && !r.consumed && !jobs.some(j => j.taskId === r.taskId && launched(j))).flatMap(r => {
+  const rows = store.sessionTickets().filter(r => !r.archived && !r.missing && !r.dismissedAt && !r.consumed && !started(r.taskId)).flatMap(r => {
     const bySession = new Map<string, SessionSource>();
     for (const source of r.sources) {
       if (!includeSource(source.threadId, source.title)) continue;
