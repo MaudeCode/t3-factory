@@ -910,6 +910,12 @@ test('only a confirmed Factory start consumes an entry, including starts made el
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8']);
   const job = (state: 'dispatching' | 'running' | 'complete', reason: string, taskId = 'task-7') => ({ id: `job-${taskId}`, kind: 'ticket' as const, projectId: 'FIX', taskId, ticketKey: 'FIX-7', threadId: 'thread', messageId: 'message', createdAt: AT.reported, state, reason, lastPersonalActivity: null, reportPath: join(f.dir, 'report'), command: null, prUrls: [], completedAt: null });
+  // A run that cannot start yet waits as a queued plan: the ticket leaves the list without being consumed.
+  const queued = { id: 'queued-8', queued: true, createdAt: AT.reported, target: { id: 'task-8', key: 'FIX-8', title: 'Eight', projectId: 'FIX', status: 'todo', priority: 'none', createdAt: AT.reported, runnable: true, blockedBy: [], done: false }, tickets: [], model: 'auto', overrideLimits: [], state: 'active' as const };
+  f.store.savePlan(queued);
+  assert.deepEqual(f.keys(), ['FIX-7'], 'a queued run takes its ticket off the list');
+  f.store.savePlan({ ...queued, state: 'cancelled' });
+  assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'cancelling it lists the ticket again');
   f.store.save(job('dispatching', 'Dispatch prepared'));
   await f.drain();
   assert.deepEqual(f.keys(), ['FIX-7', 'FIX-8'], 'a prepared dispatch is not a confirmed start');

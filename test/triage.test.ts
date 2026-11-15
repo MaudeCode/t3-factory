@@ -1122,14 +1122,18 @@ test('the Triage page gets each promoted ticket from the target projection, star
 
   const events = [{ id: 7, time: '2026-01-01T00:00:00Z', kind: 'triage', jobId: null, text: 'TALIN-5 promoted to TAL-100', data }, { id: 5, time: '2026-01-01T00:00:00Z', kind: 'triage', jobId: null, text: 'TALIN-9 needs the owner', data: other }];
   let jobs: { taskId: string; state: string; reason?: string }[] = [];
-  const store = { get: (key: string) => key === 'triagePromoted' ? JSON.stringify(found) : null, events: () => events, jobSummaries: () => jobs };
+  let plans: { state: string; target?: { id: string } }[] = [];
+  const store = { get: (key: string) => key === 'triagePromoted' ? JSON.stringify(found) : null, events: () => events, jobSummaries: () => jobs, plans: () => plans };
   const results = (c: typeof f.c) => triageResults(c, store as never) as (typeof events[number] & { promotedTicket?: { key: string; unavailable: string | null; listed: boolean } })[];
   assert.deepEqual(results(f.c).map(r => [r.id, r.promotedTicket?.key, r.promotedTicket?.unavailable, r.promotedTicket?.listed]), [[7, 'TAL-100', null, true], [5, undefined, undefined, undefined]]);
   jobs = [{ taskId: created.id, state: 'dispatching' }];
   assert.equal(results(f.c)[0].promotedTicket?.listed, true, 'a dispatch T3 has not accepted keeps the ticket listed');
   jobs = [{ taskId: created.id, state: 'running' }];
   assert.equal(results(f.c)[0].promotedTicket?.listed, false, 'a launched run takes the ticket off the list');
-  jobs = [];
+  jobs = []; plans = [{ state: 'active', target: { id: created.id } }];
+  assert.equal(results(f.c)[0].promotedTicket?.listed, false, 'a queued run or chain for the ticket takes it off the list');
+  plans = [{ state: 'cancelled', target: { id: created.id } }];
+  assert.equal(results(f.c)[0].promotedTicket?.listed, true, 'a cancelled one lists it again');
   const tal = f.c.projects.findIndex(p => p.kanvilId === 'TAL'), withProject = (changes: object) => ({ ...f.c, projects: f.c.projects.map((p, i) => i === tal ? { ...p, ...changes } : p) });
   assert.equal(results(withProject({ enabled: false }))[0].promotedTicket?.unavailable, 'Project disabled in Factory settings');
   assert.match(results(withProject({ readyStatuses: ['backlog'] }))[0].promotedTicket?.unavailable ?? '', /^Ticket is \w+; it must be in backlog$/);
