@@ -10,7 +10,8 @@ export async function openSearch() {
 
 // The list pages share one head: the title with its tools on the right, and the controls as one strip
 // that stays beside the title while it fits and otherwise takes a row of its own, scrolling sideways
-// instead of wrapping. Desktop always shares the title row.
+// instead of wrapping. Desktop always shares the title row. The phone layout is `@container page (max-width: 900px)`,
+// so the check follows the head's page container: inside the app shell the sidebar narrows it below the window.
 export async function checkPageHead() {
   const assert = (ok, message) => { if (!ok) throw new Error(message); };
   const head = document.querySelector('.page-head'), r = el => el.getBoundingClientRect();
@@ -20,7 +21,11 @@ export async function checkPageHead() {
   const buttons = [...head.querySelectorAll('button')].filter(el => el.getClientRects().length);
   // One row is a control plus the segmented group's border: 34px for a mouse, 46px with touch targets.
   const t = r(title), h = r(head), oneRow = parseFloat(getComputedStyle(head).getPropertyValue('--control')) + 2.5;
-  if (innerWidth <= 900) {
+  let page = head.parentElement;
+  while (page && !getComputedStyle(page).containerName.split(' ').includes('page')) page = page.parentElement;
+  assert(page, 'the head sits in a page container');
+  const box = getComputedStyle(page), narrow = page.clientWidth - parseFloat(box.paddingLeft) - parseFloat(box.paddingRight) <= 900;
+  if (narrow) {
     assert(r(search).top < t.bottom && r(search).bottom > t.top, 'Search shares the title row');
     assert(tools && strip, 'the head has a tools group and an actions strip');
     const s = r(strip), toolRow = r(tools);
@@ -48,5 +53,5 @@ export async function checkPageHead() {
   }
   assert(document.documentElement.scrollWidth <= innerWidth, 'the head fits the viewport');
   if (matchMedia('(pointer: coarse)').matches) assert(buttons.every(button => r(button).width >= 44 && r(button).height >= 44), 'head controls keep 44px touch targets');
-  return { passed: true, viewport: [innerWidth, innerHeight], height: Math.round(h.height), rows: innerWidth <= 900 && r(strip).top >= r(tools).bottom - 1 ? 2 : 1, coarse: matchMedia('(pointer: coarse)').matches };
+  return { passed: true, viewport: [innerWidth, innerHeight], height: Math.round(h.height), rows: narrow && r(strip).top >= r(tools).bottom - 1 ? 2 : 1, coarse: matchMedia('(pointer: coarse)').matches };
 }
