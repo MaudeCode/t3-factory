@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ticketDetail } from '../src/ticket-detail.ts';
+import { ticketDetail, epicDetail } from '../src/ticket-detail.ts';
 import { KanvilTaskNotFound } from '../src/clients.ts';
 
 const config = { kanvil: { url: 'https://tracker.example/' }, projects: [{ key: 'APP', kanvilId: 'p-app' }] } as never;
@@ -54,4 +54,23 @@ test('a report in a configured inbox is read and marked; a key that resolves out
   const report = await ticketDetail(withInbox, kanvil, 'in-1');
   assert.deepEqual([report?.key, report?.inbox, report?.projectId], ['IN-1', true, 'p-in']);
   assert.equal(await ticketDetail(withInbox, kanvil, 'LIB-1'), null);
+});
+
+
+test('an Epic detail projects only safe workspace fields, resolves names, and stays separate from ticket reads', async () => {
+  let read = '';
+  const client = { epic: async (id: string) => { read = id; return {
+    epic: { id, workspaceId: 'w', title: 'Outcome', status: 'in_review', priority: 'high', assigneeId: 'owner', archived: false, description: 'Goal', acceptanceCriteria: 'Complete', secret: 'never expose' },
+    comments: [{ id: 'c', actorId: 'left', body: 'Discussion', createdAt: '2026-01-01T00:00:00Z', secret: 'private' }],
+    members: [{ userId: 'owner', name: 'Owner', email: 'private@example.test' }],
+  }; } } as never;
+  assert.deepEqual(await epicDetail(config, client, 'e1'), {
+    id: 'e1', workspaceId: 'w', title: 'Outcome', status: 'in_review', priority: 'high', assignee: 'Owner', archived: false,
+    description: 'Goal', acceptanceCriteria: 'Complete', comments: [{ id: 'c', author: 'Former workspace member', body: 'Discussion', createdAt: '2026-01-01T00:00:00Z' }],
+    url: 'https://tracker.example/workspaces/w/epics/e1',
+  });
+  assert.equal(await epicDetail(config, client, '../state'), null);
+  assert.equal(read, 'e1', 'a malformed ID never reaches the tracker');
+  assert.equal(await epicDetail(config, { epic: async () => { throw new KanvilTaskNotFound('missing'); } } as never, 'missing'), null);
+  await assert.rejects(epicDetail(config, { epic: async () => { throw new Error('Unavailable'); } } as never, 'e1'), /Unavailable/);
 });

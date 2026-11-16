@@ -1,9 +1,9 @@
 // Everything that can start: what the owner queued, the scheduler's Up next list, Epics, and the tickets that came
 // from T3 sessions and inbox reports. The automatic queue and the owner's own stay visibly apart.
 import { html, signal, useState } from "../lib/h.js";
-import { config, status, jobs, clock, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
-import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText } from "../lib/format.js";
-import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, SortableList } from "../ui/index.js";
+import { config, status, jobs, clock, serverNow, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
+import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText, ticketStatusLabel, safeLink, ago } from "../lib/format.js";
+import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, Text, SortableList } from "../ui/index.js";
 import { UpNext, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
@@ -90,18 +90,28 @@ function EpicRow({ epic, show, narrowed }) {
 // One Epic in the side panel: its state, its start or the controls of its run, and its tickets, which open over it.
 // A running Epic's overrides are its plan's own and can be changed; one not started uses the page's start choices.
 export const epicById = (id) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epicId(epic) === id); };
-export function EpicDetail({ epic }) {
+export function EpicDetail({ epic, detail }) {
   clock.value;
-  const running = epic.state === "active", note = epicNote(epic), { label, tone, progress } = epicSummary(epic);
-  return html`<h3 class="ticket-title">${epic.title}</h3>
-    <p class="ticket-meta epic-state"><${Tag} tone=${tone}>${label}<//>${progress && html`<span class="muted">${progress}</span>`}</p>
-    ${!epic.state && html`<div class="ticket-actions"><${EpicStart} epic=${epic} panel /><${StartOptions} /></div>`}
-    ${running && html`<div class="ticket-actions"><${OverrideChips} value=${epic.overrideLimits} disabled=${busy.value} onChange=${(limits) => actions.planOverrides(epic.id, limits)} /><${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" /></div>
-      <p class="ticket-line">${epicModel(epic)} · ${overrideText(epic.overrideLimits)}. A change applies to the tickets this Epic starts next.</p>`}
-    ${note && html`<p class="ticket-line tone-attention">${note}</p>`}
+  const running = epic?.state === "active", note = epic && epicNote(epic);
+  const { label, tone, progress } = epic ? epicSummary(epic) : {};
+  const tracker = safeLink(detail?.url);
+  return html`<h3 class="ticket-title">${detail?.title ?? epic.title}</h3>
+    ${detail && html`<${Meta} class="ticket-meta" priority=${detail.priority}><${Tag} title="Epic status">${ticketStatusLabel(detail.status)}<//><${Tag} wrap title=${`Assignee: ${detail.assignee ?? "Unassigned"}`}>${detail.assignee ?? "Unassigned"}<//>${detail.archived && html`<${Tag}>Archived<//>`}<//>
+      ${tracker && html`<div class="ticket-actions"><a class="btn btn-ghost" href=${tracker} target="_blank" rel="noopener noreferrer">Open in tracker</a></div>`}`}
+    ${epic && html`<h4>Factory</h4>
+      <p class="ticket-meta epic-state"><${Tag} tone=${tone}>${label}<//>${progress && html`<span class="muted">${progress}</span>`}</p>
+      ${!epic.state && html`<div class="ticket-actions"><${EpicStart} epic=${epic} panel /><${StartOptions} /></div>`}
+      ${running && html`<div class="ticket-actions"><${OverrideChips} value=${epic.overrideLimits} disabled=${busy.value} onChange=${(limits) => actions.planOverrides(epic.id, limits)} /><${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" /></div>
+        <p class="ticket-line">${epicModel(epic)} · ${overrideText(epic.overrideLimits)}. A change applies to the tickets this Epic starts next.</p>`}
+      ${note && html`<p class="ticket-line tone-attention">${note}</p>`}`}
+    ${detail && html`<h4>Description</h4><${Text}>${detail.description}<//><h4>Acceptance</h4><${Text}>${detail.acceptanceCriteria}<//>`}
     <h4>Tickets</h4>
-    ${epic.tickets.length ? html`<div class="epic-tickets"><${PlanRows} plan=${epic} /></div>` : html`<${Empty}>No tickets Factory can read.<//>`}`;
+    ${epic?.tickets.length ? html`<div class="epic-tickets"><${PlanRows} plan=${epic} /></div>` : html`<${Empty}>No tickets Factory can read.<//>`}
+    ${detail && html`<h4>Discussion</h4>${detail.comments.length ? detail.comments.map((comment) => html`<article key=${comment.id}>
+      <p class="ticket-line"><strong>${comment.author}</strong> · ${ago(comment.createdAt, serverNow())}</p><${Text}>${comment.body}<//>
+    </article>`) : html`<${Empty}>No comments yet.<//>`}`}`;
 }
+
 function Epics({ filters, query }) {
   const { open, finished } = epicLists();
   const shown = matchEpics(open, filters, query);

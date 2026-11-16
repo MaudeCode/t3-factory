@@ -1,4 +1,5 @@
 // Read-only display pieces: gauges, tags, tables, timelines.
+import { markdown } from "../lib/markdown.js";
 import { html, useEffect, useState } from "../lib/h.js";
 import { clockTime, dayLabel, stateLabel, toneOf, formatBytes } from "../lib/format.js";
 import { Help } from "./controls.js";
@@ -41,12 +42,14 @@ export const Stops = ({ n, tone, label }) =>
   html`<span class=${`stops ${tone ? `stops-${tone}` : ""}`} data-n=${n} role="img" aria-label=${label} title=${label}><i></i><i></i><i></i><i></i></span>`;
 
 // With `href` the tag is itself the link, opening in a new tab like `Link`.
-export const Tag = ({ tone, state, children, title, href, onClick }) => {
-  const cls = `tag ${(tone ?? toneOf(state)) ? `tag-${tone ?? toneOf(state)}` : ""}`, label = children ?? stateLabel(state);
+export const Tag = ({ tone, state, children, title, href, onClick, wrap = false }) => {
+  const cls = `tag${wrap ? " tag-wrap" : ""} ${(tone ?? toneOf(state)) ? `tag-${tone ?? toneOf(state)}` : ""}`, label = children ?? stateLabel(state);
   return href ? html`<a class=${`${cls} tag-link`} href=${href} title=${title} target="_blank" rel="noopener noreferrer" onClick=${onClick}>${label}</a>` : html`<span class=${cls} title=${title}>${label}</span>`;
 };
 
 export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;
+// Ticket and Epic content share the same inert Markdown renderer and empty state.
+export const Text = ({ children }) => children?.trim() ? html`<div class="ticket-text">${markdown(children)}</div>` : html`<${Empty}>None written.<//>`;
 
 // Facets of a ticket or run on one line. Priority and difficulty carry a one-letter field prefix (P, D) so
 // "low" is never ambiguous; `labels` are the tracker's tags, those in `highlight` (priority labels) are lit.

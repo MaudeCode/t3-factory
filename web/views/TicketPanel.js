@@ -1,22 +1,18 @@
 // One ticket, or one Epic, opened in place. A ticket, from any ticket row: what it asks for, what it waits on, its runs, and Run now.
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
-import { html, useState, useEffect } from "../lib/h.js";
+import { html, useState, useEffect, useRef } from "../lib/h.js";
 import { config, status, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, epicPanel, closeEpic, follow } from "../lib/router.js";
-import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest } from "../lib/format.js";
-import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Segmented } from "../ui/index.js";
-import { markdown } from "../lib/markdown.js";
+import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel } from "../lib/format.js";
+import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Text, Segmented } from "../ui/index.js";
 import { startHold, runNow, startOptions } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
 import { decisions, outcomeText, DuplicateLink } from "./Triage.js";
 import { epicById, EpicDetail } from "./Queue.js";
 
 const CLOSED = ["done", "cancelled"];
-const STATUS = { backlog: "Backlog", todo: "To do", in_progress: "In progress", in_review: "In review", done: "Done", cancelled: "Cancelled" };
-// The tracker's text is untrusted: `markdown` builds its elements from the text and never parses it as HTML.
-const Text = ({ children }) => (children?.trim() ? html`<div class="ticket-text">${markdown(children)}</div>` : html`<${Empty}>None written.<//>`);
 const Related = ({ list }) => html`<span class="ticket-related">${list.map((t) => html`<span key=${t.key} class=${t.done ? "done" : ""}><b class="key">${t.key}</b> ${t.title}${t.done && html` <${Tag} tone="ok">done<//>`}</span>`)}</span>`;
 
 function Detail({ ticket: t, tab }) {
@@ -24,7 +20,7 @@ function Detail({ ticket: t, tab }) {
   useEffect(() => { if (!history.value) loadHistory().catch(() => {}); }, []);
   const c = config.value, now = serverNow(), project = c.projects.find((p) => p.kanvilId === t.projectId);
   const row = { id: t.id, key: t.key, title: t.title, projectId: t.projectId };
-  const hold = CLOSED.includes(t.status) ? `${t.key} is ${STATUS[t.status].toLowerCase()}.` : startHold(row);
+  const hold = CLOSED.includes(t.status) ? `${t.key} is ${ticketStatusLabel(t.status).toLowerCase()}.` : startHold(row);
   const start = startOptions();
   // Where the scheduler has this ticket right now, in its own words.
   const up = status.value.upNext, position = up?.tickets.findIndex((x) => x.id === t.id) ?? -1, held = up?.held.find((h) => ticketKey(h.key) === t.key);
@@ -42,7 +38,7 @@ function Detail({ ticket: t, tab }) {
           <ul class="ticket-runs">${runs.slice(1).map((j) => html`<li key=${j.id}><a href=${`/runs/${j.id}`} onClick=${follow}><${Tag} tone=${toneOf(j.state)}>${stateLabel(j.state)}<//> started ${ago(j.createdAt, now)}</a></li>`)}</ul>`}`
       : html`<${Empty}>${t.inbox ? "Inbox reports are triaged, not run." : "No runs yet."}<//>`}`;
   return html`<h3 class="ticket-title">${t.title}</h3>
-    <${Meta} class="ticket-meta" project=${project?.name} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels}><${Tag}>${STATUS[t.status] ?? t.status}<//><//>
+    <${Meta} class="ticket-meta" project=${project?.name} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels}><${Tag}>${ticketStatusLabel(t.status)}<//><//>
     <div class="ticket-actions">
       ${!t.inbox && html`<${Button} variant="primary" icon="play" disabled=${!!hold} title=${hold ?? `${overrideText(start.overrideLimits)} and start this ticket now.`} onClick=${() => runNow(row, hold, undefined, start)}>Run now<//>`}
       ${report?.data.stage === "owner" && decisions(report.data).map((a, i) => html`<${Button} key=${a.id} variant=${i ? "" : "primary"} icon=${a.icon} disabled=${busy.value} onClick=${a.run}>${a.label}<//>`)}
@@ -63,32 +59,57 @@ function Detail({ ticket: t, tab }) {
 }
 
 export function TicketPanel() {
-  const key = ticketPanel.value;
-  const [read, setRead] = useState({ key: "" });
-  // Every ticket opens on the ticket itself; Factory's side is one tab away.
-  const [tab, setTab] = useState("ticket");
-  const load = (k) => {
-    setRead({ key: k, loading: true });
-    const settle = (patch) => setRead((s) => (s.key === k ? { key: k, ...patch } : s));
-    api(`/api/tickets/${encodeURIComponent(k)}`).then((ticket) => settle({ ticket }), (error) => settle({ error }));
-  };
-  useEffect(() => { if (key) { load(key); setTab("ticket"); } }, [key]);
-  const mine = read.key === key ? read : { loading: true };
-  // An Epic shows while no ticket is open; a ticket opened from it sits on top and Back returns to the Epic.
-  const epic = !key && epicPanel.value ? epicById(epicPanel.value) : undefined;
-  // Each kind is its own dialog: dismissing a ticket closes the native dialog, and the Epic under it has to open one again.
-  if (!key && epicPanel.value) return html`<${Dialog} key="epic" class="ticket-panel" open onClose=${closeEpic} title="Epic">
-    ${epic ? html`<${EpicDetail} epic=${epic} />` : html`<${Empty}>This Epic is not listed. It may have finished or been closed.<//>`}
+  const key = ticketPanel.value, epicKey = !key && epicPanel.value;
+  const path = key ? `/api/tickets/${encodeURIComponent(key)}` : epicKey ? `/api/epics/${encodeURIComponent(epicKey)}` : null;
+  const [read, setRead] = useState({ path: null }), [retry, setRetry] = useState(0);
+  const [tab, setTab] = useState("ticket"), resource = useRef(null);
+  // Published status snapshots refresh open Epic panels even when the ticket queue is unchanged.
+  const refreshed = epicKey ? status.value.at : null;
+  useEffect(() => {
+    if (!path) return;
+    let current = true, queued = false, running = false;
+    const abort = new AbortController();
+    const load = async () => {
+      queued = true;
+      if (running) return;
+      running = true;
+      while (current && queued) {
+        queued = false;
+        setRead((previous) => ({ path, data: previous.path === path ? previous.data : undefined, loading: true }));
+        try {
+          const data = await api(path, { signal: abort.signal });
+          if (current) setRead({ path, data });
+        } catch (error) { if (current) setRead((previous) => ({ ...previous, loading: false, error })); }
+      }
+      running = false;
+    };
+    const scope = { path, refreshed, retry, load };
+    resource.current = scope;
+    load();
+    return () => { current = false; abort.abort(); if (resource.current === scope) resource.current = null; };
+  }, [path]);
+  useEffect(() => {
+    const scope = resource.current;
+    if (!scope || scope.path !== path || scope.refreshed === refreshed && scope.retry === retry) return;
+    scope.refreshed = refreshed; scope.retry = retry;
+    scope.load();
+  }, [path, refreshed, retry]);
+  useEffect(() => { if (key) setTab("ticket"); }, [key]);
+  const mine = read.path === path ? read : { loading: true };
+  const noun = key ? key : "Epic";
+  const state = mine.error ? html`<div class="ticket-state" role="alert">
+    <p><${Icon} name="alert" /> ${mine.error.status === 404 ? `${noun} was not found in Factory's configured ${key ? "projects" : "workspaces"}.` : key ? `Could not read ${key}. ${mine.error.message}` : mine.error.message}</p>
+    ${(mine.error.status !== 404 || !key) && html`<${Button} size="sm" icon="sync" onClick=${() => setRetry((value) => value + 1)}>Retry<//>`}
+  </div>` : !mine.data && html`<p class="ticket-state" role="status"><i class="spinner"></i> Reading ${noun}</p>`;
+  const epic = epicKey ? epicById(epicKey) : undefined;
+  // A member ticket opens over its Epic; closing it remounts the Epic with a fresh tracker read.
+  if (epicKey) return html`<${Dialog} key="epic" class="ticket-panel" open onClose=${closeEpic} title="Epic">
+    ${state}
+    ${mine.error?.status !== 404 && (mine.data || epic) && html`<${EpicDetail} epic=${epic} detail=${mine.data} />`}
   <//>`;
   return html`<${Dialog} key="ticket" class="ticket-panel" open=${!!key} onClose=${closeTicket} title=${key}>
-    ${mine.ticket
-      ? html`<${Segmented} label="Ticket view" value=${tab} onChange=${setTab} options=${[["ticket", "Ticket"], ["factory", "Factory"]]} />
-          <${Detail} ticket=${mine.ticket} tab=${tab} />`
-      : mine.error
-        ? html`<div class="ticket-state" role="alert">
-            <p><${Icon} name="alert" /> ${mine.error.status === 404 ? `${key} was not found in a project Factory is set up for.` : `Could not read ${key}. ${mine.error.message}`}</p>
-            ${mine.error.status !== 404 && html`<${Button} size="sm" icon="sync" onClick=${() => load(key)}>Retry<//>`}
-          </div>`
-        : html`<p class="ticket-state" role="status"><i class="spinner"></i> Reading ${key}</p>`}
+    ${state}
+    ${mine.data && html`<${Segmented} label="Ticket view" value=${tab} onChange=${setTab} options=${[["ticket", "Ticket"], ["factory", "Factory"]]} />
+      <${Detail} ticket=${mine.data} tab=${tab} />`}
   <//>`;
 }

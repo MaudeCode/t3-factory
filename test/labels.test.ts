@@ -59,10 +59,20 @@ test('native ticket payloads supply complete labels, priority and difficulty wit
 
 test('Epic reads page across projects, keep the restricted count, and read as empty on a Kanvil without Epics', async t => {
   const epic = (id: string, archived = false) => ({ id, workspaceId: 'workspace', title: id, description: '', archived, version: 1, createdBy: 'a', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', openTickets: 1, closedTickets: 0 });
-  let missing = false;
+  let missing = false, noDiscussion = false, wrongCommentOwner = false, wrongEpicOwner = false;
   const f = fixture(t, url => {
     if (missing) return json({ error: { code: 'not_found' } }, 404);
-    if (url.pathname === '/api/v1/workspaces/workspace/epics') return json({ items: [epic('live'), epic('old', true)], total: 2 });
+    if (url.pathname === '/api/v1/workspaces/workspace/epics') return json({ items: [{ ...epic('live'), description: 'Outcome', acceptanceCriteria: 'Verified', status: 'in_progress', priority: 'high', assigneeId: 'person' }, epic('old', true)], total: 2 });
+    if (url.pathname === '/api/v1/workspaces/workspace/epics/live') return json({ ...epic('live'), workspaceId: wrongEpicOwner ? 'foreign' : 'workspace', description: 'Outcome', acceptanceCriteria: 'Verified', status: 'in_progress', priority: 'high', assigneeId: 'person' });
+    if (url.pathname === '/api/v1/workspaces/workspace/epics/old') return json(epic('old', true));
+    if (url.pathname === '/api/v1/workspaces/workspace/epics/foreign') return json({ error: { code: 'not_found' } }, 404);
+    if (url.pathname.endsWith('/comments')) {
+      if (noDiscussion) return json({ error: { code: 'not_found' } }, 404);
+      const offset = Number(url.searchParams.get('offset'));
+      return json({ items: [{ id: `comment-${offset}`, workspaceId: wrongCommentOwner ? 'foreign' : 'workspace', epicId: 'live', actorId: 'person', body: `Comment ${offset}`, createdAt: '2026-01-01T00:00:00Z' }], total: 2 });
+    }
+    if (url.pathname.endsWith('/members')) return json([{ userId: 'person', name: 'Epic owner', email: 'private@example.test' }]);
+    if (url.pathname === '/api/v1/snapshot') return json(snapshot([ticket({ epicId: 'live' })]));
     if (url.pathname === '/api/v1/workspaces/workspace/epics/live/tickets') {
       const offset = Number(url.searchParams.get('offset'));
       return json({ items: [ticket({ id: `member-${offset}`, epicId: 'live', projectId: offset ? 'other' : 'project' })], total: 2, restrictedCount: 3 });
@@ -70,11 +80,26 @@ test('Epic reads page across projects, keep the restricted count, and read as em
     throw new Error(url.pathname);
   });
   assert.deepEqual((await f.client.epics()).map(e => [e.id, e.archived]), [['live', false], ['old', true]]);
+  const legacy = (await f.client.epics())[1];
+  assert.deepEqual([legacy.status, legacy.priority, legacy.assigneeId, legacy.acceptanceCriteria], ['todo', 'none', null, ''], 'older Epic payloads retain the new contract defaults');
   const read = await f.client.epicTickets('live');
   assert.deepEqual(read.tickets.map(task => [task.id, task.projectId, task.epicId]), [['member-0', 'project', 'live'], ['member-1', 'other', 'live']]);
   assert.equal(read.restrictedCount, 3);
   assert.deepEqual(read.tickets[0].labels?.[0], { name: 'sec' }, 'members are normalized like other native tickets');
   assert(f.calls.includes('/api/v1/workspaces/workspace/epics/live/tickets?limit=100&offset=1'));
+  const detail = await f.client.epic('live');
+  assert.deepEqual([detail.epic.status, detail.epic.priority, detail.epic.assigneeId, detail.epic.description, detail.epic.acceptanceCriteria], ['in_progress', 'high', 'person', 'Outcome', 'Verified']);
+  assert.deepEqual(detail.comments.map(row => row.body), ['Comment 0', 'Comment 1'], 'discussion is read in bounded pages');
+  assert.deepEqual(detail.members, [{ userId: 'person', name: 'Epic owner' }]);
+  assert.deepEqual((await f.client.tasks('project')).map(row => [row.id, row.epicId]), [['ticket', 'live']], 'Epic records never enter the ordinary ticket list, but members stay visible');
+  await assert.rejects(f.client.epic('foreign'), KanvilTaskNotFound);
+  wrongEpicOwner = true;
+  await assert.rejects(f.client.epic('live'), /Epic ownership mismatch/);
+  wrongEpicOwner = false;
+  wrongCommentOwner = true;
+  await assert.rejects(f.client.epic('live'), /discussion ownership mismatch/);
+  wrongCommentOwner = false; noDiscussion = true;
+  assert.deepEqual((await f.client.epic('old')).comments, [], 'older Kanvil versions without workspace discussion still open');
   missing = true;
   assert.deepEqual(await f.client.epics(), [], 'a Kanvil version without Epics has none');
   await assert.rejects(f.client.epicTickets('live'), KanvilTaskNotFound, 'a running plan must not read a lost Epic as an empty one');

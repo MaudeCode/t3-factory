@@ -29,6 +29,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
         return new Promise((resolve) => {
           finish = resolve;
         });
+      if (args[0] === "epic") return args[1] === "epic-404" ? { code: 1, data: { notFound: true } } : args[1] === "epic-500" ? { code: 1, data: { message: "Private diagnostics" } } : { code: 0, data: { id: args[1], title: "Fixture Epic" } };
       if (args[0] === "ticket") return args[1] === "APP-404" ? { code: 1, data: { notFound: true, message: "Ticket not found" } } : args[1] === "APP-500" ? { code: 1, data: { message: "Kanvil connection failed" } } : { code: 0, data: { key: args[1], title: "Fixture ticket" } };
       return { code: 0, data: { ok: true } };
     },
@@ -84,6 +85,7 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal((await request("/api/state")).status, 401);
     assert.equal((await request('/api/threads/mcp%3Athread/open')).status, 401, 'thread links require authentication');
     assert.equal((await request("/api/tickets/APP-8")).status, 401, "ticket reads require authentication");
+    assert.equal((await request("/api/epics/epic-1")).status, 401, "Epic reads require authentication too");
     assert.ok(!calls.some((c) => c.args[0] === "ticket"), "an unauthenticated ticket read never reaches the scheduler");
     assert.equal((await request("/api/pair", { method: "POST" })).status, 401);
     assert.equal(
@@ -223,6 +225,17 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     const ticketReads = calls.filter((c) => c.args[0] === "ticket").length;
     for (const bad of ["/api/tickets/APP", "/api/tickets/APP-8/extra", "/api/tickets/..%2Fstate", "/api/tickets/APP-8%20--chain"]) assert.equal((await request(bad, { headers: { Cookie: cookie } })).status, 404, `${bad} is not a ticket key`);
     assert.equal(calls.filter((c) => c.args[0] === "ticket").length, ticketReads, "a malformed key never reaches the scheduler");
+    const epicRead = await request("/api/epics/epic-1", { headers: { Cookie: cookie } });
+    assert.equal(epicRead.status, 200);
+    assert.deepEqual(await epicRead.json(), { id: "epic-1", title: "Fixture Epic" });
+    assert.deepEqual(calls.at(-1)?.args, ["epic", "epic-1"], "an Epic read never dispatches a ticket");
+    assert.equal((await request("/api/epics/epic-404", { headers: { Cookie: cookie } })).status, 404);
+    const epicFailure = await request("/api/epics/epic-500", { headers: { Cookie: cookie } });
+    assert.equal(epicFailure.status, 502);
+    assert.deepEqual(await epicFailure.json(), { message: "Could not read the Epic" });
+    const epicReads = calls.filter((call) => call.args[0] === "epic").length;
+    for (const bad of ["/api/epics/--dispatch", "/api/epics/epic-1/extra", "/api/epics/..%2Fstate"]) assert.equal((await request(bad, { headers: { Cookie: cookie } })).status, 404);
+    assert.equal(calls.filter((call) => call.args[0] === "epic").length, epicReads);
     const id = randomUUID(),
       input = { ticket: "app-8", model: "astra", overrideLimits: true };
     const dispatch = () =>
