@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, setPlanOverrides, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -383,6 +383,12 @@ export class FactoryService {
       // A pass in flight takes the plan's overrides from the store at each launch and save, so it keeps this change.
       const result = await this.enqueue(async () => { const r = setPlanOverrides(this.store, command.planId, command.overrideLimits); this.publishWork(); return r; });
       this.wake('plan-override');
+      return { code: 0, data: result };
+    }
+    if (command.type === 'plan-order') {
+      // A pass in flight keeps the order it read; the wake starts one on the new order.
+      const result = await this.enqueue(async () => { const r = orderPlans(this.store, command.planIds); this.publishWork(); return r; });
+      this.wake('plan-order');
       return { code: 0, data: result };
     }
     if (command.type === 'cleanup-cancel') { this.inspections.get(command.inspectionId)?.abort(); return { code: 0, data: { cancelled: this.inspections.has(command.inspectionId) } }; }

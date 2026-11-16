@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
-import { cycle, runPlans, cancelPlan, setPlanOverrides, refreshInventory, writeStatus } from '../src/scheduler.ts';
+import { cycle, runPlans, cancelPlan, setPlanOverrides, orderPlans, refreshInventory, writeStatus } from '../src/scheduler.ts';
 import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -579,6 +579,20 @@ test('queued automatic selection tries every available model and keeps a forced 
   await runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex'], ['other-codex', 'codex']]), [], undefined, 'codex');
   assert.equal(f.launches.length, 1, JSON.stringify(f.store.plan(result.planId as string)));
   assert.equal((f.launches[0] as any).modelSelection.instanceId, 'codex');
+});
+
+test('the owner\'s order decides which queued run gets the free slot', async t => {
+  const f = dispatchFixture(t);
+  f.tasks.push(f.task('second', 3, 'todo'));
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  const queue = async (ticket: string) => (await cycle(f.c, f.store, { manual: true, ticket, model: 'sol', overrideLimits: [] }, { t3: f.t3, kanvil: f.kanvil })).planId as string;
+  const first = await queue('FIX-1'), second = await queue('FIX-3');
+  assert.deepEqual(f.store.plans().map(plan => plan.id), [first, second], 'runs wait in the order they were queued');
+  assert.deepEqual(orderPlans(f.store, ['gone', second]).order, [second, first], 'an ID that is not active is dropped and a plan left out keeps its place after the named ones');
+  assert.deepEqual(f.store.plans().map(plan => plan.id), [second, first]);
+  setConfig(f, () => { f.c.concurrency.codex = 1; });
+  await runPlans(f.c, f.store, f.t3, f.kanvil, new Map([['codex', 'codex']]), f.threads);
+  assert.deepEqual(f.launches.map((l: any) => l.title), ['Factory: FIX-3'], 'the run moved to the top takes the one free slot');
 });
 
 test('queued ownership deduplicates concurrent requests, holds unnamed scheduling, and releases on cancellation', async t => {

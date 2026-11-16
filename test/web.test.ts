@@ -207,6 +207,10 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.deepEqual(calls.at(-1)?.args, ["plan-override", "p-1"], "an empty list respects every limit");
     assert.notEqual((await request("/api/plans/p-1/overrides", { method: "POST", headers: { Cookie: cookie }, body: '{"overrideLimits":["everything"]}' })).status, 200, "an unknown limit is refused");
     assert.equal(calls.at(-1)?.args.length, 2, "and never reaches the scheduler");
+    assert.equal((await request("/api/plans/order", { method: "POST", headers: { Cookie: cookie }, body: '{"ids":["p-2","p-1"]}' })).status, 200);
+    assert.deepEqual(calls.at(-1)?.args, ["plan-order", "p-2", "p-1"], "the owner's queue order goes to the scheduler as plan IDs");
+    assert.notEqual((await request("/api/plans/order", { method: "POST", headers: { Cookie: cookie }, body: '{"ids":["--model"]}' })).status, 200, "an ID that could read as a flag is refused");
+    assert.equal(calls.at(-1)?.args[0], "plan-order", "and never reaches the scheduler");
     assert.equal((await request("/api/triage/reports/t-6/delete", { method: "POST", headers: { Cookie: cookie }, body: "{}" })).status, 404, "only retry, promote and close are decisions");
     const read = await request("/api/tickets/app-8", { headers: { Cookie: cookie } });
     assert.equal(read.status, 200);

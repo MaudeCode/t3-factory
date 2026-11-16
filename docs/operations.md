@@ -41,9 +41,12 @@ Manual jobs can overlap other runs and can start while automatic dispatch is pau
 t3-factory dispatch --epic EPIC_ID --model auto --override labels
 t3-factory plan-cancel PLAN_ID
 t3-factory plan-override PLAN_ID --override reserve,labels
+t3-factory plan-order PLAN_ID PLAN_ID
 ```
 
 `plan-override`, or `/api/plans/<id>/overrides` with `{ "overrideLimits": [...] }`, replaces the limits a running Epic or chain overrides. Its next launches use them; `--override-limits` is every limit and no flag respects them all. Tickets already running are not touched.
+
+`plan-order`, or `/api/plans/order` with `{ "ids": [...] }`, sets which queued runs, chains and running Epics are offered free slots first: the named plans in the order given, then any other active plan. Queue's Queued section sends it when a row is dragged. A plan started later joins the end.
 
 `--epic`, or `epic` on `/api/dispatch`, starts a Kanvil Epic with one model, provider and override choice. It cannot be combined with `--ticket`, `--chain` or `--upstream`. Every ticket that can start does, within the limits you did not override, and the rest start as their blockers finish. A blocker outside the Epic joins the run and is marked as outside. Native readiness, holds, hard allowance, duplicate checks and merge gates still apply to each launch.
 

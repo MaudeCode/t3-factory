@@ -3,8 +3,8 @@
 import { html, signal, useState } from "../lib/h.js";
 import { config, status, jobs, clock, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
 import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText } from "../lib/format.js";
-import { Button, Segmented, Tag, Icon, Empty, Page, Section } from "../ui/index.js";
-import { UpNext, Chains, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow } from "./Deck.js";
+import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, SortableList } from "../ui/index.js";
+import { UpNext, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { ReadyReports, readyReportCount } from "./Triage.js";
@@ -113,6 +113,24 @@ function Epics({ filters, query }) {
     ${done.length > 0 && html`<${Section} collapsible class="epic-finished" title="Finished" count=${done.length} open=${!!query.trim() || hasRunFilters(filters)}>${done.map(section)}<//>`}`;
 }
 
+// What the owner started that waits for or holds slots: queued runs, chains and running Epics, in the order the
+// scheduler offers them free slots. Dragging a row's handle, or the arrow keys on it, changes that order.
+const planName = (p) => p.epic ? `Epic ${p.epic.title}` : p.queued ? p.target.key : `chain to ${p.target.key}`;
+function Queued() {
+  const plans = (status.value.plans ?? []).filter((p) => p.state === "active");
+  if (!plans.length) return null;
+  const epics = epicLists().open;
+  const move = (from, to) => { const ids = plans.map((p) => p.id); ids.splice(to, 0, ...ids.splice(from, 1)); actions.orderPlans(ids); };
+  const item = (p) => p.epic ? html`<${EpicRow} epic=${epics.find((e) => e.id === p.id)} show=${() => true} />`
+    : p.queued ? html`<div class="queued-run"><${PlanRows} plan=${p} /><${CancelPlan} plan=${p} title=${`Cancel the queued run for ${p.target.key}?`} label="Cancel queued run" icon="x" class="next-run" /></div>`
+    : html`<div class="queued-run"><div class="chain-row"><${Tag}>Chain<//><${RowBody} title=${html`Chain to <b class="key">${p.target.key}</b>`}><${Meta}>${planProgress(p)}<//><//></div><${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" icon="x" class="next-run" /></div>
+      <div class="epic-tickets"><${PlanRows} plan=${p} /></div>`;
+  return html`<${Section} class="queued" title="Queued" count=${plans.length} hint=${plans.length > 1 && "The top row gets the next free slot. Drag a handle to reorder, or focus it and press the arrow keys."}>
+    <${SortableList} label="Queued, in the order they start" items=${plans} keyOf=${planName} onMove=${move}
+      render=${(p, i, grip) => html`<div class="queued-item">${plans.length > 1 && grip}<div class="queued-body">${item(p)}</div></div>`} />
+  <//>`;
+}
+
 // The view is in the address, so each one can be linked: /queue, ?view=epics, ?origin=sessions, ?origin=reports.
 const VIEWS = { next: "/queue", epics: "/queue?view=epics", sessions: "/queue?origin=sessions", reports: "/queue?origin=reports" };
 export const queueView = (query) => {
@@ -136,7 +154,7 @@ export function Queue() {
   return html`<${Page} class="runs queue" title="Queue" count=${count} actions=${html`<${StartOptions} />`} tools=${html`<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
     ${tabs}
     ${view === "next"
-      ? html`<${Chains} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} start=${start} />`
+      ? html`<${Queued} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} start=${start} />`
       : html`<${Epics} filters=${filters} query=${query} />`}
   <//>`;
 }

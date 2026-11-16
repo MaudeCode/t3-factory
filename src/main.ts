@@ -6,7 +6,7 @@ import { modify, applyEdits, parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
-import { cycle, log, safeError, stopJob, cancelPlan, setPlanOverrides, writeStatus } from './scheduler.ts';
+import { cycle, log, safeError, stopJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus } from './scheduler.ts';
 import { FactoryService } from './service.ts';
 import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
@@ -116,6 +116,15 @@ if (command === 'web') {
     const forwarded = await callControl(c.stateDir, { type: 'plan-cancel', planId: process.argv[3] ?? '' });
     if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
     else { const store = new Store(c.stateDir); console.log(JSON.stringify(cancelPlan(store, process.argv[3] ?? ''))); writeStatus(c, store); store.close(); }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (command === 'plan-order') {
+  // Set which active queued runs, chains and Epics get free slots first.
+  try {
+    const c = loadConfig(configPath), owner = commandFor(process.argv.slice(2));
+    if (owner?.type !== 'plan-order') throw new Error('Usage: t3-factory plan-order PLAN_ID...');
+    const forwarded = await callControl(c.stateDir, owner);
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(orderPlans(store, owner.planIds))); writeStatus(c, store); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'plan-override') {
   // Change the limits an active chain or Epic overrides; no flag means it respects them all from here on.
@@ -264,6 +273,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

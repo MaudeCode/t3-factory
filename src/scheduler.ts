@@ -1708,6 +1708,14 @@ export function setPlanOverrides(store: Store, id: string, overrideLimits: Overr
   plan.overrideLimits = [...skips({ manual: true, overrideLimits })]; store.savePlan(plan);
   return { ok: true, planId: id, overrideLimits: plan.overrideLimits };
 }
+// The order active plans get free slots in. IDs that are no longer active are dropped and active plans left out keep
+// their place after the named ones, so an order sent just as a plan finishes or starts still applies.
+export function orderPlans(store: Store, ids: string[]) {
+  const active = store.plans().filter(plan => plan.state === 'active').map(plan => plan.id), named = [...new Set(ids)].filter(id => active.includes(id));
+  const order = [...named, ...active.filter(id => !named.includes(id))];
+  store.set('planOrder', JSON.stringify(order));
+  return { ok: true, order };
+}
 export function cancelPlan(store: Store, id: string) {
   const plan = store.plan(id);
   if (!plan || plan.state !== 'active') throw new Error('That chain is not active');

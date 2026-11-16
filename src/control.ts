@@ -15,6 +15,7 @@ export type ControlCommand =
   | { type: 'job-stop'; jobId: string }
   | { type: 'plan-cancel'; planId: string }
   | { type: 'plan-override'; planId: string; overrideLimits: OverrideLimits }
+  | { type: 'plan-order'; planIds: string[] }
   | { type: 'session-dismiss'; taskId: string }
   | { type: 'triage-run' }
   | { type: 'triage-report'; ticketId: string; action: 'retry' | 'close' | 'promote'; override?: true }
@@ -74,6 +75,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   if (args[0] === 'job-stop' && args[1]) return { type: 'job-stop', jobId: args[1] };
   if (args[0] === 'plan-cancel' && args[1]) return { type: 'plan-cancel', planId: args[1] };
   if (args[0] === 'plan-override' && args[1]) return { type: 'plan-override', planId: args[1], overrideLimits: dispatchOptions(args.slice(2)).overrideLimits ?? [] };
+  if (args[0] === 'plan-order' && args[1]) return { type: 'plan-order', planIds: args.slice(1) };
   if (args[0] === 'cleanup-cancel' && args[1]) return { type: 'cleanup-cancel', inspectionId: args[1] };
   if (args[0] === 'session-dismiss' && args[1]) return { type: 'session-dismiss', taskId: args[1] };
   if (args[0] === 'triage-run') return { type: 'triage-run' };

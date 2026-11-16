@@ -1753,7 +1753,29 @@ a.chain-row:hover {
   background: var(--surface);
   text-decoration: none;
 }
-/* A queued run: its plan row, then the button that cancels it. */
+/* Queued: one block per queued run, chain or Epic, behind its drag handle. */
+.queued .sortable {
+  border-top: 0;
+}
+.queued-item {
+  display: flex;
+  gap: var(--space-3);
+}
+.queued-item > .grip {
+  position: relative;
+  margin-top: 11px;
+}
+/* The handle's dots stay small; the area that takes the pointer is a full touch target. */
+.queued-item > .grip::after {
+  content: "";
+  position: absolute;
+  inset: -11px -15px;
+}
+.queued-body {
+  flex: 1;
+  min-width: 0;
+}
+/* A plan row, then the button that cancels it. */
 .queued-run {
   display: flex;
   align-items: center;
@@ -1762,6 +1784,11 @@ a.chain-row:hover {
 .queued-run > .chain-row {
   flex: 1;
   min-width: 0;
+}
+.sortable-row.lifted .queued-item {
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 dialog .chain {
   margin-top: var(--space-3);
