@@ -579,6 +579,12 @@ h2 .help {
   white-space: nowrap;
   vertical-align: middle;
 }
+.tag.tag-wrap {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .tag-link {
   position: relative;
 }

@@ -490,11 +490,20 @@ async function epicSearch(value) {
 async function epicPanelTest() {
   setSessionProvider("auto"); setSessionOverrides(["labels"]);
   const oldFetch = window.fetch, oldUrl = location.href, posts = [], dispatches = [];
+  let epicDescription = "Shared Epic outcome.", epicFailure = false, epicAssignee = "Epic owner", heldEpic, releaseEpic, epicReads = 0;
   window.fetch = async (url, init) => {
     if (url === "/api/history") return Response.json([]);
     if (url === "/api/dispatch") { const input = JSON.parse(init.body); dispatches.push(input); return Response.json({ id: init.headers["Idempotency-Key"], input, state: "done", result: { data: { reason: "dispatched" } } }); }
     if (url.startsWith?.("/api/plans/")) { posts.push([url, JSON.parse(init.body)]); return Response.json({ ok: true }); }
     if (url.startsWith?.("/api/tickets/")) return Response.json({ message: "Ticket not found" }, { status: 404 });
+    if (url.startsWith?.("/api/epics/")) {
+      epicReads++;
+      if (heldEpic) await heldEpic;
+      if (epicFailure) return Response.json({ message: "Could not read the Epic" }, { status: 502 });
+      const id = url.split("/").at(-1), titles = { moving: "Moving", launch: "Launch", shipped: "Shipped" };
+      return Response.json({ id, title: titles[id], status: "in_review", priority: "high", assignee: epicAssignee, description: epicDescription, acceptanceCriteria: "- Complete the whole outcome", comments: [{ id: "comment-1", author: "Epic owner", body: "<script>window.__epicXss=true</script>\n\nDiscuss the Epic.", createdAt: new Date().toISOString() }], url: `https://tracker.example/workspaces/w/epics/${id}` });
+    }
+
     return Response.json({ ...filterState, status: status.value });
   };
   try {
@@ -506,6 +515,29 @@ async function epicPanelTest() {
     title("Moving").click(); await pause(); await pause();
     assert(epicPanel.value === "moving" && panel()?.querySelector(".ticket-title").textContent === "Moving", "an Epic's title opens it in the side panel");
     assert(new URLSearchParams(location.search).get("epic") === "moving", "the panel is in the address");
+    assert(panel().textContent.includes("Shared Epic outcome.") && panel().textContent.includes("Complete the whole outcome"), "the Epic panel reads its description and acceptance criteria");
+    assert(panel().textContent.includes("In review") && panel().textContent.includes("Epic owner") && panel().textContent.includes("Discuss the Epic."), "canonical metadata and workspace discussion are visible");
+    assert(!window.__epicXss && !panel().querySelector("script") && panel().textContent.includes("<script>"), "Epic Markdown stays inert text");
+    epicDescription = "An updated Epic outcome.";
+    epicAssignee = "LongWorkspaceMemberName".repeat(12);
+    const beforeRefresh = epicReads;
+    heldEpic = new Promise(resolve => { releaseEpic = resolve; });
+    status.value = { ...status.value, upNext: { ...status.value.upNext, at: "2026-01-01T00:00:01Z" } }; await pause(); await pause();
+    for (const tick of [2, 3, 4]) { status.value = { ...status.value, upNext: { ...status.value.upNext, at: `2026-01-01T00:00:0${tick}Z` } }; await pause(); }
+    assert(epicReads === beforeRefresh + 1, "inventory bursts share an unfinished Epic read");
+    heldEpic = null; releaseEpic(); await pause(); await pause();
+    assert(epicReads === beforeRefresh + 2, "one follow-up settles the accumulated refreshes");
+    assert(panel().textContent.includes(epicDescription), "an inventory refresh updates metadata on an active Epic");
+    const assignee = panel().querySelector('[title^="Assignee:"]');
+    assert(assignee.getBoundingClientRect().right <= panel().getBoundingClientRect().right && assignee.scrollWidth <= assignee.clientWidth, "long workspace member names wrap inside the panel");
+    epicFailure = true;
+    status.value = { ...status.value, upNext: { ...status.value.upNext, at: "2026-01-01T00:00:05Z" } }; await pause(); await pause();
+    assert(panel().querySelector('[role="alert"]')?.textContent.includes("Could not read"), "failed metadata refreshes remain visible");
+    epicFailure = false;
+    byText("button", "Retry", panel()).click(); await pause(); await pause();
+    assert(!panel().querySelector('[role="alert"]') && panel().textContent.includes(epicDescription), "Retry settles the error and keeps the Epic available");
+
+
     assert(!epicSection("Moving").querySelector(".chain-row") && epicToggle("Moving").getAttribute("aria-expanded") === "false", "the panel leaves the row closed; the chevron opens it in place");
     assert(panel().querySelectorAll(".chain-row").length === 4 && panel().textContent.includes("2 tickets"), "the panel lists the Epic's tickets and what keeps it open");
     // A running Epic's overrides are its plan's own, not the page's start choices.
@@ -532,8 +564,13 @@ async function epicPanelTest() {
     assert(JSON.stringify(dispatches) === JSON.stringify([{ epic: "launch", model: "auto", overrideLimits: ["labels"] }]), `Run Epic dispatches the Epic: ${JSON.stringify(dispatches)}`);
     assert(posts.length === 2, "starting an Epic changes no plan");
     closeEpic(); await pause(); await pause();
+    root.querySelector("details.epic-finished summary").click(); await pause();
+    epicDescription = "Fresh details for a finished Epic.";
+    title("Shipped").click(); await pause(); await pause();
+    assert(panel().textContent.includes(epicDescription) && panel().querySelector('[title="Epic status"]')?.textContent === "In review" && panel().querySelector(".epic-state")?.textContent.includes("Done"), "finished plans read fresh metadata and keep canonical status apart from Factory state");
+    closeEpic(); await pause(); await pause();
     return { passed: true, viewport: [innerWidth, innerHeight] };
-  } finally { if (ticketPanel.value) closeTicket(); if (epicPanel.value) closeEpic(); window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]); }
+  } finally { releaseEpic?.(); if (ticketPanel.value) closeTicket(); if (epicPanel.value) closeEpic(); window.fetch = oldFetch; window.history.replaceState(null, "", oldUrl); operations.value = []; setSessionProvider("auto"); setSessionOverrides(["idle", "reserve", "labels"]); }
 }
 async function epics() {
   setSessionProvider("auto"); setSessionOverrides(["labels"]);

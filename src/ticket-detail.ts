@@ -40,3 +40,19 @@ export async function ticketDetail(c: Pick<Config, 'projects' | 'kanvil'>, kanvi
     url: `${c.kanvil.url.replace(/\/$/, '')}/projects/${encodeURIComponent(task.projectId)}/tickets/${encodeURIComponent(task.id)}`,
   };
 }
+
+// The same read boundary for an Epic, whose workspace and membership the Kanvil client checks.
+export async function epicDetail(c: Pick<Config, 'kanvil'>, kanvil: Pick<Kanvil, 'epic'>, id: string) {
+  if (!/^\w[\w-]{0,63}$/.test(id)) return null;
+  try {
+    const { epic, comments, members } = await kanvil.epic(id);
+    const name = (userId: string) => members.find(member => member.userId === userId)?.name ?? 'Former workspace member';
+    return {
+      id: epic.id, workspaceId: epic.workspaceId, title: epic.title, status: epic.status, priority: epic.priority,
+      assignee: epic.assigneeId ? name(epic.assigneeId) : null, archived: epic.archived,
+      description: epic.description, acceptanceCriteria: epic.acceptanceCriteria,
+      comments: comments.map(comment => ({ id: comment.id, body: comment.body, author: name(comment.actorId), createdAt: comment.createdAt })),
+      url: `${c.kanvil.url.replace(/\/$/, '')}/workspaces/${encodeURIComponent(epic.workspaceId)}/epics/${encodeURIComponent(epic.id)}`,
+    };
+  } catch (error) { if (error instanceof KanvilTaskNotFound) return null; throw error; }
+}

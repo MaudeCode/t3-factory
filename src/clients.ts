@@ -445,7 +445,13 @@ const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
   automationReady: z.boolean(), holdReason: z.string().nullable(), archived: z.boolean(), parentId: z.string().nullable(),
   acceptanceCriteria: z.string(), version: z.number().int().positive(),
 });
-const epicSchema = z.object({ id: z.string(), workspaceId: z.string(), title: z.string(), archived: z.boolean() }).passthrough();
+const epicSchema = z.object({
+  id: z.string(), workspaceId: z.string(), title: z.string(), archived: z.boolean(),
+  description: z.string().default(''), acceptanceCriteria: z.string().default(''),
+  status: nativeTicket.shape.status.default('todo'), priority: taskSchema.shape.priority.default('none'),
+  assigneeId: z.string().nullable().default(null),
+}).passthrough();
+const epicCommentSchema = z.object({ id: z.string(), workspaceId: z.string(), epicId: z.string(), actorId: z.string(), body: z.string(), createdAt: z.string() });
 export type Epic = z.infer<typeof epicSchema>;
 const projectSchema = z.object({ id: z.string(), workspaceId: z.string(), name: z.string(), key: z.string(), description: z.string().optional(), archivedAt: z.string().nullish() }).passthrough();
 const snapshotSchema = z.object({ project: projectSchema, tickets: z.array(nativeTicket), cursor: z.string().regex(/^\d+$/) });
@@ -581,6 +587,31 @@ export class Kanvil {
         return items;
       } catch (error) { if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404) return []; throw error; }
     }))).flat();
+  }
+  // A fresh workspace record for the panel, independent of the plan that may be running it.
+  async epic(epicId: string) {
+    let epic: Epic | undefined;
+    for (const workspaceId of this.workspaceIds()) {
+      try {
+        const row = epicSchema.parse(await this.request(`/workspaces/${encodeURIComponent(workspaceId)}/epics/${encodeURIComponent(epicId)}`));
+        if (row.id !== epicId || row.workspaceId !== workspaceId) throw new Error('Kanvil Epic ownership mismatch');
+        epic = row; break;
+      } catch (error) {
+        if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404) continue;
+        throw error;
+      }
+    }
+    if (!epic) throw new KanvilTaskNotFound('Kanvil Epic not found or inaccessible');
+    const base = `/workspaces/${encodeURIComponent(epic.workspaceId)}`;
+    const comments = await this.allPages(`${base}/epics/${encodeURIComponent(epic.id)}/comments`, epicCommentSchema).catch(error => {
+      // Older Kanvil versions have Epics but no workspace discussion endpoint.
+      if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404 && error.code === 'unclassified') return { items: [] };
+      throw error;
+    });
+    if (comments.items.some(row => row.workspaceId !== epic.workspaceId || row.epicId !== epic.id)) throw new Error('Kanvil Epic discussion ownership mismatch');
+    const members = epic.assigneeId || comments.items.length
+      ? z.array(z.object({ userId: z.string(), name: z.string() })).parse(await this.request(`${base}/members`)) : [];
+    return { epic, comments: comments.items, members };
   }
   // The tickets the caller can read and a count of the rest. A missing Epic stays an error: a running plan must not read it as empty.
   async epicTickets(epicId: string) {

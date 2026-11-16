@@ -138,6 +138,8 @@ export const STATE_LABELS = { dispatching: "Starting", running: "Running", waiti
 export const finishedAt = (job) => job.completedAt ?? job.dismissedAt ?? job.createdAt;
 export const byFinished = (a, b) => String(finishedAt(b)).localeCompare(String(finishedAt(a)));
 export const stateLabel = (state) => STATE_LABELS[state] ?? state;
+const TICKET_LABELS = { backlog: "Backlog", todo: "To do", in_progress: "In progress", in_review: "In review", done: "Done", cancelled: "Cancelled" };
+export const ticketStatusLabel = (status) => TICKET_LABELS[status] ?? status;
 // The four stops on a run's track, in order; a settled run also reaches the last stop.
 export const STOPS = ["Queued", "Working", "Needs you", "Done"];
 export const stopOf = (state) => ({ dispatching: 1, running: 2, waiting: 3, complete: 4, dismissed: 4 })[state] ?? 1;

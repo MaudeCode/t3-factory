@@ -1,3 +1,5 @@
+import { createServer as createHttpServer } from "node:http";
+import { serveControl } from "../src/control.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -143,4 +145,35 @@ test("state is pushed over the event stream whenever the factory writes, and run
     server.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test("Epic CLI reads directly even while an older scheduler socket is running", { timeout: 10000 }, async t => {
+  const f = dispatchFixture(t), controls: unknown[] = [], reads: string[] = [];
+  const control = serveControl(f.c.stateDir, async command => { controls.push(command); return { code: 1, data: { message: "Unsupported old scheduler command" } }; });
+  await new Promise<void>(resolve => control.once("listening", resolve));
+  const tracker = createHttpServer((req, res) => {
+    const path = new URL(req.url!, "http://fixture.invalid").pathname;
+    reads.push(path);
+    const epicPath = `/api/v1/workspaces/${f.c.kanvil.workspaceId}/epics/e1`;
+    res.writeHead(path === epicPath || path === `${epicPath}/comments` ? 200 : 404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(path === epicPath ? { id: "e1", workspaceId: f.c.kanvil.workspaceId, title: "CLI Epic", description: "Upgrade-safe read", archived: false } : path === `${epicPath}/comments` ? { items: [], total: 0 } : { error: { code: "not_found" } }));
+  });
+  await new Promise<void>(resolve => tracker.listen(0, "127.0.0.1", resolve));
+  const address = tracker.address(); assert(address && typeof address === "object");
+  f.c.kanvil.url = `http://127.0.0.1:${address.port}`;
+  const configFile = join(f.dir, "epic-config.jsonc"), envFile = join(f.dir, "epic.env");
+  writeFileSync(configFile, JSON.stringify(f.c)); writeFileSync(envFile, "");
+  const child = spawn(process.execPath, [new URL("../src/main.ts", import.meta.url).pathname, "epic", "e1"], { env: { ...process.env, T3_FACTORY_CONFIG: configFile, T3_FACTORY_ENV: envFile, KANVIL_API_KEY: "fixture-secret" }, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => { child.kill(); });
+  let output = "", errors = "";
+  child.stdout.on("data", chunk => { output += chunk; }); child.stderr.on("data", chunk => { errors += chunk; });
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+    assert.equal(code, 0, errors || output);
+    const detail = JSON.parse(output);
+    assert.equal(detail.title, "CLI Epic"); assert.equal(detail.status, "todo"); assert.deepEqual(detail.comments, []);
+    assert.deepEqual(controls, [], "a read never sends an unknown command to an older scheduler");
+    assert.equal(reads.length, 2, "the CLI uses the direct record and discussion reads");
+  } finally { child.kill(); await new Promise<void>(resolve => tracker.close(() => resolve())); await new Promise<void>(resolve => control.close(() => resolve())); }
 });
