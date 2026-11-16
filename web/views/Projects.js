@@ -90,8 +90,10 @@ function LabelLimits({ index, project }) {
         <span><${Tag}>${label}<//> <small class="muted">${n} ${mode === 'full' ? 'open' : 'running'}</small></span>
         <${Segmented} label=${`${label} block mode`} value=${mode} options=${[['full', 'Full block'], ['running', 'Running block']]} icons=${{ full: 'lock', running: 'play' }}
           onChange=${(mode) => set([...path, label], { limit: legacy ? setting : setting.limit, mode })} />
-        <${Slots} label=${`${label} runs at once`} path=${legacy ? [...path, label] : [...path, label, 'limit']} running=${n} busyLabel=${mode === 'full' ? 'reserved by an open run' : undefined} />
-        <${Button} variant="ghost" size="sm" icon="x" label=${`Remove the ${label} limit`} onClick=${() => update((c) => delete c.projects[index].labelLimits[label])} />
+        <div class="label-limit-runs">
+          <${Slots} label=${`${label} runs at once`} path=${legacy ? [...path, label] : [...path, label, 'limit']} running=${n} busyLabel=${mode === 'full' ? 'reserved by an open run' : undefined} />
+          <${Button} variant="ghost" size="sm" icon="x" label=${`Remove the ${label} limit`} onClick=${() => update((c) => delete c.projects[index].labelLimits[label])} />
+        </div>
       </div>`;
     })}
     <${LabelPicker} label="Limit a label" exclude=${new Set(Object.keys(limits))} onPick=${(v) => set([...path, v], 1)} />
