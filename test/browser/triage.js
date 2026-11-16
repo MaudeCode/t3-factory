@@ -220,6 +220,14 @@ async function promotion() {
   const group = (row) => rows()[row].querySelector('[role="radiogroup"]');
   const one = (row) => new Set([...group(row).children].map((el) => Math.round(el.getBoundingClientRect().top))).size === 1;
   assert(one(0) && one(1), 'both promotion pickers initially fit one line, including at 382px');
+  // A row too narrow for its choices scrolls sideways; each choice keeps a 44px target on touch screens.
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  const reachable = (row) => [...group(row).children].every((el) => {
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const r = el.getBoundingClientRect(), g = group(row).getBoundingClientRect();
+    return Math.round(r.left) >= Math.round(g.left) && Math.round(r.right) <= Math.round(g.right) && (!coarse || (r.width >= 44 && r.height >= 44));
+  });
+  assert(reachable(0) && reachable(1), 'every choice scrolls into view and keeps a 44px touch target with touch input');
   const choice = (row, name) => [...group(row).querySelectorAll('button')].find((b) => b.textContent === name || b.getAttribute('aria-label') === name);
   const checked = (row) => group(row).querySelector('[aria-checked="true"]')?.textContent;
   const state = (row) => lines()[row].textContent;

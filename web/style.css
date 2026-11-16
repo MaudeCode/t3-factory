@@ -1881,6 +1881,12 @@ body:has(.save-bar) .now-grid {
 .page-head .slots {
   flex-shrink: 0;
 }
+/* The head's strip scrolls as a whole, so its pickers lay out flat. */
+.page-head .slots {
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+}
 .page-head .chips button,
 .page-head .slots button {
   display: inline-flex;
@@ -2272,11 +2278,20 @@ h1 .crumb::after {
   font-weight: 600;
 }
 
-/* Run slots */
+/* Run slots: one row that scrolls sideways when the choices outgrow it, like the page head's strip.
+   The padding keeps the checked ring inside the scroll box; the margin cancels it in the layout. */
 .slots {
   display: flex;
   gap: 3px;
-  flex-wrap: wrap;
+  padding: 4px;
+  margin: -4px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.slots > * {
+  flex: none;
 }
 .slots button {
   font: inherit;
@@ -2334,6 +2349,7 @@ h1 .crumb::after {
 
 .label-limits {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
   justify-items: start;
 }
@@ -2342,9 +2358,17 @@ h1 .crumb::after {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  max-width: 100%;
 }
 .label-limit > span {
   min-width: 120px;
+}
+/* The limit and its remove button wrap together; the limit scrolls when the pair outgrows the row. */
+.label-limit-runs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 /* Priority ladder: one row per rank, drag to reorder; the last rows are the next rank and the unranked rest. */
@@ -2690,6 +2714,17 @@ h1 .crumb::after {
     --strip-fade-end: 0px;
   }
 }
+/* A sideways strip fades the edge that hides more controls. The scroll timeline is inactive when nothing
+   overflows, so a strip that fits shows no fade. Engines without scroll timelines keep plain edges:
+   unguarded, the zero-length animation would hold its last keyframe and fade the leading edge for good. */
+@supports (animation-timeline: scroll(self inline)) {
+  .page-actions,
+  .slots {
+    mask-image: linear-gradient(to right, transparent, #000 var(--strip-fade-start), #000 calc(100% - var(--strip-fade-end)), transparent);
+    animation: strip-fade linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
 @container page (max-width: 900px) {
   .next-secondary {
     display: none;
@@ -2780,16 +2815,6 @@ h1 .crumb::after {
     overscroll-behavior-x: contain;
     scrollbar-width: none;
   }
-  /* The strip fades the edge that hides more controls. The scroll timeline is inactive when nothing
-     overflows, so a strip that fits shows no fade. Engines without scroll timelines keep plain edges:
-     unguarded, the zero-length animation would hold its last keyframe and fade the leading edge for good. */
-  @supports (animation-timeline: scroll(self inline)) {
-    .page-actions {
-      mask-image: linear-gradient(to right, transparent, #000 var(--strip-fade-start), #000 calc(100% - var(--strip-fade-end)), transparent);
-      animation: strip-fade linear both;
-      animation-timeline: scroll(self inline);
-    }
-  }
   .page-actions > *,
   .page-actions .chips,
   .page-actions .slots {
@@ -2844,7 +2869,7 @@ h1 .crumb::after {
   .segmented button,
   .chips button,
   .popover .chips button,
-  .slot,
+  .slots > *,
   .next-toggle,
   .select li {
     min-height: 44px;
@@ -2854,7 +2879,8 @@ h1 .crumb::after {
   .wordmark,
   .segmented button,
   .chips button,
-  .popover .chips button {
+  .popover .chips button,
+  .slots button {
     min-width: 44px;
   }
   /* The page head sizes these at 32px for pointers; touch keeps its targets at every width. */
