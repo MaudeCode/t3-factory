@@ -210,7 +210,12 @@ export class Store {
     this.statement('INSERT INTO cleanup_actions VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(action.id, JSON.stringify(action));
     if (!before || action.outcomes.some(outcome => outcome.state === 'confirmed' && outcome.physicalRemoval === true && !before.outcomes.some(old => old.path === outcome.path && old.physicalRemoval === true))) this.onCleanupChange?.([...new Set(action.targets.map(target => target.projectId))]);
   }
-  plans(): Plan[] { return this.statement('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  // Plans in the order the scheduler serves them: the owner's saved order first, then the rest as created.
+  plans(): Plan[] {
+    const plans = this.statement('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string) as Plan);
+    const rank = new Map((JSON.parse(this.get('planOrder') || '[]') as string[]).map((id, i) => [id, i]));
+    return rank.size ? plans.map((plan, i) => ({ plan, at: rank.get(plan.id) ?? rank.size + i })).sort((a, b) => a.at - b.at).map(row => row.plan) : plans;
+  }
   plan(id: string): Plan | undefined { const row = this.statement('SELECT data FROM plans WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
   savePlan(plan: Plan) {
     const before = this.plan(plan.id);

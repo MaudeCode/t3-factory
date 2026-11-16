@@ -70,7 +70,7 @@ const dispatchSchema = z
     chain: z.enum(["first", "all"]).optional(),
     ticketKeyRevision: z.string().min(1).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
-    epic: z.string().regex(/^[\w-]{1,64}$/).optional(),
+    epic: z.string().regex(/^\w[\w-]{0,63}$/).optional(),
   })
   .strict()
   .refine(input => !input.upstream || (!input.ticket && !input.chain), "An upstream review cannot include ticket options")
@@ -418,6 +418,11 @@ export function createFactoryWeb(options: {
         const plan = path.match(/^\/api\/plans\/([\w-]{1,64})\/cancel$/);
         if (plan && req.method === "POST") {
           const result = await run(["plan-cancel", plan[1]]);
+          return json(res, result.code ? 409 : 200, result.data);
+        }
+        if (path === "/api/plans/order" && req.method === "POST") {
+          const { ids } = z.object({ ids: z.array(z.string().regex(/^\w[\w-]{0,63}$/)).min(1).max(200) }).strict().parse(await body(req));
+          const result = await run(["plan-order", ...ids]);
           return json(res, result.code ? 409 : 200, result.data);
         }
         const limits = path.match(/^\/api\/plans\/([\w-]{1,64})\/overrides$/);

@@ -694,10 +694,10 @@ async function epics() {
     assert(epicTitles() === "Moving,Launch,Paused,Hidden,Shipped,Stopped", "clearing restores every Epic");
     assert(!finishedGroup().open, "clearing closes the finished group again");
     assert(!root.querySelector(".epic .chain-row"), "clearing a search or filter collapses what it opened");
-    // Up next keeps chains only.
+    // Up next lists the running Epic with the chain, under Queued.
     stateTab("Up next").click(); await pause();
-    assert(!root.textContent.includes("Epic Moving") && !root.textContent.includes("Moving"), "a running Epic is gone from Up next's chains");
-    assert(root.textContent.includes("Chain to APP-15") && root.textContent.includes("Last") && byText("button", "Cancel chain"), "a chain keeps its title, target row and action");
+    assert(root.querySelector(".queued .epic")?.textContent.includes("Moving"), "a running Epic is listed under Queued on Up next");
+    assert(root.querySelector(".queued").textContent.includes("Chain to APP-15") && root.textContent.includes("Last") && root.querySelector('.queued button[aria-label="Cancel chain"]'), "a chain keeps its title, target row and action");
     stateTab("Epics").click(); await pause();
     // Nothing to show.
     status.value = { ...status.value, epics: [], plans: [] }; await pause();
@@ -728,7 +728,38 @@ async function showQueued() {
   await pause();
 }
 
-window.queueTests = { showQueued, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+// Up next with a running Epic, a chain and a queued run in one Queued list, and the order the page sends on a move.
+async function showOrder() {
+  await showEpics();
+  const run = { id: 'queued-run', queued: true, state: 'active', model: 'auto', overrideLimits: [], tickets: [], target: epicTicket(30, { note: 'Waiting for a free Codex slot' }) };
+  status.value = { ...status.value, plans: [...status.value.plans, run] };
+  navigate('/queue', true); await pause();
+}
+async function reorder() {
+  await showOrder();
+  const active = () => status.value.plans.filter(p => p.state === 'active').map(p => p.id), before = active();
+  const rows = () => [...root.querySelectorAll('.queued .sortable-row')];
+  assert(root.querySelectorAll('.queued').length === 1 && root.querySelector('.queued h2 small').textContent === String(before.length), 'queued runs, chains and running Epics share one counted section');
+  assert(rows().length === before.length && rows().every(row => row.querySelector('.grip')), 'each one is a row with a handle');
+  assert(before.join() === 'moving-plan,chain,queued-run' && rows()[0].querySelector('.epic'), 'the running Epic is listed with the chain and the queued run');
+  assert(rows()[1].textContent.includes('Chain to APP-15') && rows()[1].querySelectorAll('.chain-row').length === 3, 'a chain keeps its tickets under its own row');
+  const oldFetch = window.fetch, sent = [];
+  window.fetch = async (url, init) => {
+    if (url === '/api/plans/order') { sent.push(JSON.parse(init.body).ids); return Response.json({ ok: true }); }
+    return Response.json({ ...filterState, status: status.value });
+  };
+  try {
+    rows().at(-1).querySelector('.grip').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    for (let n = 0; n < 100 && !sent.length; n++) await pause();
+    await pause();
+    const want = 'moving-plan,queued-run,chain';
+    assert(sent.length === 1 && sent[0].join() === want, 'a move sends every active plan in its new order');
+    assert(active().join() === want && rows()[1].textContent.includes('APP-30'), 'the list shows the new order');
+  } finally { window.fetch = oldFetch; }
+  return { passed: true };
+}
+
+window.queueTests = { showOrder, reorder, showQueued, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

@@ -207,6 +207,13 @@ export const actions = {
       await load();
       message("Cancelled. Tickets already running finish on their own.");
     }),
+  // The order queued runs, chains and running Epics get free slots in. The list moves at once; the reload settles it.
+  orderPlans: async (ids) => {
+    const at = (p) => { const i = ids.indexOf(p.id); return i < 0 ? ids.length : i; };
+    status.value = { ...status.value, plans: [...(status.value.plans ?? [])].sort((a, b) => at(a) - at(b)) };
+    try { await post("/api/plans/order", { ids }); } catch (error) { message(error.message, true); }
+    await load();
+  },
   // The limits a running chain or Epic overrides from its next start on.
   planOverrides: (id, overrideLimits) =>
     run(async () => {
