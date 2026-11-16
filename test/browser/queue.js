@@ -520,10 +520,13 @@ async function epicPanelTest() {
     assert(!window.__epicXss && !panel().querySelector("script") && panel().textContent.includes("<script>"), "Epic Markdown stays inert text");
     epicDescription = "An updated Epic outcome.";
     epicAssignee = "LongWorkspaceMemberName".repeat(12);
-    const beforeRefresh = epicReads;
+    const beforeRefresh = epicReads, queueAt = status.value.upNext?.at;
+    const publish = at => { status.value = { ...status.value, at }; };
     heldEpic = new Promise(resolve => { releaseEpic = resolve; });
-    status.value = { ...status.value, upNext: { ...status.value.upNext, at: "2026-01-01T00:00:01Z" } }; await pause(); await pause();
-    for (const tick of [2, 3, 4]) { status.value = { ...status.value, upNext: { ...status.value.upNext, at: `2026-01-01T00:00:0${tick}Z` } }; await pause(); }
+    publish("2026-01-01T00:00:01Z"); await pause(); await pause();
+    assert(epicReads === beforeRefresh + 1, "a published status refresh rereads metadata while the queue is unchanged");
+    for (const tick of [2, 3, 4]) { publish(`2026-01-01T00:00:0${tick}Z`); await pause(); }
+    assert(status.value.upNext?.at === queueAt, "queue-content timestamps stay stable through metadata refreshes");
     assert(epicReads === beforeRefresh + 1, "inventory bursts share an unfinished Epic read");
     heldEpic = null; releaseEpic(); await pause(); await pause();
     assert(epicReads === beforeRefresh + 2, "one follow-up settles the accumulated refreshes");
@@ -531,7 +534,7 @@ async function epicPanelTest() {
     const assignee = panel().querySelector('[title^="Assignee:"]');
     assert(assignee.getBoundingClientRect().right <= panel().getBoundingClientRect().right && assignee.scrollWidth <= assignee.clientWidth, "long workspace member names wrap inside the panel");
     epicFailure = true;
-    status.value = { ...status.value, upNext: { ...status.value.upNext, at: "2026-01-01T00:00:05Z" } }; await pause(); await pause();
+    publish("2026-01-01T00:00:05Z"); await pause(); await pause();
     assert(panel().querySelector('[role="alert"]')?.textContent.includes("Could not read"), "failed metadata refreshes remain visible");
     epicFailure = false;
     byText("button", "Retry", panel()).click(); await pause(); await pause();

@@ -63,8 +63,8 @@ export function TicketPanel() {
   const path = key ? `/api/tickets/${encodeURIComponent(key)}` : epicKey ? `/api/epics/${encodeURIComponent(epicKey)}` : null;
   const [read, setRead] = useState({ path: null }), [retry, setRetry] = useState(0);
   const [tab, setTab] = useState("ticket"), resource = useRef(null);
-  // Inventory refreshes bring fresh tracker metadata to open Epic panels, including finished plans.
-  const refreshed = epicKey ? status.value.upNext?.at : null;
+  // Published status snapshots refresh open Epic panels even when the ticket queue is unchanged.
+  const refreshed = epicKey ? status.value.at : null;
   useEffect(() => {
     if (!path) return;
     let current = true, queued = false, running = false;
