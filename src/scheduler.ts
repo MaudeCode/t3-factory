@@ -255,10 +255,14 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
     }
     if (executing(t, c.monitoringTimeoutMinutes) || ['dispatching', 'running'].includes(job.state)) job.lastExecutionAt = t.updatedAt;
     job.thread = { title: t.title, status: t.status, branch: t.branch, worktreePath: t.worktreePath, updatedAt: t.updatedAt, pending: t.pendingRuntimeRequest?.kind ?? null, background: t.pendingBackgroundTasks.map(b => b.kind) };
+    // The session's linked pull requests, before any report names them, so a run waiting on CI shows its PR.
+    const linked = t.pullRequests.filter(p => p.source !== 'stack-dismissed').map(p => p.url);
+    if (linked.some(url => !job.prUrls.includes(url))) job.prUrls = [...new Set([...job.prUrls, ...linked])];
     if (waiting(t)) { job.state = 'waiting'; job.reason = 'T3 is awaiting human input'; }
     else if (executing(t, c.monitoringTimeoutMinutes)) {
       if (job.state === 'waiting') job.resumedAt = new Date().toISOString();
-      job.state = 'running'; job.reason = 'Claude is executing';
+      job.state = 'running';
+      job.reason = !executing(t, c.monitoringTimeoutMinutes, false) && t.pullRequests.some(p => p.watch != null) ? 'Waiting on pull request checks and review' : 'Claude is executing';
     }
     // An unfinished turn yielded to its commands; their notification resumes it. A current report is still verified below.
     else if (commandWait(t, c.monitoringTimeoutMinutes) && !currentReport(job, t)) { job.state = 'running'; job.reason = 'Waiting for background commands'; }

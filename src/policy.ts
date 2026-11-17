@@ -18,6 +18,8 @@ export const threadSchema = z.object({
   pendingRuntimeRequest: z.object({ kind: z.string(), createdAt: z.string() }).passthrough().nullable(),
   // T3 lists background work only once the latest run settles. Monitors include pull request watches.
   pendingBackgroundTasks: z.array(z.object({ taskId: z.string(), kind: z.string() }).passthrough()).default([]),
+  // Pull requests the session linked; `watch` is set while T3 watches one for CI and review.
+  pullRequests: z.array(z.object({ url: z.string(), source: z.string(), watch: z.unknown().optional() }).passthrough()).default([]),
   lineage: z.object({ parentThreadId: z.string().nullish(), relationshipToParent: z.string().nullish() }).passthrough().nullish(),
   settledOverride: z.enum(['settled', 'active']).nullable(),
   // Set by `T3.shell()`: the active run outlived every provider session, so it can never progress.
