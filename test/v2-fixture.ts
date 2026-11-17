@@ -14,7 +14,7 @@ export function v2Thread(overrides: Record<string, unknown> = {}): Thread {
     activeRunId: null, activityRunStartedAt: null, activityRunStatus: null,
     status: 'completed', lastError: null, lastErrorClass: null,
     pendingRuntimeRequest: null, latestVisibleMessage: null, latestUserMessageAt: at, latestUserAuthoredMessageAt: at,
-    hasActionableProposedPlan: false, pendingBackgroundTasks: [], providerInstanceHistory: ['claudeAgent'],
+    hasActionableProposedPlan: false, pendingBackgroundTasks: [], pullRequests: [], providerInstanceHistory: ['claudeAgent'],
     itemCount: 2, visibleItemCount: 2, createdAt: at, updatedAt: at, archivedAt: null,
     settledOverride: null, settledAt: null, unsettledAt: null, deletedAt: null,
     ...overrides,

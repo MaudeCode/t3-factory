@@ -189,3 +189,24 @@ test('a deleted thread dismisses its run; an archived or never-seen thread keeps
     assert.equal(jobs.get('unseen')!.state, 'dispatching', 'a launch T3 never showed may still land');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+// A run waiting on its pull request through T3's native watch has no report yet; the thread's linked PR puts it in CI.
+test('a settled turn watching its linked pull request is in CI with its PR before any report', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-pr-watch-')), store = new Store(dir);
+  const now = new Date().toISOString(), pr = 'https://github.com/example/app/pull/7';
+  const job: Job = { id: 'job', taskId: 'ticket', kind: 'ticket', projectId: 'project', ticketKey: 'FIX-1', threadId: 'owned-thread', messageId: 'initial', state: 'running', reason: 'Claude is executing', createdAt: now, reportPath: join(dir, 'job.json'), prUrls: [], lastPersonalActivity: null, command: null, completedAt: null };
+  const thread = v2Thread({ id: job.threadId, status: 'completed', updatedAt: now, latestRunCompletedAt: now, pendingBackgroundTasks: [{ taskId: 'pull-request-watch:github.com/example/app#7', kind: 'monitor' }],
+    pullRequests: [{ url: pr, source: 'created', watch: {} }, { url: 'https://github.com/example/app/pull/6', source: 'stack-dismissed' }] });
+  try {
+    store.save(job);
+    await reconcile({ monitoringTimeoutMinutes: 30 } as Config, store, {} as T3, {} as Kanvil, [thread], false);
+    const saved = store.job(job.id)!;
+    assert.deepEqual(saved.prUrls, [pr]);
+    assert.equal(saved.state, 'running');
+    assert.equal(saved.reason, 'Waiting on pull request checks and review');
+    thread.status = 'running'; thread.activeRunId = 'run-2';
+    await reconcile({ monitoringTimeoutMinutes: 30 } as Config, store, {} as T3, {} as Kanvil, [thread], false);
+    assert.deepEqual(store.job(job.id)!.prUrls, [pr], 'a linked PR is recorded once');
+    assert.equal(store.job(job.id)!.reason, 'Claude is executing');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
