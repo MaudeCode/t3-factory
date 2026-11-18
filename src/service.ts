@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, safeError, stopJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -181,10 +181,11 @@ export class FactoryService {
     this.scheduleAdmissions(reason, 'tickets');
     this.scheduleAdmissions(reason, 'chains');
     this.scheduleAdmissions(reason, 'upstream');
-    this.runLane('upstream-sources', async () => {
+    // Each pass begins here, so a followed workflow run is read again on every pass until it finishes.
+    for (const [lane, on, read] of [['upstream-sources', (c: Config) => c.upstream?.enabled, pendingReviews], ['repair-sources', (c: Config) => c.repair?.enabled, pendingRepairs]] as const) this.runLane(lane, async () => {
       const c = this.configure();
-      if (!c.upstream?.enabled) return;
-      await pendingReviews(c, this.store, this.store.jobSummaries());
+      if (!on(c)) return;
+      await read(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
     this.triage();
@@ -226,7 +227,7 @@ export class FactoryService {
         if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 && (driver === 'claudeAgent' || c.concurrency.claude > 0) && !plans.some(plan => skips({ manual: true, overrideLimits: plan.overrideLimits }).has('providers'))) return;
       } else {
         if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0) return;
-        if (workKind === 'tickets' ? !c.enabled : !c.upstream?.enabled) return;
+        if (workKind === 'tickets' ? !c.enabled : !c.upstream?.enabled && !c.repair?.enabled) return;
         if (!c.models.some(model => model.automatic && matches(model))) return;
       }
       await this.pass({}, reason, 0, workKind, driver);

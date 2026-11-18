@@ -3,7 +3,7 @@ import { html, useEffect, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow, openTicket } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest, STOPS, stopOf } from "../lib/format.js";
+import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest, STOPS, stopOf, RUN_KINDS } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, OrderChoice } from "./Deck.js";
 
@@ -122,7 +122,7 @@ export function RunDetail({ id, embedded }) {
     // A ticket in one of Factory's projects opens in the ticket panel; anything else keeps its tracker link.
     inFactory = factoryTicket(c, job);
   return html`<${Page} class="run-detail" title=${html`<a class="crumb" href=${embedded ? `/runs/${id}` : "/runs"} onClick=${follow}>${embedded ? "Run" : "Runs"}</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
-    lead=${`${job.historyOnly ? "Archived run" : job.kind === "upstream" ? "Upstream review" : job.kind === "discovery" ? "Discovery run" : "Ticket run"}${project ? ` in ${project.name}` : ""}`}
+    lead=${`${job.historyOnly ? "Archived run" : RUN_KINDS[job.kind]?.[1] ?? "Ticket run"}${project ? ` in ${project.name}` : ""}`}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))}>Stop run<//>`}>
     <div class="run-actions">
       ${job.threadId && html`<a class="btn btn-sm btn-primary" href=${threadLink(job)}>Open in T3 Code</a>`}

@@ -20,7 +20,7 @@ export function match(href) {
     return { page: path, param: tickets.length === 1 ? ticketKey(tickets[0]) : "", path };
   }
   // Settings has one tab per area; the bare address opens the first.
-  const settings = path.match(/^\/settings(?:\/(projects|models|limits|sources))?$/);
+  const settings = path.match(/^\/settings(?:\/(projects|models|limits|sources|repair))?$/);
   if (settings) return { page: "/settings", param: settings[1] ?? "projects", path };
   const run = path.match(/^\/runs\/([\w-]+)$/);
   if (run) return { page: "/runs/:id", param: run[1], path };

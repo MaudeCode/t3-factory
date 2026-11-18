@@ -66,6 +66,14 @@
     "promptFile": "/absolute/path/to/upstream-review.md",
     "checkMinutes": 360
   },
+  // Optional: required once any project lists repairWorkflows. Ships off; repair-resume turns it on.
+  // A failed run of a watched workflow on a project's base branch starts one repair run, then waits cooldownMinutes.
+  "repair": {
+    "enabled": false,
+    "promptFile": "/absolute/path/to/repair.md",
+    "cooldownMinutes": 60,
+    "checkMinutes": 30
+  },
   "factorySkill": "/absolute/path/to/software-factory/SKILL.md",
   "projects": [
     {
@@ -88,6 +96,9 @@
       // "inbox": { "kanvilId": "YOUR_INBOX_KANVIL_PROJECT_ID", "label": "intake", "maxPromotionsPerDay": 5 },
       // When the intake holds every new report, name that hold so promotion can ignore it:
       // "inbox": { "kanvilId": "YOUR_INBOX_KANVIL_PROJECT_ID", "label": "intake", "intakeHold": "Untrusted intake: human triage required" },
+      // Workflow files whose failed runs on baseBranch start a repair, e.g. main CI and the release workflow.
+      // "repairPromptFile" overrides repair.promptFile for this project.
+      "repairWorkflows": ["ci.yml", "release.yml"],
       "upstreams": [
         { "name": "Example library", "repo": "OWNER/LIBRARY", "prereleases": false, "firstBase": "v1.0.0" }
       ]

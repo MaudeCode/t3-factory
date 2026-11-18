@@ -31,15 +31,17 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
   resume: { path: ['enabled'], value: true, message: 'New dispatches enabled; quota and idle gates still apply.' },
   'upstream-pause': { path: ['upstream', 'enabled'], value: false, message: 'New upstream reviews paused. Running reviews continue.' },
   'upstream-resume': { path: ['upstream', 'enabled'], value: true, message: 'Upstream reviews enabled; quota and run limits still apply.' },
+  'repair-pause': { path: ['repair', 'enabled'], value: false, message: 'New CI repairs paused. Running repairs continue.' },
+  'repair-resume': { path: ['repair', 'enabled'], value: true, message: 'CI repairs enabled; the cooldown, quota and run limits still apply.' },
   'triage-pause': { path: ['triage', 'enabled'], value: false, message: 'Inbox triage paused. A running report finishes.' },
   'triage-resume': { path: ['triage', 'enabled'], value: true, message: 'Inbox triage enabled; the Claude quota reserve still applies.' },
 };
 // A section switch needs its section; the message names what is missing.
-const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', triage: 'No inbox triage is configured' };
+const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', repair: 'No CI repairs are configured', triage: 'No inbox triage is configured' };
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
-  const compact = (j: any) => ({ id: j.id, historyOnly: j.historyOnly, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
+  const compact = (j: any) => ({ id: j.id, historyOnly: j.historyOnly, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, repair: j.repair, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
   // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
   const viaService = async (args: string[], input?: unknown) => {
     const command = args[0] === 'cleanup' ? { type: 'cleanup' as const, input: cleanupRequestSchema.parse(input), operator: args[1] } : commandFor(args);
@@ -273,6 +275,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

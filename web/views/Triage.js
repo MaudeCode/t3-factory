@@ -2,8 +2,8 @@ import { html, useEffect, useState } from "../lib/h.js";
 import { config, status, live, busy, clock, serverNow, actions, launchOperations, TRIAGE_ORIGIN as ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, streamReason, ticketKey, triageSummary } from "../lib/format.js";
-import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, Switch } from "../ui/index.js";
-import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice } from "./Deck.js";
+import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page } from "../ui/index.js";
+import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice, SectionSwitch } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { follow, ticketClick } from "../lib/router.js";
 
@@ -180,7 +180,7 @@ export function Triage({ lead } = {}) {
   const waits = (status.value.triageDecision?.results ?? []).filter((r) => r.outcome === "waiting");
   const heldRow = (row) => ["waiting", "awaiting-promotion"].includes(row.event.data.outcome) ? (waits.find((r) => r.ticket === row.event.data.ticket) ?? waits.find((r) => r.admission))?.reason : undefined;
   return html`<${Page} title="Sources" hint=${HINT}
-    actions=${html`${c.triage && html`<label class="automation"><${Switch} label="Inbox triage" checked=${live.value.triage} disabled=${busy.value} onChange=${() => actions.toggle("triage")} /><b>${live.value.triage ? "Triage on" : "Triage paused"}</b></label><${StartOptions} limits=${["reserve"]} />`}<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
+    actions=${html`${c.triage && html`<${SectionSwitch} kind="triage" label="Inbox triage" on="Triage on" off="Triage paused" /><${StartOptions} limits=${["reserve"]} />`}<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
     ${lead}
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Triage settings" title="Triage settings"><${Icon} name="gear" /></a>`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on.</p>`}

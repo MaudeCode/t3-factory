@@ -91,13 +91,16 @@ export const STREAM_REASONS = {
 };
 export const streamReason = (reason) => STREAM_REASONS[reason] ?? (reason ? reason.replaceAll("-", " ") : "watching the queue");
 
+// What a dispatch decision started; the scheduler's journal and the web app say it the same way.
+export const startedWork = (d) => d.ticket ?? (d.upstream ? `a review of ${d.upstream.name} ${d.upstream.candidate}` : d.repair ? `a repair of ${d.repair.workflow} run ${d.repair.runId}` : `discovery for ${d.project}`);
+
 // One sentence for the last scheduler check.
 export function decisionSentence(decision) {
   if (!decision) return "No check has run yet.";
   const d = decision;
   if (d.reason === "disabled") return "";
   if (d.reason === "error") return `The last check failed: ${d.message}`;
-  if (d.reason === "dispatched") return `Started ${d.ticket ?? (d.upstream ? `a review of ${d.upstream.name} ${d.upstream.candidate}` : `discovery for ${d.project}`)} on ${d.model}.`;
+  if (d.reason === "dispatched") return `Started ${startedWork(d)} on ${d.model}.`;
   // Provider state is on the cards below; only the queue outcome is said here.
   return d.eligible ? `${d.eligible} ticket${d.eligible === 1 ? "" : "s"} eligible.` : "Nothing eligible to start.";
 }
@@ -204,8 +207,10 @@ export const modelName = (config, job) => {
 // A run's ticket key when the ticket is in one of Factory's projects, so the ticket panel can read it.
 export const factoryTicket = (config, job) => {
   const key = ticketKey(job.label), project = projectOf(config, job);
-  return job.kind !== "upstream" && job.kind !== "discovery" && project?.key && key.startsWith(`${project.key}-`) ? key : "";
+  return !RUN_KINDS[job.kind] && project?.key && key.startsWith(`${project.key}-`) ? key : "";
 };
+// Runs that are not ticket runs: the short name on a run row and the long one on a run's page.
+export const RUN_KINDS = { upstream: ["review", "Upstream review"], discovery: ["discovery", "Discovery run"], repair: ["repair", "CI repair"] };
 export const byNewest = (a, b) => String(b.createdAt).localeCompare(String(a.createdAt));
 
 // Convert an input's string value to the configured type.
