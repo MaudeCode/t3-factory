@@ -135,6 +135,18 @@ for (const passed of [false, true]) test(`repair cooldown: a failure seen during
   assert.equal(gh.runReads(), 2, 'the end of the cooldown is a reason to read');
 });
 
+test('repair cooldown: a failed read when the cooldown ends holds a stale failure until a read succeeds', async t => {
+  const { dir, c, store, gh } = fixture(t);
+  const jobs = [repairJob({ completedAt: at(-50) })];
+  gh.runs('ci.yml', [run(5, 'failure', -1)]); gh.jobs(5, ['deploy']);
+  assert.deepEqual(await pendingRepairs(c, store, jobs, t0), []);
+  rmSync(join(dir, 'runs-ci.yml.json'));
+  assert.deepEqual(await pendingRepairs(c, store, jobs, t0 + 11 * 60_000), [], 'the cached failure may be superseded; nothing starts while its result is unknown');
+  gh.runs('ci.yml', [run(6, 'success', 5), run(5, 'failure', -1)]);
+  assert.deepEqual(await pendingRepairs(c, store, jobs, t0 + 11 * 60_000 + 15_000), [], 'the next pass reads again and finds the newer pass');
+  assert.equal(gh.runReads(), 3);
+});
+
 test('repair status: each watched workflow shows its newest result, the run being followed, the last repair and the cooldown', async t => {
   const { c, store, gh } = fixture(t);
   store.save(repairJob({ completedAt: at(-10), unrepaired: ['deploy'] }));
@@ -169,6 +181,7 @@ test('repair dispatch: a failed run takes the free slot ahead of a ready ticket,
   assert.deepEqual({ ...launch.workspaceStrategy, branch: String(launch.workspaceStrategy.branch).replace(/[0-9a-f]{8}$/, 'ID') }, { type: 'worktree', baseRef: 'main', branch: 'fix/factory-repair-ID', startFromOrigin: true });
   assert.match(launch.initialMessage.text, /The `ci\.yml` workflow of `fixture\/FIX` failed on its release branch: run 5 \(https:\/\/github\.com\/fixture\/app\/actions\/runs\/5\) at commit `sha-5`\. These jobs failed:\n\n- test\n- deploy\n/);
   assert.match(launch.initialMessage.text, /"repairedJobs"/, 'the report names the jobs it repaired and left');
+  assert.match(launch.initialMessage.text, /<software-factory-skill>\nSource: [^\n]+\n[^\n]+\n\n# Software factory\n<\/software-factory-skill>/, 'a repair publishes and merges under the configured delivery workflow');
   assert.deepEqual(store.jobs().map(j => [j.kind, j.repair?.runId]), [['repair', 5]]);
   await cycle(configSchema.parse(c), store, {}, { t3: f.t3, kanvil: f.kanvil });
   assert.equal(f.launches.length, 1, 'the same run never gets a second repair');

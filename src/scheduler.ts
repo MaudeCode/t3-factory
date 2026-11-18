@@ -140,7 +140,7 @@ function repairState(c: Config, project: Project, workflow: string, store: Store
   const gaveUp = !!last?.repair?.unrepaired?.length && !!run?.failedJobs?.length && run.failedJobs.every(name => last.repair!.unrepaired!.includes(name))
     && !(Date.parse(watch.passedAt ?? '') > ended(last));
   const hold = !run || !FAILED.includes(run.conclusion) ? null : !c.repair?.enabled ? 'Repairs are paused' : !project.enabled ? 'Project is off'
-    : active ? 'A repair is running' : cooldownEndsAt > now ? 'Cooling down' : owned.some(j => j.repair!.runId === run.id) ? 'This run already had a repair'
+    : watch.error ? 'The last read failed; the newest result is unknown' : active ? 'A repair is running' : cooldownEndsAt > now ? 'Cooling down' : owned.some(j => j.repair!.runId === run.id) ? 'This run already had a repair'
     : gaveUp ? 'The last repair could not repair these jobs' : !run.failedJobs ? 'Failed jobs not read yet' : null;
   return { watch, active, last, cooldownEndsAt, due: !!run && FAILED.includes(run.conclusion) && !hold, hold };
 }
@@ -171,12 +171,12 @@ export async function pendingRepairs(c: Config, store: Store, jobs: RepairJobs, 
     const watch = readWatch(store, project, workflow), checkedAt = watch.checkedAt ?? 0;
     const { cooldownEndsAt } = repairState(c, project, workflow, store, jobs, now);
     const expected = Date.parse(store.get(`repairExpect:${project.kanvilId}`) ?? '') || 0;
-    const due = !checkedAt || (!!watch.following && now - checkedAt >= FOLLOW_SECONDS * 1000) || expected > checkedAt
+    // A failed read holds admission (see repairState) and is retried on the next pass.
+    const due = !checkedAt || ((!!watch.following || !!watch.error) && now - checkedAt >= FOLLOW_SECONDS * 1000) || expected > checkedAt
       || (checkedAt < cooldownEndsAt && cooldownEndsAt <= now) || now - checkedAt >= c.repair!.checkMinutes * 60_000;
     if (refresh && due) {
       try { store.set(watchKey(project, workflow), JSON.stringify(await readWorkflow(project, workflow, watch, now))); }
       catch (error) {
-        // A failed read also waits for the next reason to read.
         store.set(watchKey(project, workflow), JSON.stringify({ ...watch, checkedAt: now, error: safeError(error) }));
         log('repair-check-failed', { repo: project.githubRepo, workflow, reason: safeError(error) });
       }
