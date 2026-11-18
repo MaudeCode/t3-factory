@@ -32,8 +32,12 @@ import {
   OVERRIDES,
   overrideText,
   operationText,
+  RUN_KINDS,
 } from "../lib/format.js";
-import { Button, Select, Segmented, Chips, Meter, Icon, Tag, Empty, Meta, RowBody, Section, More, Popover } from "../ui/index.js";
+import { Button, Select, Segmented, Chips, Meter, Icon, Tag, Empty, Meta, RowBody, Section, More, Popover, Switch } from "../ui/index.js";
+
+// The switch of a section with its own pause (inbox triage, upstream reviews, CI repairs), for its page's actions.
+export const SectionSwitch = ({ kind, label, on, off }) => html`<label class="automation"><${Switch} label=${label} checked=${live.value[kind]} disabled=${busy.value} onChange=${() => actions.toggle(kind)} /><b>${live.value[kind] ? on : off}</b></label>`;
 
 
 export function Machine({ provider }) {
@@ -256,7 +260,7 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
   <//>`;
 }
 
-// One run. Used on the deck, the runs page, and upstream reviews.
+// One run. Used on the deck, the runs page, upstream reviews and CI repairs.
 // `selected` is set by the Runs list: true marks the row as the run shown beside it, and either value keeps the click in place.
 export function RunRow({ job, now = serverNow(), showProject = true, selected }) {
   const c = config.value,
@@ -281,7 +285,7 @@ export function RunRow({ job, now = serverNow(), showProject = true, selected })
   const note = waiting ? (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason) : job.state === "dismissed" && !/^Dismissed by settling/.test(job.reason ?? "") ? job.reason : "";
   return html`<${TicketRow} ticket=${{ ...job, id: job.taskId, key: job.label, title: job.thread?.title }} project=${project} plain
     link=${{ href: `/runs/${job.id}`, onClick: open, "aria-current": selected ? "true" : undefined }}
-    meta=${{ project: showProject ? project?.name : undefined, difficulty: job.difficulty, kind: job.kind && job.kind !== "ticket" && (job.kind === "upstream" ? "review" : "discovery"), model: html`<span title=${`Model: ${providerName(providerOf(job))} ${modelName(c, job)}`}><${Icon} name=${providerIcon(providerOf(job))} /> ${modelName(c, job)}</span>` }}
+    meta=${{ project: showProject ? project?.name : undefined, difficulty: job.difficulty, kind: RUN_KINDS[job.kind]?.[0], model: html`<span title=${`Model: ${providerName(providerOf(job))} ${modelName(c, job)}`}><${Icon} name=${providerIcon(providerOf(job))} /> ${modelName(c, job)}</span>` }}
     badge=${html`<${Tag} state=${job.state} title=${note || stateLabel(job.state)} />`}
     actions=${html`<a class="btn btn-sm btn-icon next-run" href=${`/runs/${job.id}`} onClick=${open} aria-label=${`Open run ${job.label}`} title=${`Open run ${job.label}`}><${Icon} name="arrowRight" /><//>`}
     secondaryActions=${(ticket || prs.length > 0 || job.threadId) && html`${ticket && html`<a class="btn btn-sm btn-icon next-run" href=${ticket} target="_blank" rel="noopener noreferrer" aria-label=${`Open ticket ${job.label}`} title=${`Open ticket ${job.label}`}><${Icon} name="tag" /><span class="next-action-label">Open ticket</span></a>`}

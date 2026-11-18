@@ -15,14 +15,21 @@ const initial = {
   kanvil: { url: "https://tracker.example", workspaceId: "w" },
   models: [{ id: "m1", name: "Example model", automatic: true, maxDifficulty: "high", model: { instanceId: "codex", model: "example" } }],
   triage: { enabled: true, promptFile: "/prompts/triage.md" }, discovery: { promptFile: "/prompts/discovery.md", emptyCooldownHours: 24 }, upstream: { enabled: true, promptFile: "/prompts/review.md", checkMinutes: 360 },
-  projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true, githubRepo: "example/app", repoPath: "/repos/app", baseBranch: "main", readyStatuses: ["todo"], doneStatuses: ["done"], priorityLabels: [], labelLimits: {}, upstreams: [], scopes: ["app"], inbox: { kanvilId: "pin", label: "intake", maxPromotionsPerDay: 10 } }],
+  repair: { enabled: false, promptFile: "/prompts/repair.md", cooldownMinutes: 60, checkMinutes: 30 },
+  projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true, githubRepo: "example/app", repoPath: "/repos/app", baseBranch: "main", readyStatuses: ["todo"], doneStatuses: ["done"], priorityLabels: [], labelLimits: {}, upstreams: [], repairWorkflows: ["ci.yml"], scopes: ["app"], inbox: { kanvilId: "pin", label: "intake", maxPromotionsPerDay: 10 } }],
 };
 let saved, writes;
-const state = () => ({ config: saved, status: { jobs: [], journal: [], triageEnabled: true, triageStreams: [{ project: "Example", projectId: "p", inboxId: "pin", label: "intake", synchronized: true, untriaged: 0, failed: 0, running: null, promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: 10 }], triageResults: [], triageReports: [] } });
+const state = () => ({ config: saved, status: { jobs: [], journal: [], triageEnabled: true, triageStreams: [{ project: "Example", projectId: "p", inboxId: "pin", label: "intake", synchronized: true, untriaged: 0, failed: 0, running: null, promoted: 0, queued: 0, blocked: 0, needsOwner: 0, limit: 10 }], triageResults: [], triageReports: [],
+  repairs: [{ project: "Example", projectId: "p", repo: "example/app", branch: "main", workflow: "ci.yml", checkedAt: new Date(Date.now() - 60_000).toISOString(), checkError: null, repairing: false, pending: false, hold: "Cooling down",
+    finished: { id: 812, status: "completed", conclusion: "failure", url: "https://github.com/example/app/actions/runs/812", failedJobs: ["test (ubuntu-latest)", "lint"] },
+    following: { id: 813, status: "in_progress", conclusion: "", url: "https://github.com/example/app/actions/runs/813" },
+    lastRepair: { jobId: "r1", state: "complete", runId: 807, endedAt: new Date(Date.now() - 20 * 60_000).toISOString(), repaired: ["test (ubuntu-latest)"], unrepaired: ["deploy"] },
+    cooldownEndsAt: new Date(Date.now() + 40 * 60_000).toISOString() }] } });
 window.fetch = async (url, init) => {
   if (url === "/api/config" && init?.method === "POST") { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
   if (url === "/api/sources") return Response.json({ t3: [], kanvil: { projects: [], columns: {}, labels: ["app", "web"] } });
   if (url === "/api/history") return Response.json([]);
+  if (url === "/api/repair/enabled" && init?.method === "POST") { saved = { ...saved, repair: { ...saved.repair, enabled: JSON.parse(init.body).enabled } }; return Response.json({ ok: true }); }
   return Response.json(state());
 };
 async function show(path = "/settings") {
@@ -51,7 +58,7 @@ async function run() {
     await show(old);
     assert(here() === now && main().querySelector("h1").textContent.includes("Settings") && tab(name).getAttribute("aria-checked") === "true", `${old} opens the ${name} tab at ${now}: ${here()}`);
   }
-  assert(tabs().map((t) => t.textContent).join() === "Projects,Models,Limits,Sources", "four tabs");
+  assert(tabs().map((t) => t.textContent).join() === "Projects,Models,Limits,Sources,Repair", "five tabs");
   // Navigation: work first, then upkeep, Settings last.
   const names = [...root.querySelectorAll(".side nav a span")].map((el) => el.textContent.trim());
   if (names.length) assert(names.join() === "Now,Queue,Runs,Sources,Log,Storage,Settings", `the sidebar reads work, then upkeep: ${names}`);
@@ -95,5 +102,25 @@ async function run() {
   assert(document.documentElement.scrollWidth <= innerWidth, "Settings fits the viewport");
   return { passed: true, viewport: [innerWidth, innerHeight], writes: writes.length };
 }
-window.settingsTests = { show, run };
+// Repair tab: its own switch, the cooldown and interval controls, each project's workflows, and each workflow's live row.
+async function runRepair() {
+  await show("/settings/repair");
+  assert(tab("Repair").getAttribute("aria-checked") === "true", "the Repair tab has its address");
+  const c = () => store.config.value;
+  const toggle = main().querySelector('.page-head [role="switch"][aria-label="CI repairs"]');
+  assert(toggle && !toggle.checked && main().querySelector(".page-head .automation b").textContent === "Repairs paused", "the switch shows repairs paused");
+  toggle.click(); await pause(200);
+  assert(saved.repair.enabled === true && saved.upstream.enabled === true && saved.enabled === false && main().querySelector(".page-head .automation b").textContent === "Repairs on", "the switch flips only repairs");
+  assert(field("After a repair, wait")?.querySelector('input[type="range"]') && field("Look for runs every")?.querySelector('input[type="range"]'), "the cooldown and the check interval are ranges");
+  await type(field("Prompt file on your Mac").querySelector("input"), "/prompts/repair-2.md");
+  const chips = main().querySelector('[role="group"][aria-label="Example workflows"]');
+  await type(chips.querySelector("input"), "release.yml");
+  chips.querySelector("input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await pause();
+  assert(c().repair.promptFile === "/prompts/repair-2.md" && c().projects[0].repairWorkflows.join() === "ci.yml,release.yml", `the prompt and workflows edit the config: ${c().projects[0].repairWorkflows}`);
+  const row = main().querySelector(".release");
+  assert(row && /failing/.test(row.textContent) && /812 failure: test \(ubuntu-latest\), lint/.test(row.textContent) && /813 in progress/.test(row.textContent) && /run 807/.test(row.textContent) && /left deploy/.test(row.textContent) && /cooldown ends in/.test(row.textContent), `the workflow row shows its result, followed run, last repair and cooldown: ${row?.textContent}`);
+  assert(document.documentElement.scrollWidth <= innerWidth, "the Repair tab fits the viewport");
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.settingsTests = { show, run, runRepair };
 await show();

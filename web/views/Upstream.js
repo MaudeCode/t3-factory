@@ -1,8 +1,8 @@
 import { html, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
+import { config, status, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
-import { Button, Switch, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody, Icon } from "../ui/index.js";
-import { RunGroup, Operations } from "./Deck.js";
+import { Button, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody, Icon } from "../ui/index.js";
+import { RunGroup, Operations, SectionSwitch } from "./Deck.js";
 import { follow } from "../lib/router.js";
 
 const minutes = (n) => span(n * 60);
@@ -66,7 +66,7 @@ export function Upstream({ lead } = {}) {
   const reviews = jobs.value.filter((j) => j.kind === "upstream").sort(byNewest),
     minutesDefault = c.upstream.checkMinutes;
   return html`<${Page} title="Sources" hint="Each new release of a watched repository gets a review run that files tickets for anything worth adopting."
-    actions=${html`<label class="automation"><${Switch} label="Upstream reviews" checked=${live.value.upstream} disabled=${busy.value} onChange=${() => actions.toggle("upstream")} /><b>${live.value.upstream ? "Reviews on" : "Reviews paused"}</b></label>`}>
+    actions=${html`<${SectionSwitch} kind="upstream" label="Upstream reviews" on="Reviews on" off="Reviews paused" />`}>
     ${lead}
     <${WatchDialog} key=${edit ? `${edit.project}-${edit.index ?? "new"}` : "closed"} edit=${edit} onClose=${() => setEdit(null)} />
     ${requests.length > 0 && html`<${Section}><${Operations} list=${requests} /><//>`}

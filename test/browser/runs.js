@@ -12,7 +12,7 @@ const assert = (ok, message) => { if (!ok) throw new Error(message); };
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const job = (n, state, extra = {}) => ({ id: `run-${n}`, label: `APP-${n}`, taskId: `t${n}`, threadId: `th${n}`, projectId: "p", state, createdAt: ago(n * 3 + 5), lastExecutionAt: ago(1), providerDriver: "claudeAgent", difficulty: "med", thread: { title: `Synthetic ticket ${n}`, branch: `feat/APP-${n}-factory-x`, status: "running" }, ...extra });
 // Thirty runs so the list scrolls; one waits on the owner and is not the newest.
-const jobs = [...Array.from({ length: 28 }, (_, i) => job(i + 1, "running", i === 0 ? { prUrls: ["https://github.com/example/app/pull/7"] } : {})), job(40, "waiting", { reason: "Parked for inspection", thread: { title: "Needs a decision", pending: "question" } }), job(50, "complete", { completedAt: ago(2) })];
+const jobs = [...Array.from({ length: 28 }, (_, i) => job(i + 1, "running", i === 0 ? { prUrls: ["https://github.com/example/app/pull/7"] } : {})), job(40, "waiting", { reason: "Parked for inspection", thread: { title: "Needs a decision", pending: "question" } }), job(50, "complete", { completedAt: ago(2), kind: "repair", label: "ci.yml run 812", taskId: null, thread: { title: "CI repair: Example ci.yml run 812", status: "completed" } })];
 const state = {
   config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], kanvil: { url: "https://tracker.example", workspaceId: "w" }, projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true }] },
   status: { jobs, journal: [] },
@@ -107,6 +107,7 @@ async function run() {
   assert(detail().querySelector(".callout").textContent.includes("asked a question") && detail().querySelector(".run-track .now").textContent === "Needs you", "a waiting run shows what it waits for");
   await show("/runs/run-50");
   assert(detail().textContent.includes("Merged and verified.") && detail().querySelector(".run-track .now").textContent === "Done", "a finished run shows its report");
+  assert(detail().textContent.includes("CI repair in Example"), "a repair run is named as its own kind");
   // An unknown run reports the error where the detail goes and leaves the list usable.
   await show("/runs/missing");
   assert(detail().textContent.includes("Run not found") && (!wide || (visible(list()) && keys().length === 29)), "an unknown run is reported in the detail area");

@@ -1,4 +1,5 @@
 import { canonicalPath } from './workspace.ts';
+import { startedWork } from '../web/lib/format.js';
 import type { CleanupAction } from './cleanup.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
@@ -18,9 +19,11 @@ export interface Job {
   historyOnly?: boolean;
   sourceIdentity?: { backend: 'kaneo'; projectId: string; taskId: string | null; ticketKey: string | null };
   requestId?: string;
-  id: string; kind: 'ticket' | 'discovery' | 'upstream'; projectId: string; taskId: string | null;
+  id: string; kind: 'ticket' | 'discovery' | 'upstream' | 'repair'; projectId: string; taskId: string | null;
   // An upstream review covers base..candidate of one watched repository.
   upstream?: { name: string; repo: string; base: string; candidate: string };
+  // A repair covers one failed run of a watched workflow; its report fills in the failed jobs it repaired and those it did not.
+  repair?: { workflow: string; runId: number; runUrl: string; sha: string; failedJobs: string[]; repaired?: string[]; unrepaired?: string[] };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
   lastPersonalActivity: string | null; reportPath: string; command?: unknown;
@@ -49,8 +52,8 @@ export interface Job {
   workspaceCleanupBlockedAt?: string;
   workspaceCleanupAttemptedAt?: string;
 }
-export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream'>): string {
-  return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : 'Discovery');
+export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream' | 'repair'>): string {
+  return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : job.repair ? `${job.repair.workflow} run ${job.repair.runId}` : 'Discovery');
 }
 // A chain: the unfinished tickets that must finish before a target ticket, run in priority order as they unblock.
 // An Epic plan has no target: its tickets are the Epic's unfinished members and their blockers, re-read on every pass.
@@ -96,7 +99,7 @@ const STREAM_TEXT: Record<string, string> = {
   'needs-classification': 'tickets need difficulty labels', 'no-eligible-ticket': 'watching the queue', dispatched: 'starting work', 'would-dispatch': 'ready to start',
 };
 export function decisionText(result: { reason: string } & Record<string, unknown>): string {
-  if (result.reason === 'dispatched') return `Started ${result.ticket ?? (result.upstream ? `review of ${(result.upstream as any).name} ${(result.upstream as any).candidate}` : `discovery for ${result.project}`)} on ${result.model}`;
+  if (result.reason === 'dispatched') return `Started ${startedWork(result)} on ${result.model}`;
   if (result.reason === 'error') return `Check failed: ${result.message}`;
   if (result.reason === 'disabled') return 'Automation paused';
   const streams = result.streams as { provider: string; reason: string }[] | undefined;

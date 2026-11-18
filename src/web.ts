@@ -81,6 +81,7 @@ const requestId = z.string().uuid();
 const toggles: Record<string, [string, string]> = {
   "/api/enabled": ["pause", "resume"],
   "/api/upstream/enabled": ["upstream-pause", "upstream-resume"],
+  "/api/repair/enabled": ["repair-pause", "repair-resume"],
   "/api/triage/enabled": ["triage-pause", "triage-resume"],
 };
 

@@ -80,6 +80,9 @@ export const configSchema = z.preprocess(input => {
   upstream: z.object({ enabled: z.boolean().default(false), promptFile: absolute, checkMinutes: positive.default(360) }).strict().optional(),
   // Untrusted intake: a read-only, network-less model run whose JSON output factory code applies.
   // Its own switch, like upstream reviews; each project names its inbox.
+  // Repairs of a watched workflow's failed run on a project's base branch; their own switch, like upstream reviews.
+  // `checkMinutes` is the slow read for runs the scheduler has no reason to expect; an unfinished run is read on every pass.
+  repair: z.object({ enabled: z.boolean().default(false), promptFile: absolute, cooldownMinutes: positive.default(60), checkMinutes: positive.default(30) }).strict().optional(),
   triage: z.object({ enabled: z.boolean().default(false), concurrency: z.number().int().positive().default(3), quotaReservePercent: z.number().positive().max(100).default(5), promptFile: absolute }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
@@ -96,6 +99,9 @@ export const configSchema = z.preprocess(input => {
       z.object({ limit: z.number().int().min(0), mode: z.enum(['full', 'running']) }).strict(),
     ])).default({}),
     discoveryPromptFile: absolute.optional(),
+    // Workflow files (for example ci.yml) whose failed runs on baseBranch start a repair; none means not watched.
+    repairWorkflows: z.array(z.string().trim().min(1)).refine(files => new Set(files).size === files.length, 'Workflows must be unique').default([]),
+    repairPromptFile: absolute.optional(),
     // Allowed native scopes, for example the triage output's scope allowlist.
     scopes: z.array(z.string().trim().min(1)).refine(scopes => new Set(scopes).size === scopes.length, 'Scopes must be unique').optional(),
     // A Kanvil project of untrusted reports about this project; triage targets this project and its repository.
@@ -126,6 +132,7 @@ export const configSchema = z.preprocess(input => {
   const upstreams = c.projects.flatMap(p => p.upstreams.map(u => u.repo));
   if (new Set(upstreams).size !== upstreams.length) ctx.addIssue({ code: 'custom', message: 'Each upstream repository can be watched by only one project' });
   if (upstreams.length && !c.upstream) ctx.addIssue({ code: 'custom', path: ['upstream'], message: 'Watched upstreams need upstream.promptFile' });
+  if (c.projects.some(p => p.repairWorkflows.length) && !c.repair) ctx.addIssue({ code: 'custom', path: ['repair'], message: 'Watched workflows need repair.promptFile' });
   // Inbox tickets are never dispatched: an inbox cannot be a delivery project, and feeds exactly one project.
   const inboxIds = c.projects.flatMap(p => p.inbox ? [p.inbox.kanvilId] : []);
   c.projects.forEach((p, i) => {

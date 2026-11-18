@@ -9,8 +9,9 @@ import { Projects } from "./Projects.js";
 import { Models } from "./Models.js";
 import { Capacity } from "./Capacity.js";
 import { TriageSettings } from "./Triage.js";
+import { Repair } from "./Repair.js";
 
-const TABS = [["projects", "Projects"], ["models", "Models"], ["limits", "Limits"], ["sources", "Sources"]];
+const TABS = [["projects", "Projects"], ["models", "Models"], ["limits", "Limits"], ["sources", "Sources"], ["repair", "Repair"]];
 const minutes = (m) => span(m * 60);
 
 // What each source reads and how often: the prompt files, intervals and promotion limits, in one place.
@@ -38,6 +39,6 @@ function SourceSettings({ lead }) {
 
 export function Settings({ id: tab = "projects" } = {}) {
   const lead = html`<${Segmented} label="Settings" value=${tab} onChange=${(v) => navigate(`/settings/${v}`)} options=${TABS} />`;
-  const View = { projects: Projects, models: Models, limits: Capacity, sources: SourceSettings }[tab] ?? Projects;
+  const View = { projects: Projects, models: Models, limits: Capacity, sources: SourceSettings, repair: Repair }[tab] ?? Projects;
   return html`<${View} lead=${lead} />`;
 }

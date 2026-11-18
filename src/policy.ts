@@ -22,6 +22,8 @@ export const threadSchema = z.object({
   pullRequests: z.array(z.object({ url: z.string(), source: z.string(), watch: z.unknown().optional() }).passthrough()).default([]),
   lineage: z.object({ parentThreadId: z.string().nullish(), relationshipToParent: z.string().nullish() }).passthrough().nullish(),
   settledOverride: z.enum(['settled', 'active']).nullable(),
+  // The owner keeps a pinned thread, or one with automatic settlement turned off, in his list.
+  pinnedAt: z.string().nullish(), autoSettleDisabledAt: z.string().nullish(),
   // Set by `T3.shell()`: the active run outlived every provider session, so it can never progress.
   orphanedRun: z.boolean().optional(),
 }).passthrough();

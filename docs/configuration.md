@@ -8,13 +8,13 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 
 | Setting | Meaning |
 | --- | --- |
-| `enabled` | Allows new automatic ticket and discovery work; explicit manual runs remain available while paused. Upstream reviews have their own `upstream.enabled`. |
+| `enabled` | Allows new automatic ticket and discovery work; explicit manual runs remain available while paused. Upstream reviews and CI repairs have their own `upstream.enabled` and `repair.enabled`. |
 | `pollSeconds` | Maintenance fallback cadence, at least 15 seconds. Kanvil inventory changes arrive through SSE. |
-| `idleMinutes` | Required inactivity for the relevant provider in T3 before ticket and discovery work. Upstream reviews do not wait for it. |
+| `idleMinutes` | Required inactivity for the relevant provider in T3 before ticket and discovery work. Upstream reviews and CI repairs do not wait for it. |
 | `concurrency.claude` / `concurrency.codex` | Nonnegative integer limits for simultaneous runs per provider, default 1 each. Zero disables that provider's automatic starts. They gate automatic starts and manual starts without a provider override; manual runs with `providers` selected may exceed them. |
 | `maxWaitingPRs` | Maximum parked jobs before further dispatches are held; `null` means unlimited. |
 | `holdEpicTicketsUntilStarted` | When `true`, automatic scheduling skips members of an Epic that has not started and shows why on the held row, so the model and overrides chosen for the Epic apply. Defaults to `false`. Named manual starts are unaffected, a running Epic always keeps its tickets, and members of an archived Epic are not held. |
-| `minFreeSpaceBytes` | Free bytes required on the target repository's filesystem before any run starts, default `1073741824` (1 GiB). `0` disables the check. Automatic, manual, chain, discovery and upstream starts are all checked. |
+| `minFreeSpaceBytes` | Free bytes required on the target repository's filesystem before any run starts, default `1073741824` (1 GiB). `0` disables the check. Automatic, manual, chain, discovery, upstream and repair starts are all checked. |
 | `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. |
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |
@@ -69,6 +69,16 @@ Projects may override `discoveryPromptFile`. `discovery.emptyCooldownHours` cont
 ### Upstream release reviews
 
 A project's `upstreams` list names GitHub repositories whose releases the project should review: `name`, `repo` (`OWNER/REPOSITORY`), `prereleases` (default `false`), and `firstBase`, the tag or commit the first review starts from. Each repository belongs to one project. `upstream.promptFile` is the review invocation; the scheduler replaces `{{name}}`, `{{repo}}`, `{{base}}` and `{{candidate}}` in it. [`prompts/upstream-review.md`](../prompts/upstream-review.md) is a starting point. `upstream.checkMinutes` (default 360) limits how often each repository's releases are read; an upstream's own `checkMinutes` overrides it, for example `1440` to review a busy repository at most once a day. `upstream.enabled` (default `false`) allows new reviews, independently of the top-level `enabled`; a config written before this setting existed keeps reviews paused until it is turned on.
+
+### CI repairs
+
+A project's `repairWorkflows` lists the workflow files of its own repository, for example `["ci.yml", "release.yml"]`, whose failed runs on `baseBranch` start a repair run. A project that lists none is not watched. Pull request runs are never watched: the run that owns a pull request repairs its checks. `repair.promptFile` is the repair invocation; the scheduler replaces `{{repo}}`, `{{workflow}}`, `{{runId}}`, `{{runUrl}}`, `{{sha}}` and `{{failedJobs}}` in it, and a project's `repairPromptFile` overrides it. [`prompts/repair.md`](../prompts/repair.md) is a starting point: it has the session follow the repository's own repair guide when it has one, repair every failure in one pull request where it can, open or update one issue for a failure that needs a person, look once more after merging, and report.
+
+`repair.enabled` (default `false`) allows new repairs, independently of the other switches. `repair.cooldownMinutes` (default 60) is how long a workflow waits after its last repair ended before another can start. `repair.checkMinutes` (default 30) is the slow read for runs the scheduler has no reason to expect. The scheduler reads with the `gh` login it already uses for pull requests; no webhook, token or secret is added.
+
+A finished run whose conclusion is `failure`, `timed_out` or `startup_failure` starts one repair when repairs are on, the project is included and watches the workflow, no repair is running for that project and workflow, the cooldown has passed, the run has not had a repair, and it is not the failure the last repair gave up on: a run whose every failed job the last repair reported unrepaired starts nothing until a run of the workflow has passed. A cancelled or skipped run is not a result; the workflow keeps the state its last result gave it. A failure seen during a repair or the cooldown is not queued: when the cooldown ends, the newest finished run decides.
+
+Status carries `repairEnabled` and `repairs`, one row per project and watched workflow: the newest result (`finished`, with its failed jobs), the run being followed (`following`), `lastRepair` with the jobs it repaired and left, `cooldownEndsAt`, `checkedAt`, `checkError`, whether a repair is running or due, and `hold`, the rule that holds a failed run back.
 
 ### Inbox triage
 

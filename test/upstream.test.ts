@@ -75,7 +75,7 @@ test('upstream detection: newest counted release, throttled reads, and one revie
   store.save({ ...open, state: 'complete' }); store.save({ ...dismissed, upstream: { ...dismissed.upstream!, candidate: 'exp-2' } });
 
   store.set('upstreamReviewed:up/stable', 'v2');
-  assert.deepEqual((await pendingReviews(c, store, [], now + 61 * 60_000)).map(p => p.upstream.repo), ['up/exp'], 'a reviewed candidate is the new base');
+  assert.deepEqual((await pendingReviews(c, store, [], now + 61 * 60_000)).map(p => p.upstream?.repo), ['up/exp'], 'a reviewed candidate is the new base');
   assert.deepEqual(upstreamRows(c, store).map(r => [r.repo, r.reviewed, r.latest, r.checkedAt, r.pending]), [
     ['up/stable', 'v2', 'v2', new Date(now + 61 * 60_000).toISOString(), false],
     ['up/exp', 'v1', 'exp-3', new Date(now + 61 * 60_000).toISOString(), true],
@@ -104,21 +104,22 @@ test('upstream detection: a failed release read is recorded on its row', async t
   assert.match(row.checkError ?? '', /404/);
 });
 
-test('upstream switch: the CLI flips only upstream.enabled and refuses configs without upstream', t => {
+// Each section with its own switch: the CLI flips only that section, and refuses a config without it.
+for (const [section, missing] of [['upstream', 'No upstream reviews are configured'], ['repair', 'No CI repairs are configured']] as const) test(`${section} switch: the CLI flips only ${section}.enabled and refuses configs without ${section}`, t => {
   const { dir, c } = fixture(t, []);
   const main = new URL('../src/main.ts', import.meta.url).pathname, run = (file: string) => {
-    try { return { code: 0, out: execFileSync(process.execPath, [main, 'upstream-resume'], { env: { ...process.env, NODE_NO_WARNINGS: '1', T3_FACTORY_CONFIG: file }, encoding: 'utf8', stdio: 'pipe' }) }; }
+    try { return { code: 0, out: execFileSync(process.execPath, [main, `${section}-resume`], { env: { ...process.env, NODE_NO_WARNINGS: '1', T3_FACTORY_CONFIG: file }, encoding: 'utf8', stdio: 'pipe' }) }; }
     catch (error: any) { return { code: error.status, out: String(error.stderr) }; }
   };
-  const file = join(dir, 'config.jsonc');
-  writeFileSync(file, JSON.stringify({ ...c, upstream: { ...c.upstream, enabled: false } }));
+  const file = join(dir, 'config.jsonc'), off = { enabled: false, promptFile: join(dir, 'upstream.md') };
+  writeFileSync(file, JSON.stringify({ ...c, upstream: { ...c.upstream, enabled: false }, repair: off }));
   assert.equal(run(file).code, 0);
-  const saved = JSON.parse(readFileSync(file, 'utf8'));
-  assert.deepEqual([saved.upstream.enabled, saved.enabled], [true, true]);
-  const bare = join(dir, 'bare.jsonc'), { upstream: _, ...withoutUpstream } = c;
-  writeFileSync(bare, JSON.stringify(withoutUpstream));
-  assert.deepEqual(run(bare), { code: 1, out: 'No upstream reviews are configured\n' });
-  assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(withoutUpstream), 'the file is untouched');
+  const saved = JSON.parse(readFileSync(file, 'utf8')), other = section === 'upstream' ? 'repair' : 'upstream';
+  assert.deepEqual([saved[section].enabled, saved[other].enabled, saved.enabled], [true, false, true]);
+  const bare = join(dir, 'bare.jsonc'), { [section]: _, ...without } = { ...c, repair: off };
+  writeFileSync(bare, JSON.stringify(without));
+  assert.deepEqual(run(bare), { code: 1, out: `${missing}\n` });
+  assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(without), 'the file is untouched');
 });
 
 for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused', 'owner-busy', 'activity-unreadable'] as const) test(`upstream dispatch: ${scenario}`, async t => {

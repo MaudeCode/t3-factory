@@ -31,6 +31,8 @@ const cleanupPending = (job: Job) => (job.state === 'complete' || job.state === 
 const reportSchema = z.object({
   jobId: z.string(), status: z.enum(['complete', 'awaiting-human', 'no-work']), reason: z.string(),
   prUrls: z.array(z.url()).default([]), createdTaskIds: z.array(z.string()).default([]),
+  // Repair runs name the failed jobs of their run they repaired and those they left for a person.
+  repairedJobs: z.array(z.string()).default([]), unrepairedJobs: z.array(z.string()).default([]),
 }).strict();
 function projectFor(c: Config, job: Job): Project {
   const p = c.projects.find(p => p.kanvilId === job.projectId);
@@ -75,7 +77,8 @@ async function gh(args: string[]): Promise<unknown> {
   return readPhase('github.read', async signal => JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000, signal })).stdout));
 }
 const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedAt: z.string() }));
-export interface PendingReview { project: Project; upstream: NonNullable<Job['upstream']> }
+// Bounded work that goes ahead of tickets and does not wait for idle time: an upstream review or a CI repair.
+export type PendingReview = { project: Project; upstream: NonNullable<Job['upstream']>; repair?: never } | { project: Project; repair: NonNullable<Job['repair']>; upstream?: never };
 // Each watched repository yields at most one review: from its last reviewed release to its newest one.
 // GitHub is read at most every checkMinutes (the upstream's own, else upstream.checkMinutes); a repository with an unfinished review is not read at all.
 // refresh=false (dry runs and doctor) reads only the cached releases and writes nothing.
@@ -107,6 +110,79 @@ export async function pendingReviews(c: Config, store: Store, jobs: Job[], now =
     }
     const { reviewed, latest, due } = releaseState(project, watched, store, jobs);
     return due ? { project, upstream: { name: watched.name, repo: watched.repo, base: reviewed, candidate: latest! } } : undefined;
+  }));
+  return pending.filter((row): row is PendingReview => !!row);
+}
+
+// CI repair --------------------------------------------------------------------------------------
+// Each watched workflow's newest run on the base branch. A finished run's conclusion is its result, except a
+// cancelled or skipped one, which a newer push superseded: the state stays what the last result said.
+const FAILED = ['failure', 'timed_out', 'startup_failure'];
+const RESULTS = ['success', ...FAILED];
+// ponytail: T3 events can wake a pass every few milliseconds; an unfinished run is read at most this often.
+const FOLLOW_SECONDS = 15;
+const runListSchema = z.array(z.object({ databaseId: z.number(), status: z.string(), conclusion: z.string(), headSha: z.string(), url: z.string(), createdAt: z.string(), updatedAt: z.string() }));
+type WorkflowRun = { id: number; status: string; conclusion: string; sha: string; url: string; createdAt: string; failedJobs?: string[] };
+interface WorkflowWatch { checkedAt?: number; error?: string; following?: WorkflowRun | null; finished?: WorkflowRun | null; passedAt?: string | null }
+type RepairJobs = Pick<Job, 'id' | 'kind' | 'projectId' | 'repair' | 'state' | 'completedAt' | 'dismissedAt'>[];
+const watchKey = (project: Project, workflow: string) => `repairWatch:${project.kanvilId}:${workflow}`;
+const readWatch = (store: Store, project: Project, workflow: string): WorkflowWatch => JSON.parse(store.get(watchKey(project, workflow)) ?? '{}');
+// The single reading of a watched workflow's stored state against the repair rules; dispatch and status both use it.
+function repairState(c: Config, project: Project, workflow: string, store: Store, jobs: RepairJobs, now = Date.now()) {
+  const watch = readWatch(store, project, workflow);
+  const owned = jobs.filter(j => j.kind === 'repair' && j.projectId === project.kanvilId && j.repair?.workflow === workflow);
+  const active = owned.some(j => !['complete', 'dismissed'].includes(j.state));
+  const ended = (j: typeof owned[number]) => Date.parse(j.completedAt ?? j.dismissedAt ?? '') || 0;
+  const last = owned.filter(ended).toSorted((a, b) => ended(b) - ended(a))[0];
+  const cooldownEndsAt = last ? ended(last) + (c.repair?.cooldownMinutes ?? 60) * 60_000 : 0;
+  const run = watch.finished;
+  // The same failure a repair just gave up on: every failed job was reported unrepaired, and nothing has passed since.
+  const gaveUp = !!last?.repair?.unrepaired?.length && !!run?.failedJobs?.length && run.failedJobs.every(name => last.repair!.unrepaired!.includes(name))
+    && !(Date.parse(watch.passedAt ?? '') > ended(last));
+  const hold = !run || !FAILED.includes(run.conclusion) ? null : !c.repair?.enabled ? 'Repairs are paused' : !project.enabled ? 'Project is off'
+    : active ? 'A repair is running' : cooldownEndsAt > now ? 'Cooling down' : owned.some(j => j.repair!.runId === run.id) ? 'This run already had a repair'
+    : gaveUp ? 'The last repair could not repair these jobs' : !run.failedJobs ? 'Failed jobs not read yet' : null;
+  return { watch, active, last, cooldownEndsAt, due: !!run && FAILED.includes(run.conclusion) && !hold, hold };
+}
+async function readWorkflow(project: Project, workflow: string, previous: WorkflowWatch, now: number): Promise<WorkflowWatch> {
+  const runs = runListSchema.parse(await backgroundRead(() => gh(['run', 'list', '--repo', project.githubRepo, '--workflow', workflow, '--branch', project.baseBranch, '--limit', '20', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,updatedAt'])))
+    .toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const record = (r: typeof runs[number]): WorkflowRun => ({ id: r.databaseId, status: r.status, conclusion: r.conclusion, sha: r.headSha, url: r.url, createdAt: r.createdAt });
+  const newest = runs[0], result = runs.find(r => r.status === 'completed' && RESULTS.includes(r.conclusion));
+  let finished = result ? record(result) : previous.finished ?? null;
+  if (finished && FAILED.includes(finished.conclusion)) {
+    finished.failedJobs = previous.finished?.id === finished.id ? previous.finished.failedJobs : undefined;
+    if (!finished.failedJobs) {
+      const detail = z.object({ jobs: z.array(z.object({ name: z.string(), conclusion: z.string() })) }).parse(await backgroundRead(() => gh(['run', 'view', String(finished!.id), '--repo', project.githubRepo, '--json', 'jobs'])));
+      finished.failedJobs = detail.jobs.filter(j => FAILED.includes(j.conclusion)).map(j => j.name);
+    }
+  }
+  const passed = runs.filter(r => r.status === 'completed' && r.conclusion === 'success').map(r => r.updatedAt).toSorted().at(-1);
+  return { checkedAt: now, following: newest && newest.status !== 'completed' ? record(newest) : null, finished, passedAt: [passed, previous.passedAt].filter(Boolean).toSorted().at(-1) ?? null };
+}
+// Reads a watched workflow while its newest run is unfinished, on the first pass after one of the scheduler's own pull
+// requests is verified merged into the project's base branch, when a cooldown has just ended, and otherwise every repair.checkMinutes.
+// refresh=false (dry runs and doctor) reads only the stored state and writes nothing.
+export async function pendingRepairs(c: Config, store: Store, jobs: RepairJobs, now = Date.now(), refresh = true): Promise<PendingReview[]> {
+  if (!c.repair) return [];
+  const watched = c.projects.filter(project => project.enabled).flatMap(project => project.repairWorkflows.map(workflow => ({ project, workflow })));
+  const pending = await readAll(watched.map(async ({ project, workflow }): Promise<PendingReview | undefined> => {
+    await backgroundCheckpoint();
+    const watch = readWatch(store, project, workflow), checkedAt = watch.checkedAt ?? 0;
+    const { cooldownEndsAt } = repairState(c, project, workflow, store, jobs, now);
+    const expected = Date.parse(store.get(`repairExpect:${project.kanvilId}`) ?? '') || 0;
+    const due = !checkedAt || (!!watch.following && now - checkedAt >= FOLLOW_SECONDS * 1000) || expected > checkedAt
+      || (checkedAt < cooldownEndsAt && cooldownEndsAt <= now) || now - checkedAt >= c.repair!.checkMinutes * 60_000;
+    if (refresh && due) {
+      try { store.set(watchKey(project, workflow), JSON.stringify(await readWorkflow(project, workflow, watch, now))); }
+      catch (error) {
+        // A failed read also waits for the next reason to read.
+        store.set(watchKey(project, workflow), JSON.stringify({ ...watch, checkedAt: now, error: safeError(error) }));
+        log('repair-check-failed', { repo: project.githubRepo, workflow, reason: safeError(error) });
+      }
+    }
+    const state = repairState(c, project, workflow, store, jobs, now), run = state.watch.finished;
+    return state.due && run ? { project, repair: { workflow, runId: run.id, runUrl: run.url, sha: run.sha, failedJobs: run.failedJobs ?? [] } } : undefined;
   }));
   return pending.filter((row): row is PendingReview => !!row);
 }
@@ -195,11 +271,13 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
       await verifyMerged(project, report.prUrls);
     }
   } else {
+    // A repair's pull requests are verified merged like a ticket's; it may also end without one.
+    if (job.kind === 'repair') await verifyMerged(project, report.prUrls);
     // An upstream review that created nothing reports no-work, so a truncated report cannot mark a release reviewed.
     if (job.kind === 'upstream' && report.status === 'complete' && !report.createdTaskIds.length) throw new Error('Upstream review reported complete without created tickets; report no-work if none were needed');
     for (const id of report.createdTaskIds) {
       const task = await kanvil.task(id, project.kanvilId);
-      if (task.projectId !== project.kanvilId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : 'Discovery'} report includes another project`);
+      if (task.projectId !== project.kanvilId) throw new Error(`${job.kind === 'upstream' ? 'Upstream review' : job.kind === 'repair' ? 'Repair' : 'Discovery'} report includes another project`);
       if (job.kind === 'upstream' && Date.parse(task.createdAt) < Date.parse(job.createdAt)) throw new Error('Upstream review report lists a ticket created before the review started');
     }
   }
@@ -223,7 +301,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kanvil, job);
     if (job.state === 'dismissed') return;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) { await dismissJob(store, job, 'Dismissed by settling the task in T3', t); return; }
-    if (job.state === 'complete') return;
+    if (job.state === 'complete') { if (t && allowMonitorStop && job.workspaceCleanedAt) await settleFinished(t3, job, t); return; }
     if (!t) {
       // A thread T3 has shown before and no longer lists, even among archived threads, was deleted: its run cannot resume.
       if (job.thread && !(await (listed ??= t3.shell(true).then(s => s.threads))).some(x => x.id === job.threadId)) {
@@ -273,6 +351,9 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
         if (report.status === 'awaiting-human') { job.state = 'waiting'; job.reason = report.reason; }
         else {
           await verifyCompletionReport(c, kanvil, job, t, report);
+          // Its merge starts a run of each watched workflow, so the next pass reads them.
+          if (report.prUrls.length) store.set(`repairExpect:${job.projectId}`, new Date().toISOString());
+          if (job.kind === 'repair') job.repair = { ...job.repair!, repaired: report.repairedJobs, unrepaired: report.unrepairedJobs };
           if (job.kind === 'upstream') store.set(`upstreamReviewed:${job.upstream!.repo}`, job.upstream!.candidate);
           else if (job.kind === 'discovery' && !report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
           job.state = 'complete'; job.reason = report.reason; job.completedAt = new Date().toISOString();
@@ -282,6 +363,16 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
     }
     store.save(job);
   })));
+}
+
+// A verified finished run leaves the owner's T3 list on its own once its workspace is cleaned up, whatever its kind and
+// whether or not it merged a pull request; a workspace cleanup refused keeps it in view. T3's automatic settlement refuses
+// if the thread changed since this snapshot or the owner set its state himself; the factory also leaves pinned threads and
+// threads with automatic settlement turned off alone, as T3 does.
+async function settleFinished(t3: T3, job: Job, t: Thread) {
+  if (t.settledOverride !== null || t.archivedAt || t.pinnedAt || t.autoSettleDisabledAt || t.activeRunId || t.pendingRuntimeRequest || t.pendingBackgroundTasks.length || executing(t) || waiting(t)) return;
+  try { await t3.dispatch({ type: 'thread.auto-settle', commandId: randomUUID(), threadId: t.id, snapshotAt: t.updatedAt }); }
+  catch (error) { log('job-settle-failed', { jobId: job.id, threadId: t.id, reason: safeError(error) }); }
 }
 
 // One existing cleanup step per job per sweep. Re-read durable state after every queued command;
@@ -1081,7 +1172,7 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
       catch (error) { stream.quotaError = safeError(error); }
     }
     // The queue is read on every pass, paused or not, so the page always shows what would start next.
-    const reviewsOn = clients.workKind !== 'tickets' && (!!options.upstream || !!c.upstream?.enabled), ticketsOn = clients.workKind !== 'upstream' && !options.upstream && (c.enabled || !!options.manual || !!options.doctor);
+    const reviewsOn = clients.workKind !== 'tickets' && (!!options.upstream || !!c.upstream?.enabled), repairsOn = clients.workKind !== 'tickets' && !options.manual && !!c.repair?.enabled, ticketsOn = clients.workKind !== 'upstream' && !options.upstream && (c.enabled || !!options.manual || !!options.doctor);
     // While tickets are paused the read is for display only, so a Kanvil failure must not hold up reviews.
     await backgroundCheckpoint();
     let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true;
@@ -1101,10 +1192,13 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
     // or empty queue; publishing those would hide ready tickets from manual starts.
     if (!clients.backgroundInventory && !options.ticket && !options.upstream && queueRead) await publishQueue(c, store, kanvil, queue);
     // Fully paused: provider status, quota, and the queue stay fresh, nothing is dispatched. With only reviews on, only reviews dispatch.
-    if (!ticketsOn && !reviewsOn) { saveStreams(); return decision('disabled', { streams, eligible: queue.ready.length }); }
-    // Upstream reviews are bounded and time-sensitive, so they go ahead of ticket work.
-    const reviews = options.upstream ? (await pendingReviews(c, store, store.jobs(), Date.now(), false)).filter(r => r.upstream.repo === options.upstream!.toLowerCase())
-      : options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), !clients.workKind && !options.dryRun && !options.doctor);
+    if (!ticketsOn && !reviewsOn && !repairsOn) { saveStreams(); return decision('disabled', { streams, eligible: queue.ready.length }); }
+    // Repairs and upstream reviews are bounded and time-sensitive, so they go ahead of ticket work; a red base branch goes first.
+    const refreshSources = !clients.workKind && !options.dryRun && !options.doctor;
+    const reviews = options.upstream ? (await pendingReviews(c, store, store.jobs(), Date.now(), false)).filter(r => r.upstream?.repo === options.upstream!.toLowerCase()) : [
+      ...options.manual || (!repairsOn && !options.doctor) ? [] : await pendingRepairs(c, store, store.jobs(), Date.now(), refreshSources),
+      ...options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), refreshSources),
+    ];
     if (options.upstream && !reviews.length) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     const candidates = ticketsOn ? [...queue.ready] : [];
     if (options.manual && options.ticket && candidates.some(ticket => store.isLocked(`ticket:${ticket.id}`))) return decision('ticket-preparing', { ticket: options.ticket, message: 'Another request is already preparing this ticket.' });
@@ -1145,7 +1239,7 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
           const result = await dispatchOne(c, store, { ...options, doctor: false, dryRun: options.dryRun || options.doctor, model: selected.preset.id, ticket: assignment?.ticket.key }, { driver: selected.driver, instanceDrivers: instances, skipProjects, inspect: options.doctor, review, shell, queue: scoped, t3, kanvil, currentConfig: clients.currentConfig, unnamed: !options.ticket }, clients);
           stream.reason = result.reason;
           if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
-          if (result.reason === 'dispatched' || result.reason === 'would-dispatch') (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: null, upstream: review?.upstream }));
+          if (result.reason === 'dispatched' || result.reason === 'would-dispatch') (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: null, upstream: review?.upstream, repair: review?.repair }));
           else if (!(options.manual && !options.ticket && selectionChanged(result.reason))) for (const list of [readyModels, idleModels]) {
             const index = list.findIndex(model => model.preset.id === selected.preset.id);
             if (index >= 0) list.splice(index, 1);
@@ -1229,7 +1323,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const result = { reason, at: new Date().toISOString(), ...extra };
     recordDecision(result); log('decision', result); return result;
   };
-  if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && c.upstream?.enabled)) return decision('disabled');
+  if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && (plan.review.repair ? c.repair?.enabled : c.upstream?.enabled))) return decision('disabled');
   const t3 = plan?.t3 ?? clients.t3 ?? new T3(c.t3);
   const [shell, instances] = await readAll([
     plan?.shell ?? t3.shell(),
@@ -1253,7 +1347,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const queued = ticketKey && queuedPlan(store, ticketKey);
     if (queued && queued.id !== activePlanId) return decision('ticket-queued', { ticket: ticketKey, planId: queued.id, message: 'Ticket has a queued run. Cancel it before starting with different choices.' });
     if (driver && busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(driver)) return decision(c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running', { driver });
-    const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream.repo === options.upstream!.toLowerCase()) : undefined);
+    const review = plan?.review ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream?.repo === options.upstream!.toLowerCase()) : undefined);
     if (options.upstream && !review) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     // A review needs no ticket queue, so ticket-only reads cannot block it.
     const queue = plan?.queue ?? (clients.backgroundInventory && options.manual && !ticketKey && !review && !options.doctor ? preparedInventory(c, store) : undefined) ?? (review && !plan?.inspect ? { ready: [], skipped: [], selected: undefined } as Queue : await inventory(c, kanvil, shell.threads, jobs, store, ticketKey, cancelledFinished));
@@ -1397,10 +1491,14 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       if ((!skip.has('idle') && !currentManualCodex && idleBlocked(c, currentActivity)) || (!skip.has('reserve') && !currentQuota.allowed)) return decision('gate-changed-before-dispatch', { quota: currentQuota });
       // Recheck capacity at reservation; only an explicit manual override can exceed it.
       if (busyProviders(currentJobs, fresh.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(currentQuota.driver)) return decision('job-resumed-before-dispatch');
-      if (review) {
+      if (review?.upstream) {
         const watched = project.upstreams.find(watched => watched.repo === review.upstream.repo);
         const state = watched && releaseState(project, watched, store, currentJobs);
         if (!state?.due || state.reviewed !== review.upstream.base || state.latest !== review.upstream.candidate) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
+      }
+      if (review?.repair) {
+        const state = project.repairWorkflows.includes(review.repair.workflow) ? repairState(c, project, review.repair.workflow, store, currentJobs) : undefined;
+        if (!state?.due || state.watch.finished?.id !== review.repair.runId) return decision('repair-changed-before-dispatch', { message: 'The failed run changed or already has a repair.' });
       }
       if (JSON.stringify((clients.currentConfig ?? plan?.currentConfig ?? loadConfig)()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
       if (activePlanId && store.plan(activePlanId)?.state !== 'active') return decision('plan-cancelled-before-dispatch');
@@ -1411,22 +1509,23 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         if ('error' in space) return decision('disk-space-check-failed', { ...at, message: `Not launched: free space on ${project.repoPath} could not be read (${safeError(space.error)}). Check the volume, or set minFreeSpaceBytes to 0 to skip this check.` });
         if (space.bytes < c.minFreeSpaceBytes) return decision('disk-space-low', { ...at, availableBytes: space.bytes, message: `Not launched: ${project.repoPath} has ${formatBytes(space.bytes)} free; ${formatBytes(c.minFreeSpaceBytes)} required. Open Cleanup to delete unused worktrees.` });
       }
-      if (options.dryRun) { prepared.check(); return decision('would-dispatch', { kind: review ? 'upstream' : discovery ? 'discovery' : 'ticket', project: project.name, projectId: project.kanvilId, ticket: queue.selected?.key, upstream: review?.upstream, model: currentQuota.factoryRouting.model, quota: currentQuota }); }
+      const kind: Job['kind'] = review?.repair ? 'repair' : review ? 'upstream' : queue.selected ? 'ticket' : 'discovery';
+      if (options.dryRun) { prepared.check(); return decision('would-dispatch', { kind, project: project.name, projectId: project.kanvilId, ticket: queue.selected?.key, upstream: review?.upstream, repair: review?.repair, model: currentQuota.factoryRouting.model, quota: currentQuota }); }
       const selectedModel = currentQuota.factoryRouting.model;
       // Manual Codex runs already skip idle and reserve checks.
       const waived = [...skip].filter(l => !currentManualCodex || !['idle', 'reserve'].includes(l)).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit', providers: 'provider-limit' })[l]);
       const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason;
       const now = new Date().toISOString(), id = randomUUID();
-      const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind: review ? 'upstream' : queue.selected ? 'ticket' : 'discovery', ...(review ? { upstream: review.upstream } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
+      const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind, ...(review?.upstream ? { upstream: review.upstream } : {}), ...(review?.repair ? { repair: review.repair } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
       if (checked) {
         job.labels = checked.labels.map(l => l.name);
         job.priority = checked.task.priority;
       }
-      const u = job.upstream;
-      const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : `Factory discovery: ${project.name}`;
+      const u = job.upstream, r = job.repair;
+      const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : r ? `CI repair: ${project.name} ${r.workflow} run ${r.runId}` : `Factory discovery: ${project.name}`;
       // Ticket branches carry the ticket's kind (fix, feat, perf, ...) so release tooling can bump versions from them.
       // Keep the final native ticket metadata with the job for status and filtering.
-      const branch = job.kind === 'ticket' ? `${branchKind(checked?.labels ?? queue.selected?.labels ?? [])}/${job.ticketKey}-factory-${id.slice(0, 8)}` : `chore/factory-${job.kind}-${id.slice(0, 8)}`;
+      const branch = job.kind === 'ticket' ? `${branchKind(checked?.labels ?? queue.selected?.labels ?? [])}/${job.ticketKey}-factory-${id.slice(0, 8)}` : `${job.kind === 'repair' ? 'fix' : 'chore'}/factory-${job.kind}-${id.slice(0, 8)}`;
       // T3 creates the worktree from the project's workspace root, which must match project.repoPath (checked above).
       job.command = { commandId: randomUUID(), threadId: job.threadId, projectId: project.t3Id, title,
         modelSelection: selectedModel, runtimeMode: c.runtimeMode, interactionMode: 'default',
@@ -1443,7 +1542,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       if (job.kind === 'discovery') store.set(`discoveryLast:${project.kanvilId}`, String(Date.now()));
       await prepared.launch(job.command);
       const accepted = store.job(job.id)!; accepted.reason = 'T3 accepted dispatch'; store.save(accepted);
-      return decision('dispatched', { jobId: job.id, threadId: job.threadId, project: project.name, projectId: project.kanvilId, ticket: job.ticketKey, upstream: job.upstream, model: selectedModel.model, modelReason, difficulty: job.difficulty, quota: currentQuota });
+      return decision('dispatched', { jobId: job.id, threadId: job.threadId, project: project.name, projectId: project.kanvilId, ticket: job.ticketKey, upstream: job.upstream, repair: job.repair, model: selectedModel.model, modelReason, difficulty: job.difficulty, quota: currentQuota });
     }
   } finally { releaseTicket?.(); await prepared?.close(); if (ownsKanvil) await kanvil.close(); }
 }
@@ -1839,6 +1938,18 @@ export function upstreamRows(c: Config, store: Store) {
   }));
 }
 
+// One row per project and watched workflow: the newest finished run, the run being followed, the last repair and its cooldown.
+export function repairRows(c: Config, store: Store, now = Date.now()) {
+  const jobs = store.jobSummaries();
+  return c.projects.flatMap(p => p.repairWorkflows.map(workflow => {
+    const { watch, active, last, cooldownEndsAt, due, hold } = repairState(c, p, workflow, store, jobs, now);
+    return { project: p.name, projectId: p.kanvilId, repo: p.githubRepo, branch: p.baseBranch, workflow, finished: watch.finished ?? null, following: watch.following ?? null,
+      checkedAt: watch.checkedAt ? new Date(watch.checkedAt).toISOString() : null, checkError: watch.error ?? null, repairing: active, pending: due, hold,
+      lastRepair: last ? { jobId: last.id, state: last.state, runId: last.repair!.runId, endedAt: last.completedAt ?? last.dismissedAt, repaired: last.repair!.repaired ?? [], unrepaired: last.repair!.unrepaired ?? [] } : null,
+      cooldownEndsAt: cooldownEndsAt > now ? new Date(cooldownEndsAt).toISOString() : null };
+  }));
+}
+
 // The lane publishes each inbox's queue from the live projections; rows follow the current config.
 export function triageRows(c: Config, store: Store, now = Date.now()) {
   const rows = JSON.parse(store.get('triageStreams') || '[]') as TriageRow[];
@@ -1871,7 +1982,8 @@ export function writeStatus(c: Config, store: Store) {
     ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
     triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: triageResults(c, store), triageReports: JSON.parse(store.get('triageReports') || '[]'),
-    enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: store.currentDecision(),
+    enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store),
+    repairEnabled: !!c.repair?.enabled, repairs: repairRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: store.currentDecision(),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
