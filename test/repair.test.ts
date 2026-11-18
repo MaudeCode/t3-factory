@@ -131,6 +131,7 @@ for (const passed of [false, true]) test(`repair cooldown: a failure seen during
   gh.runs('ci.yml', [run(5, 'failure', -1)]); gh.jobs(5, ['deploy']);
   assert.deepEqual(await pendingRepairs(c, store, jobs, t0), [], 'inside the cooldown nothing starts and nothing is queued');
   if (passed) gh.runs('ci.yml', [run(6, 'success', 5), run(5, 'failure', -1)]);
+  assert.deepEqual(await pendingRepairs(c, store, jobs, t0 + 11 * 60_000, false), [], 'an admission pass that runs before the cooldown-end read starts nothing');
   assert.deepEqual((await pendingRepairs(c, store, jobs, t0 + 11 * 60_000)).map(p => p.repair?.runId), passed ? [] : [5], 'the newest finished run, read when the cooldown ends, decides');
   assert.equal(gh.runReads(), 2, 'the end of the cooldown is a reason to read');
 });

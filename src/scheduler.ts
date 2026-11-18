@@ -140,7 +140,7 @@ function repairState(c: Config, project: Project, workflow: string, store: Store
   const gaveUp = !!last?.repair?.unrepaired?.length && !!run?.failedJobs?.length && run.failedJobs.every(name => last.repair!.unrepaired!.includes(name))
     && !(Date.parse(watch.passedAt ?? '') > ended(last));
   const hold = !run || !FAILED.includes(run.conclusion) ? null : !c.repair?.enabled ? 'Repairs are paused' : !project.enabled ? 'Project is off'
-    : watch.error ? 'The last read failed; the newest result is unknown' : active ? 'A repair is running' : cooldownEndsAt > now ? 'Cooling down' : owned.some(j => j.repair!.runId === run.id) ? 'This run already had a repair'
+    : watch.error ? 'The last read failed; the newest result is unknown' : active ? 'A repair is running' : cooldownEndsAt > now ? 'Cooling down' : (watch.checkedAt ?? 0) < cooldownEndsAt ? 'Waiting for a read after the cooldown' : owned.some(j => j.repair!.runId === run.id) ? 'This run already had a repair'
     : gaveUp ? 'The last repair could not repair these jobs' : !run.failedJobs ? 'Failed jobs not read yet' : null;
   return { watch, active, last, cooldownEndsAt, due: !!run && FAILED.includes(run.conclusion) && !hold, hold };
 }
