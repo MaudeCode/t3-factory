@@ -61,6 +61,8 @@ function fixture(t: TestContext, repair: Record<string, unknown> = {}) {
   t.after(() => { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); });
   return { dir, c, store, gh: fakeGitHub(dir) };
 }
+// The tracker as a repair report's verification reads it: every ticket it names is in the fixture project.
+const tracker = { task: async () => ({ projectId: 'FIX' }) } as unknown as Kanvil;
 const repairJob = (overrides: Partial<Job> & { runId?: number; unrepaired?: string[] } = {}): Job => {
   const { runId = 4, unrepaired, ...job } = overrides;
   return { id: `repair-${runId}`, kind: 'repair', projectId: 'FIX', taskId: null, ticketKey: null, threadId: `thread-${runId}`, messageId: 'm', createdAt: at(-200), state: 'complete', reason: '', lastPersonalActivity: null, reportPath: '/nonexistent', command: null, prUrls: [], completedAt: null,
@@ -87,11 +89,20 @@ test('repair follow: a verified merge of a factory pull request makes the next p
   assert.equal(gh.runReads(), 1, 'nothing to follow and no merge: the slow interval holds');
   const job = repairJob({ state: 'running', reportPath: join(dir, 'report.json') });
   store.save(job);
-  writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Repaired', prUrls: ['https://github.com/fixture/app/pull/7'], repairedJobs: ['test'], unrepairedJobs: ['deploy'] }));
-  await reconcile(c, store, {} as T3, {} as Kanvil, [v2Thread({ id: job.threadId, projectId: 'FIX' })], false);
+  writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Repaired', prUrls: ['https://github.com/fixture/app/pull/7'], repairedJobs: ['test'], unrepairedJobs: ['deploy'], createdTaskIds: ['T-1'] }));
+  await reconcile(c, store, {} as T3, tracker, [v2Thread({ id: job.threadId, projectId: 'FIX' })], false);
   assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.repair!.repaired, store.job(job.id)!.repair!.unrepaired], ['complete', ['test'], ['deploy']], 'the verified report records what it repaired and what it left');
   await pendingRepairs(c, store, [], t0 + 2 * 60_000);
   assert.equal(gh.runReads(), 2, 'the merge makes the next pass read');
+});
+
+test('repair report: a run that leaves a failed job without a ticket does not complete', async t => {
+  const { dir, c, store } = fixture(t);
+  const job = repairJob({ state: 'running', reportPath: join(dir, 'report.json') });
+  store.save(job);
+  writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Did not reproduce', prUrls: [], repairedJobs: [], unrepairedJobs: ['deploy'] }));
+  await reconcile(c, store, {} as T3, tracker, [v2Thread({ id: job.threadId, projectId: 'FIX' })], false);
+  assert.deepEqual([store.job(job.id)!.state, store.job(job.id)!.reason], ['waiting', 'Repair left failed jobs unrepaired without a ticket; file one and list it in createdTaskIds']);
 });
 
 // T3's own automatic settlement command; the fake refuses anything else.
@@ -188,7 +199,7 @@ test('repair dispatch: a failed run takes the free slot ahead of a ready ticket,
   assert.deepEqual([f.launches.length, launch.title], [1, 'CI repair: FIX ci.yml run 5'], 'the only slot goes to the repair, not FIX-1');
   assert.deepEqual({ ...launch.workspaceStrategy, branch: String(launch.workspaceStrategy.branch).replace(/[0-9a-f]{8}$/, 'ID') }, { type: 'worktree', baseRef: 'main', branch: 'fix/factory-repair-ID', startFromOrigin: true });
   assert.match(launch.initialMessage.text, /The `ci\.yml` workflow of `fixture\/FIX` failed on its release branch: run 5 \(https:\/\/github\.com\/fixture\/app\/actions\/runs\/5\) at commit `sha-5`\. These jobs failed:\n\n- test\n- deploy\n/);
-  assert.match(launch.initialMessage.text, /"repairedJobs"/, 'the report names the jobs it repaired and left');
+  assert.match(launch.initialMessage.text, /"createdTaskIds":\["TICKET_ID"\],"repairedJobs":\["test"\],"unrepairedJobs":\["deploy"\]/, 'the report names the jobs it repaired, those it left, and the ticket that records them');
   assert.match(launch.initialMessage.text, /<software-factory-skill>\nSource: [^\n]+\n[^\n]+\n\n# Software factory\n<\/software-factory-skill>/, 'a repair publishes and merges under the configured delivery workflow');
   assert.deepEqual(store.jobs().map(j => [j.kind, j.repair?.runId]), [['repair', 5]]);
   await cycle(configSchema.parse(c), store, {}, { t3: f.t3, kanvil: f.kanvil });
