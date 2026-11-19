@@ -32,11 +32,6 @@ function WorkflowRow({ row: r, now }) {
 export function Repair({ lead } = {}) {
   clock.value;
   const c = config.value, now = serverNow();
-  if (!c.repair)
-    return html`<${Page} class="settings-page" title="Settings">
-      ${lead}
-      <${Empty}>Add <code>repair</code> with a prompt file to the config file to turn CI repairs on.<//>
-    <//>`;
   const rows = status.value.repairs || [];
   const repairs = jobs.value.filter((j) => j.kind === "repair").sort(byNewest);
   return html`<${Page} class="settings-page" title="Settings" hint="A failed run of a watched workflow on a project's base branch starts one repair run. Pull request checks are left to the run that owns the pull request."

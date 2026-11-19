@@ -37,7 +37,8 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
   'triage-resume': { path: ['triage', 'enabled'], value: true, message: 'Inbox triage enabled; the Claude quota reserve still applies.' },
 };
 // A section switch needs its section; the message names what is missing.
-const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', repair: 'No CI repairs are configured', triage: 'No inbox triage is configured' };
+// Sections that need a prompt in the file before their switch means anything. Repairs default theirs, so they are not here.
+const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', triage: 'No inbox triage is configured' };
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir);
@@ -219,7 +220,7 @@ if (command === 'web') {
 } else if (Object.hasOwn(switches, command)) {
   const { path, value, message } = switches[command];
   const text = readFileSync(configPath, 'utf8');
-  if (path.length > 1 && !parse(text, [], { allowTrailingComma: true })?.[path[0]]) {
+  if (sections[path[0]] && !parse(text, [], { allowTrailingComma: true })?.[path[0]]) {
     console.error(sections[path[0]]); process.exitCode = 1;
   } else {
     const next = applyEdits(text, modify(text, path, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));

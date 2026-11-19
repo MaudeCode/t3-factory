@@ -16,7 +16,7 @@ if (!/^[A-Za-z0-9.-]+$/.test(label)) throw new Error('Invalid service label');
 const plist = join(home, 'Library/LaunchAgents', `${label}.plist`);
 await bootout(domain, label);
 mkdirSync(app, { recursive: true, mode: 0o700 });
-for (const entry of ['src', 'web', 'scripts', 'deploy', 'node_modules', 'package.json', 'package-lock.json', 'README.md', 'docs', 'LICENSE', 'SECURITY.md', 'config.example.jsonc', '.env.example']) {
+for (const entry of ['src', 'web', 'prompts', 'scripts', 'deploy', 'node_modules', 'package.json', 'package-lock.json', 'README.md', 'docs', 'LICENSE', 'SECURITY.md', 'config.example.jsonc', '.env.example']) {
   cpSync(join(root, entry), join(app, entry), { recursive: true });
 }
 if (existsSync(envPath)) { cpSync(envPath, join(app, '.env')); chmodSync(join(app, '.env'), 0o600); }

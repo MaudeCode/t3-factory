@@ -23,6 +23,7 @@ mkdirSync(join(userDir, "Library/Logs"), { recursive: true });
 for (const entry of [
   "src",
   "web",
+  "prompts",
   "scripts",
   "deploy",
   "package.json",
