@@ -1,5 +1,5 @@
 import { bootout, bootstrap, installRuntime, writeControlAgent } from './launchd.ts';
-import { cpSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,8 +21,7 @@ const string = (s: string) => `<string>${escape(s)}</string>`;
 const config = process.env.T3_FACTORY_CONFIG ?? join(home, '.config/t3-factory/config.jsonc');
 if (!existsSync(config)) throw new Error('Create the configuration and T3 credential before installing the service');
 // Checks run and the runtime is staged before the old service is unloaded, so a failed copy leaves it running.
-await installRuntime(root, app, () => bootout(domain, label));
-if (existsSync(envPath)) { cpSync(envPath, join(app, '.env')); chmodSync(join(app, '.env'), 0o600); }
+await installRuntime(root, app, () => bootout(domain, label), existsSync(envPath) ? envPath : undefined);
 mkdirSync(dirname(plist), { recursive: true });
 mkdirSync(join(home, 'Library/Logs'), { recursive: true });
 writeControlAgent(plist, `<key>Label</key>${string(label)}

@@ -117,17 +117,21 @@ test('installing over links into a removed checkout leaves relative links into t
   const { dir, root, app } = runtimeFixture(t);
   mkdirSync(join(app, 'node_modules/.bin'), { recursive: true });
   symlinkSync(join(dir, 'removed-worktree/node_modules/pkg/cli.js'), join(app, 'node_modules/.bin/cli'));
-  await assert.doesNotReject(launchd.installRuntime(root, app, async () => {}));
+  writeFileSync(join(dir, '.env'), 'SECRET=1');
+  await assert.doesNotReject(launchd.installRuntime(root, app, async () => {}, join(dir, '.env')));
   assert.equal(readlinkSync(join(app, 'node_modules/.bin/cli')), '../pkg/cli.js');
+  assert.equal(statSync(join(app, '.env')).mode & 0o777, 0o600);
 });
 
 test('a copy that fails leaves the service loaded on its previous runtime', async t => {
-  const { root, app } = runtimeFixture(t);
-  mkdirSync(join(app, 'src'), { recursive: true });
-  writeFileSync(join(app, 'src/index'), 'old');
-  rmSync(join(root, 'LICENSE'), { recursive: true });
-  let unloads = 0;
-  await assert.rejects(launchd.installRuntime(root, app, async () => { unloads++; }), { code: 'ENOENT' });
-  assert.equal(unloads, 0, 'the service was unloaded before the copy could fail');
-  assert.equal(readFileSync(join(app, 'src/index'), 'utf8'), 'old');
+  for (const missing of ['LICENSE', '.env']) {
+    const { dir, root, app } = runtimeFixture(t);
+    mkdirSync(join(app, 'src'), { recursive: true });
+    writeFileSync(join(app, 'src/index'), 'old');
+    if (missing === 'LICENSE') rmSync(join(root, 'LICENSE'), { recursive: true });
+    let unloads = 0;
+    await assert.rejects(launchd.installRuntime(root, app, async () => { unloads++; }, join(dir, '.env')), { code: 'ENOENT' }, missing);
+    assert.equal(unloads, 0, `the service was unloaded before the copy could fail without ${missing}`);
+    assert.equal(readFileSync(join(app, 'src/index'), 'utf8'), 'old');
+  }
 });

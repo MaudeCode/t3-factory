@@ -1,5 +1,5 @@
 import { bootout, bootstrap, installRuntime, writeControlAgent } from "./launchd.ts";
-import { cpSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -20,9 +20,7 @@ mkdirSync(join(userDir, "Library/LaunchAgents"), { recursive: true });
 mkdirSync(join(userDir, "Library/Logs"), { recursive: true });
 // Dependencies are copied rather than rebuilt with npm: the scheduler runs from the same
 // directory, and an npm install there removes modules it is loading.
-await installRuntime(root, app, () => bootout(domain, label));
-cpSync(envPath, join(app, ".env"));
-chmodSync(join(app, ".env"), 0o600);
+await installRuntime(root, app, () => bootout(domain, label), envPath);
 const escape = (value: string) =>
   value
     .replaceAll("&", "&amp;")
