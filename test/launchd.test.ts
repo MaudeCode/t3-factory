@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
@@ -95,4 +95,39 @@ test('control-agent definitions retain one Interactive resource class without ca
     assert.throws(() => launchd.writeControlAgent(path, '<key>ProcessType</key><string>Background</string>'), /owns ProcessType/);
     assert.equal(readFileSync(path, 'utf8'), output, 'a rejected duplicate cannot replace the previous definition');
   }
+});
+
+// A checkout with every runtime entry, whose node_modules/.bin link is relative as npm writes it.
+function runtimeFixture(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-install-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, 'checkout'), app = join(dir, 'app');
+  for (const entry of launchd.runtimeEntries) {
+    mkdirSync(join(root, entry), { recursive: true });
+    writeFileSync(join(root, entry, 'index'), 'new');
+  }
+  mkdirSync(join(root, 'node_modules/pkg'));
+  writeFileSync(join(root, 'node_modules/pkg/cli.js'), '');
+  mkdirSync(join(root, 'node_modules/.bin'));
+  symlinkSync('../pkg/cli.js', join(root, 'node_modules/.bin/cli'));
+  return { dir, root, app };
+}
+
+test('installing over links into a removed checkout leaves relative links into the runtime itself', async t => {
+  const { dir, root, app } = runtimeFixture(t);
+  mkdirSync(join(app, 'node_modules/.bin'), { recursive: true });
+  symlinkSync(join(dir, 'removed-worktree/node_modules/pkg/cli.js'), join(app, 'node_modules/.bin/cli'));
+  await assert.doesNotReject(launchd.installRuntime(root, app, async () => {}));
+  assert.equal(readlinkSync(join(app, 'node_modules/.bin/cli')), '../pkg/cli.js');
+});
+
+test('a copy that fails leaves the service loaded on its previous runtime', async t => {
+  const { root, app } = runtimeFixture(t);
+  mkdirSync(join(app, 'src'), { recursive: true });
+  writeFileSync(join(app, 'src/index'), 'old');
+  rmSync(join(root, 'LICENSE'), { recursive: true });
+  let unloads = 0;
+  await assert.rejects(launchd.installRuntime(root, app, async () => { unloads++; }), { code: 'ENOENT' });
+  assert.equal(unloads, 0, 'the service was unloaded before the copy could fail');
+  assert.equal(readFileSync(join(app, 'src/index'), 'utf8'), 'old');
 });

@@ -85,7 +85,7 @@ node src/main.ts dispatch --ticket APP-123 --model default-model --dry-run
 node scripts/install.ts
 ```
 
-The installer copies the runtime to `~/.local/share/t3-factory/app`, creates `~/.local/bin/t3-factory`, and installs a LaunchAgent. When reinstalling, it waits up to 15 seconds for launchd to unload the previous service before loading the new one, and stops if it is still loaded. The web installer does the same. Add `~/.local/bin` to your shell's `PATH` if needed. The service starts immediately, but the example's `enabled: false` keeps automatic dispatch paused.
+The installer copies the runtime to `~/.local/share/t3-factory/app`, creates `~/.local/bin/t3-factory`, and installs a LaunchAgent. When reinstalling, it first copies the new runtime into a staging directory inside the installed one while the previous service keeps running, then waits up to 15 seconds for launchd to unload that service, moves the staged files into place, and loads the new one; it stops if the old service is still loaded. Links in `node_modules` are copied as written, so they point inside the runtime rather than at the checkout. The web installer does the same. A failed copy leaves the previous service running on its previous files and needs nothing done by hand: fix the cause and run the installer again. If an install stops after the old service was unloaded, the service stays stopped until the installer is run again. Add `~/.local/bin` to your shell's `PATH` if needed. The service starts immediately, but the example's `enabled: false` keeps automatic dispatch paused.
 
 When ready to authorize automatic work:
 
