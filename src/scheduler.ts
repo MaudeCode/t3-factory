@@ -272,6 +272,8 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
   } else {
     // A repair's pull requests are verified merged like a ticket's; it may also end without one.
     if (job.kind === 'repair') await verifyMerged(project, report.prUrls);
+    // A failure a repair leaves is recorded in the tracker, so a run that gave up never ends without a trace.
+    if (job.kind === 'repair' && report.status === 'complete' && report.unrepairedJobs.length && !report.createdTaskIds.length) throw new Error('Repair left failed jobs unrepaired without a ticket; file one and list it in createdTaskIds');
     // An upstream review that created nothing reports no-work, so a truncated report cannot mark a release reviewed.
     if (job.kind === 'upstream' && report.status === 'complete' && !report.createdTaskIds.length) throw new Error('Upstream review reported complete without created tickets; report no-work if none were needed');
     for (const id of report.createdTaskIds) {
