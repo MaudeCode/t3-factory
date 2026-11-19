@@ -134,12 +134,12 @@ function repairState(c: Config, project: Project, workflow: string, store: Store
   const active = owned.some(j => !['complete', 'dismissed'].includes(j.state));
   const ended = (j: typeof owned[number]) => Date.parse(j.completedAt ?? j.dismissedAt ?? '') || 0;
   const last = owned.filter(ended).toSorted((a, b) => ended(b) - ended(a))[0];
-  const cooldownEndsAt = last ? ended(last) + (c.repair?.cooldownMinutes ?? 60) * 60_000 : 0;
+  const cooldownEndsAt = last ? ended(last) + c.repair.cooldownMinutes * 60_000 : 0;
   const run = watch.finished;
   // The same failure a repair just gave up on: every failed job was reported unrepaired, and nothing has passed since.
   const gaveUp = !!last?.repair?.unrepaired?.length && !!run?.failedJobs?.length && run.failedJobs.every(name => last.repair!.unrepaired!.includes(name))
     && !(Date.parse(watch.passedAt ?? '') > ended(last));
-  const hold = !run || !FAILED.includes(run.conclusion) ? null : !c.repair?.enabled ? 'Repairs are paused' : !project.enabled ? 'Project is off'
+  const hold = !run || !FAILED.includes(run.conclusion) ? null : !c.repair.enabled ? 'Repairs are paused' : !project.enabled ? 'Project is off'
     : watch.error ? 'The last read failed; the newest result is unknown' : active ? 'A repair is running' : cooldownEndsAt > now ? 'Cooling down' : (watch.checkedAt ?? 0) < cooldownEndsAt ? 'Waiting for a read after the cooldown' : owned.some(j => j.repair!.runId === run.id) ? 'This run already had a repair'
     : gaveUp ? 'The last repair could not repair these jobs' : !run.failedJobs ? 'Failed jobs not read yet' : null;
   return { watch, active, last, cooldownEndsAt, due: !!run && FAILED.includes(run.conclusion) && !hold, hold };
@@ -164,7 +164,6 @@ async function readWorkflow(project: Project, workflow: string, previous: Workfl
 // requests is verified merged into the project's base branch, when a cooldown has just ended, and otherwise every repair.checkMinutes.
 // refresh=false (dry runs and doctor) reads only the stored state and writes nothing.
 export async function pendingRepairs(c: Config, store: Store, jobs: RepairJobs, now = Date.now(), refresh = true): Promise<PendingReview[]> {
-  if (!c.repair) return [];
   const watched = c.projects.filter(project => project.enabled).flatMap(project => project.repairWorkflows.map(workflow => ({ project, workflow })));
   const pending = await readAll(watched.map(async ({ project, workflow }): Promise<PendingReview | undefined> => {
     await backgroundCheckpoint();
@@ -173,7 +172,7 @@ export async function pendingRepairs(c: Config, store: Store, jobs: RepairJobs, 
     const expected = Date.parse(store.get(`repairExpect:${project.kanvilId}`) ?? '') || 0;
     // A failed read holds admission (see repairState) and is retried on the next pass.
     const due = !checkedAt || ((!!watch.following || !!watch.error) && now - checkedAt >= FOLLOW_SECONDS * 1000) || expected > checkedAt
-      || (checkedAt < cooldownEndsAt && cooldownEndsAt <= now) || now - checkedAt >= c.repair!.checkMinutes * 60_000;
+      || (checkedAt < cooldownEndsAt && cooldownEndsAt <= now) || now - checkedAt >= c.repair.checkMinutes * 60_000;
     if (refresh && due) {
       try { store.set(watchKey(project, workflow), JSON.stringify(await readWorkflow(project, workflow, watch, now))); }
       catch (error) {
@@ -1172,7 +1171,7 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
       catch (error) { stream.quotaError = safeError(error); }
     }
     // The queue is read on every pass, paused or not, so the page always shows what would start next.
-    const reviewsOn = clients.workKind !== 'tickets' && (!!options.upstream || !!c.upstream?.enabled), repairsOn = clients.workKind !== 'tickets' && !options.manual && !!c.repair?.enabled, ticketsOn = clients.workKind !== 'upstream' && !options.upstream && (c.enabled || !!options.manual || !!options.doctor);
+    const reviewsOn = clients.workKind !== 'tickets' && (!!options.upstream || !!c.upstream?.enabled), repairsOn = clients.workKind !== 'tickets' && !options.manual && !!c.repair.enabled, ticketsOn = clients.workKind !== 'upstream' && !options.upstream && (c.enabled || !!options.manual || !!options.doctor);
     // While tickets are paused the read is for display only, so a Kanvil failure must not hold up reviews.
     await backgroundCheckpoint();
     let queue: Queue = { ready: [], skipped: [], selected: undefined }, queueRead = true;
@@ -1323,7 +1322,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const result = { reason, at: new Date().toISOString(), ...extra };
     recordDecision(result); log('decision', result); return result;
   };
-  if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && (plan.review.repair ? c.repair?.enabled : c.upstream?.enabled))) return decision('disabled');
+  if (!c.enabled && !options.doctor && !options.manual && !plan?.inspect && !(plan?.review && (plan.review.repair ? c.repair.enabled : c.upstream?.enabled))) return decision('disabled');
   const t3 = plan?.t3 ?? clients.t3 ?? new T3(c.t3);
   const [shell, instances] = await readAll([
     plan?.shell ?? t3.shell(),
@@ -1983,7 +1982,7 @@ export function writeStatus(c: Config, store: Store) {
     work: JSON.parse(store.get('serviceWork') ?? 'null'),
     triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: triageResults(c, store), triageReports: JSON.parse(store.get('triageReports') || '[]'),
     enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store),
-    repairEnabled: !!c.repair?.enabled, repairs: repairRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: store.currentDecision(),
+    repairEnabled: !!c.repair.enabled, repairs: repairRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: store.currentDecision(),
     discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: JSON.parse(store.get('upNext') ?? 'null'),
     plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),

@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
-import { configSchema } from '../src/config.ts';
+import { fileURLToPath } from 'node:url';
+import { configSchema, loadConfig } from '../src/config.ts';
+import { saveSettings } from '../src/settings.ts';
 import type { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingRepairs, reconcile, repairRows, writeStatus } from '../src/scheduler.ts';
@@ -159,12 +161,17 @@ test('repair status: each watched workflow shows its newest result, the run bein
   assert.equal(writeStatus(c, store).repairs.length, 1, 'status.json carries the rows');
 });
 
-test('repair config: watched workflows need a prompt; the cooldown defaults to 60 minutes and repairs ship off', () => {
-  const base = JSON.parse(readFileSync(new URL('../config.example.jsonc', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, ''));
-  const project = { ...base.projects[0], repairWorkflows: ['ci.yml'] };
-  assert.throws(() => configSchema.parse({ ...base, repair: undefined, projects: [project] }), /repair\.promptFile/);
-  assert.deepEqual(configSchema.parse({ ...base, repair: { promptFile: '/p.md' }, projects: [project] }).repair, { enabled: false, promptFile: '/p.md', cooldownMinutes: 60, checkMinutes: 30 });
-  assert.equal(configSchema.parse(base).repair?.enabled, false, 'the example ships with repairs off');
+test('repair config: a file with no repair section has repairs off with the shipped prompt, and watching a workflow from settings adds nothing else to it', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-repair-config-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { repair: _, ...bare } = JSON.parse(readFileSync(new URL('../config.example.jsonc', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, ''));
+  const file = join(dir, 'config.jsonc'); writeFileSync(file, JSON.stringify({ ...bare, projects: [{ ...bare.projects[0], repairWorkflows: [] }] }));
+  const before = loadConfig(file);
+  assert.deepEqual(before.repair, { enabled: false, promptFile: fileURLToPath(new URL('../prompts/repair.md', import.meta.url)), cooldownMinutes: 60, checkMinutes: 30 });
+  assert.ok(existsSync(before.repair.promptFile), 'the default prompt ships with the code');
+  saveSettings({ base: before, config: { ...before, projects: [{ ...before.projects[0], repairWorkflows: ['ci.yml'] }] } }, file);
+  const stored = JSON.parse(readFileSync(file, 'utf8'));
+  assert.deepEqual([stored.repair, stored.projects[0].repairWorkflows, loadConfig(file).projects[0].repairWorkflows], [undefined, ['ci.yml'], ['ci.yml']]);
+  assert.deepEqual(configSchema.parse({ ...bare, repair: { promptFile: '/p.md' } }).repair, { enabled: false, promptFile: '/p.md', cooldownMinutes: 60, checkMinutes: 30 }, 'a prompt of its own replaces the shipped one');
 });
 
 test('repair dispatch: a failed run takes the free slot ahead of a ready ticket, without waiting for idle time, once', async t => {

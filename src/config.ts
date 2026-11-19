@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import { z } from 'zod';
 import { DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketStatuses } from './policy.ts';
@@ -82,7 +83,8 @@ export const configSchema = z.preprocess(input => {
   // Its own switch, like upstream reviews; each project names its inbox.
   // Repairs of a watched workflow's failed run on a project's base branch; their own switch, like upstream reviews.
   // `checkMinutes` is the slow read for runs the scheduler has no reason to expect; an unfinished run is read on every pass.
-  repair: z.object({ enabled: z.boolean().default(false), promptFile: absolute, cooldownMinutes: positive.default(60), checkMinutes: positive.default(30) }).strict().optional(),
+  // The section needs nothing in the file: its prompt defaults to the one beside this code, so the settings page alone sets repairs up.
+  repair: z.object({ enabled: z.boolean().default(false), promptFile: absolute.default(fileURLToPath(new URL('../prompts/repair.md', import.meta.url))), cooldownMinutes: positive.default(60), checkMinutes: positive.default(30) }).strict().prefault({}),
   triage: z.object({ enabled: z.boolean().default(false), concurrency: z.number().int().positive().default(3), quotaReservePercent: z.number().positive().max(100).default(5), promptFile: absolute }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({
@@ -132,7 +134,6 @@ export const configSchema = z.preprocess(input => {
   const upstreams = c.projects.flatMap(p => p.upstreams.map(u => u.repo));
   if (new Set(upstreams).size !== upstreams.length) ctx.addIssue({ code: 'custom', message: 'Each upstream repository can be watched by only one project' });
   if (upstreams.length && !c.upstream) ctx.addIssue({ code: 'custom', path: ['upstream'], message: 'Watched upstreams need upstream.promptFile' });
-  if (c.projects.some(p => p.repairWorkflows.length) && !c.repair) ctx.addIssue({ code: 'custom', path: ['repair'], message: 'Watched workflows need repair.promptFile' });
   // Inbox tickets are never dispatched: an inbox cannot be a delivery project, and feeds exactly one project.
   const inboxIds = c.projects.flatMap(p => p.inbox ? [p.inbox.kanvilId] : []);
   c.projects.forEach((p, i) => {

@@ -182,7 +182,7 @@ export class FactoryService {
     this.scheduleAdmissions(reason, 'chains');
     this.scheduleAdmissions(reason, 'upstream');
     // Each pass begins here, so a followed workflow run is read again on every pass until it finishes.
-    for (const [lane, on, read] of [['upstream-sources', (c: Config) => c.upstream?.enabled, pendingReviews], ['repair-sources', (c: Config) => c.repair?.enabled, pendingRepairs]] as const) this.runLane(lane, async () => {
+    for (const [lane, on, read] of [['upstream-sources', (c: Config) => c.upstream?.enabled, pendingReviews], ['repair-sources', (c: Config) => c.repair.enabled, pendingRepairs]] as const) this.runLane(lane, async () => {
       const c = this.configure();
       if (!on(c)) return;
       await read(c, this.store, this.store.jobSummaries());
@@ -227,7 +227,7 @@ export class FactoryService {
         if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 && (driver === 'claudeAgent' || c.concurrency.claude > 0) && !plans.some(plan => skips({ manual: true, overrideLimits: plan.overrideLimits }).has('providers'))) return;
       } else {
         if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0) return;
-        if (workKind === 'tickets' ? !c.enabled : !c.upstream?.enabled && !c.repair?.enabled) return;
+        if (workKind === 'tickets' ? !c.enabled : !c.upstream?.enabled && !c.repair.enabled) return;
         if (!c.models.some(model => model.automatic && matches(model))) return;
       }
       await this.pass({}, reason, 0, workKind, driver);

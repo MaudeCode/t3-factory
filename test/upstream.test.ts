@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { configSchema } from '../src/config.ts';
+import { configSchema, loadConfig } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
@@ -104,8 +104,9 @@ test('upstream detection: a failed release read is recorded on its row', async t
   assert.match(row.checkError ?? '', /404/);
 });
 
-// Each section with its own switch: the CLI flips only that section, and refuses a config without it.
-for (const [section, missing] of [['upstream', 'No upstream reviews are configured'], ['repair', 'No CI repairs are configured']] as const) test(`${section} switch: the CLI flips only ${section}.enabled and refuses configs without ${section}`, t => {
+// Each section with its own switch: the CLI flips only that section. Upstream reviews refuse a config without their
+// section, which holds their prompt; repairs default theirs, so the switch works on a config that never mentions them.
+for (const [section, missing] of [['upstream', 'No upstream reviews are configured'], ['repair', null]] as const) test(`${section} switch: the CLI flips only ${section}.enabled and ${missing ? 'refuses' : 'works on'} configs without ${section}`, t => {
   const { dir, c } = fixture(t, []);
   const main = new URL('../src/main.ts', import.meta.url).pathname, run = (file: string) => {
     try { return { code: 0, out: execFileSync(process.execPath, [main, `${section}-resume`], { env: { ...process.env, NODE_NO_WARNINGS: '1', T3_FACTORY_CONFIG: file }, encoding: 'utf8', stdio: 'pipe' }) }; }
@@ -118,8 +119,14 @@ for (const [section, missing] of [['upstream', 'No upstream reviews are configur
   assert.deepEqual([saved[section].enabled, saved[other].enabled, saved.enabled], [true, false, true]);
   const bare = join(dir, 'bare.jsonc'), { [section]: _, ...without } = { ...c, repair: off };
   writeFileSync(bare, JSON.stringify(without));
-  assert.deepEqual(run(bare), { code: 1, out: `${missing}\n` });
-  assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(without), 'the file is untouched');
+  if (missing) {
+    assert.deepEqual(run(bare), { code: 1, out: `${missing}\n` });
+    assert.equal(readFileSync(bare, 'utf8'), JSON.stringify(without), 'the file is untouched');
+  } else {
+    assert.equal(run(bare).code, 0);
+    assert.deepEqual(JSON.parse(readFileSync(bare, 'utf8')), { ...without, repair: { enabled: true } }, 'only the switch is written');
+    assert.equal(loadConfig(bare).repair.enabled, true, 'and the config still loads');
+  }
 });
 
 for (const scenario of ['priority', 'ambiguous-launch', 'dry-run', 'tickets-paused', 'tickets-paused-empty', 'reviews-paused', 'owner-busy', 'activity-unreadable'] as const) test(`upstream dispatch: ${scenario}`, async t => {
