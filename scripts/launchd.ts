@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { setTimeout } from "node:timers/promises";
 
@@ -54,4 +55,27 @@ export function writeControlAgent(plist: string, body: string) {
 <key>ProcessType</key><string>Interactive</string>
 ${body}
 </dict></plist>\n`, { mode: 0o600 });
+}
+
+// Everything an installer deploys to the shared runtime directory. Configuration, credentials and job state live elsewhere.
+export const runtimeEntries = ["src", "web", "prompts", "scripts", "deploy", "node_modules", "package.json", "package-lock.json", "README.md", "docs", "LICENSE", "SECURITY.md", "config.example.jsonc", ".env.example"];
+
+// Copies the runtime into a fresh staging directory while the service still runs, so a failed copy changes nothing,
+// then unloads it and moves each entry into place. Links are copied as written: npm's relative node_modules/.bin links
+// keep pointing inside the runtime instead of into a checkout that may later be removed. `env` is staged as the private .env.
+export async function installRuntime(root: string, app: string, unload: () => Promise<void>, env?: string) {
+  const staging = join(app, ".install");
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(staging, { recursive: true, mode: 0o700 });
+  try {
+    for (const entry of runtimeEntries) cpSync(join(root, entry), join(staging, entry), { recursive: true, verbatimSymlinks: true });
+    if (env) { cpSync(env, join(staging, ".env")); chmodSync(join(staging, ".env"), 0o600); }
+    await unload();
+    for (const entry of env ? [...runtimeEntries, ".env"] : runtimeEntries) {
+      rmSync(join(app, entry), { recursive: true, force: true });
+      renameSync(join(staging, entry), join(app, entry));
+    }
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 }

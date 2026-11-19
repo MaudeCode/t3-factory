@@ -1,5 +1,5 @@
-import { bootout, bootstrap, writeControlAgent } from './launchd.ts';
-import { cpSync, mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { bootout, bootstrap, installRuntime, writeControlAgent } from './launchd.ts';
+import { mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,18 +14,14 @@ const home = homedir(), app = join(home, '.local/share/t3-factory/app');
 const label = process.env.T3_FACTORY_SERVICE_LABEL ?? 'local.t3-factory', domain = `gui/${process.getuid!()}`;
 if (!/^[A-Za-z0-9.-]+$/.test(label)) throw new Error('Invalid service label');
 const plist = join(home, 'Library/LaunchAgents', `${label}.plist`);
-await bootout(domain, label);
-mkdirSync(app, { recursive: true, mode: 0o700 });
-for (const entry of ['src', 'web', 'prompts', 'scripts', 'deploy', 'node_modules', 'package.json', 'package-lock.json', 'README.md', 'docs', 'LICENSE', 'SECURITY.md', 'config.example.jsonc', '.env.example']) {
-  cpSync(join(root, entry), join(app, entry), { recursive: true });
-}
-if (existsSync(envPath)) { cpSync(envPath, join(app, '.env')); chmodSync(join(app, '.env'), 0o600); }
 const gh = execFileSync('/usr/bin/which', ['gh'], { encoding: 'utf8' }).trim();
 const path = [dirname(gh), dirname(process.execPath), join(home, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':');
 const escape = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const string = (s: string) => `<string>${escape(s)}</string>`;
 const config = process.env.T3_FACTORY_CONFIG ?? join(home, '.config/t3-factory/config.jsonc');
 if (!existsSync(config)) throw new Error('Create the configuration and T3 credential before installing the service');
+// Checks run and the runtime is staged before the old service is unloaded, so a failed copy leaves it running.
+await installRuntime(root, app, () => bootout(domain, label), existsSync(envPath) ? envPath : undefined);
 mkdirSync(dirname(plist), { recursive: true });
 mkdirSync(join(home, 'Library/Logs'), { recursive: true });
 writeControlAgent(plist, `<key>Label</key>${string(label)}

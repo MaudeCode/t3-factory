@@ -1,5 +1,5 @@
-import { bootout, bootstrap, writeControlAgent } from "./launchd.ts";
-import { cpSync, mkdirSync, chmodSync } from "node:fs";
+import { bootout, bootstrap, installRuntime, writeControlAgent } from "./launchd.ts";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -16,32 +16,11 @@ const app = join(userDir, ".local/share/t3-factory/app"),
   domain = `gui/${process.getuid!()}`;
 if (!/^[A-Za-z0-9.-]+$/.test(label)) throw new Error("Invalid service label");
 const plist = join(userDir, "Library/LaunchAgents", `${label}.plist`);
-mkdirSync(app, { recursive: true, mode: 0o700 });
 mkdirSync(join(userDir, "Library/LaunchAgents"), { recursive: true });
 mkdirSync(join(userDir, "Library/Logs"), { recursive: true });
-// Stage the complete runtime before restarting the web process.
-for (const entry of [
-  "src",
-  "web",
-  "prompts",
-  "scripts",
-  "deploy",
-  "package.json",
-  "package-lock.json",
-  "README.md",
-  "docs",
-  "LICENSE",
-  "SECURITY.md",
-  "config.example.jsonc",
-  ".env.example",
-])
-  cpSync(join(root, entry), join(app, entry), { recursive: true });
-cpSync(envPath, join(app, ".env"));
-chmodSync(join(app, ".env"), 0o600);
-// Dependencies are copied in place rather than rebuilt with npm: the scheduler runs from the same
+// Dependencies are copied rather than rebuilt with npm: the scheduler runs from the same
 // directory, and an npm install there removes modules it is loading.
-cpSync(join(root, "node_modules"), join(app, "node_modules"), { recursive: true });
-await bootout(domain, label);
+await installRuntime(root, app, () => bootout(domain, label), envPath);
 const escape = (value: string) =>
   value
     .replaceAll("&", "&amp;")
