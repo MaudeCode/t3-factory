@@ -66,7 +66,7 @@ for (const scenario of ['other-project', 'settled-discussion'] as const) test(`t
   } finally { store.close(); process.env.PATH = oldPath; rmSync(dir, { recursive: true, force: true }); }
 });
 
-for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true, false, false], [false, true, false], [false, true, true]]) test(`historical ownership releases safely: ${settled ? 'explicitly settled' : 'completed'}${launched ? ' v2 launch' : ''}${pushedElsewhere ? ' pushed under another name' : ''}`, async t => {
+for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true, false, false], [false, true, false], [false, true, true]]) test(`historical ownership releases safely: ${settled ? 'verified settled' : 'completed'}${launched ? ' v2 launch' : ''}${pushedElsewhere ? ' pushed under another name' : ''}`, async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-reopened-')), repo = join(dir, 'repo'), tree = join(dir, 'old-tree'); mkdirSync(repo);
   const git = (...args: string[]) => execFileSync('/usr/bin/git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
   git('init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'old work\n'); git('add', 'file');
@@ -74,7 +74,7 @@ for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true
   const branch = 'chore/FIX-1-old', head = git('rev-parse', 'HEAD'); git('worktree', 'add', '-qb', branch, tree);
   const metadata = join(dir, 'metadata.json'), prBranch = pushedElsewhere ? 'fix/FIX-1-delivery' : branch;
   if (pushedElsewhere) git('update-ref', `refs/remotes/origin/${prBranch}`, head);
-  const setPR = (open = false) => writeFileSync(metadata, JSON.stringify({ state: 'MERGED', headRefName: prBranch, headRefOid: head, open })); setPR();
+  const setPR = (open = false) => writeFileSync(metadata, JSON.stringify({ state: 'MERGED', baseRefName: 'main', mergeCommit: { oid: head }, headRefName: prBranch, headRefOid: head, open })); setPR();
   writeFileSync(join(dir, 'gh'), `#!${process.execPath}\nconst fs=require('node:fs');const p=JSON.parse(fs.readFileSync(${JSON.stringify(metadata)},'utf8'));console.log(JSON.stringify(process.argv.includes('view')?p:p.open?[{title:'FIX-1 follow-up',headRefName:'fix/FIX-1-new',body:''}]:[]));\n`, { mode: 0o755 });
   const oldPath = process.env.PATH; process.env.PATH = `${dir}:${oldPath}`;
   const c = configSchema.parse({ enabled: false, pollSeconds: 60, idleMinutes: 30, maxWaitingPRs: null,
@@ -86,6 +86,7 @@ for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true
   writeFileSync(c.factorySkill, '# Software factory\nMerge without asking after review and CI.');
   const task = { id: 'task', projectId: 'p', number: 1, title: 'Reopened work', status: 'todo', priority: 'high', createdAt: '2026-01-01T00:00:00Z', labels: [{ name: 'sf' }, { name: 'med' }] };
   mockTracker(t, Kanvil.prototype, async (name: string) => {
+    if (name === 'ticket') return task;
     if (name === 'labels') return [task].flatMap(task => task.labels.map(label => ({ ...label, taskId: task.id, workspaceId: 'workspace' })));
     if (name === 'tickets') return { data: { workspaceId: 'workspace', columns: [{ tasks: [task] }] }, pagination: { total: 1, totalPages: 1 } };
     if (name === 'relations') return [];
@@ -106,10 +107,13 @@ for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true
       await reconcile(c, store, t3, kanvil, [thread]);
       assert.notEqual(store.jobs()[0].state, 'dismissed', 'still-executing work must remain protected');
       thread.status = 'failed'; thread.activeRunId = null;
+      task.status = 'done';
+      writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Merged', prUrls: ['https://github.com/fixture/repo/pull/1'], createdTaskIds: [] }));
       await reconcile(c, store, t3, kanvil, [thread]);
       assert.equal(store.jobs()[0].state, 'dismissed');
       assert.equal(writeStatus(c, store).jobs.length, 0, 'settled runs disappear from factory status');
       assert.equal(store.db.prepare('SELECT task_id FROM jobs WHERE id=?').get(job.id)!.task_id, null);
+      task.status = 'todo';
       thread.settledOverride = null;
       assert.match((await inspect()).skipped[0].reason, /T3 thread/);
       thread.settledOverride = 'settled';

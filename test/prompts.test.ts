@@ -26,7 +26,8 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
       assert.doesNotMatch(prompt, /Only approved=true|normal structured user merge prompt|safe merged-work cleanup/);
       assert.match(prompt, /human-only gates still require user input/);
       assert.match(prompt, /reuse them; do not create another worktree/);
-      assert.match(prompt, /no change is needed.*record the evidence on the ticket.*move it out of the ready queue.*clear native automationReady, record holdReason.*clean with no commits.*"no-work" with "prUrls":\[\]/);
+      assert.match(prompt, /no change is needed.*record the evidence on the ticket.*close it in a configured final status.*verify that closure.*clean with no commits.*"no-work" with "prUrls":\[\]/);
+      assert.match(prompt, /A held, unverified or not-ready ticket remains unfinished: keep this job awaiting-human/);
       assert.match(prompt, /Never report complete based merely on finishing a turn or opening a PR/);
       assert.match(prompt, /Yielding to background work that notifies you on completion.*ordinary progress: it needs no awaiting-human report or user question.*resumes this same job/);
       assert.match(prompt, /Automatic run visual validation/);
@@ -40,6 +41,10 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
       for (const dispatched of [prompt, manualPrompt]) {
         assert.ok(dispatched.indexOf('PR monitoring:') > dispatched.indexOf('</software-factory-skill>'), 'native PR monitoring must follow the supplied skill and its polling advice');
         assert.match(dispatched, /call watch_pull_request and end your turn/);
+        assert.ok(dispatched.indexOf('Job ownership:') > dispatched.indexOf('</software-factory-skill>'), 'job boundaries follow the supplied workflow');
+        assert.match(dispatched, /Do not message, steer, interrupt, launch, settle or manage unrelated sessions/);
+        assert.match(dispatched, /Only an explicit user instruction authorizes cross-session coordination/);
+        assert.match(dispatched, /Never settle, dismiss, report complete or no-work, or end the job while operator input or assigned work remains/);
       }
     }
     const updated = skill.replace('green CI', 'green CI on the exact current head');

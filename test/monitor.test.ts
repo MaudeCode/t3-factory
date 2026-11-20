@@ -86,6 +86,10 @@ test('runtime handoffs and a waiting snapshot without a human request never jour
       await reconcile(c, store, {} as T3, {} as Kanvil, [thread], false);
       assert.equal(store.job(job.id)!.state, 'waiting', kind);
       assert.equal(busyProviders(store.jobs(), [thread], new Map(), 30).size, 0);
+      thread.settledOverride = 'settled';
+      await reconcile(c, store, {} as T3, {} as Kanvil, [thread], false);
+      assert.equal(store.job(job.id)!.state, 'waiting', 'settlement cannot discard an unanswered operator request');
+      thread.settledOverride = null;
       thread.pendingRuntimeRequest = null;
       await reconcile(c, store, {} as T3, {} as Kanvil, [thread], false);
     }

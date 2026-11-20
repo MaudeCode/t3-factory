@@ -235,10 +235,10 @@ async function untouchedHead(project: Project, branch: string, worktreePath?: st
   if (worktreePath && existsSync(join(worktreePath, '.git'))) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
   return history.every(head => head === created) && await released(project, created) ? created : '';
 }
-// A ticket closed without delivery must have left the ready queue and abandon no work.
+// A hold is unfinished work, even when the agent removed the ticket from the ready queue.
 async function verifyClosedWithoutDelivery(project: Project, task: Task, job: Job, thread: Thread) {
-  if (!project.doneStatuses.includes(task.status) && project.readyStatuses.includes(task.status) && task.automationReady && !task.holdReason && !task.archived) {
-    throw new Error('Ticket is still ready; record why no change is needed and remove it from the ready queue');
+  if (!project.doneStatuses.includes(task.status)) {
+    throw new Error('Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved');
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
   const branch = assignedBranch(job), worktree = thread.worktreePath && existsSync(thread.worktreePath) ? thread.worktreePath : null;
@@ -301,7 +301,17 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
     const t = threads.find(t => t.id === job.threadId);
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kanvil, job);
     if (job.state === 'dismissed') return;
-    if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) { await dismissJob(store, job, 'Dismissed by settling the task in T3', t); return; }
+    if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
+      try {
+        if (waiting(t)) throw new Error('T3 is awaiting human input');
+        if (job.state !== 'complete' || existsSync(job.reportPath)) {
+          const report = readCompletionReport(job);
+          if (report.status === 'awaiting-human') throw new Error(report.reason);
+          if (job.state !== 'complete') await verifyCompletionReport(c, kanvil, job, t, report);
+        }
+      } catch (error) { job.state = 'waiting'; job.reason = safeError(error); store.save(job); return; }
+      await dismissJob(store, job, 'Dismissed by settling the task in T3', t); return;
+    }
     if (job.state === 'complete') { if (t && allowMonitorStop && job.workspaceCleanedAt) await settleFinished(t3, job, t); return; }
     if (!t) {
       // A thread T3 has shown before and no longer lists, even among archived threads, was deleted: its run cannot resume.
