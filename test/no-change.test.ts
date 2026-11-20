@@ -10,10 +10,19 @@ import type { Config } from '../src/config.ts';
 import type { T3, Kanvil } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
 
-const accepted = { 'done': 'done', 'automation-disabled': 'todo', 'held': 'todo', 'archived': 'todo', 'complete-empty': 'done', 'missing-worktree': 'done' } as const;
+const accepted = { 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done' } as const;
+const unfinished = 'Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved';
 const rejected = {
-  'unlabeled': 'Ticket is still ready; record why no change is needed and remove it from the ready queue',
-  'still-ready': 'Ticket is still ready; record why no change is needed and remove it from the ready queue',
+  'unlabeled': unfinished,
+  'still-ready': unfinished,
+  'automation-disabled': unfinished,
+  'held': unfinished,
+  'held-complete': unfinished,
+  'archived': unfinished,
+  'backlog': unfinished,
+  'held-settled': unfinished,
+  'awaiting-human-settled': 'Choose the reproduction route',
+  'settled-no-report': 'Turn ended without a completion report; inspect in T3',
   'dirty': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'missing-worktree-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
@@ -33,14 +42,16 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
     const branch = 'chore/FIX-1-factory';
     git(repo, 'update-ref', 'refs/remotes/origin/main', git(repo, 'rev-parse', 'HEAD')); git(repo, 'worktree', 'add', '-qb', branch, tree);
     const store = new Store(join(dir, 'state'));
-    const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] };
+    const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done', 'cancelled'] };
     const c = { monitoringTimeoutMinutes: 30, kanvil: { workspaceId: 'workspace' }, projects: [project] } as unknown as Config;
     const job: Job = { id: 'job', kind: 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: null, state: 'waiting', reason: 'Ticket cannot finish as no-work', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, status: 'completed' });
-    const report = { jobId: job.id, status: scenario === 'complete-empty' ? 'complete' : 'no-work', reason: 'Already delivered on main; evidence recorded on the ticket', prUrls: scenario === 'no-work-with-pr' ? ['https://github.com/fixture/repo/pull/1'] : [], createdTaskIds: [] };
-    writeFileSync(job.reportPath, JSON.stringify(report));
-    const status = scenario in accepted ? accepted[scenario as keyof typeof accepted] : ['still-ready', 'unlabeled'].includes(scenario) ? 'todo' : 'done';
-    const kanvil = { config: c.kanvil, task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status, automationReady: scenario !== 'automation-disabled', holdReason: scenario === 'held' ? 'Decision pending' : null, archived: scenario === 'archived', labels: [{ name: 'med' }, ...(scenario === 'unlabeled' ? [] : [{ name: 'sf' }])] }) } as unknown as Kanvil;
+    if (scenario.includes('settled')) thread.settledOverride = 'settled';
+    const report = { jobId: job.id, status: ['complete-empty', 'held-complete'].includes(scenario) ? 'complete' : 'no-work', reason: 'Already delivered on main; evidence recorded on the ticket', prUrls: scenario === 'no-work-with-pr' ? ['https://github.com/fixture/repo/pull/1'] : [], createdTaskIds: [] };
+    if (scenario === 'awaiting-human-settled') { report.status = 'awaiting-human'; report.reason = 'Choose the reproduction route'; }
+    if (scenario !== 'settled-no-report') writeFileSync(job.reportPath, JSON.stringify(report));
+    const status = scenario in accepted ? accepted[scenario as keyof typeof accepted] : scenario === 'backlog' ? 'backlog' : ['still-ready', 'unlabeled', 'automation-disabled', 'held', 'held-complete', 'held-settled', 'archived'].includes(scenario) ? 'todo' : 'done';
+    const kanvil = { config: c.kanvil, task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status, automationReady: scenario !== 'automation-disabled', holdReason: scenario.startsWith('held') ? 'Decision pending' : null, archived: scenario === 'archived', labels: [{ name: 'med' }, ...(scenario === 'unlabeled' ? [] : [{ name: 'sf' }])] }) } as unknown as Kanvil;
     const threads = [thread];
     const t3 = { shell: async () => ({ threads }), request: async () => ({ projection: v2Projection(thread) }), terminals: async () => [],
       dispatch: async (command: any) => { thread.worktreePath = null; thread.branch = null; assert.equal(command.type, 'thread.metadata.update'); } } as unknown as T3;
