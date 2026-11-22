@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configSchema, loadConfig } from '../src/config.ts';
 import { applySchedule, editConfig } from '../src/settings.ts';
+import { weeklyResets } from '../src/scheduler.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
 const NOW = Date.parse('2026-03-10T12:00:00Z'), PAST = '2026-03-10T11:00:00Z', EARLIER = '2026-03-10T10:00:00Z', FUTURE = '2026-03-12T12:00:00Z';
 const none = { onAt: null, offAt: null, offAtReset: null };
@@ -42,4 +44,16 @@ for (const [name, schedule, resets, expected, line] of cases) test(`schedule: ${
 test('a weekly reset schedule needs the reset time it was taken from', () => {
   const base = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
   assert.throws(() => configSchema.parse({ ...base, schedule: { offAtReset: 'claude' } }), /A weekly reset needs its time/);
+});
+
+// Admission reads its quota from T3's current provider reading; the published streams follow only after the launches.
+test('a reset is read from the provider reading admission uses, ahead of the published one', t => {
+  const f = dispatchFixture(t), published = '2020-01-01T00:00:00.000Z';
+  f.store.set('streams', JSON.stringify([{ driver: 'codex', quota: { windows: [{ name: 'weekly', resetsAt: published }] } }, { driver: 'claudeAgent', quota: { windows: [{ name: 'weekly', resetsAt: published }] } }]));
+  assert.deepEqual(weeklyResets(f.c, f.store, f.t3), { codex: published, claude: published }, 'without a current reading the published ones stand');
+  const provider = f.provider('codex');
+  t.mock.method(f.t3, 'peekProvider', (id: string) => id === 'codex' ? provider : undefined);
+  assert.deepEqual(weeklyResets(f.c, f.store, f.t3), { codex: provider.usageLimits.windows[0].resetsAt, claude: published });
+  provider.usageLimits.checkedAt = '2020-01-01T00:00:00.000Z';
+  assert.equal(weeklyResets(f.c, f.store, f.t3).codex, published, 'a reading too old for admission leaves the published one');
 });

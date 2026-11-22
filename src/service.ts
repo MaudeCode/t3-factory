@@ -515,7 +515,7 @@ export class FactoryService {
   // The settings on disk after any due schedule timer. Every admission and every launch's last check reads them here,
   // so nothing starts past a timer.
   private settings(): Config {
-    const c = loadConfig(this.configPath), scheduled = applySchedule(this.configPath, c, () => weeklyResets(this.store));
+    const c = loadConfig(this.configPath), scheduled = applySchedule(this.configPath, c, () => weeklyResets(c, this.store, this.t3));
     if (!scheduled) return c;
     this.store.record('schedule', scheduled.text); log('schedule', scheduled);
     return loadConfig(this.configPath);

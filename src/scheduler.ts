@@ -1097,9 +1097,18 @@ type ProviderStream = {
   quota?: Awaited<ReturnType<typeof readModelQuota>>; quotaError?: string;
 };
 
-// Each provider's weekly reset as last read, under its config name.
-export function weeklyResets(store: Store): Partial<Record<'claude' | 'codex', string>> {
-  return Object.fromEntries((JSON.parse(store.get('streams') ?? '[]') as ProviderStream[]).map(stream => [stream.driver === 'codex' ? 'codex' : 'claude', stream.quota?.windows.find(w => w.name === 'weekly')?.resetsAt]));
+// Each provider's weekly reset under its config name: from the provider reading admission uses while that reading is
+// current, else from the last published one. A launch's own quota read therefore decides whether a reset came early.
+export function weeklyResets(c: Config, store: Store, t3?: Pick<T3, 'peekProvider'>): Partial<Record<'claude' | 'codex', string>> {
+  const resets: Partial<Record<'claude' | 'codex', string>> = Object.fromEntries((JSON.parse(store.get('streams') ?? '[]') as ProviderStream[]).map(stream => [stream.driver === 'codex' ? 'codex' : 'claude', stream.quota?.windows.find(w => w.name === 'weekly')?.resetsAt]));
+  const read = new Set<string>();
+  for (const preset of c.models) {
+    const provider = t3?.peekProvider(preset.model.instanceId), name = provider?.driver === 'codex' ? 'codex' : 'claude';
+    if (!provider || read.has(name)) continue;
+    // A stale or unusable reading leaves the published one; admission cannot start on it either.
+    try { const reset = modelQuota(c, [], preset.id, provider, false).windows.find(w => w.name === 'weekly')?.resetsAt; if (reset) { resets[name] = reset; read.add(name); } } catch { /* keep the published reading */ }
+  }
+  return resets;
 }
 
 // Admission and quota refreshes share publication ownership, independently per provider.
