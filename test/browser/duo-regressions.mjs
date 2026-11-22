@@ -46,14 +46,16 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
         assert.equal(await page.locator("input.search").count(), 0, "Enter closes Search once without reopening it");
       }],
     ];
-    // The Queue page's three ticket views share one phone head; their measured heights must agree at each width.
+    // The Queue page's three ticket views share one head; at each width, heads with the same layout must agree in height.
+    // At 951px only the Session tickets fixture mounts the sidebar, which narrows its page to the phone head.
     const heads = {};
-    for (const width of [360, 382, 594]) for (const [fixture, api] of [["queue", "queueTests"], ["session-tickets", "sessionTests"], ["triage", "triageTests"]]) {
+    for (const width of [360, 382, 385, 594, 669, 951]) for (const [fixture, api] of [["queue", "queueTests"], ["session-tickets", "sessionTests"], ["triage", "triageTests"]]) {
       cases.push([`${fixture} phone header`, fixture, api, width, async page => {
         const result = await page.evaluate(api => window[api].phoneHeader(), api);
         assert(result.coarse, "phone header check ran with touch input");
-        (heads[width] ??= []).push(result.height);
-        assert(Math.max(...heads[width]) - Math.min(...heads[width]) <= 1, `list page heads share one height at ${width}px: ${heads[width].join(", ")}`);
+        const same = heads[`${width} ${result.narrow}`] ??= [];
+        same.push(result.height);
+        assert(Math.max(...same) - Math.min(...same) <= 1, `list page heads share one height at ${width}px: ${same.join(", ")}`);
       }]);
     }
     // Foldable poses with touch input; the fixture itself checks three-digit counts and overflow.

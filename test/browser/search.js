@@ -25,6 +25,10 @@ export async function checkPageHead() {
   while (page && !getComputedStyle(page).containerName.split(' ').includes('page')) page = page.parentElement;
   assert(page, 'the head sits in a page container');
   const box = getComputedStyle(page), narrow = page.clientWidth - parseFloat(box.paddingLeft) - parseFloat(box.paddingRight) <= 900;
+  // A strip beside the title must not squeeze the title block below its own words.
+  const block = r(title.parentElement), words = document.createRange();
+  words.selectNodeContents(title);
+  assert([...words.getClientRects()].every(line => line.left >= block.left - 1 && line.right <= block.right + 1), 'the title reads in full inside its block');
   if (narrow) {
     assert(r(search).top < t.bottom && r(search).bottom > t.top, 'Search shares the title row');
     assert(tools && strip, 'the head has a tools group and an actions strip');
@@ -53,5 +57,5 @@ export async function checkPageHead() {
   }
   assert(document.documentElement.scrollWidth <= innerWidth, 'the head fits the viewport');
   if (matchMedia('(pointer: coarse)').matches) assert(buttons.every(button => r(button).width >= 44 && r(button).height >= 44), 'head controls keep 44px touch targets');
-  return { passed: true, viewport: [innerWidth, innerHeight], height: Math.round(h.height), rows: narrow && r(strip).top >= r(tools).bottom - 1 ? 2 : 1, coarse: matchMedia('(pointer: coarse)').matches };
+  return { passed: true, viewport: [innerWidth, innerHeight], narrow, height: Math.round(h.height), rows: narrow && r(strip).top >= r(tools).bottom - 1 ? 2 : 1, coarse: matchMedia('(pointer: coarse)').matches };
 }
