@@ -10,11 +10,11 @@ import { dispatchProviderSchema } from './config.ts';
 const id = z.string().regex(/^[\w-]{1,64}$/);
 type Tool = { description: string; input: z.ZodObject; command?: (input: any) => ControlCommand; read?: (stateDir: string) => unknown };
 // Status fields an agent needs to pick a run, plan or report; the rest of status.json feeds the menu and web pages.
-const statusFields = ['enabled', 'concurrency', 'work', 'decision', 'upNext', 'plans', 'jobs', 'recent', 'triageReports'] as const;
+const statusFields = ['enabled', 'concurrency', 'work', 'decision', 'upNext', 'plans', 'jobs', 'recent'] as const;
 
 export const tools: Record<string, Tool> = {
   factory_status: {
-    description: 'Factory state: whether dispatch is enabled, concurrency, the current decision, up next, Epic plans, runs (jobs) and recent runs, and open triage reports.',
+    description: 'Factory state: whether dispatch is enabled, concurrency, the current decision, up next, Epic plans, and runs (jobs) and recent runs.',
     input: z.object({}).strict(),
     read: stateDir => {
       const file = join(stateDir, 'status.json');
@@ -24,9 +24,9 @@ export const tools: Record<string, Tool> = {
     },
   },
   get_ticket: {
-    description: 'Read a Kanvil ticket as the factory sees it, including readiness and its runs.',
+    description: 'Read a ticket in a configured project as the factory sees it, including readiness and its runs. Inbox reports are not readable here.',
     input: z.object({ key: z.string().regex(/^[A-Za-z0-9]{1,32}-\d{1,9}$/) }).strict(),
-    command: ({ key }) => ({ type: 'ticket', key: key.toUpperCase() }),
+    command: ({ key }) => ({ type: 'ticket', key: key.toUpperCase(), agent: true }),
   },
   dispatch: {
     description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Normal limits apply, including the quota reserve and idle time; the result says why work did not start. Omit all targets to let the factory pick the next ticket.',

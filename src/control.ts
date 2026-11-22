@@ -20,7 +20,7 @@ export type ControlCommand =
   | { type: 'session-dismiss'; taskId: string }
   | { type: 'triage-run' }
   | { type: 'triage-report'; ticketId: string; action: 'retry' | 'close' | 'promote'; override?: true }
-  | { type: 'ticket'; key: string }
+  | { type: 'ticket'; key: string; agent?: true }
   | { type: 'cleanup'; input: CleanupRequest; operator?: string }
   | { type: 'cleanup-cancel'; inspectionId: string }
   | { type: 'health' };

@@ -364,7 +364,7 @@ export class FactoryService {
     }
     if (command.type === 'ticket') {
       // A read for the web app's ticket panel; nothing is queued and no state changes.
-      const c = this.configure(), detail = await ticketDetail(c, await this.ensureKanvil(c), command.key);
+      const c = this.configure(), detail = await ticketDetail(c, await this.ensureKanvil(c), command.key, !command.agent);
       return detail ? { code: 0, data: detail } : { code: 1, data: { notFound: true, message: 'Ticket not found' } };
     }
     if (command.type === 'job-stop') {
