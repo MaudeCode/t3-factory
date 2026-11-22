@@ -561,7 +561,7 @@ export class Kanvil {
   async updateTicket(projectId: string, ticketId: string, expectedVersion: number, changes: Record<string, unknown>, requestId: string) {
     return this.send('PATCH', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}`, { expectedVersion, changes, requestId });
   }
-  async recoverClaim(projectId: string, ticketId: string, input: { claimId?: string; reason: string; cancelActive?: boolean; reschedule: true; expectedVersion: number }, requestId: string) {
+  async recoverClaim(projectId: string, ticketId: string, input: { claimId?: string; reason: string; reschedule: true; expectedVersion: number }, requestId: string) {
     return this.send('POST', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/claim/recover`, { ...input, confirmedStopped: true, requestId });
   }
   async addComment(projectId: string, ticketId: string, body: string, requestId: string) {

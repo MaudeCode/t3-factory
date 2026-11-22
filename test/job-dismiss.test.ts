@@ -22,7 +22,7 @@ async function fixture(t: TestContext) {
     live: [200, { projection: { thread: { id: 'live', status: 'idle' } } }],
     bare: [404, 'not found'], down: [500, { error: 'unavailable' }], odd: [200, { projection: { thread: { id: 'someone-else' } } }],
   };
-  const ticket: Ticket = { status: 'in_progress', version: 5, claimRequired: true, claim: { id: '11111111-1111-4111-8111-111111111111', workerId: 'agent', createdAt: '2026-01-01T00:01:00Z', expiresAt: '2999-01-01T00:00:00Z' } };
+  const ticket: Ticket = { status: 'in_progress', version: 5, claimRequired: true, claim: { id: '11111111-1111-4111-8111-111111111111', workerId: 'agent', createdAt: '2026-01-01T00:01:00Z', expiresAt: '2026-01-02T00:01:00Z' } };
   const writes: { method: string; path: string; body: any }[] = [];
   let refuseWrite = false;
   const body = (req: IncomingMessage) => new Promise<any>(resolve => { const chunks: Buffer[] = []; req.on('data', c => chunks.push(c)); req.on('end', () => resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined)); });
@@ -157,16 +157,18 @@ test('job-dismiss --reset-ticket returns the ticket before dismissing and retrie
   assert.equal(f.store.job('deleted')!.state, 'dismissed');
   const recovers = f.writes.filter(w => w.path.endsWith('/claim/recover'));
   assert.equal(recovers.length, 2, 'one refused and one applied recovery; the retry writes nothing');
-  assert.deepEqual({ ...recovers[1].body, reason: undefined, requestId: undefined }, { claimId: '11111111-1111-4111-8111-111111111111', confirmedStopped: true, cancelActive: true, reschedule: true, expectedVersion: 5, reason: undefined, requestId: undefined });
+  assert.deepEqual({ ...recovers[1].body, reason: undefined, requestId: undefined }, { claimId: '11111111-1111-4111-8111-111111111111', confirmedStopped: true, reschedule: true, expectedVersion: 5, reason: undefined, requestId: undefined });
 });
 
-test('job-dismiss --reset-ticket refuses another status or an older claim, and moves an unclaimed ticket directly', async t => {
+test('job-dismiss --reset-ticket refuses another status, an older claim or a live claim, and moves an unclaimed ticket directly', async t => {
   const f = await fixture(t);
   f.store.save(f.job('deleted', 'gone', 'task-1'));
   f.ticket.status = 'in_review';
   assert.match((await f.handle('deleted', true)).data.message, /in_review/);
   f.ticket.status = 'in_progress'; f.ticket.claim!.createdAt = '2025-12-31T00:00:00Z';
   assert.match((await f.handle('deleted', true)).data.message, /predates this run/);
+  f.ticket.claim!.createdAt = '2026-01-01T00:01:00Z'; f.ticket.claim!.expiresAt = '2999-01-01T00:00:00Z';
+  assert.match((await f.handle('deleted', true)).data.message, /may not be this run/, 'a live claim may be a newer worker\'s');
   assert.equal(f.writes.length, 0);
   assert.equal(f.store.job('deleted')!.state, 'running');
 

@@ -1644,14 +1644,16 @@ async function returnTicketToReady(c: Config, kanvil: Kanvil, job: Job) {
   const task = await kanvil.task(job.taskId!, project.kanvilId);
   if (task.status === ready) return { key, status: ready, changed: false };
   if (task.status !== 'in_progress') throw new Error(`${key} is ${task.status}; --reset-ticket only returns an in_progress ticket`);
-  // This run's own claim cannot predate it; an older claim belongs to another worker.
+  // This run's own claim cannot predate it; an older claim belongs to another worker. A live claim may be a newer worker's,
+  // and nothing proves it was the deleted run's, so only an expired claim is recovered.
   if (task.claim && Date.parse(task.claim.createdAt) < Date.parse(job.createdAt)) throw new Error(`${key} is claimed by ${task.claim.workerId}, which predates this run; ticket left unchanged`);
+  if (task.claim && Date.parse(task.claim.expiresAt) > Date.now()) throw new Error(`${key} is claimed by ${task.claim.workerId} until ${task.claim.expiresAt}, which may not be this run; retry after it expires, or dismiss without --reset-ticket`);
   const requestId = stableRequestId(`t3-factory-job-dismiss:${job.id}:${task.id}:${task.version}`);
   try {
     if (task.claim || task.claimRequired) {
-      // Recovery reschedules to To do and lifts the deleted worker's claim; a worker cannot move a claimed ticket any other way.
+      // Recovery reschedules to To do and lifts the expired claim; a worker cannot move a claimed ticket any other way.
       if (ready !== 'todo') throw new Error(`${key} has a worker claim, which only returns to todo, not ${ready}`);
-      await kanvil.recoverClaim(project.kanvilId, task.id, { ...task.claim ? { claimId: task.claim.id } : {}, ...task.claim && Date.parse(task.claim.expiresAt) > Date.now() ? { cancelActive: true } : {}, reason: `Factory run ${job.id} was dismissed because its T3 thread was deleted`, reschedule: true, expectedVersion: task.version! }, requestId);
+      await kanvil.recoverClaim(project.kanvilId, task.id, { ...task.claim ? { claimId: task.claim.id } : {}, reason: `Factory run ${job.id} was dismissed because its T3 thread was deleted`, reschedule: true, expectedVersion: task.version! }, requestId);
     } else await kanvil.updateTicket(project.kanvilId, task.id, task.version!, { status: ready }, requestId);
   } catch (error) { throw new Error(`${key} was not reset; the run keeps its claim: ${safeError(error)}`); }
   const readback = await kanvil.task(job.taskId!, project.kanvilId);
