@@ -1,7 +1,7 @@
 import { html } from "../lib/h.js";
-import { config, jobs, clock, serverNow, quotaFor } from "../lib/store.js";
-import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span } from "../lib/format.js";
-import { Field, Range, Stepper, Slots, Toggle, Budget, Section, useReady, Page, Icon } from "../ui/index.js";
+import { config, jobs, clock, serverNow, quotaFor, set } from "../lib/store.js";
+import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span, moment } from "../lib/format.js";
+import { Field, Range, Stepper, Slots, Toggle, Budget, Section, Segmented, Input, useReady, Page, Icon } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
@@ -22,6 +22,38 @@ function Allowance({ provider, title, windows }) {
   <//>`;
 }
 
+// One-shot timers for the Automation switch and the queue's. A weekly reset stores that provider's reset as it reads now.
+function Schedule() {
+  const now = serverNow(), s = config.value.schedule ?? {};
+  const resets = PROVIDERS.map((p) => [p.concurrency, p.name, quotaFor(p.driver)?.windows?.find((w) => w.name === "weekly")?.resetsAt]).filter(([id, , at]) => at || s.offAtReset === id);
+  const nextHour = () => new Date(Math.ceil((now + 1) / 3_600_000) * 3_600_000).toISOString();
+  const atReset = (id) => set(["schedule"], { ...s, offAtReset: id, offAt: resets.find(([p]) => p === id)[2] ?? s.offAt });
+  // Weekly reset starts on the provider that resets first; choosing it again keeps the provider already picked.
+  const turnOff = (mode) => {
+    if (mode !== "reset") return set(["schedule"], { ...s, offAtReset: null, offAt: mode ? (!s.offAtReset && s.offAt) || nextHour() : null });
+    const first = resets.filter(([, , at]) => at).sort((a, b) => Date.parse(a[2]) - Date.parse(b[2]))[0];
+    if (first && !s.offAtReset) atReset(first[0]);
+  };
+  return html`<${Section} title="Schedule" hint="Each timer sets Automation and queued runs once, then clears itself.">
+    <${Field} group label="Turn on">
+      <div class="timer">
+        <${Segmented} label="Turn on" value=${s.onAt ? "at" : ""} onChange=${(mode) => set(["schedule", "onAt"], mode ? nextHour() : null)} options=${[["", "By hand"], ["at", "At a time"]]} />
+        ${s.onAt && html`<${Input} kind="datetime" path=${["schedule", "onAt"]} aria-label="Turn on at" />`}
+      </div>
+    <//>
+    <${Field} group label="Turn off" hint="At a weekly reset, both also turn off when that reset comes early.">
+      <div class="timer">
+        <${Segmented} label="Turn off" value=${s.offAtReset ? "reset" : s.offAt ? "at" : ""} onChange=${turnOff}
+          options=${[["", "By hand"], ...(resets.some(([, , at]) => at) || s.offAtReset ? [["reset", "Weekly reset"]] : []), ["at", "At a time"]]} />
+        ${s.offAtReset
+          ? html`<${Segmented} label="Weekly reset of" value=${s.offAtReset} onChange=${atReset} options=${resets.map(([id, name]) => [id, name])} />
+              <small class="muted">${moment(s.offAt)}, ${until(s.offAt, now)}</small>`
+          : s.offAt && html`<${Input} kind="datetime" path=${["schedule", "offAt"]} aria-label="Turn off at" />`}
+      </div>
+    <//>
+  <//>`;
+}
+
 // The Settings area's Limits tab; `lead` is its tab strip.
 export function Capacity({ lead } = {}) {
   clock.value;
@@ -32,6 +64,7 @@ export function Capacity({ lead } = {}) {
     ${lead}
     <div class="cols">
       <div>
+        <${Schedule} />
         <${Section} title="Runs at once" hint="Filled slots are running now. Runs waiting for you free their slot. A run you start by hand may exceed the limit.">
           ${PROVIDERS.map(
             (p) => html`<${Field} group key=${p.driver} label=${html`<${Icon} name=${providerIcon(p.driver)} /> ${p.name}: ${running[p.driver]} running`}><${Slots} label=${`${p.name} runs at once`} path=${["concurrency", p.concurrency]} running=${running[p.driver]} /><//>`,

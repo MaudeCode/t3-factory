@@ -147,6 +147,17 @@ test('a chain with the provider override runs every launch past provider capacit
   assert.equal((f.launches[1] as any).modelSelection.instanceId, 'codex');
 });
 
+test('a held queue starts nothing, whatever the chain overrides, until it is released', async t => {
+  const f = dispatchFixture(t);
+  setConfig(f, () => { f.c.queue.enabled = false; });
+  const planId = await startChain(f, { overrideLimits: true });
+  assert.equal(f.launches.length, 0, 'the chain is accepted without a launch');
+  assert.equal(f.store.plan(planId)!.tickets.find(ticket => ticket.key === 'FIX-2')?.note, 'Queued runs are held');
+  setConfig(f, () => { f.c.queue.enabled = true; });
+  await advance(f);
+  assert.equal(f.launches.length, 1, 'the first blocker starts once the queue is released');
+});
+
 test('a running chain shows a ticket\'s hold until it is lifted', async t => {
   const f = dispatchFixture(t);
   const planId = await startChain(f, { overrideLimits: true });

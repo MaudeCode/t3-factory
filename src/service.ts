@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -15,6 +15,7 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
+import { applySchedule } from './settings.ts';
 import { admitTriage, inboxes, openReports, resolveReport, promotedTickets, triagePass, triageQueue } from './triage.ts';
 
 const EVENT_SETTLE_MS = 25;
@@ -511,8 +512,17 @@ export class FactoryService {
     await dead?.then(k => k.close()).catch(() => {});
   }
 
+  // The settings on disk after any due schedule timer. Every admission and every launch's last check reads them here,
+  // so nothing starts past a timer.
+  private settings(): Config {
+    const c = loadConfig(this.configPath), scheduled = applySchedule(this.configPath, c, () => weeklyResets(c, this.store, this.t3));
+    if (!scheduled) return c;
+    this.store.record('schedule', scheduled.text); log('schedule', scheduled);
+    return loadConfig(this.configPath);
+  }
+
   private configure(): Config {
-    const c = loadConfig(this.configPath);
+    const c = this.settings();
     this.pollSeconds = c.pollSeconds;
     if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
     if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
@@ -529,7 +539,7 @@ export class FactoryService {
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide, currentConfig: () => loadConfig(this.configPath) });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide, currentConfig: () => this.settings() });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);

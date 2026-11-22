@@ -1,7 +1,7 @@
 // Form controls. Inputs with a `path` bind straight to the config signal.
 import { html, useEffect, useLayoutEffect, useRef, useState, useId } from "../lib/h.js";
 import { at, set } from "../lib/store.js";
-import { coerce, selectPosition } from "../lib/format.js";
+import { coerce, localInput, selectPosition } from "../lib/format.js";
 import { Icon } from "./data.js";
 
 const cls = (...parts) => parts.filter(Boolean).join(" ");
@@ -41,16 +41,17 @@ export const Field = ({ label, hint, children, group }) =>
 // Reads a bound config path, or an explicit value; writes through `set` or the given `onChange`.
 const bind = (path, value, onChange) => [path ? at(path) : value, onChange ?? ((v) => set(path, v))];
 
-// Text, number, or list input. `kind` decides how the value is stored.
+// Text, number, list, or date-and-time input. `kind` decides how the value is stored; "datetime" stores an ISO time.
+// A date being retyped is empty until it is whole, so an empty datetime keeps the stored one.
 export function Input({ path, kind = "text", mono, value, onChange, ...props }) {
   const [current, change] = bind(path, value, onChange);
   return html`<input
     class=${mono ? "mono" : undefined}
-    type=${kind === "number" || kind === "integer" ? "number" : "text"}
+    type=${kind === "number" || kind === "integer" ? "number" : kind === "datetime" ? "datetime-local" : "text"}
     min=${kind === "number" || kind === "integer" ? 0 : undefined}
     step=${kind === "integer" ? 1 : kind === "number" ? "any" : undefined}
-    value=${kind === "list" ? (current || []).join(", ") : (current ?? "")}
-    onInput=${(e) => change(coerce(kind, e.target))}
+    value=${kind === "list" ? (current || []).join(", ") : kind === "datetime" ? localInput(current) : (current ?? "")}
+    onInput=${(e) => (kind !== "datetime" || e.target.value) && change(coerce(kind, e.target))}
     ...${props}
   />`;
 }

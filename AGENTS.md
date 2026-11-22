@@ -15,6 +15,7 @@ Settings pages should read as designed controls, not a form of text boxes and dr
 - Several values from a list: `Chips`.
 - A count or limit: `Slots` (Off, quick picks, a box for any other value). Pick sensible steps with `picks` (for example 5, 10, 20, 40) rather than 1, 2, 3; `offLabel`, `unit` and `unlimited` cover Paused, "per day" and a null ∞ choice.
 - A count with an unlimited end: `Stepper`. A duration or percentage: `Range`.
+- A date and time: `Input` with `kind="datetime"`, shown only once a `Segmented` choice asks for a time.
 - `Select` only for long or live catalogs, such as T3 or Kanvil projects, models and repositories. `Input` only for free text: names, paths, repositories, tags and search.
 
 Don't add a bare number box, or a dropdown for a short fixed list. Extend the existing control with a parameter rather than adding a second one, and check the page at desktop and phone widths with its `test/browser` fixture.

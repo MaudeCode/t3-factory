@@ -1,8 +1,8 @@
 import { runManualRequest } from './manual-request.ts';
 import { manageCleanup, cleanupRequestSchema, readCleanupCatalog } from './cleanup.ts';
-import { readFileSync, writeFileSync, renameSync, existsSync, watch } from 'node:fs';
+import { readFileSync, existsSync, watch } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
-import { modify, applyEdits, parse } from 'jsonc-parser';
+import { parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
@@ -11,7 +11,7 @@ import { FactoryService } from './service.ts';
 import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
 import { dismissSessionTicket } from './session-tickets.ts';
-import { saveSettings } from './settings.ts';
+import { saveSettings, editConfig } from './settings.ts';
 import type { CycleOptions } from './scheduler.ts';
 import { z, ZodError } from 'zod';
 import { T3, Kanvil } from './clients.ts';
@@ -30,6 +30,8 @@ const configPath = process.env.T3_FACTORY_CONFIG ?? defaultConfigPath;
 const switches: Record<string, { path: string[]; value: boolean; message: string }> = {
   pause: { path: ['enabled'], value: false, message: 'New dispatches paused. Existing T3 jobs continue.' },
   resume: { path: ['enabled'], value: true, message: 'New dispatches enabled; quota and idle gates still apply.' },
+  'queue-pause': { path: ['queue', 'enabled'], value: false, message: 'Queued runs held. Running jobs continue.' },
+  'queue-resume': { path: ['queue', 'enabled'], value: true, message: 'Queued runs start again; run limits still apply.' },
   'upstream-pause': { path: ['upstream', 'enabled'], value: false, message: 'New upstream reviews paused. Running reviews continue.' },
   'upstream-resume': { path: ['upstream', 'enabled'], value: true, message: 'Upstream reviews enabled; quota and run limits still apply.' },
   'repair-pause': { path: ['repair', 'enabled'], value: false, message: 'New CI repairs paused. Running repairs continue.' },
@@ -244,8 +246,7 @@ if (command === 'web') {
   if (sections[path[0]] && !parse(text, [], { allowTrailingComma: true })?.[path[0]]) {
     console.error(sections[path[0]]); process.exitCode = 1;
   } else {
-    const next = applyEdits(text, modify(text, path, value, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
-    writeFileSync(`${configPath}.tmp`, next, { mode: 0o600 }); renameSync(`${configPath}.tmp`, configPath);
+    editConfig(configPath, [[path, value]]);
     console.log(message);
   }
 } else if (command === 'status') {
@@ -297,6 +298,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | mcp | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | queue-pause | queue-resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | mcp | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

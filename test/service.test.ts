@@ -59,7 +59,7 @@ test('commands reach the running scheduler over its socket and fall back without
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { configSchema } from '../src/config.ts';
+import { configSchema, loadConfig } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
@@ -228,6 +228,19 @@ test('paused service startup performs pending maintenance without a manual reque
   finally { await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+
+test('the running scheduler applies a due schedule timer and records it', { timeout: 10000 }, async t => {
+  const f = await maintenanceFixture(t);
+  writeFileSync(f.path, JSON.stringify({ ...f.c, enabled: true, schedule: { offAt: '2026-01-01T00:00:00Z' } }));
+  const applied = deferred(), original = Store.prototype.record;
+  t.mock.method(Store.prototype, 'record', function(this: Store, kind: string, text: string, ...rest: []) { original.call(this, kind, text, ...rest); if (text === 'Automation and queued runs turned off by the schedule') applied.resolve(); });
+  const service = new FactoryService(f.path);
+  try {
+    await service.start(); await applied.promise;
+    const c = loadConfig(f.path);
+    assert.deepEqual([c.enabled, c.queue.enabled, c.schedule.offAt], [false, false, null]);
+  } finally { await service.stop(); rmSync(f.dir, { recursive: true, force: true }); }
+});
 
 for (const options of [{ manual: true }, { manual: true, model: 'sol' }, { dryRun: true }, { doctor: true }, {}]) {
   test(`standalone cleanup compatibility: ${JSON.stringify(options)}`, async t => {

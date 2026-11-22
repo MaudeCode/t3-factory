@@ -768,6 +768,33 @@ async function showQueued() {
   await pause();
 }
 
+// The Queued section's hold switch: its state, the request it sends, and an empty held queue staying on the page.
+async function hold() {
+  await showQueued();
+  const withQueue = (enabled, plans = status.value.plans) => ({ ...filterState, config: { ...filterState.config, queue: { enabled } }, status: { ...filterState.status, plans } });
+  const section = () => [...root.querySelectorAll('section.queued')][0], toggle = () => section()?.querySelector('[role="switch"][aria-label="Queued runs"]');
+  assert(toggle()?.checked && section().querySelector('.automation b').textContent === 'Queue on', 'a queue that starts runs shows its switch on');
+  applyState(withQueue(false)); await pause();
+  assert(!toggle().checked && section().querySelector('.automation b').textContent === 'Queue held', 'a held queue says so');
+  const oldFetch = window.fetch, posts = [];
+  let enabled = false;
+  window.fetch = async (url, init) => {
+    if (url === '/api/queue/enabled') { posts.push(JSON.parse(init.body)); enabled = posts.at(-1).enabled; return Response.json({ ok: true }); }
+    return Response.json(withQueue(enabled));
+  };
+  try {
+    toggle().click();
+    for (let n = 0; n < 100 && !toggle()?.checked; n++) await pause();
+    assert(JSON.stringify(posts) === JSON.stringify([{ enabled: true }]) && toggle().checked, `the switch releases the queue: ${JSON.stringify(posts)}`);
+  } finally { window.fetch = oldFetch; }
+  applyState(withQueue(false, [])); await pause();
+  assert(toggle() && !toggle().checked, 'an empty held queue keeps its switch');
+  applyState(withQueue(true, [])); await pause();
+  assert(!section(), 'an empty queue that starts runs has no section');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'the Queued section fits the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+
 // Up next with a running Epic, a chain and a queued run in one Queued list, and the order the page sends on a move.
 async function showOrder() {
   await showEpics();
@@ -799,7 +826,7 @@ async function reorder() {
   return { passed: true };
 }
 
-window.queueTests = { showOrder, reorder, showQueued, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+window.queueTests = { showOrder, reorder, showQueued, hold, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 
