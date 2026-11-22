@@ -17,6 +17,7 @@ import { z, ZodError } from 'zod';
 import { T3, Kanvil } from './clients.ts';
 import { ticketDetail, epicDetail } from './ticket-detail.ts';
 import { createFactoryWeb, runFactory, webSettings } from './web.ts';
+import { serveMcp } from './mcp.ts';
 
 import { loadEnvironment } from './env.ts';
 import { createOidc } from './oidc.ts';
@@ -189,6 +190,8 @@ if (command === 'web') {
       } finally { await kanvil.close(); }
     }
   } catch (e) { console.log(JSON.stringify({ message: safeError(e) })); process.exitCode = 1; }
+} else if (command === 'mcp') {
+  serveMcp(loadConfig(configPath).stateDir);
 } else if (command === 'web-pair') {
   try {
     const { config, secret, oidc } = webSettings();
@@ -294,6 +297,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | mcp | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

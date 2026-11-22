@@ -35,6 +35,7 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | `src/prompts.ts`, `src/codex-approval.ts` | Agent reporting and merge authorization |
 | `src/session-tickets.ts` | Collection of tickets that T3 sessions report creating, and the Session tickets list |
 | `src/web.ts`, `src/oidc.ts` | Web API and authentication |
+| `src/mcp.ts` | Stdio MCP server that gives agents factory tools |
 | `web/`, `macos/` | Browser and native interfaces |
 | `scripts/`, `deploy/` | macOS installation and optional proxy launcher |
 
@@ -179,6 +180,10 @@ Action notices share `Toast` in `web/ui/overlay.js`. Errors stay until their Dis
 Serve the repository root and open `/test/browser/toast.html` for the isolated notification fixture. Run `await toastTests.run()` at 390 × 844, 320 × 568, 568 × 320, and 1280 × 800. It checks short errors, an 800-character unbroken token, long multiline diagnostics, viewport and save-bar bounds, internal scrolling through the final text, selection, dismiss hit testing, replacement, and fake-timer persistence/expiry/cleanup. Use `await toastTests.show("long", true)` for screenshots with unsaved edits. Also focus the text region and press End to reach the ending, Tab to Dismiss, then Enter or Space to dismiss; these native keyboard defaults require real browser input. The fixture mounts the actual component and styles, disables transitions, and uses only synthetic data.
 
 For scripted Duo regressions, provide Playwright and serve the synthetic browser fixtures, then run `node test/browser/duo-regressions.mjs`. `FACTORY_FIXTURE_URL` selects the fixture server, defaulting to loopback port 3860; `PLAYWRIGHT_MODULE` can name a separate Playwright installation. The same command checks the baseline and fixed assets in Chromium and WebKit with touch explicitly enabled, including native Enter handling. No production API is used.
+
+### Agent MCP server
+
+`t3-factory mcp` is a stdio MCP server, so agents, including factory runs, can read and steer the factory. Register it in the agent's MCP config as the command `node <repo>/src/main.ts mcp`, with `T3_FACTORY_CONFIG` set when the config is not at its default path. Tools: `factory_status`, `get_ticket`, `dispatch`, `stop_run`, `dismiss_run`, `cancel_plan`, `order_plans`, `run_triage` and `resolve_triage_report`. `factory_status` reads `status.json`; every other tool is a command on `control.sock` and fails when no scheduler is running, never falling back to local work. Agent dispatches are manual requests without limit overrides, so a run that queues more work stays inside daily, concurrency, label and provider limits. Settings, pause switches, limit overrides and cleanup are left to the web app and CLI. `test/mcp.test.ts` covers the dispatch translation, the override refusal and the missing-scheduler error.
 
 ### Scheduler service
 
