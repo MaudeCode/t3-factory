@@ -10,6 +10,7 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | `doctor` | Checks live integrations and reports a possible decision without dispatching. With `triage` configured, it also runs the triage sandbox canary and exits non-zero unless the CLI refuses both probes. |
 | `once --dry-run` | Previews a cycle using the current enabled state and policy. |
 | `pause` / `resume` | Disables or enables new automatic ticket and discovery work. |
+| `queue-pause` / `queue-resume` | Holds or releases what you queued: runs waiting for a slot, chains and Epic runs. Held rows stay queued. Running jobs continue. |
 | `upstream-pause` / `upstream-resume` | Disables or enables new upstream release reviews, independently of `pause` / `resume`. |
 | `repair-pause` / `repair-resume` | Disables or enables new CI repairs, independently of the other switches. Works on a config file with no `repair` section. A running repair continues. |
 | `triage-pause` / `triage-resume` | Disables or enables new inbox triage runs, independently of the other switches. A running report finishes. |
@@ -21,7 +22,11 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | `config-get` | Prints validated scheduler configuration. |
 | `config-save` | Reads `{ "base": ..., "config": ... }` on stdin; rejects stale edits and preserves JSONC comments where possible. |
 
-Diagnostic commands can update local observations, but `doctor` and dry runs do not create tickets, PRs, tasks, or worktrees. A busy scheduler may hold the local cycle lock; stop its service before a long diagnostic run if necessary.
+### Scheduled on and off
+
+The web app's Settings, Limits tab, has a Schedule with two one-shot timers: Turn on at a time, and Turn off at a time or at a provider's weekly reset. Each timer sets Automation and the Queued switch together, once, and clears itself. The Automation switch and the Queue page's Queued section show the next one. Running jobs finish.
+
+To use up an allowance before it resets, queue what you want run or turn Automation on, set Turn off to Weekly reset, pick the provider and save. The weekly reserve already relaxes to its floor as the reset nears, so lower the floor on the same tab to spend the last of it. At the reset, or earlier if the provider resets early, automatic starts stop and queued rows are held, so the next week's allowance is left alone. Release the queue with its switch or `queue-resume`. The timers are `schedule` in the [configuration](configuration.md).
 
 ## Manual runs
 

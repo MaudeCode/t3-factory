@@ -2,7 +2,7 @@ import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
 import { authenticated, auth, connection, config, status, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
 import { route, NAV, TABS, follow } from "../lib/router.js";
 import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover } from "../ui/index.js";
-import { ago, until } from "../lib/format.js";
+import { ago, until, moment } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { display } from "../lib/display.js";
@@ -148,10 +148,12 @@ function Automation({ bare }) {
   clock.value;
   const on = live.value.enabled, d = status.value.decision, now = serverNow();
   const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
-  return html`<div class="auto" title=${on ? "Automation on" : "Automation paused"}>
+  // The schedule's next change to this switch, if it has one.
+  const timer = on ? live.value.schedule.offAt : live.value.schedule.onAt, turns = on ? "Turns off" : "Turns on";
+  return html`<div class="auto" title=${`${on ? "Automation on" : "Automation paused"}${timer ? `. ${turns} ${moment(timer)}` : ""}`}>
     <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
     ${!bare && html`<span class="auto-text"><b>${on ? "Automation on" : "Automation paused"}</b>
-      <small>${on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`}</small></span>`}
+      <small>${timer ? `${turns} ${until(timer, now)}` : on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`}</small></span>`}
   </div>`;
 }
 

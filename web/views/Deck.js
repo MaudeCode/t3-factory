@@ -36,7 +36,7 @@ import {
 } from "../lib/format.js";
 import { Button, Select, Segmented, Chips, Meter, Icon, Tag, Empty, Meta, RowBody, Section, More, Popover, Switch } from "../ui/index.js";
 
-// The switch of a section with its own pause (inbox triage, upstream reviews, CI repairs), for its page's actions.
+// The switch of a section with its own pause (queued runs, inbox triage, upstream reviews, CI repairs), for its page's actions.
 export const SectionSwitch = ({ kind, label, on, off }) => html`<label class="automation"><${Switch} label=${label} checked=${live.value[kind]} disabled=${busy.value} onChange=${() => actions.toggle(kind)} /><b>${live.value[kind] ? on : off}</b></label>`;
 
 

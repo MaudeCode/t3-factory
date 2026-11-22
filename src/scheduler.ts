@@ -1097,6 +1097,11 @@ type ProviderStream = {
   quota?: Awaited<ReturnType<typeof readModelQuota>>; quotaError?: string;
 };
 
+// Each provider's weekly reset as last read, under its config name.
+export function weeklyResets(store: Store): Partial<Record<'claude' | 'codex', string>> {
+  return Object.fromEntries((JSON.parse(store.get('streams') ?? '[]') as ProviderStream[]).map(stream => [stream.driver === 'codex' ? 'codex' : 'claude', stream.quota?.windows.find(w => w.name === 'weekly')?.resetsAt]));
+}
+
 // Admission and quota refreshes share publication ownership, independently per provider.
 function streamUpdate(store: Store, key: string, drivers = ['claudeAgent', 'codex']) {
   const revisions = new Map(drivers.map(id => {
@@ -1874,6 +1879,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     const jobs = store.jobSummaries();
     for (const t of chainReady(plan, jobs)) {
       if (stored()?.state !== 'active') break;
+      if (!c.queue.enabled) { t.note = 'Queued runs are held'; continue; }
       if (providerDriver && plan.provider && providerDriver !== plan.provider) continue;
       if (!t.runnable) { t.note = 'Its project is not included in the factory'; continue; }
       const models = c.models.filter(model => plan.model !== 'auto' ? model.id === plan.model

@@ -80,6 +80,7 @@ const requestId = z.string().uuid();
 // Toggle endpoints and the CLI commands for [off, on].
 const toggles: Record<string, [string, string]> = {
   "/api/enabled": ["pause", "resume"],
+  "/api/queue/enabled": ["queue-pause", "queue-resume"],
   "/api/upstream/enabled": ["upstream-pause", "upstream-resume"],
   "/api/repair/enabled": ["repair-pause", "repair-resume"],
   "/api/triage/enabled": ["triage-pause", "triage-resume"],

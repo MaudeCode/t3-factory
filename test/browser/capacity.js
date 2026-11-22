@@ -232,7 +232,54 @@ async function epicHold() {
   await show();
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.capacityTests = { epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance };
+// Both providers report a weekly reset, so the schedule offers each.
+const RESETS = { claudeAgent: '2026-11-22T19:00:00.000Z', codex: '2026-11-25T08:30:00.000Z' };
+async function showSchedule(schedule = {}, enabled = false) {
+  await show();
+  saved = { ...structuredClone(initial), enabled, schedule: { onAt: null, offAt: null, offAtReset: null, ...schedule } };
+  quotaStatus = { streams: Object.entries(RESETS).map(([driver, resetsAt]) => ({ driver, quota: { driver, capturedAt: '2026-11-22T18:00:00.000Z', windows: [{ name: 'weekly', remaining: 27, reserved: 2, resetsAt }] } })) };
+  await mount();
+}
+const timer = name => root.querySelector(`[role="radiogroup"][aria-label="Turn ${name}"]`);
+const timerBox = name => root.querySelector(`input[aria-label="Turn ${name} at"]`);
+async function pick(name, text) { [...timer(name).querySelectorAll('button')].find(b => b.textContent.trim() === text).click(); await pause(); }
+// The schedule's choices through the real controls, Save and reload.
+async function schedule() {
+  await showSchedule();
+  assert([...timer('off').querySelectorAll('button')].map(b => b.textContent.trim()).join() === 'By hand,Weekly reset,At a time', 'a weekly reading offers its reset');
+  await pick('off', 'Weekly reset');
+  assert(JSON.stringify(store.config.value.schedule) === JSON.stringify({ onAt: null, offAt: RESETS.claudeAgent, offAtReset: 'claude' }), 'Weekly reset starts on the provider that resets first');
+  [...root.querySelectorAll('[role="radiogroup"][aria-label="Weekly reset of"] button')].find(b => b.textContent.trim() === 'Codex').click(); await pause();
+  assert(JSON.stringify(store.config.value.schedule) === JSON.stringify({ onAt: null, offAt: RESETS.codex, offAtReset: 'codex' }), 'a reset choice stores that provider and its reset time');
+  assert(!timerBox('off'), 'a reset shows its time without a box to edit');
+  await pick('off', 'Weekly reset');
+  assert(store.config.value.schedule.offAtReset === 'codex', 'choosing Weekly reset again keeps the picked provider');
+  await pick('off', 'At a time'); await pick('on', 'At a time');
+  assert(store.config.value.schedule.offAtReset === null && timerBox('off') && timerBox('on'), 'a chosen time shows its box and drops the reset');
+  const box = timerBox('off'); box.value = '2026-12-01T07:30'; box.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(store.config.value.schedule.offAt === new Date(2026, 11, 1, 7, 30).toISOString(), 'the box stores the local time as an ISO time');
+  box.value = ''; box.dispatchEvent(new Event('input', { bubbles: true })); await pause();
+  assert(timerBox('off') && store.config.value.schedule.offAt === new Date(2026, 11, 1, 7, 30).toISOString(), 'a date being retyped keeps the stored time');
+  await pick('on', 'By hand');
+  assert(store.config.value.schedule.onAt === null && !timerBox('on'), 'By hand clears the timer');
+  await store.actions.save(); await mount();
+  assert(writes.at(-1).config.schedule.offAt === new Date(2026, 11, 1, 7, 30).toISOString() && timerBox('off')?.value === '2026-12-01T07:30', 'the schedule survives Save and reload');
+  for (const el of root.querySelectorAll('.segmented, input[type="datetime-local"]')) { const r = el.getBoundingClientRect(); assert(r.left >= 0 && r.right <= innerWidth + 1, 'schedule controls stay in bounds'); }
+  assert(document.documentElement.scrollWidth <= innerWidth, 'Limits has no horizontal overflow');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+// The Automation switch names the schedule's next change to it.
+async function scheduleStatus() {
+  const soon = new Date(Date.now() + 2 * 3_600_000 + 30_000).toISOString(), auto = () => document.querySelector('.auto');
+  await showSchedule({ offAt: soon, onAt: soon }, true);
+  assert(auto().title.startsWith('Automation on. Turns off '), `an armed off timer is named on the switch: ${auto().title}`);
+  await showSchedule({ offAt: soon, onAt: soon }, false);
+  assert(auto().title.startsWith('Automation paused. Turns on '), `a paused switch names its on timer: ${auto().title}`);
+  await showSchedule({}, true);
+  assert(auto().title === 'Automation on', 'no timer leaves the plain state');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.capacityTests = { epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance, showSchedule, schedule, scheduleStatus };
 const labelFixture = new URLSearchParams(location.search).get('labels');
 if (labelFixture === 'run') {
   try { await labelModes(); document.body.dataset.result = 'passed'; }

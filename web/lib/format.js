@@ -69,11 +69,17 @@ export const clockTime = (date) => new Date(date).toLocaleTimeString([], { hour:
 export const dayLabel = (date) => {
   const d = new Date(date),
     today = new Date();
-  if (d.toDateString() === today.toDateString()) return "Today";
-  today.setDate(today.getDate() - 1);
-  if (d.toDateString() === today.toDateString()) return "Yesterday";
+  for (const [name, step] of [["Today", 0], ["Yesterday", -1], ["Tomorrow", 2]]) {
+    today.setDate(today.getDate() + step);
+    if (d.toDateString() === today.toDateString()) return name;
+  }
   return d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
 };
+
+// A day and time inside a sentence: "today at 1:59 PM", "Wednesday, Nov 25 at 3:27 AM".
+export const moment = (date) => `${dayLabel(date).replace(/^(Today|Yesterday|Tomorrow)$/, (day) => day.toLowerCase())} at ${clockTime(date)}`;
+// An ISO time as the local value a datetime-local input takes.
+export const localInput = (date) => (date ? new Date(ms(date) - new Date(date).getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : "");
 
 export const STREAM_REASONS = {
   "provider-running": "working",
@@ -221,7 +227,9 @@ export const coerce = (kind, el) =>
       ? Number(el.value)
       : kind === "list"
         ? el.value.split(",").map((s) => s.trim()).filter(Boolean)
-        : el.value;
+        : kind === "datetime"
+          ? new Date(el.value).toISOString()
+          : el.value;
 
 // True when a click on a <dialog> landed on its backdrop rather than its content.
 export function isBackdropClick(event, dialog) {

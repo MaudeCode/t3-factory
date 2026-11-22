@@ -57,6 +57,14 @@ export const configSchema = z.preprocess(input => {
   } };
 }, z.object({
   enabled: z.boolean(), pollSeconds: positive.min(15), idleMinutes: positive,
+  // What the owner queued (runs waiting for a slot, chains, Epic runs) starts only while this is on. A hold keeps it queued.
+  queue: z.object({ enabled: z.boolean().default(true) }).strict().prefault({}),
+  // One-shot timers for `enabled` and `queue.enabled`: each sets both switches once at its time, then clears itself.
+  // `offAtReset` names the provider whose weekly reset `offAt` was taken from, so a reset that comes early also turns them off.
+  schedule: z.object({
+    onAt: z.iso.datetime({ offset: true }).nullable().default(null), offAt: z.iso.datetime({ offset: true }).nullable().default(null),
+    offAtReset: z.enum(['claude', 'codex']).nullable().default(null),
+  }).strict().prefault({}),
   manualPrelaunchSeconds: positive.max(2_147_483).default(60),
   maxWaitingPRs: z.number().int().positive().nullable(),
   // Automatic scheduling leaves members of an Epic alone until that Epic starts.
@@ -124,6 +132,7 @@ export const configSchema = z.preprocess(input => {
     }).strict()).default([]),
   }).strict()).min(1),
 }).strict().superRefine((c, ctx) => {
+  if (c.schedule.offAtReset && !c.schedule.offAt) ctx.addIssue({ code: 'custom', path: ['schedule', 'offAt'], message: 'A weekly reset needs its time in offAt' });
   const ids = c.models.map(p => p.id);
   if (new Set(ids).size !== ids.length || ids.includes('auto')) {
     ctx.addIssue({ code: 'custom', path: ['models'], message: 'Model IDs must be unique and cannot be auto' });
