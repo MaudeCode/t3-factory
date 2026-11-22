@@ -92,7 +92,7 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all' } {
+export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all'; agent?: true } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
@@ -122,6 +122,7 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
       options.overrideLimits = value as OverrideLimits;
     }
     else if (args[i] === '--dry-run') options.dryRun = true;
+    else if (args[i] === '--agent') options.agent = true;
     else throw new Error(`Unknown dispatch argument: ${args[i]}`);
   }
   if (options.upstream && (options.ticket || options.chain)) throw new Error('--upstream cannot be combined with ticket options');

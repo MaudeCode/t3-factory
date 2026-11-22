@@ -16,7 +16,7 @@ test('agent dispatch reaches the scheduler as a manual request and cannot overri
 
   const ok = await call(dir, 'dispatch', { ticket: 'fix-7', chain: 'all' });
   assert.equal(ok.result.isError, undefined);
-  assert.deepEqual(seen, [{ type: 'dispatch', options: { manual: true, ticket: 'FIX-7', chain: 'all' } }]);
+  assert.deepEqual(seen, [{ type: 'dispatch', options: { manual: true, agent: true, ticket: 'FIX-7', chain: 'all' } }]);
 
   const refused = await call(dir, 'dispatch', { ticket: 'FIX-7', overrideLimits: true });
   assert.equal(refused.result.isError, true);

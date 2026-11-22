@@ -1012,7 +1012,7 @@ async function publishQueue(c: Config, store: Store, kanvil: Kanvil, queue: Pick
 }
 
 export interface Skipped { key: string; reason: string; id?: string; blockedBy?: string[]; ticket?: Candidate }
-export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean }
+export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean; agent?: boolean }
 // The thresholds this start skips; automatic work skips none.
 export const skips = (options: Pick<CycleOptions, 'manual' | 'overrideLimits'>) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
 // The dependency rules every start obeys: unfinished blockers (a parent's count for its subtasks) and an umbrella's open children.
@@ -1425,7 +1425,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       return chained ?? decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
     }
     // A chain continuation is still user-authorized work, but it starts later and on its own, so only the chain's recorded overrides waive the automatic quota and idle policy.
-    const manualPolicy = !!options.manual && !options.continuation;
+    // An agent's request is not the owner's, so it keeps the automatic reserve and idle policy too.
+    const manualPolicy = !!options.manual && !options.continuation && !options.agent;
     const quotaBaseline = store.jobSummaries();
     const readSelectedQuota = (refresh = false) => {
       const live = liveModelQuota(t3, c, quotaBaseline, preset.id, manualPolicy);
@@ -1573,7 +1574,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const selectedModel = currentQuota.factoryRouting.model;
       // Manual Codex runs already skip idle and reserve checks.
       const waived = [...skip].filter(l => !currentManualCodex || !['idle', 'reserve'].includes(l)).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit', providers: 'provider-limit' })[l]);
-      const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason;
+      const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.agent ? 'Started by an agent request. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason;
       const now = new Date().toISOString(), id = randomUUID();
       const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind, ...(review?.upstream ? { upstream: review.upstream } : {}), ...(review?.repair ? { repair: review.repair } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? null, ticketKey: queue.selected?.key ?? null, threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
       if (checked) {

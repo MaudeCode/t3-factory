@@ -29,7 +29,7 @@ export const tools: Record<string, Tool> = {
     command: ({ key }) => ({ type: 'ticket', key: key.toUpperCase() }),
   },
   dispatch: {
-    description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Normal limits apply; the result says why work did not start. Omit all targets to let the factory pick the next ticket.',
+    description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Normal limits apply, including the quota reserve and idle time; the result says why work did not start. Omit all targets to let the factory pick the next ticket.',
     input: z.object({
       ticket: z.string().regex(/^[A-Za-z0-9]{1,32}-\d{1,9}$/).optional(),
       epic: id.optional(),
@@ -39,7 +39,7 @@ export const tools: Record<string, Tool> = {
       provider: dispatchProviderSchema.optional().describe('Only with automatic model selection'),
       dryRun: z.boolean().optional(),
     }).strict(),
-    command: input => ({ type: 'dispatch', options: dispatchOptions([
+    command: input => ({ type: 'dispatch', options: dispatchOptions(['--agent',
       ...input.ticket ? ['--ticket', input.ticket.toUpperCase()] : [], ...input.epic ? ['--epic', input.epic] : [],
       ...input.upstream ? ['--upstream', input.upstream] : [], ...input.chain ? ['--chain', input.chain] : [],
       ...input.model ? ['--model', input.model] : [], ...input.provider ? ['--provider', input.provider] : [],
