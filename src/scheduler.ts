@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { automationHold, taskDifficulty, taskHold } from './policy.ts';
-import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, type Task, type Epic } from './clients.ts';
+import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, stableRequestId, type Task, type Epic } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
 import { Store, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision } from './store.ts';
 import { promptFor } from './prompts.ts';
@@ -1616,6 +1616,47 @@ export async function stopJob(c: Config, store: Store, t3: T3, jobId: string) {
   current.reason = 'Stop requested from the web app; waiting for T3 to confirm'; store.save(current);
   store.record('job.stop', `${jobLabel(job)} stop requested`, { ticketKey: job.ticketKey, projectId: job.projectId }, job.id);
   return { ok: true, jobId: job.id };
+}
+
+// An operator's recovery for a run whose T3 thread was deleted: dismiss it only on T3's own answer that the thread is gone,
+// optionally returning its ticket to the project's first ready status first. Automatic reconciliation stays conservative.
+export async function dismissDeletedJob(c: Config, store: Store, t3: T3, kanvil: () => Promise<Kanvil>, jobId: string, resetTicket = false) {
+  const found = store.job(jobId);
+  if (!found) throw new Error(`No run ${jobId}; check the run ID in factory status`);
+  return store.exclusive([`job:${jobId}`, ...found.taskId ? [`ticket:${found.taskId}`] : []], async () => {
+    const job = store.job(jobId)!;
+    if (job.state === 'dismissed') return { ok: true, jobId, alreadyDismissed: true };
+    if (job.historyOnly || job.state === 'complete') throw new Error('That run already finished; there is nothing to dismiss');
+    if (resetTicket && !job.taskId) throw new Error('--reset-ticket needs a ticket run; this run has no ticket');
+    let missing: boolean;
+    try { missing = await t3.threadMissing(job.threadId); }
+    catch (error) { throw new Error(`T3 did not confirm the thread is deleted; nothing changed: ${safeError(error)}`); }
+    if (!missing) throw new Error('T3 still has this run\'s thread; stop it with job-stop or settle it in T3');
+    const ticket = resetTicket ? await returnTicketToReady(c, await kanvil(), job) : undefined;
+    await dismissJob(store, job, 'Dismissed by job-dismiss because its T3 thread was deleted', job.thread);
+    return { ok: true, jobId, ...ticket ? { ticket } : {} };
+  });
+}
+// The ticket goes back before the run is dismissed, so a failure leaves the run and its claim for a retry.
+async function returnTicketToReady(c: Config, kanvil: Kanvil, job: Job) {
+  const project = projectFor(c, job), ready = project.readyStatuses[0], key = job.ticketKey ?? job.taskId!;
+  if (!(await kanvil.columns(project.kanvilId)).some(column => column.slug === ready)) throw new Error(`${project.name} has no ${ready} column; fix its ready statuses before resetting ${key}`);
+  const task = await kanvil.task(job.taskId!, project.kanvilId);
+  if (task.status === ready) return { key, status: ready, changed: false };
+  if (task.status !== 'in_progress') throw new Error(`${key} is ${task.status}; --reset-ticket only returns an in_progress ticket`);
+  // This run's own claim cannot predate it; an older claim belongs to another worker.
+  if (task.claim && Date.parse(task.claim.createdAt) < Date.parse(job.createdAt)) throw new Error(`${key} is claimed by ${task.claim.workerId}, which predates this run; ticket left unchanged`);
+  const requestId = stableRequestId(`t3-factory-job-dismiss:${job.id}:${task.id}:${task.version}`);
+  try {
+    if (task.claim || task.claimRequired) {
+      // Recovery reschedules to To do and lifts the deleted worker's claim; a worker cannot move a claimed ticket any other way.
+      if (ready !== 'todo') throw new Error(`${key} has a worker claim, which only returns to todo, not ${ready}`);
+      await kanvil.recoverClaim(project.kanvilId, task.id, { ...task.claim ? { claimId: task.claim.id } : {}, ...task.claim && Date.parse(task.claim.expiresAt) > Date.now() ? { cancelActive: true } : {}, reason: `Factory run ${job.id} was dismissed because its T3 thread was deleted`, reschedule: true, expectedVersion: task.version! }, requestId);
+    } else await kanvil.updateTicket(project.kanvilId, task.id, task.version!, { status: ready }, requestId);
+  } catch (error) { throw new Error(`${key} was not reset; the run keeps its claim: ${safeError(error)}`); }
+  const readback = await kanvil.task(job.taskId!, project.kanvilId);
+  if (readback.status !== ready) throw new Error(`${key} reads back as ${readback.status}, not ${ready}; the run keeps its claim`);
+  return { key, status: ready, changed: true };
 }
 
 // Chains ------------------------------------------------------------------------------------------
