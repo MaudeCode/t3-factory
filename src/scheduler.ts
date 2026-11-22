@@ -235,9 +235,10 @@ async function untouchedHead(project: Project, branch: string, worktreePath?: st
   if (worktreePath && existsSync(join(worktreePath, '.git'))) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
   return history.every(head => head === created) && await released(project, created) ? created : '';
 }
-// A hold is unfinished work, even when the agent removed the ticket from the ready queue.
+// A hold is unfinished work, even when the agent removed the ticket from the ready queue. A cancelled ticket
+// (duplicate, superseded, or cancelled by the owner) is closed whatever the project's done statuses say.
 async function verifyClosedWithoutDelivery(project: Project, task: Task, job: Job, thread: Thread) {
-  if (!project.doneStatuses.includes(task.status)) {
+  if (!project.doneStatuses.includes(task.status) && task.status !== 'cancelled') {
     throw new Error('Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved');
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
