@@ -33,6 +33,8 @@ const reportSchema = z.object({
   prUrls: z.array(z.url()).default([]), createdTaskIds: z.array(z.string()).default([]),
   // Repair runs name the failed jobs of their run they repaired and those they left for a person.
   repairedJobs: z.array(z.string()).default([]), unrepairedJobs: z.array(z.string()).default([]),
+  // An upstream review that covered a different range than it was given names it.
+  range: z.object({ base: z.string().min(1), candidate: z.string().min(1) }).strict().optional(),
 }).strict();
 function projectFor(c: Config, job: Job): Project {
   const p = c.projects.find(p => p.kanvilId === job.projectId);
@@ -77,41 +79,84 @@ async function gh(args: string[]): Promise<unknown> {
   return readPhase('github.read', async signal => JSON.parse((await exec('gh', args, { timeout: 30_000, maxBuffer: 3_000_000, signal })).stdout));
 }
 const releasesSchema = z.array(z.object({ tagName: z.string().min(1), publishedAt: z.string() }));
+const comparisonSchema = z.object({ data: z.object({ repository: z.record(z.string(), z.object({ compare: z.object({
+  status: z.enum(['AHEAD', 'BEHIND', 'DIVERGED', 'IDENTICAL']), baseTarget: z.object({ oid: z.string() }), headTarget: z.object({ oid: z.string() }),
+}).nullable() }).nullable()).nullable() }) });
+const relation = { BEHIND: 'forward', AHEAD: 'behind', IDENTICAL: 'identical', DIVERGED: 'diverged' } as const;
+// Where each release stands relative to the reviewed watermark, by the commits both resolve to, in one GraphQL read.
+// Each release tag is the comparison's base and the watermark its head, so the watermark can also be a commit ID.
+async function compareReleases(repo: string, watermark: string, tags: string[]) {
+  const [owner, name] = repo.split('/'), vars = tags.map((_, i) => `, $c${i}: String!`).join('');
+  const refs = tags.map((_, i) => `c${i}: ref(qualifiedName: $c${i}) { compare(headRef: $base) { status baseTarget { oid } headTarget { oid } } }`).join(' ');
+  const query = `query($owner: String!, $name: String!, $base: String!${vars}) { repository(owner: $owner, name: $name) { ${refs} } }`;
+  const reply = await backgroundRead(() => gh(['api', 'graphql', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `base=${watermark}`, ...tags.flatMap((tag, i) => ['-f', `c${i}=refs/tags/${tag}`])]))
+    .catch((error: any) => { throw new Error(`GitHub could not compare ${repo} releases with ${watermark}: ${String(error?.stderr ?? '').trim() || safeError(error)}`); });
+  const repository = comparisonSchema.parse(reply).data.repository;
+  return tags.map((tag, i) => {
+    const compare = repository?.[`c${i}`]?.compare;
+    if (!compare) throw new Error(`GitHub could not compare ${tag} with ${watermark}`);
+    return { tag, relation: relation[compare.status], baseCommit: compare.headTarget.oid, candidateCommit: compare.baseTarget.oid };
+  });
+}
 // Bounded work that goes ahead of tickets and does not wait for idle time: an upstream review or a CI repair.
 export type PendingReview = { project: Project; upstream: NonNullable<Job['upstream']>; repair?: never } | { project: Project; repair: NonNullable<Job['repair']>; upstream?: never };
-// Each watched repository yields at most one review: from its last reviewed release to its newest one.
+// Each watched repository yields at most one review: from its last reviewed release to the newest release that strictly descends from it.
+// Releases at, behind or diverged from the watermark are skipped whenever they were published; a refresh caches the verified range for its base.
 // GitHub is read at most every checkMinutes (the upstream's own, else upstream.checkMinutes); a repository with an unfinished review is not read at all.
-// refresh=false (dry runs and doctor) reads only the cached releases and writes nothing.
+// refresh=false (dry runs, doctor and manual starts) reads only the cached range and writes nothing.
 type Watched = Project['upstreams'][number];
+type ForwardRange = { base: string; candidate: string; baseCommit: string; candidateCommit: string };
 // The single reading of a watched repository's stored state; dispatch and status both use it.
 function releaseState(project: Project, watched: Watched, store: Store, jobs: Job[]) {
   const owned = jobs.filter(j => j.upstream?.repo === watched.repo);
   const reviewing = owned.some(j => !['complete', 'dismissed'].includes(j.state));
   const reviewed = store.get(`upstreamReviewed:${watched.repo}`) ?? watched.firstBase, latest = store.get(`upstreamLatest:${watched.repo}`);
+  // Only a range verified from the current watermark counts; a range cached before verification existed is not JSON and never counts.
+  let candidate: ForwardRange | undefined;
+  try { candidate = JSON.parse(store.get(`upstreamCandidate:${watched.repo}`) || 'null') ?? undefined; } catch { candidate = undefined; }
+  if (candidate?.base !== reviewed) candidate = undefined;
   // A candidate that already had a review, even one dismissed by settling it, is never dispatched again.
-  const due = project.enabled && !reviewing && !!latest && latest !== reviewed && !owned.some(j => j.upstream!.candidate === latest);
-  return { reviewing, reviewed, latest, due };
+  const due = project.enabled && !reviewing && !!candidate && !owned.some(j => j.upstream!.candidate === candidate.candidate);
+  return { reviewing, reviewed, latest, candidate, due };
 }
 export async function pendingReviews(c: Config, store: Store, jobs: Job[], now = Date.now(), refresh = true): Promise<PendingReview[]> {
   const watched = c.projects.filter(project => project.enabled).flatMap(project => project.upstreams.map(watched => ({ project, watched })));
   const pending = await readAll(watched.map(async ({ project, watched }): Promise<PendingReview | undefined> => {
     await backgroundCheckpoint();
-    if (releaseState(project, watched, store, jobs).reviewing) return undefined;
+    const state = releaseState(project, watched, store, jobs);
+    if (state.reviewing) return undefined;
     const checkedKey = `upstreamCheckedAt:${watched.repo}`, errorKey = `upstreamCheckError:${watched.repo}`;
     if (refresh && now - Number(store.get(checkedKey) ?? 0) >= (watched.checkMinutes ?? c.upstream!.checkMinutes) * 60_000) {
       store.set(checkedKey, String(now)); // A failed read also waits checkMinutes before retrying.
       try {
         // gh excludes drafts (which have no publish date) and skipped pre-releases before its limit, so they cannot hide a release.
-        const latest = releasesSchema.parse(await backgroundRead(() => gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--exclude-drafts', ...watched.prereleases ? [] : ['--exclude-pre-releases'], '--json', 'tagName,publishedAt'])))
-          .toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt))[0];
-        if (latest) store.set(`upstreamLatest:${watched.repo}`, latest.tagName);
-        store.set(errorKey, '');
+        const releases = releasesSchema.parse(await backgroundRead(() => gh(['release', 'list', '--repo', watched.repo, '--limit', '30', '--exclude-drafts', ...watched.prereleases ? [] : ['--exclude-pre-releases'], '--json', 'tagName,publishedAt'])))
+          .toSorted((a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
+        if (releases[0]) store.set(`upstreamLatest:${watched.repo}`, releases[0].tagName);
+        const tags = releases.map(r => r.tagName).filter(tag => tag !== state.reviewed);
+        const compared = tags.length ? await compareReleases(watched.repo, state.reviewed, tags) : [];
+        // Publication date orders only the strict descendants; a diverged release that would have been newer is reported.
+        const next = compared.findIndex(r => r.relation === 'forward'), found = compared[next];
+        const diverged = compared.slice(0, next < 0 ? undefined : next).filter(r => r.relation === 'diverged').map(r => r.tag);
+        store.set(`upstreamCandidate:${watched.repo}`, found ? JSON.stringify({ base: state.reviewed, candidate: found.tag, baseCommit: found.baseCommit, candidateCommit: found.candidateCommit } satisfies ForwardRange) : '');
+        store.set(errorKey, diverged.length ? `Not reviewed: ${diverged.join(', ')} diverged from ${state.reviewed}` : '');
       } catch (error) { store.set(errorKey, safeError(error)); log('upstream-check-failed', { repo: watched.repo, reason: safeError(error) }); }
     }
-    const { reviewed, latest, due } = releaseState(project, watched, store, jobs);
-    return due ? { project, upstream: { name: watched.name, repo: watched.repo, base: reviewed, candidate: latest! } } : undefined;
+    const { candidate, due } = releaseState(project, watched, store, jobs);
+    return due ? { project, upstream: { name: watched.name, repo: watched.repo, ...candidate! } } : undefined;
   }));
   return pending.filter((row): row is PendingReview => !!row);
+}
+// The watermark moves only over a forward range that was reviewed: the dispatched range when the scheduler verified it,
+// or the range the report names instead, which must start at the watermark and is verified now.
+async function reviewedCandidate(job: Job, report: z.infer<typeof reportSchema>): Promise<string | undefined> {
+  const u = job.upstream!, range = report.range ?? u;
+  if (range.base !== u.base) throw new Error(`Upstream review reported ${range.base}..${range.candidate}, which does not start at the watermark ${u.base}`);
+  if (!report.range && u.candidateCommit) return u.candidate;
+  const [compared] = await compareReleases(u.repo, range.base, [range.candidate]);
+  if (compared.relation === 'forward') return range.candidate;
+  log('upstream-range-not-forward', { jobId: job.id, repo: u.repo, base: range.base, candidate: range.candidate, relation: compared.relation });
+  return undefined;
 }
 
 // CI repair --------------------------------------------------------------------------------------
@@ -368,7 +413,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
           // Its merge starts a run of each watched workflow, so the next pass reads them.
           if (report.prUrls.length) store.set(`repairExpect:${job.projectId}`, new Date().toISOString());
           if (job.kind === 'repair') job.repair = { ...job.repair!, repaired: report.repairedJobs, unrepaired: report.unrepairedJobs };
-          if (job.kind === 'upstream') store.set(`upstreamReviewed:${job.upstream!.repo}`, job.upstream!.candidate);
+          if (job.kind === 'upstream') { const reviewed = await reviewedCandidate(job, report); if (reviewed) store.set(`upstreamReviewed:${job.upstream!.repo}`, reviewed); }
           else if (job.kind === 'discovery' && !report.createdTaskIds.length) store.set(`discoveryAfter:${job.projectId}`, String(Date.now() + c.discovery.emptyCooldownHours * 3_600_000));
           job.state = 'complete'; job.reason = report.reason; job.completedAt = new Date().toISOString();
           log('job-complete', { jobId: job.id, ticket: job.ticketKey, prUrls: job.prUrls });
@@ -1508,7 +1553,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       if (review?.upstream) {
         const watched = project.upstreams.find(watched => watched.repo === review.upstream.repo);
         const state = watched && releaseState(project, watched, store, currentJobs);
-        if (!state?.due || state.reviewed !== review.upstream.base || state.latest !== review.upstream.candidate) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
+        if (!state?.due || state.reviewed !== review.upstream.base || state.candidate?.candidate !== review.upstream.candidate || state.candidate.candidateCommit !== review.upstream.candidateCommit) return decision('upstream-changed-before-dispatch', { message: 'The review changed or is already owned. Refresh its status before trying again.' });
       }
       if (review?.repair) {
         const state = project.repairWorkflows.includes(review.repair.workflow) ? repairState(c, project, review.repair.workflow, store, currentJobs) : undefined;
@@ -1946,8 +1991,9 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
 export function upstreamRows(c: Config, store: Store) {
   const jobs = store.jobSummaries();
   return c.projects.flatMap(p => p.upstreams.map(u => {
-    const { reviewing, reviewed, latest, due } = releaseState(p, u, store, jobs), checked = Number(store.get(`upstreamCheckedAt:${u.repo}`) ?? 0);
-    return { project: p.name, name: u.name, repo: u.repo, prereleases: u.prereleases, reviewed, latest, checkedAt: checked ? new Date(checked).toISOString() : null,
+    const { reviewing, reviewed, latest, candidate, due } = releaseState(p, u, store, jobs), checked = Number(store.get(`upstreamCheckedAt:${u.repo}`) ?? 0);
+    // A verified candidate is what Review now starts, even when a newer release sits behind the watermark.
+    return { project: p.name, name: u.name, repo: u.repo, prereleases: u.prereleases, reviewed, latest: candidate?.candidate ?? latest, checkedAt: checked ? new Date(checked).toISOString() : null,
       checkError: store.get(`upstreamCheckError:${u.repo}`) || null, reviewing, pending: due };
   }));
 }

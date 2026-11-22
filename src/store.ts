@@ -20,8 +20,8 @@ export interface Job {
   sourceIdentity?: { backend: 'kaneo'; projectId: string; taskId: string | null; ticketKey: string | null };
   requestId?: string;
   id: string; kind: 'ticket' | 'discovery' | 'upstream' | 'repair'; projectId: string; taskId: string | null;
-  // An upstream review covers base..candidate of one watched repository.
-  upstream?: { name: string; repo: string; base: string; candidate: string };
+  // An upstream review covers base..candidate of one watched repository; the commits are those the scheduler verified forward.
+  upstream?: { name: string; repo: string; base: string; candidate: string; baseCommit?: string; candidateCommit?: string };
   // A repair covers one failed run of a watched workflow; its report fills in the failed jobs it repaired and those it did not.
   repair?: { workflow: string; runId: number; runUrl: string; sha: string; failedJobs: string[]; repaired?: string[]; unrepaired?: string[] };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
