@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createParser, type EventSourceMessage } from 'eventsource-parser';
 import { z } from 'zod';
 import { threadSchema, ticketStatuses, humanRequest, ORPHANED_RUN_GRACE_MINUTES, type Thread } from './policy.ts';
@@ -41,6 +41,12 @@ function immutableProjection<T>(value: T): T {
 }
 type Provider = z.infer<typeof providerPayloadSchema>['providers'][number];
 const account = (p: Provider) => { const auth = (p as { auth?: { email?: unknown; workspaceId?: unknown } }).auth; return JSON.stringify([typeof auth?.email === 'string' ? auth.email.toLowerCase() : null, auth?.workspaceId ?? null]); };
+// A refused T3 request keeps its status and JSON body, so a caller can tell an authoritative answer from a failure.
+export class T3HttpError extends Error {
+  readonly status: number; readonly body: unknown;
+  constructor(path: string, status: number, body: unknown) { super(`T3 ${path} returned HTTP ${status}`); this.status = status; this.body = body; }
+}
+const threadNotFoundSchema = z.object({ _tag: z.literal('EnvironmentResourceNotFoundError'), code: z.literal('not_found'), reason: z.literal('thread_not_found') }).passthrough();
 export class T3 {
   readonly config: Config['t3'];
   private readonly orphanVerdicts = new Map<string, boolean>();
@@ -93,7 +99,7 @@ export class T3 {
             ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: requestSignal,
           });
           if (r.status === 400) await this.assertProtocol();
-          if (!r.ok) throw new Error(`T3 ${path} returned HTTP ${r.status}`);
+          if (!r.ok) throw new T3HttpError(path, r.status, await r.json().catch(() => null));
           return await r.json();
         } catch (error) {
           const cause = error instanceof Error ? error.cause : undefined;
@@ -287,6 +293,16 @@ export class T3 {
   async dispatch(command: unknown) {
     return this.rpcCall({ type: 'dispatch', command });
   }
+  /** True only when T3 answers that the thread does not exist and false when it can read it; any other answer throws. */
+  async threadMissing(id: string): Promise<boolean> {
+    try {
+      z.object({ projection: z.object({ thread: z.object({ id: z.literal(id) }).passthrough() }).passthrough() }).parse(await this.request(`/api/orchestration/threads/${encodeURIComponent(id)}/bounded`));
+      return false;
+    } catch (error) {
+      if (error instanceof T3HttpError && error.status === 404 && threadNotFoundSchema.safeParse(error.body).success) return true;
+      throw error;
+    }
+  }
   /** Match T3's public interruptThreadTurn: resolve fresh work, hold the queue, or end runless watches. */
   async stop(id: string, beforeStop?: (projection: unknown) => Promise<void>) {
     const { projection } = z.object({ projection: z.object({
@@ -438,6 +454,9 @@ export const taskSchema = z.object({
   version: z.number().int().positive().optional(),
   kind: z.string().optional(), scopes: z.array(z.string()).optional(), updatedAt: z.string().optional(),
   epicId: z.string().nullable().optional(),
+  // Ownership, present on a fresh single-ticket read.
+  claimRequired: z.boolean().optional(),
+  claim: z.object({ id: z.string(), workerId: z.string(), createdAt: z.string(), expiresAt: z.string() }).passthrough().nullable().optional(),
 }).passthrough();
 export type Task = z.infer<typeof taskSchema>;
 const nativeTicket = taskSchema.omit({ labels: true, readiness: true }).extend({
@@ -464,6 +483,11 @@ const normalized = (ticket: z.infer<typeof nativeTicket>): Task => ({ ...ticket,
 export const relationsSchema = z.array(z.object({ sourceTaskId: z.string(), targetTaskId: z.string(), relationType: z.enum(['blocks', 'subtask', 'related']) }).passthrough());
 export type TaskRelation = z.infer<typeof relationsSchema>[number];
 
+// A write's requestId from its intent, so a retry after an uncertain response replays it instead of applying it twice.
+export function stableRequestId(seed: string) {
+  const h = createHash('sha256').update(seed).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 // HTTP and the durable SSE feed share the same project-scoped bearer credential. No subprocess or device login.
 export class Kanvil {
   readonly config: Config['kanvil'];
@@ -536,6 +560,9 @@ export class Kanvil {
   }
   async updateTicket(projectId: string, ticketId: string, expectedVersion: number, changes: Record<string, unknown>, requestId: string) {
     return this.send('PATCH', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}`, { expectedVersion, changes, requestId });
+  }
+  async recoverClaim(projectId: string, ticketId: string, input: { claimId?: string; reason: string; reschedule: true; expectedVersion: number }, requestId: string) {
+    return this.send('POST', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/claim/recover`, { ...input, confirmedStopped: true, requestId });
   }
   async addComment(projectId: string, ticketId: string, body: string, requestId: string) {
     return this.send('POST', `/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/comments`, { body, requestId });
@@ -721,9 +748,9 @@ export class Kanvil {
       if (projectId && resolved.ticket.projectId !== projectId) throw new Error('Kanvil ticket moved to another project');
       projectId = resolved.ticket.projectId; id = resolved.ticket.id;
     }
-    const result = z.object({ ticket: nativeTicket, readiness: readinessSchema }).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(id)}`));
+    const result = z.object({ ticket: nativeTicket, readiness: readinessSchema, claim: taskSchema.shape.claim }).parse(await this.request(`/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(id)}`));
     if (result.ticket.projectId !== projectId || (result.ticket.id !== id && result.ticket.key !== id)) throw new Error('Kanvil ticket identity mismatch');
-    const task = { ...normalized(result.ticket), readiness: result.readiness };
+    const task = { ...normalized(result.ticket), readiness: result.readiness, claim: result.claim };
     if (this.watching) await this.ensureProjectStream(task.projectId);
     if (!this.watching || this.connected && this.unchanged(revision, [task.projectId])) this.tasksById.set(task.id, task);
     return task;

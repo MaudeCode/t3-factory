@@ -6,7 +6,7 @@ import { modify, applyEdits, parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
-import { cycle, log, safeError, stopJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus } from './scheduler.ts';
+import { cycle, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus } from './scheduler.ts';
 import { FactoryService } from './service.ts';
 import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
@@ -113,6 +113,24 @@ if (command === 'web') {
       console.log(JSON.stringify(result));
     }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+} else if (command === 'job-dismiss') {
+  // The running scheduler dismisses through its writer. Without one, this process claims the state directory first;
+  // a request the scheduler took and never answered is reported, never repeated here.
+  let store: Store | undefined, kanvil: Kanvil | undefined;
+  try {
+    const c = loadConfig(configPath), owner = commandFor(process.argv.slice(2));
+    if (owner?.type !== 'job-dismiss') throw new Error('Usage: t3-factory job-dismiss JOB_ID [--reset-ticket]');
+    const forwarded = await callControl(c.stateDir, owner);
+    if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
+    else {
+      store = new Store(c.stateDir);
+      if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; dismissal refused');
+      const connect = async () => { if (!kanvil) { kanvil = new Kanvil(c.kanvil, c.projects); await kanvil.connect(); } return kanvil; };
+      console.log(JSON.stringify(await dismissDeletedJob(c, store, new T3(c.t3), connect, owner.jobId, owner.resetTicket)));
+      writeStatus(c, store);
+    }
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
+  finally { await kanvil?.close().catch(() => {}); store?.close(); }
 } else if (command === 'plan-cancel') {
   try {
     const c = loadConfig(configPath);
@@ -276,6 +294,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

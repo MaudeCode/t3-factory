@@ -13,6 +13,7 @@ export type ControlCommand =
   | { type: 'wake'; reason?: string }
   | { type: 'once'; options: Record<string, unknown> }
   | { type: 'job-stop'; jobId: string }
+  | { type: 'job-dismiss'; jobId: string; resetTicket: boolean }
   | { type: 'plan-cancel'; planId: string }
   | { type: 'plan-override'; planId: string; overrideLimits: OverrideLimits }
   | { type: 'plan-order'; planIds: string[] }
@@ -73,6 +74,11 @@ export function callControl(stateDir: string, command: ControlCommand, timeoutMs
 export function commandFor(args: string[]): ControlCommand | undefined {
   if (args[0] === 'once' || args[0] === 'doctor') return { type: 'once', options: { dryRun: args.includes('--dry-run'), doctor: args[0] === 'doctor' } };
   if (args[0] === 'job-stop' && args[1]) return { type: 'job-stop', jobId: args[1] };
+  if (args[0] === 'job-dismiss' && args[1]) {
+    const unknown = args.slice(2).find(arg => arg !== '--reset-ticket');
+    if (unknown) throw new Error(`Unknown job-dismiss argument: ${unknown}`);
+    return { type: 'job-dismiss', jobId: args[1], resetTicket: args.includes('--reset-ticket') };
+  }
   if (args[0] === 'plan-cancel' && args[1]) return { type: 'plan-cancel', planId: args[1] };
   if (args[0] === 'plan-override' && args[1]) return { type: 'plan-override', planId: args[1], overrideLimits: dispatchOptions(args.slice(2)).overrideLimits ?? [] };
   if (args[0] === 'plan-order' && args[1]) return { type: 'plan-order', planIds: args.slice(1) };

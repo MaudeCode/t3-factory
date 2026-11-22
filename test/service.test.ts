@@ -36,6 +36,8 @@ test('commands reach the running scheduler over its socket and fall back without
     for (const bad of [[], ['quota']]) assert.throws(() => commandFor(['dispatch', '--override', ...bad]), /--override requires/);
     assert.equal(commandFor(['model-catalog']), undefined);
     assert.deepEqual(commandFor(['job-stop', 'j1']), { type: 'job-stop', jobId: 'j1' });
+    assert.deepEqual(commandFor(['job-dismiss', 'j1', '--reset-ticket']), { type: 'job-dismiss', jobId: 'j1', resetTicket: true });
+    assert.throws(() => commandFor(['job-dismiss', 'j1', '--force']), /Unknown job-dismiss argument/);
     assert.deepEqual(commandFor(['session-dismiss', 'task-1']), { type: 'session-dismiss', taskId: 'task-1' });
     assert.deepEqual(commandFor(['dispatch', '--upstream', 'UP/Stable']), { type: 'dispatch', options: { manual: true, upstream: 'up/stable' } });
     assert.throws(() => commandFor(['dispatch', '--upstream', 'no-slash']), /requires owner\/repo/);

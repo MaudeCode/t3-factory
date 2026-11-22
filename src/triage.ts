@@ -8,7 +8,7 @@ import { join, matchesGlob, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { Config, Project } from './config.ts';
-import type { T3, Task } from './clients.ts';
+import { stableRequestId, type T3, type Task } from './clients.ts';
 import type { Job } from './store.ts';
 import { readModelQuota } from './models.ts';
 import { log, safeError } from './scheduler.ts';
@@ -211,10 +211,7 @@ const commentBody = (output: TriageOutput, evidence: Evidence, commit: string, g
 
 // Stable per ticket version and step, so a retried apply is idempotent in Kanvil.
 // Promotion's create, relation and comment drop the version: one inbox ticket yields one promoted ticket.
-const requestId = (ticket: Task, step: string, versioned = true) => {
-  const h = createHash('sha256').update(`t3-factory-triage:${ticket.id}:${versioned ? ticket.version : 'promotion'}:${step}`).digest('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
-};
+const requestId = (ticket: Task, step: string, versioned = true) => stableRequestId(`t3-factory-triage:${ticket.id}:${versioned ? ticket.version : 'promotion'}:${step}`);
 const union = (...lists: string[][]) => [...new Set(lists.flat())];
 
 // Kanvil's 409 when another write moved the ticket's version after it was read.
