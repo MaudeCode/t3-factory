@@ -1,5 +1,5 @@
 // A stdio MCP server that lets agents read and steer the running factory. Every write goes through the scheduler's
-// control socket, so agents get the same limits and locks as the CLI and web app. Limit overrides, the forced Triage now pass and settings are not exposed.
+// control socket, so agents get the same limits and locks as the CLI and web app. Limit overrides, triage decisions (they are recorded as the owner's) and settings are not exposed.
 import { existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
@@ -65,11 +65,6 @@ export const tools: Record<string, Tool> = {
     description: 'Set the order active Epic plans are worked in.',
     input: z.object({ planIds: z.array(id).min(1).max(200) }).strict(),
     command: ({ planIds }) => ({ type: 'plan-order', planIds }),
-  },
-  resolve_triage_report: {
-    description: 'Act on an inbox triage report: retry it, close it, or promote it to a ticket.',
-    input: z.object({ ticketId: id, action: z.enum(['retry', 'close', 'promote']) }).strict(),
-    command: ({ ticketId, action }) => ({ type: 'triage-report', ticketId, action }),
   },
 };
 
