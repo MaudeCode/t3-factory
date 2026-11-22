@@ -453,6 +453,16 @@ test('an agent Codex dispatch waits for the idle rule a manual one waives', asyn
   assert.equal(f.launches.length, 0);
 });
 
+test('an agent chain start keeps the idle rule for the launches it starts at once', async t => {
+  const f = dispatchFixture(t);
+  f.tasks[1].status = 'todo';
+  f.threads.push(v2Thread({ id: 'personal', projectId: 'FIX', providerInstanceId: 'codex', modelSelection: { instanceId: 'codex', model: 'fixture-sol' }, status: 'completed', activeRunId: null, updatedAt: new Date().toISOString(), latestUserMessageAt: new Date().toISOString() }));
+  t.mock.method(f.t3, 'detail', async () => ({ messages: [], responses: [] }));
+  const result = await cycle(f.c, f.store, { manual: true, agent: true, model: 'sol', ticket: 'FIX-1', chain: 'all' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(result.reason, 'plan-started');
+  assert.equal(f.launches.length, 0, 'the runnable blocker waits for idle time');
+});
+
 test('warm unnamed selection uses prepared queue hints and validates only the selected ticket', async t => {
   const f = dispatchFixture(t);
   const { inventory, upNext } = await import('../src/scheduler.ts');

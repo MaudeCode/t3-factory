@@ -1747,7 +1747,7 @@ async function chainResponse(c: Config, store: Store, t3: T3, kanvil: Kanvil, in
 }
 // Durable before its first launch, and saved before the first await so a caller's checks stay atomic with it.
 async function beginPlan(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, contents: Pick<Plan, 'target' | 'epic' | 'tickets' | 'queued'>, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>) {
-  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), ...contents, model: options.model ?? 'auto', ...(options.provider ? { provider: options.provider } : {}), overrideLimits: [...skip], state: 'active' };
+  const plan: Plan = { requestId: options.requestId, id: randomUUID(), createdAt: new Date().toISOString(), ...contents, model: options.model ?? 'auto', ...(options.provider ? { provider: options.provider } : {}), ...(options.agent ? { agent: true as const } : {}), overrideLimits: [...skip], state: 'active' };
   const context = readContext();
   if (context) context.own({ planId: plan.id }, () => store.savePlan(plan));
   else store.savePlan(plan);
@@ -1892,7 +1892,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
         try {
           for (const preset of available) {
             stored();
-            const result = await dispatchOne(c, store, { manual: true, continuation: !only, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
+            const result = await dispatchOne(c, store, { manual: true, continuation: !only, agent: plan.agent, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
             results.push(result);
             t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
             if (plan.queued && result.reason === 'dispatched' && stored()?.state === 'active') { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); }
