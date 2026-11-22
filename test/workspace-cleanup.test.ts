@@ -11,7 +11,7 @@ import type { Config } from '../src/config.ts';
 import { T3, type Kanvil } from '../src/clients.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
-const commandScenarios = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
+const commandScenarios = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-cancelled', 'command-no-pr-cancelled', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
 
 for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'ignored-only', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', 'orphan-process', 'half-deleted', 'leftover-directory', ...commandScenarios] as const) {
   test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
@@ -28,7 +28,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
     let store = new Store(join(dir, 'state'));
     const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', doneStatuses: ['done'] };
     const c = { monitoringTimeoutMinutes: 30, projects: [project] } as Config;
-    const job: Job = { id: 'job', kind: scenario === 'discovery' ? 'discovery' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Verified complete', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: scenario.startsWith('no-pr') ? [] : ['https://github.com/fixture/repo/pull/1'], command: { workspaceStrategy: { type: 'worktree', branch } } };
+    const job: Job = { id: 'job', kind: scenario === 'discovery' ? 'discovery' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-02T00:00:00Z', state: 'complete', reason: 'Verified complete', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: scenario.includes('no-pr') ? [] : ['https://github.com/fixture/repo/pull/1'], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, updatedAt: job.createdAt, latestUserMessageAt: job.createdAt, latestRunCompletedAt: job.createdAt, status: 'completed', activeRunId: null });
     const isCommand = scenario.startsWith('command');
     let threads = [thread], attempts = 0, detachAttempts = 0, shellReads = 0;
@@ -59,7 +59,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       }) };
     }, shell: async () => { if (++shellReads === 3 && scenario === 'race-before-remove') thread.updatedAt = thread.latestUserMessageAt = '2026-01-03T00:00:00Z'; return { threads }; }, dispatch: async (command: any) => { commands.push(command); if (command.type === 'run.interrupt') { publicStopCommand.parse(command); if (scenario === 'command-error') throw new Error('Transport outcome unknown'); if (scenario === 'command-rejected') throw { _tag: 'CommandRejected', detail: 'Request was rejected' }; return; } if (command.type === 'thread.pull-request.watch') { publicStopCommand.parse(command); threads.find(t => t.id === command.threadId)!.pendingBackgroundTasks = []; return; } assert.equal(command.expectedWorktreePath, tree); detachAttempts++; if (scenario === 'retry-detach' && detachAttempts === 1) throw new Error('temporary detach failure'); const target = threads.find(t => t.id === command.threadId)!; target.worktreePath = null; target.branch = null; }, terminals: async () => { terminalReads++; if (scenario === 'terminal-snapshot-failure') throw new Error('T3 terminal snapshot unavailable'); return terminals(); },
     closeTerminal: async (threadId: string, terminalId: string) => { closes.push({ threadId, terminalId }); if (terminalProcess) { const exited = once(terminalProcess, 'exit'); terminalProcess.kill(); await exited; } } } as unknown as T3;
-    const kanvil = { task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status: scenario.endsWith('not-done') ? 'todo' : 'done' }) } as unknown as Kanvil;
+    const kanvil = { task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status: scenario.endsWith('not-done') ? 'todo' : scenario.endsWith('cancelled') ? 'cancelled' : 'done' }) } as unknown as Kanvil;
     const runReconcile = async (allow = true) => {
       await reconcile(c, store, t3, kanvil, threads, allow, mode === 'direct');
       if (allow && mode === 'deferred') await cleanupNextWorkspace(c, store, t3, kanvil, new Set());
@@ -148,7 +148,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         assert.equal(store.events().some(e => e.text === 'FIX-1 needs you'), false, 'no intermediate wait asks the user');
       }
       if (isCommand) {
-        const eligible = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process'].includes(scenario);
+        const eligible = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-no-pr-cancelled'].includes(scenario);
         // Settled jobs first retain dismissal semantics, then maintenance verifies their report.
         await runReconcile(); await runReconcile();
         const stops = () => commands.filter(c => c.type === 'run.interrupt');
@@ -169,6 +169,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
             assert.equal(existsSync(tree), scenario === 'command-process', 'process CWD still holds cleanup after T3 settlement');
           }
         } else assert.ok(store.job(job.id)!.workspaceCleanupError, 'retain a cleanup hold diagnostic');
+        if (scenario === 'command-cancelled') assert.equal(store.job(job.id)!.workspaceCleanupError, 'Ticket not yet verified Done in Kanvil', 'a delivered ticket still needs a done status');
         return;
       }
       await runReconcile(scenario !== 'dry-run');

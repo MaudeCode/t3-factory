@@ -42,7 +42,7 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
     const branch = 'chore/FIX-1-factory';
     git(repo, 'update-ref', 'refs/remotes/origin/main', git(repo, 'rev-parse', 'HEAD')); git(repo, 'worktree', 'add', '-qb', branch, tree);
     const store = new Store(join(dir, 'state'));
-    const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done', 'cancelled'] };
+    const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] };
     const c = { monitoringTimeoutMinutes: 30, kanvil: { workspaceId: 'workspace' }, projects: [project] } as unknown as Config;
     const job: Job = { id: 'job', kind: 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: null, state: 'waiting', reason: 'Ticket cannot finish as no-work', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, status: 'completed' });

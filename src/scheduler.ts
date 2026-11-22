@@ -235,9 +235,12 @@ async function untouchedHead(project: Project, branch: string, worktreePath?: st
   if (worktreePath && existsSync(join(worktreePath, '.git'))) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
   return history.every(head => head === created) && await released(project, created) ? created : '';
 }
+// A delivered ticket is closed in a done status. One closed without delivery may also be cancelled (a duplicate,
+// superseded, or cancelled by the owner) whatever the project's done statuses say.
+const ticketClosed = (project: Project, task: Task, delivered: boolean) => project.doneStatuses.includes(task.status) || !delivered && task.status === 'cancelled';
 // A hold is unfinished work, even when the agent removed the ticket from the ready queue.
 async function verifyClosedWithoutDelivery(project: Project, task: Task, job: Job, thread: Thread) {
-  if (!project.doneStatuses.includes(task.status)) {
+  if (!ticketClosed(project, task, false)) {
     throw new Error('Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved');
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
@@ -266,7 +269,7 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
     const task = await kanvil.task(job.taskId!, project.kanvilId);
     if (!report.prUrls.length) await verifyClosedWithoutDelivery(project, task, job, t);
     else {
-      if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket not yet verified Done in Kanvil');
+      if (!ticketClosed(project, task, true)) throw new Error('Ticket not yet verified Done in Kanvil');
       await verifyMerged(project, report.prUrls);
     }
   } else {
@@ -413,7 +416,7 @@ export async function verifyCleanupHead(c: Config, store: Store, kanvil: Kanvil,
   let head: string;
   if (job.kind === 'ticket' && job.prUrls.length) {
     const task = await kanvil.task(job.taskId!, project.kanvilId);
-    if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
+    if (!ticketClosed(project, task, true)) throw new Error('Ticket is no longer Done');
     const history = await historicalArtifacts(project, [{ ...job, state: 'complete' }], threads, branch, store);
     if (!history.branches.has(branch)) throw new Error('Workspace head is not verified merged');
     head = history.branches.get(branch)!;
@@ -464,7 +467,7 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
       await verifyCompletionReport(c, kanvil, job, thread, report);
       if (job.kind === 'ticket') {
         const task = await kanvil.task(job.taskId!, project.kanvilId);
-        if (!project.doneStatuses.includes(task.status)) throw new Error('Ticket is no longer Done');
+        if (!ticketClosed(project, task, report.prUrls.length > 0)) throw new Error('Ticket is no longer Done');
       }
       checkOwner();
       job.prUrls = report.prUrls;
