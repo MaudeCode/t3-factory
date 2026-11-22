@@ -56,6 +56,12 @@ test('a report in a configured inbox is read and marked; a key that resolves out
   assert.equal(await ticketDetail(withInbox, kanvil, 'LIB-1'), null);
 });
 
+test('an agent read never returns a reporter-written inbox report', async () => {
+  const withInbox = { kanvil: { url: 'https://tracker.example/' }, projects: [{ key: 'APP', kanvilId: 'p-app', inbox: { kanvilId: 'p-in' } }] } as never;
+  const kanvil = { task: async () => task('in-1', { key: 'IN-1', projectId: 'p-in', epicId: undefined }), relations: async () => [], epics: async () => [] } as never;
+  assert.equal(await ticketDetail(withInbox, kanvil, 'IN-1', false), null);
+});
+
 
 test('an Epic detail projects only safe workspace fields, resolves names, and stays separate from ticket reads', async () => {
   let read = '';

@@ -10,10 +10,11 @@ const brief = (task: Task) => ({ key: task.key ?? task.id, title: task.title, do
 // An inbox has no key in the config, so a key outside the delivery projects is resolved by the tracker and kept
 // only when it lands in a configured inbox.
 // Only the fields below leave the scheduler; tracker rows carry more than a browser needs.
-export async function ticketDetail(c: Pick<Config, 'projects' | 'kanvil'>, kanvil: Reader, key: string) {
+// inboxReads false (agent reads) keeps reporter-written inbox reports out: only configured projects are read.
+export async function ticketDetail(c: Pick<Config, 'projects' | 'kanvil'>, kanvil: Reader, key: string, inboxReads = true) {
   const match = /^([A-Z0-9]+)-\d{1,9}$/.exec(key.toUpperCase());
   if (!match) return null;
-  const project = c.projects.find(p => p.key === match[1]), inboxes = c.projects.flatMap(p => p.inbox ? [p.inbox.kanvilId] : []);
+  const project = c.projects.find(p => p.key === match[1]), inboxes = inboxReads ? c.projects.flatMap(p => p.inbox ? [p.inbox.kanvilId] : []) : [];
   if (!project && !inboxes.length) return null;
   let task: Task;
   try { task = await kanvil.task(match[0], project?.kanvilId); }
