@@ -5,7 +5,6 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { callControl, dispatchOptions, type ControlCommand } from './control.ts';
-import { dispatchProviderSchema } from './config.ts';
 
 const id = z.string().regex(/^[\w-]{1,64}$/);
 type Tool = { description: string; input: z.ZodObject; command?: (input: any) => ControlCommand; read?: (stateDir: string) => unknown };
@@ -29,20 +28,17 @@ export const tools: Record<string, Tool> = {
     command: ({ key }) => ({ type: 'ticket', key: key.toUpperCase(), agent: true }),
   },
   dispatch: {
-    description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Normal limits apply, including the quota reserve and idle time; the result says why work did not start. Omit all targets to let the factory pick the next ticket.',
+    description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Normal limits apply, including the quota reserve and idle time, and the model is chosen automatically from presets marked automatic; the result says why work did not start. Omit all targets to let the factory pick the next ticket.',
     input: z.object({
       ticket: z.string().regex(/^[A-Za-z0-9]{1,32}-\d{1,9}$/).optional(),
       epic: id.optional(),
       upstream: z.string().regex(/^[\w.-]+\/[\w.-]+$/).optional().describe('owner/repo'),
       chain: z.enum(['first', 'all']).optional().describe('With ticket: start its first blocker, or run the whole chain'),
-      model: z.string().regex(/^[a-z][a-z0-9-]*$/).optional().describe('auto or a configured model ID'),
-      provider: dispatchProviderSchema.optional().describe('Only with automatic model selection'),
       dryRun: z.boolean().optional(),
     }).strict(),
     command: input => ({ type: 'dispatch', options: dispatchOptions(['--agent',
       ...input.ticket ? ['--ticket', input.ticket.toUpperCase()] : [], ...input.epic ? ['--epic', input.epic] : [],
       ...input.upstream ? ['--upstream', input.upstream] : [], ...input.chain ? ['--chain', input.chain] : [],
-      ...input.model ? ['--model', input.model] : [], ...input.provider ? ['--provider', input.provider] : [],
       ...input.dryRun ? ['--dry-run'] : [],
     ]) }),
   },

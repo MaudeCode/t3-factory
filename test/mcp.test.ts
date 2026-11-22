@@ -8,7 +8,7 @@ import { handleMcp } from '../src/mcp.ts';
 
 const call = (stateDir: string, name: string, args: unknown) => handleMcp(stateDir, { id: 1, method: 'tools/call', params: { name, arguments: args } }) as Promise<{ result: { isError?: true; content: { text: string }[] } }>;
 
-test('agent dispatch reaches the scheduler as a manual request and cannot override limits', async t => {
+test('agent dispatch reaches the scheduler as a manual request and cannot override limits or pick a model', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-mcp-')), seen: ControlCommand[] = [];
   const server = serveControl(dir, async command => { seen.push(command); return { code: 0, data: { reason: 'dispatched' } }; });
   t.after(() => { server.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -18,8 +18,10 @@ test('agent dispatch reaches the scheduler as a manual request and cannot overri
   assert.equal(ok.result.isError, undefined);
   assert.deepEqual(seen, [{ type: 'dispatch', options: { manual: true, agent: true, ticket: 'FIX-7', chain: 'all' } }]);
 
-  const refused = await call(dir, 'dispatch', { ticket: 'FIX-7', overrideLimits: true });
-  assert.equal(refused.result.isError, true);
+  for (const extra of [{ overrideLimits: true }, { model: 'manual-only' }, { provider: 'codex' }]) {
+    const refused = await call(dir, 'dispatch', { ticket: 'FIX-7', ...extra });
+    assert.equal(refused.result.isError, true);
+  }
   assert.equal(seen.length, 1);
 });
 
