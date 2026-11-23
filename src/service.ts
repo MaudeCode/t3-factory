@@ -428,7 +428,7 @@ export class FactoryService {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
       return { code: result.reason === 'error' || (result as { triageSandbox?: { ok: boolean } }).triageSandbox?.ok === false ? 1 : 0, data: result };
     }
-    const refused = refuseRunCaller(command, this.store.jobs());
+    const refused = await refuseRunCaller(command, this.store.jobs(), async () => (await this.t3.shell(true, true)).threads);
     if (refused) return refused;
     return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); }, receivedAt);
   }

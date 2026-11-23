@@ -135,11 +135,17 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
 }
 
 // Factory runs start their sessions in their worktree, so a dispatch sent from inside an unfinished run's worktree
-// is that run's, and a run may not lift limits or choose a model for the work it queues.
-export function refuseRunCaller(command: ControlCommand, jobs: Job[]): ControlResult | undefined {
+// is that run's, and a run may not lift limits or choose a model for the work it queues. A run launched since the last
+// reconcile has no snapshot yet, so live T3 bindings come first; a run whose worktree is still unknown refuses, and so does a failed read.
+export async function refuseRunCaller(command: ControlCommand, jobs: Job[], threads: () => Promise<{ id: string; worktreePath: string | null }[]>): Promise<ControlResult | undefined> {
   if (command.type !== 'dispatch' || typeof command.callerCwd !== 'string') return undefined;
-  const cwd = canonicalPath(command.callerCwd);
-  const run = jobs.find(j => j.state !== 'complete' && j.state !== 'dismissed' && j.thread?.worktreePath &&
-    (cwd + sep).startsWith(canonicalPath(j.thread.worktreePath) + sep));
-  return run && { code: 1, data: { message: `Factory runs cannot override limits or choose a model or provider: the caller is inside run ${run.id}'s worktree. Dispatch without those arguments.` } };
+  const cwd = canonicalPath(command.callerCwd), unfinished = jobs.filter(j => j.state !== 'complete' && j.state !== 'dismissed');
+  const live = unfinished.length ? await threads() : [];
+  const refuse = (why: string) => ({ code: 1, data: { message: `Factory runs cannot override limits or choose a model or provider: ${why}. Dispatch without those arguments, or try again.` } });
+  for (const job of unfinished) {
+    const worktree = live.find(t => t.id === job.threadId)?.worktreePath ?? job.thread?.worktreePath;
+    if (!worktree) return refuse(`run ${job.id}'s worktree is not known yet`);
+    if ((cwd + sep).startsWith(canonicalPath(worktree) + sep)) return refuse(`the caller is inside run ${job.id}'s worktree`);
+  }
+  return undefined;
 }

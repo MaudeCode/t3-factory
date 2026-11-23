@@ -9,10 +9,11 @@ import type { Job } from '../src/store.ts';
 
 const call = (stateDir: string, name: string, args: unknown) => handleMcp(stateDir, { id: 1, method: 'tools/call', params: { name, arguments: args } }) as Promise<{ result: { isError?: true; content: { text: string }[] } }>;
 
-async function scheduler(t: import('node:test').TestContext, jobs: Job[] = []) {
+type Live = { id: string; worktreePath: string | null }[];
+async function scheduler(t: import('node:test').TestContext, jobs: Job[] = [], threads: () => Promise<Live> = async () => []) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-mcp-')), seen: ControlCommand[] = [];
   // The service's own refusal runs before anything is queued; only accepted commands reach `seen`.
-  const server = serveControl(dir, async command => refuseRunCaller(command, jobs) ?? (seen.push(command), { code: 0, data: { reason: 'dispatched' } }));
+  const server = serveControl(dir, async command => await refuseRunCaller(command, jobs, threads) ?? (seen.push(command), { code: 0, data: { reason: 'dispatched' } }));
   t.after(() => { server.close(); rmSync(dir, { recursive: true, force: true }); });
   await new Promise(resolve => server.once('listening', resolve));
   return { dir, seen };
@@ -41,12 +42,13 @@ test('an owner session overrides limits, model and provider with the same comman
 });
 
 test('a factory run cannot override from its worktree, symlinked paths included', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'factory-mcp-run-')), worktree = join(root, 'worktree'), link = join(root, 'link');
-  mkdirSync(join(worktree, 'src'), { recursive: true }); symlinkSync(worktree, link);
+  const root = mkdtempSync(join(tmpdir(), 'factory-mcp-run-')), worktree = join(root, 'worktree'), link = join(root, 'link'), owner = join(root, 'owner');
+  mkdirSync(join(worktree, 'src'), { recursive: true }); mkdirSync(owner); symlinkSync(worktree, link);
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const job = (id: string, state: Job['state'], worktreePath: string) => ({ id, state, thread: { worktreePath } }) as Job;
+  const job = (id: string, state: Job['state'], worktreePath?: string) => ({ id, threadId: `thread-${id}`, state, ...worktreePath ? { thread: { worktreePath } } : {} }) as Job;
   const { dir, seen } = await scheduler(t, [job('run-1', 'running', link), job('old', 'complete', root)]);
-  const dispatch = (callerCwd: string) => ({ type: 'dispatch' as const, callerCwd, options: { manual: true, ticket: 'FIX-7', overrideLimits: true } });
+  const dispatch = { type: 'dispatch' as const, callerCwd: owner, options: { manual: true, ticket: 'FIX-7', overrideLimits: true } };
+  const refusal = async (jobs: Job[], live: Live | Error) => ((await refuseRunCaller(dispatch, jobs, async () => { if (live instanceof Error) throw live; return live; }))?.data as { message: string } | undefined)?.message;
 
   for (const cwd of [worktree, join(link, 'src')]) {
     t.mock.method(process, 'cwd', () => cwd);
@@ -55,8 +57,12 @@ test('a factory run cannot override from its worktree, symlinked paths included'
     assert.match(refused.result.content[0].text, /run-1/);
   }
   assert.equal(seen.length, 0, 'a refused override queues nothing');
-  assert.equal(refuseRunCaller(dispatch(`${worktree}-other`), [job('run-1', 'running', worktree)]), undefined, 'a sibling path is outside the worktree');
-  assert.equal(refuseRunCaller(dispatch(root), [job('old', 'dismissed', root)]), undefined, 'finished runs do not hold their worktree');
+  // A run launched since the last reconcile has no snapshot; T3's live binding still names its worktree.
+  assert.match(await refusal([job('new', 'running')], [{ id: 'thread-new', worktreePath: owner }]) ?? '', /inside run new's worktree/);
+  assert.match(await refusal([job('new', 'dispatching')], []) ?? '', /run new's worktree is not known yet/, 'an unknown worktree fails closed');
+  await assert.rejects(refusal([job('run-1', 'running', worktree)], new Error('T3 unreachable')), /T3 unreachable/);
+  assert.equal(await refusal([job('run-1', 'running', `${owner}-other`)], []), undefined, 'a sibling path is outside the worktree');
+  assert.equal(await refusal([job('old', 'dismissed', owner)], new Error('not read')), undefined, 'finished runs do not hold their worktree');
 });
 
 test('agent writes fail without a running scheduler instead of running locally', async t => {
