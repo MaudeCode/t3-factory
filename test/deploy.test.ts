@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// The deployer against a local remote whose installers record the version they install, with npm stubbed out.
+// The deployer against a local remote that carries this checkout's install-release and installers that record
+// the version they install, with npm stubbed out.
 test('the deployer installs the newest release tag once and ignores prereleases', t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-deploy-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -18,6 +19,7 @@ test('the deployer installs the newest release tag once and ignores prereleases'
   chmodSync(join(bin, 'npm'), 0o755);
   for (const name of ['install', 'install-web'])
     writeFileSync(join(remote, `scripts/${name}.ts`), `import { appendFileSync, readFileSync } from 'node:fs';\nappendFileSync(process.env.DEPLOY_LOG!, '${name} ' + readFileSync('VERSION', 'utf8'));\n`);
+  cpSync(join(import.meta.dirname, '../install-release'), join(remote, 'install-release'));
   git('init', '-q', '-b', 'main');
   const release = (version: string) => {
     writeFileSync(join(remote, 'VERSION'), `${version}\n`);
