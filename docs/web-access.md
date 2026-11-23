@@ -1,6 +1,6 @@
 # Web access
 
-The web page controls the same factory as the CLI and menu-bar app. It can show provider status, pause or resume automation, dispatch a ticket, and edit models, budgets, projects, and discovery settings.
+The web page controls the same factory as the CLI. It can show provider status, pause or resume automation, dispatch a ticket, and edit models, budgets, projects, and discovery settings.
 
 The backend binds to loopback by default. Choose how clients reach it and set `FACTORY_PUBLIC_ORIGIN` to that exact browser origin. Host and origin checks reject unconfigured origins. Authentication settings are read at startup.
 

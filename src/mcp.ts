@@ -11,7 +11,7 @@ import { dispatchProviderSchema, overridableLimits } from './config.ts';
 
 const id = z.string().regex(/^[\w-]{1,64}$/);
 type Tool = { description: string; input: z.ZodObject; command?: (input: any) => ControlCommand; read?: (stateDir: string) => unknown };
-// Status fields an agent needs to pick a run, plan or report; the rest of status.json feeds the menu and web pages.
+// Status fields an agent needs to pick a run, plan or report; the rest of status.json feeds the web page.
 const statusFields = ['enabled', 'concurrency', 'work', 'decision', 'upNext', 'plans', 'jobs', 'recent'] as const;
 
 export const tools: Record<string, Tool> = {

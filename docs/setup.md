@@ -4,7 +4,7 @@ Run commands from the repository root unless stated otherwise. The bundled servi
 
 ## Prepare the environment
 
-Install Node.js 24.13 or later, Git, the GitHub CLI, and Xcode Command Line Tools if you want the menu-bar app. Run `node --version`, `git --version`, and `gh auth status` to verify your tools. The GitHub account must have access to each configured repository.
+Install Node.js 24.13 or later, Git, the GitHub CLI. Run `node --version`, `git --version`, and `gh auth status` to verify your tools. The GitHub account must have access to each configured repository.
 
 ```sh
 npm ci
@@ -103,17 +103,6 @@ node scripts/install-deploy.ts
 
 Run it once, from a checkout of your repository with its `.env`, after the scheduler and web service are installed. It installs a `.deploy` LaunchAgent that fetches tags over HTTPS every five minutes. When a `vX.Y.Z` tag newer than the one it last tried appears, it checks that tag out in `~/.local/share/t3-factory/deploy/source` and runs the tag's `./install-release` (`npm ci`, then `scripts/install.ts` and `scripts/install-web.ts`), using the `.env` it was installed with. A deployer of your own can run the same script from a checked-out tag, with `T3_FACTORY_ENV` set to that `.env`. Prerelease tags are skipped. Each tag is tried once and recorded in `~/.local/share/t3-factory/deploy/tag`; after a failure, read `~/Library/Logs/t3-factory-deploy-error.log`, fix the cause and release the next version. Tags come from the release workflow, which creates one only after CI passes on the commit; see [development](development.md#releases).
 
-## Optional interfaces
+## Web controls
 
-For the macOS menu-bar app:
-
-```sh
-npm run build:menu
-mkdir -p "$HOME/Applications"
-ditto "build/T3 Factory.app" "$HOME/Applications/T3 Factory.app"
-open "$HOME/Applications/T3 Factory.app"
-```
-
-The app is ad-hoc signed and requires macOS 14 or later. Quit it before replacing the bundle during an update. Left-click opens its status panel: the automation switch, each provider's allowance, runs that need you, running work, chains, the queue, and a way to start a run. The count beside the icon is the number of runs waiting for you. Right-click opens Settings. The panel follows the scheduler's status file as it changes and sends commands through the CLI, so it reaches the running scheduler the same way the web app does. Quitting the app leaves the scheduler running.
-
-For browser and phone controls, continue with [web access](web-access.md). Both interfaces reuse the same CLI and private configuration.
+For browser and phone controls, continue with [web access](web-access.md). The web page reuses the same CLI and private configuration.

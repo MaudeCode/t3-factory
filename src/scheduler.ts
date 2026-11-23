@@ -2162,8 +2162,7 @@ export function writeStatus(c: Config, store: Store) {
     epics: epicRows(c, store), epicsError: JSON.parse(store.get('epicsError') || 'null'),
     sessionTickets: sessionTicketStatus(c, store),
     jobs: store.jobSummaries().filter(j => j.state !== 'dismissed').map(({ ...job }) => ({ ...job, label: jobLabel(job) })),
-    // The menu app reads only this file, so it gets the recent journal and the last finished runs here.
-    journal: store.events(60),
+    // factory_status (MCP) reads the last finished runs from this file.
     recent: store.recentJobs().map(job => ({ ...job, label: jobLabel(job) })),
   };
   const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
