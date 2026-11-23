@@ -4,6 +4,8 @@ There are two configuration files. `.env` holds deployment values and credential
 
 The CLI and installation scripts load `.env` from the source or installed runtime directory. Set `T3_FACTORY_ENV` in the process environment to use a different file. Existing environment variables take precedence. The installers copy the selected file into the installed runtime, so editing the source `.env` alone does not update a running service.
 
+The scheduler log records a lane's pass only when its wake reason or outcome changes or it takes longer than 5 seconds. Set `T3_FACTORY_LOG_VERBOSE=1` to log every pass, operation and decision.
+
 ## Scheduler settings
 
 | Setting | Meaning |

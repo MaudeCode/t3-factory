@@ -110,6 +110,8 @@ export type Decision = { reason: string; at: string } & Record<string, unknown>;
 export type DecisionOrigin = { workKind: 'tickets' | 'upstream' | 'chains'; providerDriver?: string; manual?: boolean };
 type CheckDecision = Decision & { origin?: DecisionOrigin & { sequence: number; startedAt: string }; checks?: Record<string, CheckDecision> };
 const decisionKeys = ['lastDecision', 'upstreamDecision', 'chainDecision'] as const;
+// Metadata that automatic admission reads, beside jobs and plans: the prepared Up next list, plan order, project rotation, discovery cooldowns and upstream/repair source state.
+const ADMISSION_KEYS = /^(upNext|planOrder|lastProject)$|^(discoveryAfter|discoveryLast|repairWatch|repairExpect|upstreamReviewed|upstreamLatest|upstreamCandidate|upstreamCheckedAt|upstreamCheckError):/;
 const newestDecision = (a: CheckDecision, b: CheckDecision) => (b.origin?.sequence ?? 0) - (a.origin?.sequence ?? 0) || b.at.localeCompare(a.at);
 function selectDecision(checks: CheckDecision[]): CheckDecision | undefined {
   return checks.filter(check => check.reason === 'error').sort(newestDecision)[0]
@@ -118,6 +120,8 @@ function selectDecision(checks: CheckDecision[]): CheckDecision | undefined {
 }
 export class Store {
   db: DatabaseSync;
+  /** Changes with every write admission decides from: a job, a plan, an admission key, or a ticket preparation ending. Status, caches and other lanes' state leave it alone. */
+  revision = 0;
   private closed = false;
   private readonly statements = new Map<string, ReturnType<DatabaseSync['prepare']>>();
   private statement(sql: string) { if (!this.statements.has(sql)) this.statements.set(sql, this.db.prepare(sql)); return this.statements.get(sql)!; }
@@ -173,7 +177,8 @@ export class Store {
   private lock(key: string) {
     const previous = this.locks.get(key), gate = Promise.withResolvers<void>();
     this.locks.set(key, gate.promise);
-    return { previous, release: () => { gate.resolve(); if (this.locks.get(key) === gate.promise) this.locks.delete(key); } };
+    // A ticket another lane was preparing can be selected again once its lock is gone, even if no job was written.
+    return { previous, release: () => { gate.resolve(); if (this.locks.get(key) === gate.promise) this.locks.delete(key); if (key.startsWith('ticket:')) this.revision++; } };
   }
   tryLock(key: string) { if (!this.locks.has(key)) return this.lock(key).release; }
   async exclusive<T>(keys: string[], work: () => Promise<T>): Promise<T> {
@@ -198,7 +203,7 @@ export class Store {
   save(job: Job) {
     if (job.historyOnly || this.statement('SELECT id FROM job_history WHERE id=?').get(job.id)) throw new Error('Historical runs are read-only');
     const before = this.job(job.id);
-    this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job));
+    if (this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data WHERE jobs.data != excluded.data OR jobs.task_id IS NOT excluded.task_id').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job)).changes) this.revision++;
     const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
@@ -223,7 +228,7 @@ export class Store {
   savePlan(plan: Plan) {
     const before = this.plan(plan.id);
     if (before && before.state !== 'active' && plan.state === 'active') return;
-    this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(plan.id, JSON.stringify(plan));
+    if (this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE plans.data != excluded.data').run(plan.id, JSON.stringify(plan)).changes) this.revision++;
     const detail = { planId: plan.id, ticketKey: plan.target?.key, epicId: plan.epic?.id, tickets: plan.tickets.map(t => t.key) };
     const name = plan.queued ? `Run ${plan.target!.key}` : plan.epic ? `Epic ${plan.epic.title}` : `Chain to ${plan.target!.key}`, count = `${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'}`;
     if (!before) this.record('plan.created', plan.queued ? `${name} queued` : `${name} started with ${count}${plan.epic ? '' : ' ahead of it'}`, detail);
@@ -290,7 +295,7 @@ export class Store {
     if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !before || decisionText(before) !== text)) this.record('decision', text, { reason: result.reason, origin: result.origin, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
   }
   get(key: string): string | null { return this.statement('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
-  set(key: string, value: string) { this.statement('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value != excluded.value').run(key, value); }
+  set(key: string, value: string) { if (this.statement('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value != excluded.value').run(key, value).changes && ADMISSION_KEYS.test(key)) this.revision++; }
   claim(): boolean {
     this.db.exec('BEGIN IMMEDIATE');
     try {

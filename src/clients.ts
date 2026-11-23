@@ -56,6 +56,7 @@ export class T3 {
   private readonly persistent: boolean;
   private readonly readLifetime = new ReadContext();
   private shellEpoch = 0;
+  private viewRevision = 0;
   private shellView?: { epoch: number; sequence: number; value: z.infer<typeof shellSchema> };
   private providerView?: { epoch: number; value: z.infer<typeof providerPayloadSchema>['providers'] };
   private streams?: Promise<void>;
@@ -79,7 +80,7 @@ export class T3 {
   }
   private authenticateRpc() {
     const stamp = this.readCredential().stamp;
-    if (this.connectionCredentialStamp && this.connectionCredentialStamp !== stamp) { this.credentialGeneration++; this.shellView = undefined; this.providerView = undefined; this.shellRead = undefined; this.shellEpoch++; this.providerSnapshots.clear(); this.orphanVerdicts.clear(); this.rpc.reset(); }
+    if (this.connectionCredentialStamp && this.connectionCredentialStamp !== stamp) { this.credentialGeneration++; this.viewRevision++; this.shellView = undefined; this.providerView = undefined; this.shellRead = undefined; this.shellEpoch++; this.providerSnapshots.clear(); this.orphanVerdicts.clear(); this.rpc.reset(); }
     this.connectionCredentialStamp = stamp;
   }
   private rpcCall(action: RpcAction) { if (this.persistent) this.authenticateRpc(); return this.persistent ? this.rpc.call(action) : this.socketUrl().then(url => callT3Rpc(url, action)); }
@@ -87,6 +88,8 @@ export class T3 {
   get liveProviders() { if (!this.persistent) return false; this.authenticateRpc(); return !!this.providerView && this.rpc.isLive(this.providerView.epoch); }
   peekProvider(instanceId: string) { return this.liveProviders ? structuredClone(this.providerView!.value.find(provider => provider.instanceId === instanceId)) : undefined; }
   invalidateShell() { this.shellEpoch++; }
+  /** Changes with every change to the live shell, its orphaned-run verdicts and the live provider view; undefined unless both views are live. */
+  liveRevision() { return this.peekShell() && this.liveProviders ? this.viewRevision : undefined; }
   async request(path: string, body?: unknown): Promise<unknown> {
     return readPhase(path === '/api/orchestration/shell' ? 't3.shell' : path === '/api/auth/websocket-ticket' ? 't3.socket-ticket' : 't3.thread', async signal => {
       const credential = this.readCredential();
@@ -145,10 +148,12 @@ export class T3 {
       void pending.then(() => { owned.settled = true; }, () => { if (this.shellRead === owned) this.shellRead = undefined; });
     }
     const pending = entry.pending;
-    const shell = structuredClone(await readPhase('t3.shell', signal => waitFor(pending, signal)));
+    // Every caller shares this frozen reading, like the live view; the archived merge builds its own list.
+    const shell = await readPhase('t3.shell', signal => waitFor(pending, signal));
     if (this.persistent) { this.authenticateRpc(); if (generation !== this.credentialGeneration) return this.shell(includeArchived, fresh); }
-    if (includeArchived) for (const thread of shell.archivedThreads) if (!shell.threads.some(active => active.id === thread.id)) shell.threads.push(thread);
-    return shell;
+    if (!includeArchived) return shell;
+    const active = new Set(shell.threads.map(thread => thread.id));
+    return { ...shell, threads: [...shell.threads, ...shell.archivedThreads.filter(thread => !active.has(thread.id))] };
   }
   peekShell() {
     if (!this.persistent) return;
@@ -170,13 +175,13 @@ export class T3 {
       candidates.add(key);
       if (!this.orphanVerdicts.has(key)) {
         const verdict = await this.orphaned(t);
-        if (verdict !== undefined) this.orphanVerdicts.set(key, verdict);
+        if (verdict !== undefined) { this.orphanVerdicts.set(key, verdict); this.viewRevision++; }
         else if (!this.persistent) this.shellRead = undefined;
       }
       if (this.orphanVerdicts.get(key)) t.orphanedRun = true;
     }));
-    for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) this.orphanVerdicts.delete(key);
-    return shell;
+    for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) { this.orphanVerdicts.delete(key); this.viewRevision++; }
+    return immutableProjection(shell);
   }
   private probeOrphans(threads: Thread[]) {
     if (this.orphanProbe) return;
@@ -189,7 +194,7 @@ export class T3 {
         await readAll(candidates.slice(at, at + 6).map(async thread => {
           const verdict = await this.orphaned(thread);
           if (verdict !== undefined && this.shellView?.value.threads.some(current => current.id === thread.id && current.updatedAt === thread.updatedAt)) {
-            this.orphanVerdicts.set(`${thread.id}:${thread.updatedAt}`, verdict); changed ||= verdict;
+            this.orphanVerdicts.set(`${thread.id}:${thread.updatedAt}`, verdict); this.viewRevision++; changed ||= verdict;
           }
         }));
       }
@@ -200,6 +205,7 @@ export class T3 {
     if (!this.rpc.isLive(epoch)) return;
     const event = z.object({ kind: z.string() }).passthrough().parse(item);
     if (event.kind === 'synchronized') return;
+    this.viewRevision++;
     if (event.kind === 'snapshot') {
       const value = shellSchema.extend({ snapshotSequence: z.number().int().nonnegative() }).parse(event.snapshot);
       if (event.resolvedRepositoryIdentityRoots !== undefined) {
@@ -394,6 +400,7 @@ export class T3 {
           this.observeProviders(providers);
           const changed = JSON.stringify(this.providerView?.value) !== JSON.stringify(providers);
           this.providerView = { epoch, value: providers };
+          if (changed) this.viewRevision++;
           if (changed) onItem({ kind: 'providers.updated' });
         }
       }, epoch => { if (this.providerView?.epoch === epoch) this.providerView = undefined; }, signal, onError),
@@ -406,7 +413,7 @@ export class T3 {
     const invalidate = !!refreshInstance && this.drivers.get(refreshInstance) === 'claudeAgent';
     const data = providerPayloadSchema.parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance, invalidate } : {}) }));
     this.observeProviders(data.providers);
-    if (refreshInstance && view && this.providerView === view && this.rpc.isLive(view.epoch)) this.providerView = { epoch: view.epoch, value: data.providers };
+    if (refreshInstance && view && this.providerView === view && this.rpc.isLive(view.epoch)) { this.providerView = { epoch: view.epoch, value: data.providers }; this.viewRevision++; }
     return data.providers;
   }
   private observeProviders(providers: Provider[]) {
@@ -495,6 +502,8 @@ export class Kanvil {
   private watching = false;
   revision = 0;
   get realtime() { return this.watching; }
+  /** True while the durable feed is connected, so every ticket change bumps revision. */
+  get synchronized() { return this.watching && this.connected; }
   private connected = false;
   private subscription?: Promise<void>;
   private streamSignal?: AbortSignal;

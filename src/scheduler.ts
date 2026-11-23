@@ -41,8 +41,21 @@ function projectFor(c: Config, job: Job): Project {
   if (!p) throw new Error(`Keep project ${job.projectId} configured while its jobs are unfinished; disable it instead of removing it`);
   return p;
 }
+/** `T3_FACTORY_LOG_VERBOSE=1` also logs every operation, every pass and decisions that changed nothing. */
+export const verboseLog = () => process.env.T3_FACTORY_LOG_VERBOSE === '1';
+// Outcomes that start, change and fail nothing; known holds and reasons a quiet pass reports per stream, model and dispatch.
+const QUIET = new Set(['disabled', 'plans-checked', 'watching-streams', 'autonomous-job-running', 'no-eligible-ticket', 'no-eligible-model', 'label-limit', 'difficulty-limit', 'needs-classification',
+  'waiting-for-idle', 'provider-running', 'provider-disabled', 'quota-exhausted', 'quota-budget', 'quota-reserve', 'personal-provider-running', 'personal-provider-recently-active']);
+type Outcome = { reason?: unknown; streams?: unknown; dispatches?: unknown };
+/** A pass that ends here decides the same again until its inputs change or a time policy's deadline passes. Any error or unknown reason is not quiet. */
+export function quietDecision(d: Outcome): boolean {
+  const streams = (d.streams ?? []) as { reason: string; models?: { reason: string }[] }[];
+  const held = (reason: string) => reason === 'ready' || QUIET.has(reason); // a ready model or stream that had nothing to start
+  return QUIET.has(String(d.reason)) && streams.every(s => held(s.reason) && (s.models ?? []).every(m => held(m.reason))) && ((d.dispatches ?? []) as Outcome[]).every(quietDecision);
+}
 export function log(event: string, fields: Record<string, unknown> = {}) {
   if (event === 'decision') {
+    if (!verboseLog() && quietDecision(fields)) return;
     const streams = fields.streams as { driver: string; reason: string }[] | undefined, skipped = fields.skipped as { key: string; reason: string }[] | undefined;
     fields = { reason: fields.reason, at: fields.at, ticket: fields.ticket, jobId: fields.jobId, threadId: fields.threadId, message: fields.message,
       eligible: fields.eligible, streams: streams?.map(({ driver, reason }) => ({ driver, reason })), skippedCount: skipped?.length,
@@ -656,10 +669,19 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
 
 // The owner used this provider too recently for ticket and discovery work; reviews ignore it.
 const idleBlocked = (c: Config, activity: { active: boolean; idleMinutes: number }) => activity.active || activity.idleMinutes < c.idleMinutes;
+const activityClock = (driver: string) => driver === 'claudeAgent' ? 'lastPersonalActivity.v3' : `lastPersonalActivity.${driver}.v3`;
+/** The earliest future moment the clock alone can change a quiet decision: a reported quota window resets, a provider's idle window ends or a discovery cooldown ends. */
+export function nextDeadline(c: Config, store: Store, decision: Outcome & { quota?: { windows?: { resetsAt?: string }[] } }, now = Date.now()): number {
+  const resets = (d: typeof decision): (string | undefined)[] => [d.quota, ...((d.streams ?? []) as typeof decision[]).map(s => s.quota)].flatMap(q => q?.windows?.map(w => w.resetsAt) ?? [])
+    .concat(((d.dispatches ?? []) as typeof decision[]).flatMap(resets));
+  const idle = ['claudeAgent', 'codex'].map(driver => Date.parse(store.get(activityClock(driver)) ?? '') + c.idleMinutes * 60_000);
+  const cooldowns = c.projects.map(project => Number(store.get(`discoveryAfter:${project.kanvilId}`) ?? 0));
+  return Math.min(...[...resets(decision).map(at => Date.parse(at ?? '')), ...idle, ...cooldowns].filter(at => at > now));
+}
 export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], store: Store, monitoringTimeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES, driver = 'claudeAgent', instances = new Map<string, string>()) {
   // Old polling-based timestamps can be inflated by passive commands and stale child markers. Rebuild once
   // from T3's actual events, then retain this corrected clock across archiving/restarts.
-  const clockKey = driver === 'claudeAgent' ? 'lastPersonalActivity.v3' : `lastPersonalActivity.${driver}.v3`;
+  const clockKey = activityClock(driver);
   const autonomousRoots = t3.config?.autonomousThreadIds ?? [];
   const scopeKey = `personalActivityScope.${driver}`, scope = JSON.stringify([...new Set(autonomousRoots)].sort());
   const rebuild = store.get(scopeKey) !== scope;

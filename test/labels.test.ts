@@ -306,20 +306,25 @@ test('event checkpoints wake the consumer and cache inventory until a real chang
   const stream = f.client.subscribe(event => { if (!event?.type.startsWith('stream.')) notifications++; }, abort.signal);
   await until(() => !!controller);
   send('checkpoint', '5', { cursor: '5' }); await until(() => notifications === 1);
+  assert.equal(f.client.synchronized, true, 'a connected feed vouches for unchanged tickets');
   for (let n = 0; n < 4; n++) await f.client.tasks('project');
   assert.equal(snapshots, 1, 'scheduler timers reuse a live inventory');
+  const revision = f.client.revision;
   send('change', '6', { id: '6', projectId: 'project', ticketId: 'ticket', type: 'ticket.updated' });
   await until(() => notifications === 2);
   assert.equal((await f.client.tasks('project'))[0].title, 'Update 1');
+  assert.ok(f.client.revision > revision, 'a ticket change moves the revision admission compares');
   send('change', '6', { id: '6', projectId: 'project', ticketId: 'ticket', type: 'ticket.updated' });
   await turn(); await f.client.tasks('project');
   assert.equal(snapshots, 1, 'a changed ticket does not rescan its project'); assert.equal(updates, 1); assert.equal(notifications, 2);
   send('change', '7', { id: '7', projectId: 'project', ticketId: 'ticket', type: 'ticket.deleted' });
   await until(() => notifications === 3);
   assert.deepEqual(await f.client.tasks('project'), [], 'a native deletion removes the ticket without another inventory read');
+  const beforeComment = f.client.revision;
   send('change', '8', { id: '8', projectId: 'project', ticketId: 'ticket', type: 'comment.created' });
-  await turn(); assert.equal(notifications, 3); assert.equal(snapshots, 1); assert.equal(updates, 1);
+  await turn(); assert.equal(notifications, 3); assert.equal(snapshots, 1); assert.equal(updates, 1); assert.equal(f.client.revision, beforeComment);
   abort.abort(); await stream;
+  assert.equal(f.client.synchronized, false);
 });
 
 test('disconnect replay uses the last processed cursor; an expired cursor clears the projection and snapshots again', async t => {

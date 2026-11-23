@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, verboseLog, quietDecision, nextDeadline, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients, type Decision } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { refuseRunCaller, serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -22,6 +22,10 @@ const EVENT_SETTLE_MS = 25;
 /** Quota recovery retries after these delays, then every 30 seconds until a fresh reading arrives. */
 const QUOTA_RETRY_SECONDS = [1, 2, 5, 10, 30];
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
+/** A quiet lane with unchanged inputs still runs a full pass this often, so time policies such as quota reserves and run timeouts are rechecked. */
+const QUIET_RECHECK_SECONDS = 300;
+/** Without verbose logging, a pass is logged when its wake reason or outcome changes, or when it takes longer than this. */
+const SLOW_PASS_MS = 5_000;
 
 export class FactoryService {
   private store!: Store;
@@ -49,6 +53,9 @@ export class FactoryService {
   private readonly cleanupVisited = new Set<string>();
   private readonly operations = new Map<symbol, { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string; done: Promise<unknown> }>();
   private readonly lanes = new Map<string, { again: boolean; done: Promise<void> }>();
+  // Per admission lane: its last quiet decision with the inputs and deadline it holds for, and its last logged wake reason and outcome.
+  private readonly quiet = new Map<string, { inputs: string; decision: Decision; dueAt: number }>();
+  private readonly passLog = new Map<string, string>();
   private forceTriage = false;
   private statusTimer?: NodeJS.Timeout;
   private readonly eventLoop = monitorEventLoopDelay({ resolution: 20 });
@@ -259,7 +266,7 @@ export class FactoryService {
     return result.finally(() => {
       this.operations.delete(key);
       this.publishWork();
-      log('work', { lane: metadata.reason ?? 'command', requestId: metadata.id, ms: Math.round(performance.now() - started), waitMs: 0 });
+      if (verboseLog()) log('work', { lane: metadata.reason ?? 'command', requestId: metadata.id, ms: Math.round(performance.now() - started), waitMs: 0 });
     });
   }
 
@@ -534,13 +541,32 @@ export class FactoryService {
     return c;
   }
 
+  // What admission decides from, apart from the clock. Undefined while T3 or Kanvil cannot report every change.
+  private admissionInputs(c: Config, kanvil: Kanvil) {
+    const views = this.t3.liveRevision();
+    return views === undefined || !kanvil.synchronized ? undefined : JSON.stringify([views, kanvil.revision, this.store.revision, c]);
+  }
+  private logPass(lane: string | undefined, fields: { reason: string; outcome: string; ms: number; queueWaitMs: number; skipped?: true }) {
+    const key = JSON.stringify([fields.reason, fields.outcome]), previous = lane && this.passLog.get(lane);
+    if (lane) this.passLog.set(lane, key);
+    if (verboseLog() || !lane || previous !== key || fields.ms > SLOW_PASS_MS) log('pass', fields);
+  }
+
   private async pass(options: CycleOptions, reason: string, queueWaitMs: number, workKind?: Clients['workKind'], providerDriver?: string) {
-    const started = performance.now();
+    const started = performance.now(), lane = workKind && `${workKind}:${providerDriver}`;
     const decide = this.store.decisionRecorder({ workKind: workKind ?? 'tickets', providerDriver, manual: options.manual });
     let c: Config | undefined;
     try {
       c = this.configure();
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
+      // A quiet lane whose inputs have not changed would decide the same: return that decision until a deadline.
+      const inputs = lane ? this.admissionInputs(c, kanvil) : undefined, held = lane ? this.quiet.get(lane) : undefined;
+      if (lane) this.quiet.delete(lane);
+      if (inputs !== undefined && held?.inputs === inputs && Date.now() < held.dueAt) {
+        this.quiet.set(lane!, held);
+        this.logPass(lane, { reason, outcome: held.decision.reason, ms: performance.now() - started, queueWaitMs, skipped: true });
+        return held.decision;
+      }
       const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide, currentConfig: () => this.settings() });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
@@ -548,7 +574,8 @@ export class FactoryService {
         if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
       }
       this.publishWork();
-      log('pass', { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
+      if (lane && inputs !== undefined && quietDecision(result)) this.quiet.set(lane, { inputs, decision: result, dueAt: Math.min(Date.now() + Math.max(this.pollSeconds, QUIET_RECHECK_SECONDS) * 1000, nextDeadline(c, this.store, result)) });
+      this.logPass(lane, { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
       return result;
     } catch (error) {
       if (this.stopped && !options.manual) return { reason: 'stopped' };

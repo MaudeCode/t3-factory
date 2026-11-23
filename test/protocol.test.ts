@@ -280,6 +280,42 @@ test('overlapping warm readers do not copy the whole shell or mutate another rea
   } finally { controller.abort(); await stream; }
 });
 
+test('the live revision changes with each shell or provider change and is unknown without both live views', async t => {
+  const ready = Promise.withResolvers<void>(); let shellRequest = '', configRequest = '';
+  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') { shellRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'live' })]) }] }]; }
+    if (request.tag === 'subscribeServerConfig') { configRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider] } }] }]; }
+    return [success(request)];
+  }, true);
+  assert.equal(f.t3.liveRevision(), undefined, 'no live view reports no changes');
+  const controller = new AbortController(), stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') ready.resolve(); }, controller.signal);
+  const settled = async (send: () => void) => { const before = f.t3.liveRevision(); send(); await new Promise(resolve => setImmediate(resolve)); return [before, f.t3.liveRevision()]; };
+  try {
+    await ready.promise;
+    assert.notEqual(f.t3.liveRevision(), undefined);
+    const [beforeThread, afterThread] = await settled(() => f.respond(shellRequest, { kind: 'thread.updated', sequence: 43, location: 'active', thread: v2Thread({ id: 'live', updatedAt: '2026-01-02T00:00:00.000Z' }) }, true));
+    assert.notEqual(afterThread, beforeThread, "a thread's updatedAt changes the revision");
+    const [beforeSame, afterSame] = await settled(() => f.respond(configRequest, { type: 'providerStatuses', payload: { providers: [provider] } }, true));
+    assert.equal(afterSame, beforeSame, 'an unchanged provider status leaves it');
+    const [beforeProvider, afterProvider] = await settled(() => f.respond(configRequest, { type: 'providerStatuses', payload: { providers: [{ ...provider, status: 'error' }] } }, true));
+    assert.notEqual(afterProvider, beforeProvider, 'a provider snapshot change changes it');
+    f.disconnect(false);
+    assert.equal(f.t3.liveRevision(), undefined, 'a disconnected view cannot vouch for unchanged inputs');
+  } finally { controller.abort(); await stream; }
+});
+
+test('the HTTP shell is shared frozen without a copy and the archived merge leaves it unchanged', async t => {
+  const { t3, requests } = fixtureT3(t, { '/api/orchestration/shell': () => json({ ...v2Shell([v2Thread({ id: 'active' })]), archivedThreads: [v2Thread({ id: 'archived' })] }) });
+  const clone = t.mock.method(globalThis, 'structuredClone');
+  const [merged, active] = await Promise.all([t3.shell(true), t3.shell()]);
+  assert.deepEqual(merged.threads.map(thread => thread.id), ['active', 'archived']);
+  assert.deepEqual(active.threads.map(thread => thread.id), ['active'], 'the merge builds its own list instead of extending the shared reading');
+  assert.equal(requests.length, 1);
+  assert.equal(clone.mock.callCount(), 0);
+  assert.throws(() => { active.threads[0].title = 'changed'; }, TypeError);
+});
+
 for (const failure of ['disconnect', 'malformed', 'credential'] as const) test(`live projections lose trust after ${failure}`, async t => {
   const ready = Promise.withResolvers<void>(), invalid = Promise.withResolvers<void>(); let shellRequest = '';
   let errorSnapshot: ReturnType<T3['shell']> | undefined;
