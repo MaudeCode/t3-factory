@@ -41,6 +41,25 @@ Use your own ticket key and configured model ID. With `--model auto`, `--provide
 
 Manual jobs can overlap other runs and can start while automatic dispatch is paused. `--override-limits` skips the scheduler's idle-time, quota-reserve, label-limit and provider-limit thresholds for that run. `--override` skips only the ones you list, comma-separated from `idle`, `reserve`, `labels` and `providers`; for example, `--override idle,reserve` starts now but still waits for a free label slot. The web and native start bars offer the same four choices, all on by default. Without the provider override, manual starts respect provider run limits, including zero. Auto selects from providers with capacity; an explicitly chosen model is refused when its provider has no capacity. The override cannot select a model whose applicable allowance is exhausted, even when the override is enabled. Automatic model selection skips exhausted presets and tries the next eligible model. It does not bypass provider-enforced limits, difficulty ceilings, readiness, dependencies, duplicate ownership, or merge gates. Manual Codex runs already omit the scheduler's idle and reserve checks; they still require valid provider quota information.
 
+### Tickets held back by earlier work
+
+The scheduler holds a ready ticket back when earlier work still references it: a T3 thread or branch, a Git branch, an open pull request, or a finished run whose work it cannot verify. In the Queue's Held back list and on the ticket panel's held line, such a ticket has an icon-only **Investigate in T3** button (a magnifier). Other held reasons have none. After a confirmation it starts a reconcile run, the same request as:
+
+```sh
+t3-factory dispatch --reconcile APP-123 --model auto
+```
+
+The web app sends it to `POST /api/tickets/<key>/reconcile`, and its progress shows in Operations like any start. A reconcile run is refused when the ticket is not held back by earlier work, or when any run for it is still open. It goes through the same model selection, quota, provider-limit and override choices as a manual start. Like upstream reviews and CI repairs, it does not wait for provider idle time.
+
+The run starts in a new thread titled `Factory reconcile: <TICKET>`, on a `chore/factory-reconcile-<id>` branch. Its prompt, [`prompts/reconcile.md`](../prompts/reconcile.md), carries the threads, refs and open pull request the scheduler found, and the configured delivery workflow. The run takes one of four outcomes:
+
+- Work already merged on the release branch: it records the evidence, closes the ticket in a done status, deletes merged clean branches and worktrees and settles stale threads, then reports `no-work`.
+- An unmerged branch or open pull request with real work: it delivers it through the delivery workflow with every gate unchanged and reports `complete` with the merged pull request, verified like a ticket run.
+- Abandoned or superseded leftovers: it records why on the ticket, removes clean local branches and worktrees and settles the threads, and reports `no-work`. The ticket stays open and becomes eligible again.
+- A session still active on the ticket: it touches nothing and reports `awaiting-human`.
+
+It deletes a local branch or worktree only when it is clean and its head is merged or its work is recorded on the ticket, and never force-deletes a remote branch or closes a pull request without recording why on the ticket. A `no-work` report needs the run's own worktree clean at its creation commit, like a ticket closed without delivery, but may leave the ticket open.
+
 ### Epics
 
 ```sh
@@ -109,7 +128,7 @@ For verified finished jobs, including dismissed jobs with a valid completion rep
 
 The durable job field `commandStop` records `requested`, `uncertain`, or `confirmed`, with request and confirmation timestamps and any transport error. Stop acceptance does not confirm process exit. Maintenance rechecks T3 after the request and across restarts, and never resends an unconfirmed request automatically. If commands remain after a rejected or uncertain Stop, inspect the thread before using the existing manual Stop operation. Once T3 reports no pending commands, the normal terminal, process-CWD and Git checks resume. A live process still prevents removal.
 
-Each ticket run works on a branch named `<kind>/<TICKET>-factory-<id>`, where the kind comes from the ticket's kind label in conventional-commit terms: `bug` and `sec` give `fix`, `feat` and `ux` give `feat`, and `perf`, `test`, `ci`, `docs`, and `chore` keep their names; a ticket without a kind label gets `chore`. Discovery and upstream review branches stay under `chore/`; repair branches are `fix/factory-repair-<id>`.
+Each ticket run works on a branch named `<kind>/<TICKET>-factory-<id>`, where the kind comes from the ticket's kind label in conventional-commit terms: `bug` and `sec` give `fix`, `feat` and `ux` give `feat`, and `perf`, `test`, `ci`, `docs`, and `chore` keep their names; a ticket without a kind label gets `chore`. Discovery, upstream review and reconcile branches stay under `chore/`; repair branches are `fix/factory-repair-<id>`.
 
 Completed jobs retain history but release their live ticket claim. Reopened tickets can run again when historical tasks are inactive and unchanged, and historical branch tips still match verified merged PRs or, for tickets closed without delivery, are still untouched at a commit that is part of the release branch. New work and open PRs continue to block duplicates.
 

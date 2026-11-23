@@ -93,6 +93,8 @@ export const configSchema = z.preprocess(input => {
   // `checkMinutes` is the slow read for runs the scheduler has no reason to expect; an unfinished run is read on every pass.
   // The section needs nothing in the file: its prompt defaults to the one beside this code, so the settings page alone sets repairs up.
   repair: z.object({ enabled: z.boolean().default(false), promptFile: absolute.default(fileURLToPath(new URL('../prompts/repair.md', import.meta.url))), cooldownMinutes: positive.default(60), checkMinutes: positive.default(30) }).strict().prefault({}),
+  // Runs the owner starts from a ticket held back by earlier work; like repairs, the prompt defaults to the one beside this code.
+  reconcile: z.object({ promptFile: absolute.default(fileURLToPath(new URL('../prompts/reconcile.md', import.meta.url))) }).strict().prefault({}),
   triage: z.object({ enabled: z.boolean().default(false), concurrency: z.number().int().positive().default(3), quotaReservePercent: z.number().positive().max(100).default(5), promptFile: absolute }).strict().optional(),
   factorySkill: absolute,
   projects: z.array(z.object({

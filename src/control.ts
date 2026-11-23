@@ -95,11 +95,12 @@ export function commandFor(args: string[]): ControlCommand | undefined {
   return { type: 'dispatch', options: dispatchOptions(args.slice(1)) };
 }
 // The one parser for dispatch arguments, shared by the CLI and the socket.
-export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all'; agent?: true } {
+export function dispatchOptions(args: string[]): { manual: true; requestId?: string; ticket?: string; reconcile?: string; upstream?: string; epic?: string; model?: string; provider?: DispatchProvider; overrideLimits?: OverrideLimits; dryRun?: boolean; chain?: 'first' | 'all'; agent?: true } {
   const options: ReturnType<typeof dispatchOptions> = { manual: true };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--ticket') { options.ticket = args[++i]; if (!options.ticket) throw new Error('--ticket requires a ticket key'); }
     else if (args[i] === '--request-id') options.requestId = z.uuid().parse(args[++i]);
+    else if (args[i] === '--reconcile') { options.reconcile = args[++i]?.toUpperCase(); if (!/^[A-Z0-9]+-\d+$/.test(options.reconcile ?? '')) throw new Error('--reconcile requires a ticket key'); }
     else if (args[i] === '--upstream') {
       const value = args[++i];
       if (!/^[\w.-]+\/[\w.-]+$/.test(value ?? '')) throw new Error('--upstream requires owner/repo');
@@ -130,6 +131,7 @@ export function dispatchOptions(args: string[]): { manual: true; requestId?: str
   }
   if (options.upstream && (options.ticket || options.chain)) throw new Error('--upstream cannot be combined with ticket options');
   if (options.epic && (options.ticket || options.chain || options.upstream)) throw new Error('--epic cannot be combined with ticket, chain or upstream options');
+  if (options.reconcile && (options.ticket || options.chain || options.upstream || options.epic)) throw new Error('--reconcile names its own ticket and cannot be combined with ticket, chain, upstream or Epic options');
   if (options.provider && options.model && options.model !== 'auto') throw new Error('--provider requires automatic model selection');
   return options;
 }

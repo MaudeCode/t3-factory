@@ -62,6 +62,10 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
     for (const width of [360, 382, 385, 594, 669, 951]) cases.push(["Epics tab", "queue", "queueTests", width, async page => {
       assert((await page.evaluate(() => queueTests.epics())).coarse, "Epics check ran with touch input");
     }]);
+    // Held rows and the ticket panel keep their icon-only Investigate in T3 button usable at every pose.
+    for (const width of [360, 382, 385, 594, 669, 951]) cases.push(["Investigate in T3", "queue", "queueTests", width, async page => {
+      assert((await page.evaluate(() => queueTests.investigate())).coarse, "Investigate check ran with touch input");
+    }]);
     for (const [width, height] of [[382, 580], [594, 368], [385, 571], [669, 867], [951, 585]]) cases.push([
       "workspace project selection", "projects", "projectsTests", width, page => page.evaluate(() => projectsTests.workspaces()), height,
     ]);

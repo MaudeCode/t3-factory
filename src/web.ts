@@ -71,8 +71,11 @@ const dispatchSchema = z
     ticketKeyRevision: z.string().min(1).optional(),
     upstream: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/).transform(repo => repo.toLowerCase()).optional(),
     epic: z.string().regex(/^\w[\w-]{0,63}$/).optional(),
+    // Set by POST /api/tickets/:key/reconcile, which names the ticket in its address.
+    reconcile: z.literal(true).optional(),
   })
   .strict()
+  .refine(input => !input.reconcile || (!!input.ticket && !input.chain && !input.upstream && !input.epic), "A reconcile run names one ticket and nothing else")
   .refine(input => !input.upstream || (!input.ticket && !input.chain), "An upstream review cannot include ticket options")
   .refine(input => !input.epic || (!input.ticket && !input.chain && !input.upstream), "An Epic start cannot include ticket, chain or upstream options")
   .refine(input => !input.provider || input.model === "auto", "A provider choice requires automatic model selection");
@@ -486,10 +489,12 @@ export function createFactoryWeb(options: {
           const result = await run(["cleanup"], input);
           return json(res, result.code ? 409 : 200, result.data);
         }
-        if ((path === "/api/dispatch" || path === "/api/cleanup/actions") && req.method === "POST") {
-          const id = requestId.parse(req.headers["idempotency-key"]),
-            input = path === "/api/dispatch" ? dispatchSchema.parse(await body(req)) : cleanupRequestSchema.parse({ ...z.record(z.string(), z.unknown()).parse(await body(req)), id });
-          if (path === "/api/cleanup/actions" && !["retry", "remove", "force"].includes((input as any).type)) return json(res, 400, { message: "Expected a cleanup action" });
+        const reconcileKey = path.match(/^\/api\/tickets\/([A-Za-z0-9]{1,32}-\d{1,9})\/reconcile$/)?.[1];
+        if ((path === "/api/dispatch" || reconcileKey || path === "/api/cleanup/actions") && req.method === "POST") {
+          const cleanup = path === "/api/cleanup/actions", id = requestId.parse(req.headers["idempotency-key"]),
+            input = cleanup ? cleanupRequestSchema.parse({ ...z.record(z.string(), z.unknown()).parse(await body(req)), id })
+              : dispatchSchema.parse(reconcileKey ? { ...z.record(z.string(), z.unknown()).parse(await body(req)), ticket: reconcileKey, reconcile: true } : await body(req));
+          if (cleanup && !["retry", "remove", "force"].includes((input as any).type)) return json(res, 400, { message: "Expected a cleanup action" });
           const file = join(operations, `${id}.json`);
           if (existsSync(file)) {
             const previous = JSON.parse(
@@ -509,7 +514,7 @@ export function createFactoryWeb(options: {
           };
           const dispatch = input as z.infer<typeof dispatchSchema>;
           const revision = (options.readState() as { status?: { ticketKeyRevision?: string } }).status?.ticketKeyRevision;
-          if (path === "/api/dispatch" && dispatch.ticket && revision && dispatch.ticketKeyRevision !== revision) {
+          if (!cleanup && dispatch.ticket && revision && dispatch.ticketKeyRevision !== revision) {
             operation.state = "done";
             operation.result = { code: 1, data: { reason: "ticket-keys-changed", notLaunched: true, message: "Ticket numbers changed. Reload Factory and select the ticket again." } };
             saveOperation(dataDir, operation);
@@ -519,13 +524,13 @@ export function createFactoryWeb(options: {
             flag: "wx",
             mode: 0o600,
           });
-          const args = path === "/api/cleanup/actions" ? ["cleanup", `web-session:${sign(req.headers.cookie ?? "").slice(0, 16)}`] : [
+          const args = cleanup ? ["cleanup", `web-session:${sign(req.headers.cookie ?? "").slice(0, 16)}`] : [
             "dispatch",
             "--request-id", id,
             "--model",
             dispatch.model,
             ...(dispatch.provider ? ["--provider", dispatch.provider] : []),
-            ...(dispatch.ticket ? ["--ticket", dispatch.ticket.toUpperCase()] : []),
+            ...(dispatch.ticket ? [dispatch.reconcile ? "--reconcile" : "--ticket", dispatch.ticket.toUpperCase()] : []),
             ...(dispatch.upstream ? ["--upstream", dispatch.upstream] : []),
             ...(dispatch.epic ? ["--epic", dispatch.epic] : []),
             ...overrideFlags(dispatch.overrideLimits),
@@ -538,9 +543,9 @@ export function createFactoryWeb(options: {
               if (current.state === "running" && result.data?.uncertain) saveOperation(dataDir, { ...current, state: "uncertain", result });
               return;
             }
-            saveOperation(dataDir, { ...current, state: path === "/api/cleanup/actions" ? cleanupOperationState(result) : result.data?.uncertain ? "uncertain" : "done", result });
+            saveOperation(dataDir, { ...current, state: cleanup ? cleanupOperationState(result) : result.data?.uncertain ? "uncertain" : "done", result });
           };
-          void run(args, path === "/api/cleanup/actions" ? input : undefined).then(finish).catch(() => finish({ code: 1, data: {
+          void run(args, cleanup ? input : undefined).then(finish).catch(() => finish({ code: 1, data: {
             uncertain: true, message: "Operation response was lost. Inspect its result before submitting another request.",
           } }));
           return json(res, 202, operation);

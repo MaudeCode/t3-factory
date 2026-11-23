@@ -1820,6 +1820,9 @@ dialog .chain {
   color: var(--ink);
   white-space: nowrap;
 }
+.held .next-run {
+  margin-left: auto;
+}
 .help-attention {
   color: var(--attention);
   border-color: var(--attention);

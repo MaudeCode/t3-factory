@@ -10,7 +10,8 @@ import type { Config } from '../src/config.ts';
 import type { T3, Kanvil } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
 
-const accepted = { 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done', 'discarded-commit': 'done' } as const;
+// A reconcile run may also clear abandoned leftovers and leave its ticket open for a new start.
+const accepted = { 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done', 'discarded-commit': 'done', 'reconcile-cleared': 'todo' } as const;
 const unfinished = 'Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved';
 const rejected = {
   'unlabeled': unfinished,
@@ -28,6 +29,7 @@ const rejected = {
   'missing-worktree-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'switched-branch-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'no-work-with-pr': 'Ticket cannot finish as no-work',
+  'reconcile-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'switched-branch': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'pushed-to-release': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'pushed-to-release-then-reset': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
@@ -44,7 +46,7 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
     const store = new Store(join(dir, 'state'));
     const project = { kanvilId: 'project', t3Id: 't3-project', repoPath: repo, githubRepo: 'fixture/repo', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'] };
     const c = { monitoringTimeoutMinutes: 30, kanvil: { workspaceId: 'workspace' }, projects: [project] } as unknown as Config;
-    const job: Job = { id: 'job', kind: 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: null, state: 'waiting', reason: 'Ticket cannot finish as no-work', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', branch } } };
+    const job: Job = { id: 'job', kind: scenario.startsWith('reconcile') ? 'reconcile' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: null, state: 'waiting', reason: 'Ticket cannot finish as no-work', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, status: 'completed' });
     if (scenario.includes('settled')) thread.settledOverride = 'settled';
     const report = { jobId: job.id, status: ['complete-empty', 'held-complete'].includes(scenario) ? 'complete' : 'no-work', reason: 'Already delivered on main; evidence recorded on the ticket', prUrls: scenario === 'no-work-with-pr' ? ['https://github.com/fixture/repo/pull/1'] : [], createdTaskIds: [] };

@@ -71,7 +71,8 @@ export function Machine({ provider }) {
 }
 
 // What a request starts. An Epic request carries only its ID, so its name comes from the current status.
-export const requestName = ({ upstream, ticket, epic }) => {
+export const requestName = ({ upstream, ticket, epic, reconcile }) => {
+  if (reconcile) return `Investigate ${ticket}`;
   if (!epic) return upstream || ticket;
   const known = [...(status.value.epics ?? []), ...(status.value.plans ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
   return `Epic ${known?.title ?? epic}`;
@@ -237,6 +238,11 @@ export const RunNow = ({ ticket: t, hold, origin, overrideLimits = true, provide
   title=${hold ?? `${overrideText(overrideLimits)} and start this ticket now.`}
   onClick=${() => runNow(t, hold, origin, { overrideLimits, provider })}><${Icon} name="play" /><//>`;
 
+// A held row whose ticket waits on earlier threads, branches or PRs: after a confirmation, a run settles that work.
+export const Investigate = ({ held: h }) => h.conflict === "artifacts" && html`<${Button} size="sm" icon="search" class="next-run" label="Investigate in T3" disabled=${!!startHold(h)}
+  onClick=${() => confirmAction({ title: `Investigate ${h.key} in T3?`, message: "A Factory run in a new T3 thread closes the ticket if its work already merged, delivers unmerged work, or removes clean abandoned branches, worktrees and threads so the ticket can start again. Active sessions are left alone.", label: "Start run" },
+    () => startRun({ ticket: h.key, reconcile: true, model: "auto", ...startOptions() }))} />`;
+
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "", start }) {
   clock.value;
@@ -255,7 +261,7 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
             ${t.after?.length > 0 && html`<b class="tone-attention">after ${t.after.join(", ")}</b>`}
           <//>`)
         : html`<${Empty}>${query.trim() || hasRunFilters(filters) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
-    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /></div>`)}`}
+    ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /><${Investigate} held=${h} /></div>`)}`}
     ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
   <//>`;
 }

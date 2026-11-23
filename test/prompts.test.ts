@@ -79,3 +79,26 @@ test('a ticket promoted from a user report carries the delivery guard; other tic
     for (const labels of [undefined, ['bug', 'sf']]) assert.ok(!promptFor({ ...job, labels }, project, c).includes('Promoted user report'));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a reconcile run names its ticket and the earlier work, and holds the four outcomes and the delivery workflow', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-prompt-'));
+  const c = loadConfig(fileURLToPath(new URL('../config.example.jsonc', import.meta.url)));
+  c.factorySkill = join(dir, 'SKILL.md');
+  const project = c.projects[0];
+  const job: Job = { id: 'job', kind: 'reconcile', projectId: project.kanvilId, taskId: 'task-7', ticketKey: 'APP-7', threadId: 'thread', messageId: 'message', createdAt: '2026-01-01T00:00:00Z', state: 'dispatching', reason: '', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), command: null, prUrls: [], completedAt: null,
+    reconcile: { title: 'Export the ledger', reason: 'Existing Git branch references this ticket', threads: ['thread-old'], refs: ['refs/heads/feat/APP-7-factory-1a2b3c4d'], openPR: true } };
+  try {
+    writeFileSync(c.factorySkill, '# Software factory\n');
+    const prompt = promptFor(job, project, c, true);
+    assert.ok(prompt.includes(`Reconcile APP-7 (Export the ledger): ${c.kanvil.url}/projects/${project.kanvilId}/tickets/task-7`));
+    for (const evidence of ['Existing Git branch references this ticket', 'thread-old', 'refs/heads/feat/APP-7-factory-1a2b3c4d', 'An open pull request mentions APP-7']) assert.ok(prompt.includes(evidence), evidence);
+    assert.match(prompt, /already merged on the release branch.*close it in a configured done status/s);
+    assert.match(prompt, /unmerged branch or open pull request.*deliver it/is);
+    assert.match(prompt, /abandoned or superseded.*so the ticket becomes eligible again/is);
+    assert.match(prompt, /still active.*touch nothing/is);
+    assert.match(prompt, /only when it is clean and its head is merged or its work is recorded on the ticket/);
+    assert.match(prompt, /Never force-delete a remote branch or close a pull request without recording why on the ticket/);
+    assert.match(prompt, /<software-factory-skill>/);
+    assert.match(prompt, /"no-work"/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
