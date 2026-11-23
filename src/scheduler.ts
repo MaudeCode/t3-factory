@@ -1140,7 +1140,9 @@ export async function cycle(c: Config, store: Store, options: CycleOptions = {},
   if (options.upstream && (!options.manual || !/^[\w.-]+\/[\w.-]+$/.test(options.upstream) || options.ticket || options.chain)) throw new Error('An upstream review requires a specific manual repository and no ticket options');
   if (options.epic && (!options.manual || options.ticket || options.chain || options.upstream)) throw new Error('An Epic start requires a manual request and no ticket, chain or upstream options');
   clients = { ...clients, decide: clients.decide ?? store.decisionRecorder({ workKind: clients.workKind ?? 'tickets', providerDriver: clients.providerDriver, manual: options.manual }) };
-  if (!options.manual || options.upstream || options.epic || options.chain || options.dryRun || options.doctor) return cycleNow(c, store, options, clients);
+  if (options.reconcile && (!options.manual || options.ticket || options.chain || options.upstream || options.epic)) throw new Error('A reconcile run requires a manual request for one ticket and no other target');
+  // A held reconcile is refused, never queued: the queue would start whichever other ticket is ready.
+  if (!options.manual || options.upstream || options.epic || options.reconcile || options.chain || options.dryRun || options.doctor) return cycleNow(c, store, options, clients);
   const run = () => queueManual(c, store, options, clients);
   return options.ticket ? store.exclusive([`manual-ticket:${options.ticket.trim().toUpperCase()}`], run) : run();
 }

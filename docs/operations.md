@@ -49,7 +49,7 @@ The scheduler holds a ready ticket back when earlier work still references it: a
 t3-factory dispatch --reconcile APP-123 --model auto
 ```
 
-The web app sends it to `POST /api/tickets/<key>/reconcile`, and its progress shows in Operations like any start. A reconcile run is refused when the ticket is not held back by earlier work, or when any run for it is still open. It goes through the same model selection, quota, provider-limit and override choices as a manual start. Like upstream reviews and CI repairs, it does not wait for provider idle time.
+The web app sends it to `POST /api/tickets/<key>/reconcile`, and its progress shows in Operations like any start. A reconcile run is refused when the ticket is not held back by earlier work, or when any run for it is still open. It goes through the same model selection, quota, provider-limit, label-limit and override choices as a manual start. A request that a limit holds is refused, never queued, because a queued start would pick whichever other ticket is ready. Like upstream reviews and CI repairs, it does not wait for provider idle time.
 
 The run starts in a new thread titled `Factory reconcile: <TICKET>`, on a `chore/factory-reconcile-<id>` branch. Its prompt, [`prompts/reconcile.md`](../prompts/reconcile.md), carries the threads, refs and open pull request the scheduler found, and the configured delivery workflow. The run takes one of four outcomes:
 

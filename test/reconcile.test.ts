@@ -68,7 +68,8 @@ for (const archived of [true, false]) test(`${archived ? 'an archived' : 'a sett
   assert.deepEqual([queue.tickets.map((row: { key: string }) => row.key), queue.held.map((row: { key: string }) => row.key)], archived ? [['FIX-1'], []] : [[], ['FIX-1']]);
 });
 
-// Each refusal leaves nothing launched. Provider capacity and quota bind a reconcile like any manual start.
+// Each refusal leaves nothing launched and nothing queued. Provider capacity, quota and label slots bind a reconcile like
+// any manual start, but a held reconcile never becomes a queued run: the queue would pick whichever other ticket is ready.
 const refusals: Record<string, { arrange: (f: Fixture, t: TestContext) => Promise<unknown> | void; reason: string; message?: RegExp; overrideLimits?: OverrideLimits }> = {
   'a ticket nothing holds back': { arrange: () => {}, reason: 'reconcile-not-needed' },
   'a second request while one is open': { arrange: async f => { leftovers.thread(f); assert.equal((await reconcileRun(f)).reason, 'dispatched'); f.launches.length = 0; }, reason: 'reconcile-running' },
@@ -81,7 +82,7 @@ const refusals: Record<string, { arrange: (f: Fixture, t: TestContext) => Promis
     f.c.projects[0].labelLimits = { med: 0 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   }, reason: 'label-limit', message: /med/, overrideLimits: ['idle', 'reserve'] },
   'a full provider': { arrange: f => {
-    leftovers.thread(f);
+    leftovers.thread(f); f.tasks.push(f.task('other', 3, 'todo'));
     f.c.concurrency.codex = 0; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
   }, reason: 'no-ready-model', message: /provider limit is Off/ },
 };
@@ -92,4 +93,5 @@ for (const [name, refusal] of Object.entries(refusals)) test(`a reconcile reques
   assert.equal(result.reason, refusal.reason);
   if (refusal.message) assert.match(result.message ?? '', refusal.message);
   assert.equal(f.launches.length, 0);
+  assert.deepEqual(f.store.plans(), []);
 });
