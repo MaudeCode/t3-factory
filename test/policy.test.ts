@@ -122,6 +122,17 @@ test('v2 thread status classifies every run state', () => {
   assert.throws(() => threadSchema.parse(v2Thread({ status: 'paused' })), 'an unknown status is an incompatible contract');
   assert.equal(threadSchema.parse(v2Thread()).status, 'completed');
 });
+test('a pull request watch waits out a CI run longer than the monitoring timeout; other monitors do not', () => {
+  const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const quiet = (minutes: number, taskId: string) => v2Thread({ status: 'completed', updatedAt: at(minutes), latestRunCompletedAt: at(minutes), pendingBackgroundTasks: [{ taskId, kind: 'monitor' }] });
+  const watch = 'pull-request-watch:github.com/example/app#7';
+  assert.equal(stalledMonitor(quiet(45, watch)), false, 'a 45-minute CI run keeps its session');
+  assert.equal(executing(quiet(45, watch)), true);
+  assert.equal(stalledMonitor(quiet(361, watch)), true, 'a watch quiet past GitHub\'s six-hour job limit is stalled');
+  assert.equal(stalledMonitor(quiet(45, 'monitor-1')), true, 'another monitor keeps the monitoring timeout');
+  const both = v2Thread({ ...quiet(45, watch), pendingBackgroundTasks: [{ taskId: watch, kind: 'monitor' }, { taskId: 'monitor-1', kind: 'monitor' }] });
+  assert.equal(stalledMonitor(both), true, 'a watch never shields another quiet monitor');
+});
 test('internal requests hold execution capacity; only human requests wait for a person', () => {
   for (const status of ['running', 'waiting', 'completed']) {
     for (const kind of ['dynamic_tool_call', 'auth_refresh', 'user_input', 'exec_command_approval', 'future_request']) {
@@ -182,7 +193,7 @@ test('an orphaned run does not execute, but its background worker still does', (
   assert.equal(executing(t), true); assert.equal(providerExecuting(t, new Map()), true);
 });
 test('an old passive monitor is not execution, but a live run or background worker is', () => {
-  const old = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  const old = new Date(Date.now() - 7 * 3_600_000).toISOString();
   const monitor = [{ taskId: 'pull-request-watch:1', description: 'Watching pull request #1', kind: 'monitor' }];
   const t = v2Thread({ status: 'completed', updatedAt: old, latestRunCompletedAt: old, pendingBackgroundTasks: monitor });
   assert.equal(stalledMonitor(t), true);
