@@ -1,7 +1,7 @@
 // Installs the newest vX.Y.Z release on this Mac. The .deploy LaunchAgent runs it every few minutes.
 // The release workflow creates a tag only after its checks pass, so a new tag is ready to install.
 // Each tag is tried once: after a failure, fix the cause and release the next version.
-// Uses only Node's standard library: the installers it runs replace the runtime's node_modules under it.
+// Uses only Node's standard library: the tag's install-release replaces the runtime's node_modules under it.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -20,7 +20,5 @@ if (!tag || tag === (existsSync(tagFile) ? readFileSync(tagFile, "utf8").trim() 
 writeFileSync(tagFile, `${tag}\n`);
 console.log(`${new Date().toISOString()} deploying ${tag}`);
 run("git", "checkout", "--quiet", "--force", "--detach", tag);
-run("npm", "ci", "--no-audit", "--no-fund");
-run(process.execPath, "scripts/install.ts");
-run(process.execPath, "scripts/install-web.ts");
+run("./install-release");
 console.log(`${new Date().toISOString()} deployed ${tag}`);

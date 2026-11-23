@@ -1,0 +1,8 @@
+#!/bin/sh
+# Installs this checkout as a release: its dependencies, the scheduler service and the web service.
+# A release deployer runs it from a checked-out tag, with T3_FACTORY_ENV naming the installation's .env.
+set -e
+cd "$(dirname "$0")"
+npm ci --no-audit --no-fund
+node scripts/install.ts
+node scripts/install-web.ts
