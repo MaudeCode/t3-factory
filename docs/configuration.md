@@ -17,7 +17,7 @@ The CLI and installation scripts load `.env` from the source or installed runtim
 | `maxWaitingPRs` | Maximum parked jobs before further dispatches are held; `null` means unlimited. |
 | `holdEpicTicketsUntilStarted` | When `true`, automatic scheduling skips members of an Epic that has not started and shows why on the held row, so the model and overrides chosen for the Epic apply. Defaults to `false`. Named manual starts are unaffected, a running Epic always keeps its tickets, and members of an archived Epic are not held. |
 | `minFreeSpaceBytes` | Free bytes required on the target repository's filesystem before any run starts, default `1073741824` (1 GiB). `0` disables the check. Automatic, manual, chain, discovery, upstream and repair starts are all checked. |
-| `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. |
+| `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. A session watching only pull requests waits up to six hours, GitHub Actions' job limit, since one CI run often outlasts 30 minutes. |
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |
 | `t3` | Local server origin and private session credential file. |

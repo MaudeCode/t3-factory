@@ -43,10 +43,17 @@ function active(t: Thread): boolean {
   return t.pendingRuntimeRequest != null || t.activeRunId != null || t.status === 'waiting' || (activeStatuses as readonly string[]).includes(t.status);
 }
 export function waiting(t: Thread): boolean { return awaitingInput(t) && background(t) !== 'working'; }
+/** GitHub Actions ends a job after six hours, so a pull request watch quiet for longer has nothing left to wait for. */
+export const PULL_REQUEST_WATCH_TIMEOUT_MINUTES = 360;
 function expiredMonitor(t: Thread, timeoutMinutes: number): boolean {
   if (background(t) !== 'monitoring' || active(t) || !['idle', 'completed'].includes(t.status)) return false;
+  // A pull request watch waits out a whole CI run, often longer than the monitoring timeout; T3 ends it on merge,
+  // close or an unreadable PR and wakes the session on every change, so only its six-hour bound applies.
+  const monitors = (t.pendingBackgroundTasks ?? []).filter(task => task.kind === 'monitor');
+  const watchesOnly = monitors.every(task => task.taskId.startsWith('pull-request-watch:'));
+  const limit = watchesOnly ? Math.max(timeoutMinutes, PULL_REQUEST_WATCH_TIMEOUT_MINUTES) : timeoutMinutes;
   const lastActivity = Math.max(Date.parse(t.updatedAt), Date.parse(t.latestRunCompletedAt ?? t.updatedAt));
-  return Number.isFinite(lastActivity) && Date.now() - lastActivity >= timeoutMinutes * 60_000;
+  return Number.isFinite(lastActivity) && Date.now() - lastActivity >= limit * 60_000;
 }
 export function stalledMonitor(t: Thread, timeoutMinutes = DEFAULT_MONITORING_TIMEOUT_MINUTES): boolean {
   return !t.pendingBackgroundTasks.some(task => task.kind === 'command') && expiredMonitor(t, timeoutMinutes);
