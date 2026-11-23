@@ -18,7 +18,8 @@ export function mockLaunchConnection(t: TestContext, target: T3 = T3.prototype) 
   t.mock.method(target, 'prepareLaunch', async function(this: T3) { return { check: () => {}, launch: (command: unknown) => this.launch(command), close: async () => {} }; });
 }
 // Shared synthetic dispatch setup for read ordering, freshness, failures, and quota probes.
-export function dispatchFixture(t: TestContext) {
+// `liveT3` makes the T3 client keep live views over a socket the caller fakes (test/rpc-fixture.ts); its reads stay mocked.
+export function dispatchFixture(t: TestContext, options: { liveT3?: boolean } = {}) {
   const beforeClose: (() => void | Promise<void>)[] = [];
   const dir = mkdtempSync(join(tmpdir(), 'factory-reads-')), repo = join(dir, 'repo'); mkdirSync(repo);
   execFileSync('/usr/bin/git', ['init', '-q', repo]);
@@ -41,7 +42,8 @@ export function dispatchFixture(t: TestContext) {
   const tasks = [task('root', 1, 'todo'), task('blocker', 2)];
   const relations = [{ sourceTaskId: 'blocker', targetTaskId: 'root', relationType: 'blocks' }];
   const threads: Thread[] = [], calls: string[] = [], launches: unknown[] = [];
-  const store = new Store(c.stateDir), t3 = new T3(c.t3), kanvil = new Kanvil(c.kanvil);
+  const store = new Store(c.stateDir), t3 = new T3(c.t3, { persistent: options.liveT3 }), kanvil = new Kanvil(c.kanvil);
+  if (options.liveT3) { writeFileSync(c.t3.credentialFile, JSON.stringify({ token: 'fixture-token' })); t.mock.method(t3, 'socketUrl', async () => 'ws://fixture'); beforeClose.push(() => t3.close()); }
   mockLaunchConnection(t, t3);
   const hooks = {
     shell: async (_final: boolean) => {}, providers: async () => {},
@@ -84,8 +86,8 @@ export function dispatchFixture(t: TestContext) {
   };
 }
 
-export function serviceFixture(t: TestContext) {
-  const f = dispatchFixture(t), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
+export function serviceFixture(t: TestContext, options: { liveT3?: boolean } = {}) {
+  const f = dispatchFixture(t, options), service = new FactoryService(process.env.T3_FACTORY_CONFIG!), internal = service as any;
   Object.assign(internal, { store: f.store, stateDir: f.c.stateDir, t3: f.t3, kanvil: Promise.resolve(f.kanvil), t3Settings: JSON.stringify(f.c.t3), kanvilSettings: JSON.stringify(f.c.kanvil) });
   for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleInventory']) t.mock.method(internal, method, () => {});
   f.beforeClose.push(async () => {
