@@ -8,7 +8,7 @@ npm run check
 npm test
 ```
 
-GitHub Actions runs type checks and the suite on Linux for every PR head. macOS runs the suite and builds the menu app on every push to main, and on a PR only when it changes `macos/`, `scripts/`, `web/icon.svg`, the native Swift tests and fixtures, `package.json` or the lockfile, or a workflow. CI uses fixture-owned temporary state and never deploys or reads production credentials.
+GitHub Actions runs type checks and the suite on Linux for every PR head. macOS runs the suite on every push to main, and on a PR only when it changes `scripts/`, `package.json` or the lockfile, or a workflow. CI uses fixture-owned temporary state and never deploys or reads production credentials.
 
 Tests use fixtures and temporary state. They cover quota policy, provider routing, ownership, manual dispatch, monitoring, reopened tickets, merge approval, the journal, web authentication, the web app's live stream, and the Inbox triage sandbox. Triage tests use two inboxes feeding two projects with different scope allowlists, a fake `claude` executable that records its argv, environment, working directory, and snapshot and answers the no-tools safety review separately, a fake git remote, and a fake Kanvil client with seeded projections that applies writes and records created tickets; they never run a live model. Promotion tests cover the gate, each lint rule, the daily limit across two inboxes, idempotent creation, readback, and backfill. The same triage fixture uses deferred Kanvil writes to prove three overlapping runs, immediate slot refill, active-sibling status, serial quota admission, refusal, cancellation and failure draining without timing thresholds. Source reviews share an in-flight Git fetch for the same repository and branch, then archive its immutable commit into separate snapshots. Promotion stays ordered, including its safety review, so daily counters and oldest-first creation keep one owner. The admission owner test also proves outstanding quota headroom and completion freshness; the worker and promotion owner tests verify that settlement releases the corresponding reservation on every exit. The shared model quota evaluator applies triage headroom to base and model-specific windows, including retained readings. CI repair tests (`test/repair.test.ts`) put a fake `gh` on `PATH` that answers workflow-run lists, run jobs and pull request reads by workflow, run and number, and fails any other call; each rule that holds a failed run back has a test that fails without it. Upstream review tests (`test/upstream.test.ts`) put `test/fixtures/upstream-gh.cjs` on `PATH` as `gh`; it lists releases and answers the GraphQL release comparison from a synthetic commit graph, including releases behind, identical to or diverged from the watermark, lists no open pull requests for the project, and fails any other call. They do not require production credentials or prove compatibility with a live T3 build.
 
@@ -17,8 +17,6 @@ Integration failures use the shared `readPhase` boundary to retain the original 
 Ordinary shell and provider fallback reads share an unfinished request even after its one-second cache age expires. Cache expiry applies only after settlement; explicit freshness requirements, shell invalidation and credential rotation retain their existing fences. `test/protocol.test.ts` covers both slow-read boundaries and expiry after settlement, alongside the live-stream, reconnect and cancellation contracts.
 
 `package.json` keeps `private: true` to prevent accidental npm publication. This is a source-installed application.
-
-For the native app, install Xcode Command Line Tools and run `npm run build:menu`. Building does not replace a running app. Use the [setup guide](setup.md#optional-interfaces) to install it after quitting the previous version. The app reads `status.json` and talks to the scheduler through the CLI; `T3Factory --render <dir>` draws the panel and every window page to PNG files from the current state and quits, which is how its views are checked without screen recording.
 
 ## Source layout
 
@@ -36,7 +34,7 @@ For the native app, install Xcode Command Line Tools and run `npm run build:menu
 | `src/session-tickets.ts` | Collection of tickets that T3 sessions report creating, and the Session tickets list |
 | `src/web.ts`, `src/oidc.ts` | Web API and authentication |
 | `src/mcp.ts` | Stdio MCP server that gives agents factory tools |
-| `web/`, `macos/` | Browser and native interfaces |
+| `web/` | Browser interface |
 | `scripts/`, `deploy/` | macOS installation and optional proxy launcher |
 
 The optional LAN DNS updater lives in `scripts/update-dns.ts`, separate from scheduler configuration and lifecycle. `test/dns.test.ts` covers changing LAN addresses, offline and mid-read transitions, policy identity, failed writes, and credential transport. Its installer reuses `scripts/launchd.ts`; see [web access](web-access.md#follow-a-macs-lan-address) for the private configuration.
@@ -101,7 +99,7 @@ Manual submissions in the browser and native app are accepted into ordered reque
 
 The browser persists pending and unsuccessful rows under `factoryOperations`, migrating the previous `factoryOperation` value and retiring previously saved successes and answered prompts. Reloading reconciles sent requests by ID before advancing the saved queue. Unsent rows retain their order and IDs. Uncertain outcomes are retained and never resent automatically; only a request confirmed absent from the server offers an explicit retry with the same ID. Retries join the end of the queue. The scheduler owns independent admission, fresh eligibility checks and duplicate protection.
 
-After an operator renumbers tracker tickets, the SQLite metadata key `ticketKeyRevision` records the cutover identity. Status exposes that value, and newly queued named browser requests capture it. The dispatch endpoint records a terminal, not-launched refusal for requests from an older revision, including saved requests without a revision. Recovery never stamps old requests with the current revision. During this maintenance, stop the native app to discard its in-memory queue, drain server requests and plans, and migrate stored snapshots by ticket ID before restarting the service. Historical reports and idempotency receipts retain their original inputs.
+After an operator renumbers tracker tickets, the SQLite metadata key `ticketKeyRevision` records the cutover identity. Status exposes that value, and newly queued named browser requests capture it. The dispatch endpoint records a terminal, not-launched refusal for requests from an older revision, including saved requests without a revision. Recovery never stamps old requests with the current revision. During this maintenance, drain server requests and plans, and migrate stored snapshots by ticket ID before restarting the service. Historical reports and idempotency receipts retain their original inputs.
 
 Now shows the scheduler's latest decision as one line under the header, below the start form on a launch link. Long messages wrap without moving or resizing the ticket input. `await startTests.statusLayout()` checks that geometry for dispatched runs, upstream reviews and long errors in the same browser fixture; it also runs as part of `startTests.run()`.
 
@@ -251,7 +249,7 @@ A manual dispatch of a ticket that waits on other tickets is not refused. The sc
 
 ### Queued manual runs
 
-A manual ticket start held by an unchecked label, provider, reserve or idle override stores a single-ticket plan (`queued: true`) instead of a terminal refusal. A next-ticket start selects and saves one eligible ticket; named and next-ticket requests retain their model, forced provider and exact overrides. Runs and the native app reuse the chain rows with a Queued heading, waiting reason and Cancel queued run action. Invalid, owned, unready or difficulty-incompatible tickets, exhausted allowance, dry runs, upstream reviews and uncertain launches do not create queued requests. Dependency-blocked tickets keep the existing chain choice.
+A manual ticket start held by an unchecked label, provider, reserve or idle override stores a single-ticket plan (`queued: true`) instead of a terminal refusal. A next-ticket start selects and saves one eligible ticket; named and next-ticket requests retain their model, forced provider and exact overrides. Runs reuse the chain rows with a Queued heading, waiting reason and Cancel queued run action. Invalid, owned, unready or difficulty-incompatible tickets, exhausted allowance, dry runs, upstream reviews and uncertain launches do not create queued requests. Dependency-blocked tickets keep the existing chain choice.
 
 The shared `cycle` boundary owns queue creation, with named submissions serialized per ticket and durable plans deduplicated after their reads. `runPlans` retries them through the existing service events and fallback polling, including while automation is paused. Queued automatic requests try each compatible model within the saved provider choice. Retries apply continuation policy and fresh ticket, quota and capacity checks, so a later run gains no implicit manual waiver. Unnamed scheduling leaves the ticket to its queued plan. The plan finishes when T3 accepts its launch; a cancelled plan starts nothing further. Existing chains and Epics retain their completion rules. `test/chain.test.ts` owns queue persistence, limit recovery, duplicate/cancel and selection behavior; `test/backend-concurrency.test.ts` covers the request receipt and service admission lane; `queueTests.queueTransitions()` owns the visible queued row and cancel action.
 
@@ -339,7 +337,7 @@ Removal is local, not a T3 RPC: `removeWorkspace` renames the directory to a hid
 
 ## Changes and review
 
-Keep runtime behavior documented in the relevant guide and examples aligned with the configuration schema. Use generic fixture names, domains, and paths. Review changes before committing, run type checks and relevant tests for code changes, and build the menu app when changing Swift code.
+Keep runtime behavior documented in the relevant guide and examples aligned with the configuration schema. Use generic fixture names, domains, and paths. Review changes before committing, and run type checks and relevant tests for code changes.
 
 Documentation changes need link and example validation, not live ticket dispatches. Keep installation separate from development: the installers restart services and copy the runtime, so they are deployment commands rather than build checks.
 

@@ -9,7 +9,6 @@
     "status": "node src/main.ts status",
     "doctor": "node src/main.ts doctor",
     "dry-run": "node src/main.ts once --dry-run",
-    "build:menu": "node scripts/build-menu.ts",
     "vendor:web": "node scripts/vendor-web.ts",
     "vendor:themes": "node scripts/vendor-themes.ts"
   },

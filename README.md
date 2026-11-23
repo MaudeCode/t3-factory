@@ -2,7 +2,7 @@
 
 T3 Factory turns a ready Kanvil ticket into a coding run in T3 Code. Kanvil changes arrive through its durable event stream; ticket inventories are cached between changes. It selects work by priority, matches it to an available model, and creates a separate task and Git worktree for each ticket.
 
-Control the queue from the command line, a macOS menu-bar app, or a web page. Automatic runs wait for provider activity and quota checks; manual runs let you choose a ticket and model directly.
+Control the queue from the command line or a web page. Automatic runs wait for provider activity and quota checks; manual runs let you choose a ticket and model directly.
 
 ## What it does
 
