@@ -152,7 +152,7 @@ The helper supplies review evidence, not the whole merge gate. Follow the suppli
 
 ## macOS services and files
 
-The default service label is `local.t3-factory`; `.web` identifies the web service. Substitute your `T3_FACTORY_SERVICE_LABEL` if overridden.
+The default service label is `local.t3-factory`; `.web` identifies the web service and `.deploy` the optional release deployer. Substitute your `T3_FACTORY_SERVICE_LABEL` if overridden.
 
 ```sh
 launchctl print "gui/$(id -u)/local.t3-factory"
@@ -167,7 +167,8 @@ The standard installer uses these paths:
 | `~/.local/share/t3-factory/app` | Installed runtime and private `.env` copy |
 | `~/.local/bin/t3-factory` | CLI launcher |
 | `~/Library/LaunchAgents/<label>.plist` | User service definition |
-| `~/Library/Logs/t3-factory*.log` | Scheduler and web logs |
+| `~/Library/Logs/t3-factory*.log` | Scheduler, web and deployer logs |
+| `~/.local/share/t3-factory/deploy` | Deployer checkout and last tried tag |
 | `<stateDir>/state.sqlite` | Job ledger |
 | `<stateDir>/status.json` | Status snapshot |
 | `<stateDir>/reports` | Agent reports |

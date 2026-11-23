@@ -95,6 +95,14 @@ t3-factory resume
 
 Model and project eligibility still apply. Pausing later stops new automatic dispatches; existing T3 work continues.
 
+### Deploy releases automatically
+
+```sh
+node scripts/install-deploy.ts
+```
+
+Run it once, from a checkout of your repository with its `.env`, after the scheduler and web service are installed. It installs a `.deploy` LaunchAgent that fetches tags over HTTPS every five minutes. When a `vX.Y.Z` tag newer than the one it last tried appears, it checks that tag out in `~/.local/share/t3-factory/deploy/source`, runs `npm ci`, then `scripts/install.ts` and `scripts/install-web.ts`, using the `.env` it was installed with. Prerelease tags are skipped. Each tag is tried once and recorded in `~/.local/share/t3-factory/deploy/tag`; after a failure, read `~/Library/Logs/t3-factory-deploy-error.log`, fix the cause and release the next version. Tags come from the release workflow, which creates one only after CI passes on the commit; see [development](development.md#releases).
+
 ## Optional interfaces
 
 For the macOS menu-bar app:
