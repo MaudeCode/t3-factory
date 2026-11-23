@@ -53,9 +53,9 @@ The web app sends it to `POST /api/tickets/<key>/reconcile`, and its progress sh
 
 The run starts in a new thread titled `Factory reconcile: <TICKET>`, on a `chore/factory-reconcile-<id>` branch. Its prompt, [`prompts/reconcile.md`](../prompts/reconcile.md), carries the threads, refs and open pull request the scheduler found, and the configured delivery workflow. The run takes one of four outcomes:
 
-- Work already merged on the release branch: it records the evidence, closes the ticket in a done status, deletes merged clean branches and worktrees and settles stale threads, then reports `no-work`.
+- Work already merged on the release branch: it records the evidence, closes the ticket in a done status, deletes merged clean branches and worktrees and archives stale threads, then reports `no-work`.
 - An unmerged branch or open pull request with real work: it delivers it through the delivery workflow with every gate unchanged and reports `complete` with the merged pull request, verified like a ticket run.
-- Abandoned or superseded leftovers: it records why on the ticket, removes clean local branches and worktrees and settles the threads, and reports `no-work`. The ticket stays open and becomes eligible again.
+- Abandoned or superseded leftovers: it records why on the ticket, removes clean local branches and worktrees and archives the threads, and reports `no-work`. The ticket stays open and becomes eligible again: the queue skips archived threads, while a settled thread whose worktree is gone still holds the ticket back.
 - A session still active on the ticket: it touches nothing and reports `awaiting-human`.
 
 It deletes a local branch or worktree only when it is clean and its head is merged or its work is recorded on the ticket, and never force-deletes a remote branch or closes a pull request without recording why on the ticket. A `no-work` report needs the run's own worktree clean at its creation commit, like a ticket closed without delivery, but may leave the ticket open.

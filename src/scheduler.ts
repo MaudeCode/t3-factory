@@ -101,7 +101,7 @@ async function compareReleases(repo: string, watermark: string, tags: string[]) 
 // Bounded work that goes ahead of tickets and does not wait for idle time: an upstream review or a CI repair.
 export type PendingReview = { project: Project; upstream: NonNullable<Job['upstream']>; repair?: never; reconcile?: never } | { project: Project; repair: NonNullable<Job['repair']>; upstream?: never; reconcile?: never }
   // A reconcile the owner started for one ticket held back by earlier work.
-  | { project: Project; reconcile: NonNullable<Job['reconcile']> & { taskId: string; ticketKey: string }; upstream?: never; repair?: never };
+  | { project: Project; reconcile: NonNullable<Job['reconcile']> & { taskId: string; ticketKey: string; labels: string[] }; upstream?: never; repair?: never };
 // Each watched repository yields at most one review: from its last reviewed release to the newest release that strictly descends from it.
 // Releases at, behind or diverged from the watermark are skipped whenever they were published; a refresh caches the verified range for its base.
 // GitHub is read at most every checkMinutes (the upstream's own, else upstream.checkMinutes); a repository with an unfinished review is not read at all.
@@ -1377,7 +1377,7 @@ async function pendingReconcile(c: Config, store: Store, kanvil: Kanvil, threads
   if (jobs.some(job => job.ticketKey === ticketKey && !['complete', 'dismissed'].includes(job.state))) return { reason: 'reconcile-running', message: `${ticketKey} already has an open run.` };
   const held = (await inventory(c, kanvil, threads, store.jobs(), store, ticketKey)).skipped.find(s => s.key === ticketKey);
   if (!held?.conflict) return { reason: 'reconcile-not-needed', message: `${ticketKey} is not held back by earlier work${held ? `: ${held.reason}` : '; start it normally'}.` };
-  return { project, reconcile: { taskId: held.id!, ticketKey, title: held.ticket?.title ?? '', reason: held.reason, ...held.evidence! } };
+  return { project, reconcile: { taskId: held.id!, ticketKey, title: held.ticket?.title ?? '', labels: (held.ticket?.labels ?? []).map(label => label.name), reason: held.reason, ...held.evidence! } };
 }
 
 const selectionChanged = (reason: string) => ['ticket-changed-before-dispatch', 'ticket-order-or-eligibility-changed', 'ticket-preparing', 'no-eligible-ticket', 'label-limit'].includes(reason);
@@ -1616,6 +1616,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         job.labels = checked.labels.map(l => l.name);
         job.priority = checked.task.priority;
       }
+      // A reconcile can deliver its ticket's work, so the ticket's labels keep their prompt guards and label slots.
+      if (review?.reconcile) job.labels = review.reconcile.labels;
       const u = job.upstream, r = job.repair;
       const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : job.kind === 'reconcile' ? `Factory reconcile: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : r ? `CI repair: ${project.name} ${r.workflow} run ${r.runId}` : `Factory discovery: ${project.name}`;
       // Ticket branches carry the ticket's kind (fix, feat, perf, ...) so release tooling can bump versions from them.
