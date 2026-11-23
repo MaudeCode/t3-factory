@@ -1,4 +1,4 @@
-import { bootout, bootstrap, installRuntime, writeControlAgent } from './launchd.ts';
+import { bootout, bootstrap, installRuntime, plistString as string, writeControlAgent } from './launchd.ts';
 import { mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -16,8 +16,6 @@ if (!/^[A-Za-z0-9.-]+$/.test(label)) throw new Error('Invalid service label');
 const plist = join(home, 'Library/LaunchAgents', `${label}.plist`);
 const gh = execFileSync('/usr/bin/which', ['gh'], { encoding: 'utf8' }).trim();
 const path = [dirname(gh), dirname(process.execPath), join(home, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':');
-const escape = (s: string) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-const string = (s: string) => `<string>${escape(s)}</string>`;
 const config = process.env.T3_FACTORY_CONFIG ?? join(home, '.config/t3-factory/config.jsonc');
 if (!existsSync(config)) throw new Error('Create the configuration and T3 credential before installing the service');
 // Checks run and the runtime is staged before the old service is unloaded, so a failed copy leaves it running.

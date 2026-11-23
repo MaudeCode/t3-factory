@@ -46,15 +46,22 @@ export async function bootstrap(domain: string, plist: string) {
   }
 }
 
-// These long-lived control-plane agents serve interactive state and deadline-bound RPCs.
-export function writeControlAgent(plist: string, body: string) {
-  if (/<key>\s*ProcessType\s*<\/key>/.test(body)) throw new Error('The control-agent writer owns ProcessType');
+export const plistString = (value: string) =>
+  `<string>${value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</string>`;
+
+// Writes a LaunchAgent definition around `body`, the keys inside its top-level dict.
+export function writeAgent(plist: string, body: string) {
   writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>ProcessType</key><string>Interactive</string>
 ${body}
 </dict></plist>\n`, { mode: 0o600 });
+}
+
+// These long-lived control-plane agents serve interactive state and deadline-bound RPCs.
+export function writeControlAgent(plist: string, body: string) {
+  if (/<key>\s*ProcessType\s*<\/key>/.test(body)) throw new Error('The control-agent writer owns ProcessType');
+  writeAgent(plist, `<key>ProcessType</key><string>Interactive</string>\n${body}`);
 }
 
 // Everything an installer deploys to the shared runtime directory. Configuration, credentials and job state live elsewhere.

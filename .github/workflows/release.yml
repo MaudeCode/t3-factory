@@ -1,0 +1,101 @@
+name: Release
+run-name: Release ${{ inputs.tag }}
+
+# Tag last (RELEASES.md in MaudeCode/.github). Nothing is published here: the tag is the release, and the
+# Mac's deploy LaunchAgent (scripts/deploy.ts) installs each new vX.Y.Z tag. A failed release leaves no
+# tag, so the same version is released again once the cause is fixed.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version to release, such as v1.2.3
+        required: true
+        type: string
+      sha:
+        description: Full SHA of the main commit to release, after the last release; empty for the head of main
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # to find the commit's CI checks that already passed
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      sha: ${{ steps.check.outputs.sha }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - id: check
+        uses: MaudeCode/.github/actions/release-preflight@20b180ba0237e316fcc65d83ed4e8f19ac5e16a7
+        with:
+          tag: ${{ inputs.tag }}
+          sha: ${{ inputs.sha }}
+          checks: |
+            ci.yml: Checks (*
+
+  freeze:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { statuses: write, pull-requests: read, actions: read }
+    steps:
+      - uses: MaudeCode/.github/actions/release-freeze@20b180ba0237e316fcc65d83ed4e8f19ac5e16a7
+        with: { mode: start }
+
+  # Runs only when the commit's push run has not already passed CI.
+  verify:
+    needs: preflight
+    if: needs.preflight.outputs.verified != 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      sha: ${{ needs.preflight.outputs.sha }}
+
+  release:
+    name: Tag and create GitHub release
+    needs: [preflight, freeze, verify]
+    # A skipped verify is a pass; a failed one stops the release.
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: MaudeCode/.github/actions/release-tag@20b180ba0237e316fcc65d83ed4e8f19ac5e16a7
+        with:
+          tag: ${{ inputs.tag }}
+          sha: ${{ needs.preflight.outputs.sha }}
+          message: T3 Factory ${{ needs.preflight.outputs.version }}
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+        run: |
+          flags=(--verify-tag --generate-notes)
+          [[ "$PRERELEASE" == true ]] && flags+=(--prerelease)
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" "${flags[@]}"
+          fi
+
+  # Pass release-freeze again however the release ended.
+  thaw:
+    needs: [freeze, release]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { statuses: write, pull-requests: read, actions: read }
+    steps:
+      - uses: MaudeCode/.github/actions/release-freeze@20b180ba0237e316fcc65d83ed4e8f19ac5e16a7
+        with: { mode: end }

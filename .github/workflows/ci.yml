@@ -1,6 +1,13 @@
 name: CI
 
 on:
+  # The release runs these checks on the commit it releases when its push run has not passed them.
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit to check; empty checks the run's commit.
+        type: string
+        default: ""
   pull_request:
   push:
     branches: [main]
@@ -53,6 +60,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'

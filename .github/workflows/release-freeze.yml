@@ -1,0 +1,18 @@
+name: Release freeze
+
+# pull_request_target, so pull requests from forks and Dependabot get the status too. Safe because nothing is checked
+# out: the action reads the pull request's file list through the API and never runs its code. Keep it that way.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: { statuses: write, pull-requests: read, actions: read }
+    steps:
+      - uses: MaudeCode/.github/actions/release-freeze@20b180ba0237e316fcc65d83ed4e8f19ac5e16a7
+        with: { mode: pull-request }

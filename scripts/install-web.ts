@@ -1,4 +1,4 @@
-import { bootout, bootstrap, installRuntime, writeControlAgent } from "./launchd.ts";
+import { bootout, bootstrap, installRuntime, plistString as string, writeControlAgent } from "./launchd.ts";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -21,20 +21,15 @@ mkdirSync(join(userDir, "Library/Logs"), { recursive: true });
 // Dependencies are copied rather than rebuilt with npm: the scheduler runs from the same
 // directory, and an npm install there removes modules it is loading.
 await installRuntime(root, app, () => bootout(domain, label), envPath);
-const escape = (value: string) =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 writeControlAgent(
   plist,
-  `<key>Label</key><string>${label}</string>
-<key>ProgramArguments</key><array><string>${escape(process.execPath)}</string><string>${escape(join(app, "src/main.ts"))}</string><string>web</string></array>
-<key>WorkingDirectory</key><string>${escape(app)}</string>
+  `<key>Label</key>${string(label)}
+<key>ProgramArguments</key><array>${[process.execPath, join(app, "src/main.ts"), "web"].map(string).join("")}</array>
+<key>WorkingDirectory</key>${string(app)}
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>${escape(process.env.PATH ?? "/usr/bin:/bin")}</string><key>NODE_NO_WARNINGS</key><string>1</string></dict>
-<key>StandardOutPath</key><string>${userDir}/Library/Logs/t3-factory-web.log</string>
-<key>StandardErrorPath</key><string>${userDir}/Library/Logs/t3-factory-web-error.log</string>
+<key>EnvironmentVariables</key><dict><key>PATH</key>${string(process.env.PATH ?? "/usr/bin:/bin")}<key>NODE_NO_WARNINGS</key><string>1</string></dict>
+<key>StandardOutPath</key>${string(join(userDir, "Library/Logs/t3-factory-web.log"))}
+<key>StandardErrorPath</key>${string(join(userDir, "Library/Logs/t3-factory-web-error.log"))}
 `,
 );
 execFileSync("plutil", ["-lint", plist], { stdio: "inherit" });
