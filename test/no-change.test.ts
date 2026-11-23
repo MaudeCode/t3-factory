@@ -10,7 +10,7 @@ import type { Config } from '../src/config.ts';
 import type { T3, Kanvil } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
 
-const accepted = { 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done' } as const;
+const accepted = { 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done', 'discarded-commit': 'done' } as const;
 const unfinished = 'Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved';
 const rejected = {
   'unlabeled': unfinished,
@@ -64,6 +64,7 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
         writeFileSync(join(tree, 'file'), 'unreviewed\n'); git(tree, 'commit', '-qam', 'unreviewed'); git(repo, 'update-ref', 'refs/remotes/origin/main', git(tree, 'rev-parse', 'HEAD'));
         if (scenario.endsWith('reset')) git(tree, 'reset', '-q', '--hard', 'HEAD~1');
       }
+      if (scenario === 'discarded-commit') { writeFileSync(join(tree, 'file'), 'diagnostics\n'); git(tree, 'commit', '-qam', 'scratch'); git(tree, 'reset', '-q', '--hard', 'HEAD~1'); }
       if (scenario === 'missing-worktree-and-branch') git(repo, 'branch', '-D', branch);
       store.save(job);
       await reconcile(c, store, t3, kanvil, threads);

@@ -270,15 +270,18 @@ async function branchTip(project: Project, branch: string): Promise<string> {
 async function refHistory(path: string, ref: string): Promise<string[]> {
   return (await git(path, ['reflog', 'show', '--format=%H', ref]).catch(() => '')).split('\n').filter(Boolean);
 }
-// A Factory branch that never moved from its released creation commit, in a checkout that never left it, holds no work of its run.
-// A commit pushed straight to the release branch would pass an ancestry check alone.
+// A Factory branch back at its released creation commit, in a checkout also on it, holds no work of its run.
+// A commit pushed straight to the release branch would pass an ancestry check alone, so every commit the reflogs
+// visited must be that commit or one the release branch never received. Discarded scratch commits are no delivery.
 async function untouchedHead(project: Project, branch: string, worktreePath?: string | null): Promise<string> {
   const history = await refHistory(project.repoPath, `refs/heads/${branch}`), created = history.at(-1);
   if (!created) return '';
-  history.push(await branchTip(project, branch));
+  const tips = [await branchTip(project, branch)];
   // A leftover directory without its .git link is no checkout; only the branch refs can speak for it.
-  if (worktreePath && existsSync(join(worktreePath, '.git'))) history.push(await git(worktreePath, ['rev-parse', 'HEAD']), ...await refHistory(worktreePath, 'HEAD'));
-  return history.every(head => head === created) && await released(project, created) ? created : '';
+  if (worktreePath && existsSync(join(worktreePath, '.git'))) { tips.push(await git(worktreePath, ['rev-parse', 'HEAD'])); history.push(...await refHistory(worktreePath, 'HEAD')); }
+  if (!tips.every(head => head === created) || !await released(project, created)) return '';
+  for (const head of new Set(history)) if (head !== created && await released(project, head)) return '';
+  return created;
 }
 // A delivered ticket is closed in a done status. One closed without delivery may also be cancelled (a duplicate,
 // superseded, or cancelled by the owner) whatever the project's done statuses say.
