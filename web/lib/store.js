@@ -415,7 +415,8 @@ async function drainOperations() {
         // Persist the send intent first: an interrupted write must be reconciled, never replayed.
         updateOperation(op.id, { state: "running", notReceived: false });
         try {
-          updateOperation(op.id, await post(op.kind === "cleanup" ? "/api/cleanup/actions" : "/api/dispatch", op.input, { "Idempotency-Key": op.id }));
+          const path = op.kind === "cleanup" ? "/api/cleanup/actions" : op.input.reconcile ? `/api/tickets/${encodeURIComponent(op.input.ticket)}/reconcile` : "/api/dispatch";
+          updateOperation(op.id, await post(path, op.input, { "Idempotency-Key": op.id }));
         } catch (error) {
           message(error.message, true);
         }

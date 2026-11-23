@@ -19,11 +19,13 @@ export interface Job {
   historyOnly?: boolean;
   sourceIdentity?: { backend: 'kaneo'; projectId: string; taskId: string | null; ticketKey: string | null };
   requestId?: string;
-  id: string; kind: 'ticket' | 'discovery' | 'upstream' | 'repair'; projectId: string; taskId: string | null;
+  id: string; kind: 'ticket' | 'discovery' | 'upstream' | 'repair' | 'reconcile'; projectId: string; taskId: string | null;
   // An upstream review covers base..candidate of one watched repository; the commits are those the scheduler verified forward.
   upstream?: { name: string; repo: string; base: string; candidate: string; baseCommit?: string; candidateCommit?: string };
   // A repair covers one failed run of a watched workflow; its report fills in the failed jobs it repaired and those it did not.
   repair?: { workflow: string; runId: number; runUrl: string; sha: string; failedJobs: string[]; repaired?: string[]; unrepaired?: string[] };
+  // A reconcile settles the earlier work that holds its ticket back; it records what the scheduler found at the start.
+  reconcile?: ReconcileEvidence & { title: string; reason: string };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
   lastPersonalActivity: string | null; reportPath: string; command?: unknown;
@@ -52,6 +54,8 @@ export interface Job {
   workspaceCleanupBlockedAt?: string;
   workspaceCleanupAttemptedAt?: string;
 }
+// The earlier work that holds a ticket back: T3 threads that reference it, Git refs that name it, and whether an open PR mentions it.
+export interface ReconcileEvidence { threads: string[]; refs: string[]; openPR: boolean }
 export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream' | 'repair'>): string {
   return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : job.repair ? `${job.repair.workflow} run ${job.repair.runId}` : 'Discovery');
 }

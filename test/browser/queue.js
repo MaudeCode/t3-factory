@@ -6,7 +6,7 @@ import { applyState, operations, status, history, setSessionProvider, setSession
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
 import { Queue } from "../../web/views/Queue.js";
-import { navigate, route, ticketPanel, closeTicket, epicPanel, closeEpic } from "../../web/lib/router.js";
+import { navigate, route, ticketPanel, openTicket, closeTicket, epicPanel, closeEpic } from "../../web/lib/router.js";
 import { TicketPanel } from "../../web/views/TicketPanel.js";
 // Up next and Epics are on the Queue page, run history on Runs; the fixture shows whichever the address names.
 const Views = () => (route.value.page === "/queue" ? html`<${Queue} />` : html`<${Runs} />`);
@@ -826,7 +826,61 @@ async function reorder() {
   return { passed: true };
 }
 
-window.queueTests = { showOrder, reorder, showQueued, hold, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+// Earlier work holds APP-4 back: its held row and its ticket panel offer one icon-only Investigate in T3 button, and
+// starting it asks first, then posts the reconcile request. APP-5 is held for another reason and offers none.
+async function investigate() {
+  const oldFetch = window.fetch, posts = [], held = [
+    { key: "APP-4", projectId: "p", title: "Leftover branch", reason: "Existing Git branch references this ticket", conflict: "artifacts", evidence: { threads: [], refs: ["refs/heads/feat/APP-4-old"], openPR: false } },
+    { key: "APP-5", projectId: "p", title: "Unclassified", reason: "Ticket needs a native difficulty before dispatch" },
+  ];
+  let release;
+  const sending = new Promise(resolve => { release = resolve; });
+  window.fetch = async (url, init) => {
+    if (init?.method === "POST") { posts.push([url, JSON.parse(init.body)]); await sending; return Response.json({ id: init.headers["Idempotency-Key"], state: "done", result: { data: { reason: "reconcile-running", message: "APP-4 already has an open run." } } }); }
+    if (url === "/api/history") return Response.json([]);
+    if (url === "/api/tickets/APP-4") return Response.json({ id: "id-APP-4", projectId: "p", key: "APP-4", title: "Leftover branch", status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: [], scopes: [], inbox: false, description: "", acceptanceCriteria: "", automationReady: true, holdReason: null, readiness: [], blockedBy: [], blocks: [], createdAt: new Date().toISOString() });
+    return Response.json(state);
+  };
+  const buttons = (scope) => [...scope.querySelectorAll('button[aria-label="Investigate in T3"]')];
+  const iconOnly = (b) => b.textContent.trim() === "" && b.querySelector(".icon-search") && b.title === "Investigate in T3";
+  const rowOf = (key) => [...root.querySelectorAll(".held")].find(row => row.querySelector(".key")?.textContent === key);
+  try {
+    operations.value = [];
+    applyState({ ...state, status: { ...state.status, upNext: { ...state.status.upNext, held } } }, true);
+    render(null, root);
+    render(html`<${Deck.Operations} /><${Deck.UpNext} limit=${Infinity} /><${TicketPanel} /><${Confirmation} />`, root);
+    await pause();
+    const [button] = buttons(root);
+    assert(buttons(root).length === 1 && buttons(rowOf("APP-4")).length === 1 && !buttons(rowOf("APP-5")).length, "only the row held by earlier work offers Investigate in T3");
+    assert(iconOnly(button), "Investigate in T3 is an icon-only search button named by its tooltip");
+    const b = button.getBoundingClientRect();
+    assert(b.left >= 0 && b.right <= innerWidth && b.height >= (matchMedia("(pointer: coarse)").matches ? 44 : 32), `the button fits the viewport with a usable target: ${b.width}x${b.height}`);
+    assert(document.documentElement.scrollWidth <= innerWidth, "the held list has no horizontal overflow");
+    openTicket("APP-4");
+    for (let n = 0; n < 50 && !document.querySelector("dialog.ticket-panel[open] .ticket-line"); n++) await pause();
+    const panel = document.querySelector("dialog.ticket-panel[open]");
+    assert(panel && buttons(panel).length === 1 && iconOnly(buttons(panel)[0]) && panel.textContent.includes("Held back: Existing Git branch references this ticket"), "the ticket panel's held line offers the same button");
+    const p = buttons(panel)[0].getBoundingClientRect();
+    assert(p.left >= 0 && p.right <= innerWidth, "the panel's button fits the viewport");
+    buttons(panel)[0].click(); await pause();
+    const confirm = [...document.querySelectorAll("dialog[open]")].find(d => d.textContent.includes("Investigate APP-4 in T3?"));
+    assert(confirm && !posts.length, "starting asks for confirmation before any request");
+    byText("button", "Start run", confirm).click();
+    for (let n = 0; n < 50 && !posts.length; n++) await pause();
+    assert(posts.length === 1 && posts[0][0] === "/api/tickets/APP-4/reconcile", `the request names the ticket in its address: ${posts[0]?.[0]}`);
+    assert(posts[0][1].reconcile === true && posts[0][1].ticket === "APP-4" && posts[0][1].model === "auto", `the request is a reconcile start: ${JSON.stringify(posts[0][1])}`);
+    for (let n = 0; n < 50 && rowOf("APP-4"); n++) await pause();
+    assert(!rowOf("APP-4"), "a pending request replaces the held row");
+    assert(buttons(panel).every(b => b.disabled) && panel.textContent.includes("A request for this ticket is already pending."), "a pending request takes the panel's button away with the reason");
+    assert(root.querySelector(".operation")?.textContent.includes("Investigate APP-4"), "the request row names the investigation");
+    release();
+    for (let n = 0; n < 50 && operations.value.some(op => op.state !== "done"); n++) await pause();
+    assert(root.querySelector(".operation")?.textContent.includes("already has an open run"), "a refusal is ordinary request feedback");
+  } finally { release(); closeTicket(); window.fetch = oldFetch; operations.value = []; }
+  return { passed: true, viewport: [innerWidth, innerHeight], coarse: matchMedia("(pointer: coarse)").matches };
+}
+
+window.queueTests = { investigate, showOrder, reorder, showQueued, hold, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

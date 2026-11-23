@@ -316,6 +316,14 @@ test("web controls require pairing, reject cross-origin requests and deduplicate
     assert.equal((await request("/api/dispatch", { method: "POST", headers: { Cookie: cookie, "Idempotency-Key": randomUUID() }, body: JSON.stringify({ ...reviewInput, ticket: "APP-1" }) })).status, 400, "review cannot include a ticket");
     assert.equal((await review({ ...reviewInput, upstream: "up/other" })).status, 409, "one ID cannot change review target");
     finish({ code: 1, data: { reason: "upstream-not-due" } });
+    const reconcileId = randomUUID(), reconcile = (key: string, body: unknown) => request(`/api/tickets/${key}/reconcile`, {
+      method: "POST", headers: { Cookie: cookie, "Idempotency-Key": reconcileId }, body: JSON.stringify(body),
+    });
+    assert.equal((await reconcile("app-8", { model: "auto", overrideLimits: ["idle"] })).status, 202);
+    assert.deepEqual(calls.at(-1)?.args, ["dispatch", "--request-id", reconcileId, "--model", "auto", "--reconcile", "APP-8", "--override", "idle"], "a reconcile request names its ticket from the address");
+    assert.equal((await request(`/api/operations/${reconcileId}`, { headers: { Cookie: cookie } })).status, 200, "a reconcile request is an operation like any start");
+    assert.equal((await reconcile("app-8", { model: "auto", overrideLimits: ["idle"], chain: "all" })).status, 400, "a reconcile run takes no chain");
+    finish({ code: 1, data: { reason: "reconcile-not-needed" } });
     assert.equal(
       (
         await request("/api/operations/not-a-uuid", {
