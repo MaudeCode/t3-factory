@@ -317,7 +317,7 @@ test('service validates its configured path independently of the CLI environment
 test('decision logging stays bounded without dropping the complete stored decision', t => {
   let output = '';
   t.mock.method(console, 'log', (value: string) => { output = value; });
-  log('decision', { reason: 'watching-streams', eligible: 0, skipped: Array.from({ length: 100 }, (_, number) => ({ key: `FIX-${number}`, reason: 'Held', ticket: { description: 'fixture-body'.repeat(1000) } })) });
+  log('decision', { reason: 'no-ready-model', eligible: 0, skipped: Array.from({ length: 100 }, (_, number) => ({ key: `FIX-${number}`, reason: 'Held', ticket: { description: 'fixture-body'.repeat(1000) } })) });
   const event = JSON.parse(output);
   assert.equal(event.skippedCount, 100); assert.equal(event.skipped.length, 5);
   assert.ok(output.length < 1500); assert.doesNotMatch(output, /fixture-body/);
