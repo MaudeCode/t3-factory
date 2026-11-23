@@ -76,6 +76,10 @@ const refusals: Record<string, { arrange: (f: Fixture, t: TestContext) => Promis
     leftovers.thread(f);
     t.mock.method(f.t3, 'provider', async () => { const p = f.provider(); p.usageLimits.windows[0].usedPercent = 100; return p; });
   }, reason: 'no-ready-model', message: /quota-exhausted/, overrideLimits: true },
+  'a full label slot': { arrange: f => {
+    leftovers.thread(f);
+    f.c.projects[0].labelLimits = { med: 0 }; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  }, reason: 'label-limit', message: /med/, overrideLimits: ['idle', 'reserve'] },
   'a full provider': { arrange: f => {
     leftovers.thread(f);
     f.c.concurrency.codex = 0; writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));

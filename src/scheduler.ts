@@ -1321,7 +1321,8 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
           stream.reason = result.reason;
           if ('quota' in result) stream.quota = result.quota as typeof stream.quota;
           if (result.reason === 'dispatched' || result.reason === 'would-dispatch') (result.reason === 'dispatched' ? stream.active : stream.planned).push(assignment?.ticket.key ?? jobLabel({ ticketKey: review?.reconcile?.ticketKey ?? null, upstream: review?.upstream, repair: review?.repair }));
-          else if (!(options.manual && !options.ticket && selectionChanged(result.reason))) for (const list of [readyModels, idleModels]) {
+          // A changed selection lets an unnamed manual start try the next ticket on the same model; a review has no next ticket.
+          else if (!(options.manual && !options.ticket && !review && selectionChanged(result.reason))) for (const list of [readyModels, idleModels]) {
             const index = list.findIndex(model => model.preset.id === selected.preset.id);
             if (index >= 0) list.splice(index, 1);
           }
@@ -1362,7 +1363,9 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
     // Operators run this after every Claude CLI upgrade: the sandbox must still refuse both probes.
     const triageSandbox = options.doctor && c.triage ? await triageCanary() : undefined;
     if (options.manual && (queue.ready.length || options.reconcile) && !readyModels.length && !results.length) return decision('no-ready-model', { streams, eligible: queue.ready.length, message: 'No configured model is ready. ' + streams.flatMap(stream => stream.models.length ? stream.models.map(model => `${model.name}: ${model.reason}`) : [`${stream.provider}: ${stream.reason === 'provider-disabled' ? 'provider limit is Off' : stream.reason === 'provider-running' ? 'provider limit is full' : 'no automatic model configured'}`]).join('; ') });
-    return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length, ...triageSandbox ? { triageSandbox } : {} });
+    // A named review or reconcile ends on its own attempt, so its refusal keeps that attempt's explanation.
+    const named = (options.upstream || options.reconcile) && results.at(-1)?.message ? { message: results.at(-1)!.message } : {};
+    return decision(reason, { streams, dispatches: results, skipped, eligible: queue.ready.length, ...named, ...triageSandbox ? { triageSandbox } : {} });
   } finally { if (ownsKanvil) await kanvil.close(); }
 }
 
@@ -1595,6 +1598,9 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
         if (!state?.due || state.watch.finished?.id !== review.repair.runId) return decision('repair-changed-before-dispatch', { message: 'The failed run changed or already has a repair.' });
       }
       if (review?.reconcile && currentJobs.some(job => job.taskId === review.reconcile.taskId && !['complete', 'dismissed'].includes(job.state))) return decision('reconcile-running', { message: `${review.reconcile.ticketKey} already has an open run.` });
+      // A reconcile can deliver its ticket's work, so the ticket's label slots bind it like a ticket start.
+      const reconcileLabel = review?.reconcile && labelGated && fullLabel(c, currentJobs, fresh.threads, { projectId: project.kanvilId, labels: review.reconcile.labels.map(name => ({ name })) });
+      if (reconcileLabel) return decision('label-limit', { message: `Waiting for a free ${reconcileLabel} slot` });
       if (JSON.stringify((clients.currentConfig ?? plan?.currentConfig ?? loadConfig)()) !== JSON.stringify(c)) return decision('configuration-changed-before-dispatch');
       if (activePlanId && store.plan(activePlanId)?.state !== 'active') return decision('plan-cancelled-before-dispatch');
       if (discovery && !discoveryAvailable(project, currentJobs, store, plan?.skipProjects)) return decision('discovery-changed-before-dispatch');
