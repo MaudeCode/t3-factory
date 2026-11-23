@@ -41,6 +41,8 @@ test('ticket dispatch supplies the current skill and leaves merge policy to that
       for (const dispatched of [prompt, manualPrompt]) {
         assert.ok(dispatched.indexOf('PR monitoring:') > dispatched.indexOf('</software-factory-skill>'), 'native PR monitoring must follow the supplied skill and its polling advice');
         assert.match(dispatched, /call watch_pull_request and end your turn/);
+        assert.match(dispatched, /call list_thread_pull_requests and call watch_pull_request with until "merged" again for each PR you still wait on that shows watching: false/);
+        assert.match(dispatched, /before the repository's gate check \(such as CI Gate\) exists/);
         assert.ok(dispatched.indexOf('Job ownership:') > dispatched.indexOf('</software-factory-skill>'), 'job boundaries follow the supplied workflow');
         assert.match(dispatched, /Do not message, steer, interrupt, launch, settle or manage unrelated sessions/);
         assert.match(dispatched, /Only an explicit user instruction authorizes cross-session coordination/);
