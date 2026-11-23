@@ -7,6 +7,7 @@ import { ReadContext } from '../src/read-context.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { executing, providerExecuting } from '../src/policy.ts';
 import { publicStopCommand, v2Shell, v2Thread } from './v2-fixture.ts';
+import { fixtureSocket } from './rpc-fixture.ts';
 
 function fixtureT3(t: test.TestContext, routes: Record<string, (init?: RequestInit) => Response>, persistent = false) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-protocol-'));
@@ -161,29 +162,11 @@ test('old internal requests undergo orphan probing without exposing human reques
 });
 
 function fixtureRpc(t: test.TestContext, reply: (request: { id: string; tag: string; payload: unknown }) => unknown[], persistent = false) {
-  const requests: { tag: string; payload: unknown }[] = [];
-  const sockets: FixtureSocket[] = [];
-  let connections = 0;
-  class FixtureSocket extends EventTarget {
-    readyState = 1;
-    constructor() { super(); connections++; sockets.push(this); }
-    send(data: string) {
-      const message = JSON.parse(data);
-      if (message._tag !== 'Request') return;
-      requests.push(message);
-      queueMicrotask(() => { for (const response of reply(message)) this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(response) })); });
-    }
-    close() { this.readyState = 3; }
-  }
-  const original = globalThis.WebSocket;
-  globalThis.WebSocket = FixtureSocket as unknown as typeof WebSocket;
-  t.after(() => { globalThis.WebSocket = original; });
+  const socket = fixtureSocket(t, reply);
   const { t3 } = fixtureT3(t, {}, persistent);
   t.after(async () => { await (t3 as any).close?.(); });
   t.mock.method(t3, 'socketUrl', async () => 'ws://fixture');
-  return { t3, disconnect: (notify = true) => { const socket = sockets.at(-1)!; socket.readyState = 3; if (notify) socket.dispatchEvent(Object.assign(new Event('close'), { code: 1006, reason: 'Fixture disconnect' })); }, connections: () => connections, requests: () => requests.map(r => ({ tag: r.tag, payload: r.payload })), respond: (requestId: string, value: unknown, stream = false) => {
-    for (const socket of sockets) if (socket.readyState === 1) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(stream ? { _tag: 'Chunk', requestId, values: [value] } : { _tag: 'Exit', requestId, exit: { _tag: 'Success', value } }) }));
-  } };
+  return { t3, ...socket };
 }
 const success = (request: { id: string }) => ({ _tag: 'Exit', requestId: request.id, exit: { _tag: 'Success', value: null } });
 
@@ -280,28 +263,22 @@ test('overlapping warm readers do not copy the whole shell or mutate another rea
   } finally { controller.abort(); await stream; }
 });
 
-test('the live revision changes with each shell or provider change and is unknown without both live views', async t => {
-  const ready = Promise.withResolvers<void>(); let shellRequest = '', configRequest = '';
+// What changes the admission revision is owned by test/quiet-pass.test.ts, through the service lane that reads it.
+test('the admission revision is unknown without both live views', async t => {
+  const ready = Promise.withResolvers<void>();
   const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
   const f = fixtureRpc(t, request => {
-    if (request.tag === 'orchestration.subscribeShell') { shellRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'live' })]) }] }]; }
-    if (request.tag === 'subscribeServerConfig') { configRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider] } }] }]; }
+    if (request.tag === 'orchestration.subscribeShell') return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'live' })]) }] }];
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider] } }] }];
     return [success(request)];
   }, true);
-  assert.equal(f.t3.liveRevision(), undefined, 'no live view reports no changes');
+  assert.equal(f.t3.admissionRevision(), undefined, 'no live view reports no changes');
   const controller = new AbortController(), stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') ready.resolve(); }, controller.signal);
-  const settled = async (send: () => void) => { const before = f.t3.liveRevision(); send(); await new Promise(resolve => setImmediate(resolve)); return [before, f.t3.liveRevision()]; };
   try {
     await ready.promise;
-    assert.notEqual(f.t3.liveRevision(), undefined);
-    const [beforeThread, afterThread] = await settled(() => f.respond(shellRequest, { kind: 'thread.updated', sequence: 43, location: 'active', thread: v2Thread({ id: 'live', updatedAt: '2026-01-02T00:00:00.000Z' }) }, true));
-    assert.notEqual(afterThread, beforeThread, "a thread's updatedAt changes the revision");
-    const [beforeSame, afterSame] = await settled(() => f.respond(configRequest, { type: 'providerStatuses', payload: { providers: [provider] } }, true));
-    assert.equal(afterSame, beforeSame, 'an unchanged provider status leaves it');
-    const [beforeProvider, afterProvider] = await settled(() => f.respond(configRequest, { type: 'providerStatuses', payload: { providers: [{ ...provider, status: 'error' }] } }, true));
-    assert.notEqual(afterProvider, beforeProvider, 'a provider snapshot change changes it');
+    assert.notEqual(f.t3.admissionRevision(), undefined);
     f.disconnect(false);
-    assert.equal(f.t3.liveRevision(), undefined, 'a disconnected view cannot vouch for unchanged inputs');
+    assert.equal(f.t3.admissionRevision(), undefined, 'a disconnected view cannot vouch for unchanged inputs');
   } finally { controller.abort(); await stream; }
 });
 

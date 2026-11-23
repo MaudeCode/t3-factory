@@ -24,6 +24,7 @@ const QUOTA_RETRY_SECONDS = [1, 2, 5, 10, 30];
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
 /** A quiet lane with unchanged inputs still runs a full pass this often, so time policies such as quota reserves and run timeouts are rechecked. */
 const QUIET_RECHECK_SECONDS = 300;
+type AdmissionInputs = { t3: string | undefined; kanvil: number | undefined; store: number; config: string };
 /** Without verbose logging, a pass is logged when its wake reason or outcome changes, or when it takes longer than this. */
 const SLOW_PASS_MS = 5_000;
 
@@ -54,7 +55,7 @@ export class FactoryService {
   private readonly operations = new Map<symbol, { foreground: boolean; reason: string; context: ReadContext; id?: string; queuedAt: string; startedAt: string; done: Promise<unknown> }>();
   private readonly lanes = new Map<string, { again: boolean; done: Promise<void> }>();
   // Per admission lane: its last quiet decision with the inputs and deadline it holds for, and its last logged wake reason and outcome.
-  private readonly quiet = new Map<string, { inputs: string; decision: Decision; dueAt: number }>();
+  private readonly quiet = new Map<string, { inputs: AdmissionInputs; decision: Decision; dueAt: number }>();
   private readonly passLog = new Map<string, string>();
   private forceTriage = false;
   private statusTimer?: NodeJS.Timeout;
@@ -541,12 +542,11 @@ export class FactoryService {
     return c;
   }
 
-  // What admission decides from, apart from the clock. Undefined while T3 or Kanvil cannot report every change.
-  private admissionInputs(c: Config, kanvil: Kanvil) {
-    const views = this.t3.liveRevision();
-    return views === undefined || !kanvil.synchronized ? undefined : JSON.stringify([views, kanvil.revision, this.store.revision, c]);
+  // What admission decides from, apart from the clock. T3 or Kanvil is undefined while it cannot report every change.
+  private admissionInputs(c: Config, kanvil: Kanvil): AdmissionInputs {
+    return { t3: this.t3.admissionRevision(), kanvil: kanvil.synchronized ? kanvil.revision : undefined, store: this.store.revision, config: JSON.stringify(c) };
   }
-  private logPass(lane: string | undefined, fields: { reason: string; outcome: string; ms: number; queueWaitMs: number; skipped?: true }) {
+  private logPass(lane: string | undefined, fields: { reason: string; outcome: string; ms: number; queueWaitMs: number; skipped?: true; miss?: string[] }) {
     const key = JSON.stringify([fields.reason, fields.outcome]), previous = lane && this.passLog.get(lane);
     if (lane) this.passLog.set(lane, key);
     if (verboseLog() || !lane || previous !== key || fields.ms > SLOW_PASS_MS) log('pass', fields);
@@ -561,8 +561,12 @@ export class FactoryService {
       const kanvil = await backgroundRead(() => this.ensureKanvil(c!));
       // A quiet lane whose inputs have not changed would decide the same: return that decision until a deadline.
       const inputs = lane ? this.admissionInputs(c, kanvil) : undefined, held = lane ? this.quiet.get(lane) : undefined;
+      const live = inputs?.t3 !== undefined && inputs.kanvil !== undefined;
       if (lane) this.quiet.delete(lane);
-      if (inputs !== undefined && held?.inputs === inputs && Date.now() < held.dueAt) {
+      // Why a held decision was dropped: the inputs that changed, or its deadline.
+      const changed = held && inputs && (Object.keys(inputs) as (keyof AdmissionInputs)[]).filter(key => inputs[key] !== held.inputs[key]);
+      const miss = changed?.length ? changed : held && Date.now() >= held.dueAt ? ['deadline'] : undefined;
+      if (held && !miss) {
         this.quiet.set(lane!, held);
         this.logPass(lane, { reason, outcome: held.decision.reason, ms: performance.now() - started, queueWaitMs, skipped: true });
         return held.decision;
@@ -574,8 +578,8 @@ export class FactoryService {
         if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
       }
       this.publishWork();
-      if (lane && inputs !== undefined && quietDecision(result)) this.quiet.set(lane, { inputs, decision: result, dueAt: Math.min(Date.now() + Math.max(this.pollSeconds, QUIET_RECHECK_SECONDS) * 1000, nextDeadline(c, this.store, result)) });
-      this.logPass(lane, { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs });
+      if (lane && live && quietDecision(result)) this.quiet.set(lane, { inputs, decision: result, dueAt: Math.min(Date.now() + Math.max(this.pollSeconds, QUIET_RECHECK_SECONDS) * 1000, nextDeadline(c, this.store, result)) });
+      this.logPass(lane, { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs, ...miss ? { miss } : {} });
       return result;
     } catch (error) {
       if (this.stopped && !options.manual) return { reason: 'stopped' };

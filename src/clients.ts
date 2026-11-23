@@ -40,6 +40,12 @@ function immutableProjection<T>(value: T): T {
   return value;
 }
 type Provider = z.infer<typeof providerPayloadSchema>['providers'][number];
+// The thread fields admission classifies jobs, slots and owner activity by. Message content, token counts, updatedAt and
+// latestUserMessageAt move with every streamed event and stay out: the idle-window deadline and recheck interval cover time.
+const admissionThread = (t: Thread) => [t.id, t.projectId, t.title, t.branch, t.worktreePath, t.providerInstanceId, t.modelSelection.instanceId, t.modelSelection.model,
+  t.archivedAt, t.deletedAt ?? null, t.status, t.activeRunId, t.latestRunCompletedAt ?? null, t.pendingRuntimeRequest && [t.pendingRuntimeRequest.kind, t.pendingRuntimeRequest.createdAt],
+  t.pendingBackgroundTasks.map(task => [task.taskId, task.kind, task.childThreadId ?? null]), t.pullRequests.map(pr => [pr.url, pr.source, pr.watch != null]),
+  t.lineage?.parentThreadId ?? null, t.lineage?.relationshipToParent ?? null, t.settledOverride, t.pinnedAt ?? null, t.autoSettleDisabledAt ?? null, !!t.orphanedRun, t.activeProviderThreadId ?? null];
 const account = (p: Provider) => { const auth = (p as { auth?: { email?: unknown; workspaceId?: unknown } }).auth; return JSON.stringify([typeof auth?.email === 'string' ? auth.email.toLowerCase() : null, auth?.workspaceId ?? null]); };
 // A refused T3 request keeps its status and JSON body, so a caller can tell an authoritative answer from a failure.
 export class T3HttpError extends Error {
@@ -57,6 +63,7 @@ export class T3 {
   private readonly readLifetime = new ReadContext();
   private shellEpoch = 0;
   private viewRevision = 0;
+  private admission?: { revision: number; digest: string };
   private shellView?: { epoch: number; sequence: number; value: z.infer<typeof shellSchema> };
   private providerView?: { epoch: number; value: z.infer<typeof providerPayloadSchema>['providers'] };
   private streams?: Promise<void>;
@@ -88,8 +95,18 @@ export class T3 {
   get liveProviders() { if (!this.persistent) return false; this.authenticateRpc(); return !!this.providerView && this.rpc.isLive(this.providerView.epoch); }
   peekProvider(instanceId: string) { return this.liveProviders ? structuredClone(this.providerView!.value.find(provider => provider.instanceId === instanceId)) : undefined; }
   invalidateShell() { this.shellEpoch++; }
-  /** Changes with every change to the live shell, its orphaned-run verdicts and the live provider view; undefined unless both views are live. */
-  liveRevision() { return this.peekShell() && this.liveProviders ? this.viewRevision : undefined; }
+  /** Changes when a live shell or provider field admission reads changes, not on every streamed event; undefined unless both views are live. */
+  admissionRevision() {
+    const shell = this.peekShell();
+    if (!shell || !this.liveProviders) return;
+    if (this.admission?.revision !== this.viewRevision) {
+      const threads = (location: string, list: Thread[]) => list.map(t => [location, ...admissionThread(t)]);
+      const rows = [...threads('active', shell.threads), ...threads('archive', shell.archivedThreads)].sort((a, b) => a[1]! < b[1]! ? -1 : a[1]! > b[1]! ? 1 : 0);
+      const projects = shell.projects.map(p => [p.id, p.title, p.workspaceRoot]).sort();
+      this.admission = { revision: this.viewRevision, digest: createHash('sha256').update(JSON.stringify([rows, projects, this.providerView!.value])).digest('base64url') };
+    }
+    return this.admission.digest;
+  }
   async request(path: string, body?: unknown): Promise<unknown> {
     return readPhase(path === '/api/orchestration/shell' ? 't3.shell' : path === '/api/auth/websocket-ticket' ? 't3.socket-ticket' : 't3.thread', async signal => {
       const credential = this.readCredential();
