@@ -9,7 +9,7 @@ import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
 import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
-import { serveControl, type ControlCommand, type ControlResult } from './control.ts';
+import { refuseRunCaller, serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
 import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
@@ -428,6 +428,8 @@ export class FactoryService {
       const result = await this.enqueue(queueWaitMs => this.pass(command.options as CycleOptions, 'once', queueWaitMs));
       return { code: result.reason === 'error' || (result as { triageSandbox?: { ok: boolean } }).triageSandbox?.ok === false ? 1 : 0, data: result };
     }
+    const refused = await refuseRunCaller(command, this.store.jobs(), async () => (await this.t3.shell(true, true)).threads);
+    if (refused) return refused;
     return runManualRequest(loadConfig(this.configPath), this.store, command.options as CycleOptions, this.enqueue.bind(this), (options, wait) => this.pass(options, 'dispatch', wait), this.requests, operation => { if (operation.state === 'uncertain') this.uncertainRequests.add(operation.id); }, receivedAt);
   }
 

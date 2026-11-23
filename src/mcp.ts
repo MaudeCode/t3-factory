@@ -1,10 +1,13 @@
 // A stdio MCP server that lets agents read and steer the running factory. Every write goes through the scheduler's
-// control socket, so agents get the same limits and locks as the CLI and web app. Limit overrides, triage decisions (they are recorded as the owner's) and settings are not exposed.
+// control socket, so agents get the same limits and locks as the CLI and web app. Triage decisions (they are recorded as the owner's) and settings are not exposed.
+// `dispatch` takes limit overrides, a model and a provider only from the owner's sessions: it sends this server's working directory,
+// and the scheduler refuses them when that is inside an unfinished run's worktree (`refuseRunCaller`), so runs cannot lift limits for work they queue.
 import { existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { callControl, dispatchOptions, type ControlCommand } from './control.ts';
+import { dispatchProviderSchema, overridableLimits } from './config.ts';
 
 const id = z.string().regex(/^[\w-]{1,64}$/);
 type Tool = { description: string; input: z.ZodObject; command?: (input: any) => ControlCommand; read?: (stateDir: string) => unknown };
@@ -28,19 +31,27 @@ export const tools: Record<string, Tool> = {
     command: ({ key }) => ({ type: 'ticket', key: key.toUpperCase(), agent: true }),
   },
   dispatch: {
-    description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Normal limits apply, including the quota reserve and idle time, and the model is chosen automatically from presets marked automatic; the result says why work did not start. Omit all targets to let the factory pick the next ticket.',
+    description: 'Queue factory work now: one ticket (optionally with its dependency chain), an Epic plan, or an upstream review. Without overrideLimits, model or provider, normal limits apply, including the quota reserve and idle time, and the model is chosen automatically from presets marked automatic; the result says why work did not start. overrideLimits, model and provider start it as the owner would from the CLI; they are refused when the call comes from a factory run (its worktree). Omit all targets to let the factory pick the next ticket.',
     input: z.object({
       ticket: z.string().regex(/^[A-Za-z0-9]{1,32}-\d{1,9}$/).optional(),
       epic: id.optional(),
       upstream: z.string().regex(/^[\w.-]+\/[\w.-]+$/).optional().describe('owner/repo'),
       chain: z.enum(['first', 'all']).optional().describe('With ticket: start its first blocker, or run the whole chain'),
+      overrideLimits: z.union([z.literal(true), z.array(z.enum(overridableLimits)).min(1)]).optional().describe('true for every limit, or the limits to lift for this dispatch and its chain or plan. Not available to factory runs'),
+      model: z.string().max(64).optional().describe('auto or a model preset ID. Not available to factory runs'),
+      provider: dispatchProviderSchema.optional().describe('With automatic model selection: the provider to use. Not available to factory runs'),
       dryRun: z.boolean().optional(),
     }).strict(),
-    command: input => ({ type: 'dispatch', options: dispatchOptions(['--agent',
-      ...input.ticket ? ['--ticket', input.ticket.toUpperCase()] : [], ...input.epic ? ['--epic', input.epic] : [],
-      ...input.upstream ? ['--upstream', input.upstream] : [], ...input.chain ? ['--chain', input.chain] : [],
-      ...input.dryRun ? ['--dry-run'] : [],
-    ]) }),
+    command: input => {
+      const owner = input.overrideLimits !== undefined || input.model !== undefined || input.provider !== undefined;
+      const limits = input.overrideLimits === true ? ['--override-limits'] : input.overrideLimits ? ['--override', input.overrideLimits.join(',')] : [];
+      return { type: 'dispatch', ...owner ? { callerCwd: process.cwd() } : {}, options: dispatchOptions([...owner ? [] : ['--agent'],
+        ...input.ticket ? ['--ticket', input.ticket.toUpperCase()] : [], ...input.epic ? ['--epic', input.epic] : [],
+        ...input.upstream ? ['--upstream', input.upstream] : [], ...input.chain ? ['--chain', input.chain] : [], ...limits,
+        ...input.model ? ['--model', input.model] : [], ...input.provider ? ['--provider', input.provider] : [],
+        ...input.dryRun ? ['--dry-run'] : [],
+      ]) };
+    },
   },
   stop_run: {
     description: 'Stop a running factory run by its job ID.',
