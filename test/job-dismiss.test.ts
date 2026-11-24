@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configSchema } from '../src/config.ts';
@@ -176,4 +176,23 @@ test('job-dismiss --reset-ticket refuses another status, an older claim or a liv
   assert.equal((await f.handle('deleted', true)).code, 0);
   assert.deepEqual(f.writes.map(w => [w.method, w.body.changes]), [['PATCH', { status: 'todo' }]]);
   assert.equal(f.store.job('deleted')!.state, 'dismissed');
+});
+
+// History deltas select by change time, so a dismissal's time is taken when it is saved, after the workspace's head is read.
+test('a dismissal is stamped after the workspace read it waits on, so a history cursor cannot pass it', async t => {
+  const f = await fixture(t), bin = mkdtempSync(join(tmpdir(), 'factory-git-')), started = join(bin, 'started'), release = join(bin, 'release');
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\ntouch "${started}"\nwhile [ ! -e "${release}" ]; do sleep 0.01; done\necho 0123456789abcdef\n`, { mode: 0o755 });
+  const path = process.env.PATH; process.env.PATH = `${bin}:${path}`;
+  t.after(() => { process.env.PATH = path; rmSync(bin, { recursive: true, force: true }); });
+  f.store.save({ ...f.job('deleted', 'gone'), thread: { worktreePath: bin, branch: 'feat/FIX-1' } } as Job);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-02-01T00:00:00Z') });
+  const result = f.handle('deleted');
+  const until = async (ok: () => boolean) => { for (let i = 0; !ok(); i++) { if (i > 500) throw new Error('git was not called'); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setTimeout(resolve, 10)); } };
+  await until(() => existsSync(started));
+  t.mock.timers.setTime(Date.parse('2026-02-01T00:05:00Z'));
+  writeFileSync(release, '');
+  assert.equal((await result).code, 0);
+  const dismissed = f.store.job('deleted')!;
+  assert.equal(dismissed.dismissedHead, '0123456789abcdef');
+  assert.equal(dismissed.dismissedAt, '2026-02-01T00:05:00.000Z', 'the dismissal time is taken when it is saved');
 });

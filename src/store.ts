@@ -163,6 +163,7 @@ const statusJobs = {
 // The provider instance a job reserved quota on; jobs from before model selection ran on Claude.
 const jobInstance = "coalesce(json_extract(data, '$.modelSelection.instanceId'), 'claudeAgent')", jobCreated = "json_extract(data, '$.createdAt')";
 // A job's last change in milliseconds: the latest of its creation, completion and dismissal. Date.parse's order, so differently written timestamps still compare.
+// History deltas rely on writers taking these times in the same synchronous step as Store.save, so change times follow commit order.
 const jobChanged = `max(${['createdAt', 'completedAt', 'dismissedAt'].map(field => `coalesce(round(unixepoch(json_extract(data, '$.${field}'), 'subsec') * 1000), 0)`).join(', ')})`;
 /** Dispatches recorded on one provider instance: how many, and the newest one's `createdAt` in epoch milliseconds. */
 export type Reservations = { count: number; lastCreatedAt?: number };

@@ -197,7 +197,6 @@ export async function loadSources() {
 }
 // The first read loads every job; later reads ask for the jobs changed since the newest change already loaded and merge them by ID.
 // Reads run one at a time, so a slower read never overwrites a newer one.
-// ponytail: a change whose time was taken before an earlier-committed newer one (dismissJob awaits git between the two) is missed until the next full load; send an overlapping cursor if that shows up.
 let historyCursor, historyRead = Promise.resolve();
 const changedAt = (j) => Math.max(Date.parse(j.createdAt) || 0, Date.parse(j.completedAt) || 0, Date.parse(j.dismissedAt) || 0);
 export function loadHistory() {

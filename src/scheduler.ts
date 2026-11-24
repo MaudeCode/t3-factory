@@ -352,11 +352,13 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
 }
 // Dismissal keeps the workspace's branch, path and head so cleanup can still verify it.
 async function dismissJob(store: Store, job: Job, reason: string, at?: { branch: string | null; worktreePath: string | null }) {
-  job.state = 'dismissed'; job.reason = reason; job.dismissedAt = new Date().toISOString();
+  job.state = 'dismissed'; job.reason = reason;
   job.dismissedBranch = at?.branch ?? undefined; job.dismissedWorktreePath = at?.worktreePath ?? undefined;
   if (at?.worktreePath && existsSync(at.worktreePath)) {
     try { job.dismissedHead = await git(at.worktreePath, ['rev-parse', 'HEAD']); } catch { /* Keep unknown artifacts protected. */ }
   }
+  // Stamped with the save, after the await: history deltas select by change time, so a time taken before another job's later save would fall behind the page's cursor.
+  job.dismissedAt = new Date().toISOString();
   store.save(job); log('job-dismissed', { jobId: job.id, threadId: job.threadId });
 }
 
