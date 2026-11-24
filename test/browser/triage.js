@@ -1,5 +1,5 @@
 // Real Triage view, its settings and start path; synthetic state, toggle, config and dispatch endpoints only.
-import { openSearch, checkPageHead } from "./search.js";
+import { openSearch, checkPageHead, checkTimesFollowClock } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, actions, config, notice, operations, issues, sessionOverrides } from '../../web/lib/store.js';
@@ -90,6 +90,7 @@ async function run() {
   await show();
   const text = () => root.textContent;
   assert(/3 need you.*2 waiting, oldest 3 h \d+ min ago, triaging PIN-4, 1 queued, 3 promoted/.test(root.querySelector('.triage-inbox').textContent) && root.querySelectorAll('.triage-inbox')[1].textContent.includes('clear') && !root.querySelectorAll('.triage-inbox')[1].textContent.includes('need'), 'each inbox shows its queue in pipeline order and how many reports need the owner');
+  await checkTimesFollowClock('Inbox triage', () => root.querySelector('.triage-inbox').textContent);
   assert(keys('Needs you') === 'PIN-6,PIN-2,PIN-12' && !keys('History').includes('PIN-12'), 'Needs you lists every open report waiting on the owner, including one older than the recent results');
   const info = row('PIN-12', 'Needs you');
   assert(visibleTag(info)?.textContent === 'needs-info' && info.textContent.includes('Needs more information') && info.textContent.includes('3 d') && info.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/pin/tickets/t12' && !info.querySelector('[aria-label^="Run "]'), 'a needs-info report says what it needs and how long it has waited, and opens its inbox ticket');
@@ -170,6 +171,7 @@ async function ready({ reportHeight, tagLeft } = {}) {
   if (tagLeft === undefined) { await show(); ({ reportHeight, tagLeft } = reportRow()); }
   await showReady();
   assert(keys() === 'EX-40,EX-41', 'the Reports view lists the promoted tickets that have not started, newest first');
+  await checkTimesFollowClock('Reports', () => row('EX-40').textContent);
   const ex40 = row('EX-40');
   assert(ex40.textContent.includes('Launch crash with empty saved state') && ex40.textContent.includes('from PIN-7') && ex40.querySelector('.meta-project').textContent === 'Example', 'a promoted row shows the new ticket and its report');
   assert(ex40.querySelector('a.next-ticket').href === 'https://kanvil.example.test/projects/p/tickets/t40', 'the row links to the promoted ticket');

@@ -4,7 +4,7 @@ import "../../web/lib/theme.js";
 import { applyState, operations, status, notice, blocked, serverNow, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../../web/lib/store.js";
 import { App } from "../../web/views/App.js";
 import { navigate, route, match } from "../../web/lib/router.js";
-import { openSearch, checkPageHead } from "./search.js";
+import { openSearch, checkPageHead, checkTimesFollowClock } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = () => new Promise((resolve) => setTimeout(resolve, 60));
@@ -79,6 +79,8 @@ async function run() {
   if (innerWidth <= 900) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause(); }
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
   assert(many.querySelectorAll('a[href^="/api/threads/"]').length === 1 && many.querySelector('a[href^="/api/threads/"]').title.includes("2 more"), "several sources collapse into one session action");
+  // A tick renders the times and the Open session link with its icon alone; the link's "reported … ago" tooltip still moves.
+  await checkTimesFollowClock("Session tickets", () => many.querySelector('a[href^="/api/threads/"]').title, ["SessionLink", "Icon"]);
   assert(many.getBoundingClientRect().right <= innerWidth && many.textContent.includes("Third look"), "all sources are named without widening the row");
   const tray = () => document.querySelector('.popover[aria-label="Issues"]');
   button("Run APP-2 now").click();

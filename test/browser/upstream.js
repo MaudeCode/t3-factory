@@ -4,6 +4,7 @@ import '../../web/lib/theme.js';
 import { applyState, operations } from '../../web/lib/store.js';
 import { Upstream } from '../../web/views/Upstream.js';
 import { operationText } from '../../web/lib/format.js';
+import { checkTimesFollowClock } from './search.js';
 const root = document.querySelector('#root');
 const pause = () => new Promise(resolve => setTimeout(resolve, 60));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
@@ -26,6 +27,7 @@ async function show() {
 async function run() {
   await show();
   assert(!root.textContent.includes('Inbox triage'), 'inbox queues live on the Triage page');
+  await checkTimesFollowClock('Upstream', () => root.querySelector('.release-versions').textContent);
   const button = root.querySelector('[aria-label="Review Example upstream now"]');
   assert(button && button.textContent.trim() === '' && button.querySelector('.icon-play'), 'a due release has an icon-only review action');
   assert(!root.querySelector('[aria-label="Review Current upstream now"]'), 'current releases have no launch action');

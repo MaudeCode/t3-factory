@@ -1,7 +1,7 @@
 import { html, useState } from "../lib/h.js";
-import { config, statusSection, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
-import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
-import { Button, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody, Icon } from "../ui/index.js";
+import { config, statusSection, jobs, actions, operations, pendingReview, startRun } from "../lib/store.js";
+import { until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
+import { Button, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody, Icon, RelativeTime } from "../ui/index.js";
 import { RunGroup, Operations, SectionSwitch } from "./Deck.js";
 import { follow } from "../lib/router.js";
 
@@ -51,9 +51,7 @@ function WatchDialog({ edit, onClose }) {
 
 // The Sources page's Upstream releases view; `lead` is its view switch.
 export function Upstream({ lead } = {}) {
-  clock.value;
   const [edit, setEdit] = useState(null);
-  const now = serverNow();
   const c = config.value;
   if (!c.upstream)
     return html`<${Page} narrow title="Sources">
@@ -85,7 +83,7 @@ export function Upstream({ lead } = {}) {
                   <span class="release-versions">
                     <span><small>reviewed</small><${Link} href=${releaseLink(u.repo, r?.reviewed ?? u.firstBase)} class="mono">${r?.reviewed ?? u.firstBase}<//></span>
                     <span><small>latest</small>${r?.latest ? html`<${Link} href=${releaseLink(u.repo, r.latest)} class="mono">${r.latest}<//>` : html`<span class="muted">not checked</span>`}</span>
-                    <span><small>checked</small>${r?.checkedAt ? html`${ago(r.checkedAt, now)}<em class="muted">, next ${nextCheck(r.checkedAt, u.checkMinutes ?? minutesDefault, now)}</em>` : html`<span class="muted">not yet</span>`}</span>
+                    <span><small>checked</small>${r?.checkedAt ? html`<${RelativeTime} at=${r.checkedAt} /><em class="muted">, next <${RelativeTime} text=${(now) => nextCheck(r.checkedAt, u.checkMinutes ?? minutesDefault, now)} /></em>` : html`<span class="muted">not yet</span>`}</span>
                     ${r?.checkError && html`<span class="tone-attention">${r.checkError}</span>`}
                   </span>
                 </div>`,

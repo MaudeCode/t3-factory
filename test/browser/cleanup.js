@@ -1,5 +1,5 @@
 // Real application views and saved operation queue; synthetic inventory and mutation boundaries only.
-import { openSearch } from "./search.js";
+import { openSearch, checkTimesFollowClock } from "./search.js";
 import { html, render } from '../../web/lib/h.js';
 import '../../web/lib/theme.js';
 import { applyState, operations } from '../../web/lib/store.js';
@@ -47,6 +47,7 @@ async function run() {
   await show();
   assert(document.querySelector('.cleanup-row').getBoundingClientRect().top < (innerWidth < 600 ? 430 : 300), 'worktrees appear before diagnostics');
   assert(document.querySelectorAll('.cleanup-row').length === 21, 'every present worktree except the primary checkout is listed on one page');
+  await checkTimesFollowClock('Storage', () => document.querySelector('.cleanup-footer').textContent);
   assert(!document.body.textContent.includes('Needs you') && [...document.querySelectorAll('button')].some(b => b.getAttribute('aria-label') === 'Delete 18 unused worktrees'), 'one deletion action owns the workflow and names its candidate count');
   assert(document.body.textContent.includes('128.00 GiB free'), 'one filesystem free-space observation appears in the header');
   assert(!document.querySelector('.cleanup-row').textContent.includes('/workspace/'), 'rows use readable names');

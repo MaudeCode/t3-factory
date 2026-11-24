@@ -1,8 +1,8 @@
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, statusSection, live, busy, clock, serverNow, actions, launchOperations, TRIAGE_ORIGIN as ORIGIN } from "../lib/store.js";
+import { config, statusSection, live, busy, actions, launchOperations, TRIAGE_ORIGIN as ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, streamReason, ticketKey, triageSummary } from "../lib/format.js";
-import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page } from "../ui/index.js";
+import { byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, streamReason, ticketKey, triageSummary } from "../lib/format.js";
+import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, RelativeTime } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice, SectionSwitch } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { follow, ticketClick } from "../lib/router.js";
@@ -21,7 +21,7 @@ const verdictTitle = { "needs-info": () => "Needs more information", duplicate: 
 const RETRY = ["triaged", "triage-failed", "promotion-blocked"];
 
 // One inbox's queue on one line: its project, label, state and daily limit.
-function InboxLine({ row, now, owed }) {
+function InboxLine({ row, owed }) {
   const c = config.value, p = c.projects.find((p) => p.kanvilId === row.projectId && p.inbox?.kanvilId === row.inboxId);
   const limit = p ? p.inbox.maxPromotionsPerDay : row.limit;
   return html`<div class="triage-inbox">
@@ -29,7 +29,7 @@ function InboxLine({ row, now, owed }) {
     ${row.running ? html`<${Tag} tone="on">triaging<//>` : row.untriaged ? html`<${Tag} tone="attention">${row.untriaged} waiting<//>` : row.synchronized ? html`<${Tag} tone="ok">clear<//>` : html`<${Tag}>not synchronized<//>`}
     ${owed > 0 && html`<${Tag} tone="attention">${owed} ${owed === 1 ? "needs" : "need"} you<//>`}
     <${Tag} tone=${limit === 0 ? "attention" : ""}>${promotionLimit(limit)}<//>
-    <span class="muted">${triageSummary(row, now)}</span>
+    <${RelativeTime} class="muted" text=${(now) => triageSummary(row, now)} />
   </div>`;
 }
 
@@ -82,11 +82,11 @@ export const DuplicateLink = ({ of: key }) => key && html`<a href=${`?ticket=${e
 export const reportRow = (event, id, c = config.value) => ({ id, event, key: event.data.ticket, title: outcomeText(event), projectId: event.data.projectId ?? c.projects.find((p) => p.inbox?.kanvilId === event.data.inboxId)?.kanvilId, createdAt: event.time });
 
 // A report as a list row: the promoted ticket, which can be started, or the report with its outcome.
-function Result({ row, now, selection, start, progress, decision, held }) {
+function Result({ row, selection, start, progress, decision, held }) {
   const c = config.value, d = row.event.data;
   const [tone, label] = d.outcome === "triaged" ? [verdictTone[d.verdict] ?? "", d.verdict] : outcomeTag[d.outcome] ?? ["attention", "error"];
   const tag = html`<${Tag} tone=${tone}>${label}<//>`;
-  const report = kanvil(c, "projects", d.inboxId, "tickets", d.ticketId), when = html`<span class="muted" title=${new Date(row.event.time).toLocaleString()}>${ago(row.event.time, now)}</span>`;
+  const report = kanvil(c, "projects", d.inboxId, "tickets", d.ticketId), when = html`<${RelativeTime} class="muted" at=${row.event.time} title=${new Date(row.event.time).toLocaleString()} />`;
   if (row.promoted) {
     const hold = startHold(row) ?? row.unavailable;
     // Labels stay searchable and filterable but are not listed; the tag, priority and difficulty say enough.
@@ -114,13 +114,12 @@ const narrowedBy = (filters, query) => query.trim() || Object.values(filters).so
 // Tickets promoted from inbox reports that have not started: the Queue page's Reports view. Each stays until a run
 // launches or it leaves the ready statuses. `lead` is the Queue's view switch.
 export function ReadyReports({ lead }) {
-  clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState([]);
-  const now = serverNow(), start = startOptions(), tickets = promotedTickets(config.value);
+  const start = startOptions(), tickets = promotedTickets(config.value);
   const starting = (row) => !!pendingFor(row) || openRun(row);
   const rows = tickets.filter((row) => matchesRunFilters(row, filters, query)).toSorted((a, b) => starting(b) - starting(a) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
   const visibleIds = JSON.stringify(rows.map((r) => r.id).toSorted());
@@ -140,7 +139,7 @@ export function ReadyReports({ lead }) {
         <${Button} size="sm" icon="play" label="Run selected tickets" disabled=${!picked.length || !!held} title=${held ?? `${overrideText(start.overrideLimits)} and start selected tickets.`} onClick=${() => { for (const r of picked) runNow(r, r.unavailable, ORIGIN, start); setSelected([]); }} />
       </div>`}
       ${rows.length
-        ? rows.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} start=${start} progress=${pendingFor(row)}
+        ? rows.map((row) => html`<${Result} key=${row.id} row=${row} start=${start} progress=${pendingFor(row)}
             selection=${selecting && html`<${Check} aria-label=${`Select ${row.key}`} checked=${selected.includes(row.id)} disabled=${busy.value} onChange=${(e) => setSelected((previous) => e.target.checked ? [...previous, row.id] : previous.filter((id) => id !== row.id))} />`} />`)
         : html`<${Empty}>${narrowedBy(filters, query) ? "No tickets match." : "No promoted tickets waiting to start."}<//>`}
     <//>
@@ -150,11 +149,10 @@ export const readyReportCount = () => promotedTickets(config.value).length;
 
 // The Sources page's Inbox triage view; `lead` is its view switch.
 export function Triage({ lead } = {}) {
-  clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
-  const now = serverNow(), c = config.value;
+  const c = config.value;
   const streams = statusSection("triageStreams").value || [], results = statusSection("triageResults").value || [];
   // Each open report is listed once from the inbox's live state, so newer results never push it out. Needs you: the
   // reports no later pass acts on. In progress: the ones triage or promotion still will.
@@ -184,19 +182,19 @@ export function Triage({ lead } = {}) {
     ${lead}
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Triage settings" title="Triage settings"><${Icon} name="gear" /></a>`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on.</p>`}
-      ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} now=${now} owed=${attention.filter((r) => r.event.data.inboxId === row.inboxId).length} />`) : html`<p class="muted">No project has an inbox.</p>`}
+      ${streams.length ? streams.map((row) => html`<${InboxLine} key=${row.inboxId} row=${row} owed=${attention.filter((r) => r.event.data.inboxId === row.inboxId).length} />`) : html`<p class="muted">No project has an inbox.</p>`}
     <//>
     <${Section} title="Needs you" count=${owed.length || null}>
       ${owed.length
-        ? owed.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} decision=${decide(row)} />`)
+        ? owed.map((row) => html`<${Result} key=${row.id} row=${row} decision=${decide(row)} />`)
         : html`<${Empty}>${narrowed ? "No reports match." : "No open report needs you."}<//>`}
     <//>
     ${moving.length > 0 && html`<${Section} title="In progress" count=${moving.length}>
-      ${moving.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} held=${heldRow(row)} />`)}
+      ${moving.map((row) => html`<${Result} key=${row.id} row=${row} held=${heldRow(row)} />`)}
     <//>`}
     <${Section} title="History" count=${history.length || null}>
       ${history.length
-        ? history.map((row) => html`<${Result} key=${row.id} row=${row} now=${now} />`)
+        ? history.map((row) => html`<${Result} key=${row.id} row=${row} />`)
         : html`<${Empty}>${narrowed ? "No results match." : "No reports triaged yet."}<//>`}
     <//>
   <//>`;

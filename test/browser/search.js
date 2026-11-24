@@ -12,10 +12,19 @@ export async function tickRenders(ms = 1000) {
   } finally { options.diffed = previous; }
   return [...names];
 }
-// A tick renders `RelativeTime` alone; `where` names the page in the failure.
-export async function checkTickRendersTimesOnly(where) {
+// A tick renders `RelativeTime` alone, or beside the page's own time components named in `also`; `where` names the page in the failure.
+export async function checkTickRendersTimesOnly(where, also = []) {
   const rendered = await tickRenders();
-  if (!rendered.length || rendered.some((name) => name !== "RelativeTime")) throw new Error(`a clock tick on ${where} renders only time components: ${rendered}`);
+  if (!rendered.length || rendered.some((name) => name !== "RelativeTime" && !also.includes(name))) throw new Error(`a clock tick on ${where} renders only time components: ${rendered}`);
+}
+// The tick check, then an hour on the clock must change `read()`, a time's text or tooltip. The clock is set back after.
+export async function checkTimesFollowClock(where, read, also) {
+  await checkTickRendersTimesOnly(where, also);
+  const before = read();
+  await tickRenders(60 * 60_000);
+  const after = read();
+  await tickRenders(Date.now() - clock.value);
+  if (after === before) throw new Error(`a time on ${where} follows the clock: ${before}`);
 }
 
 // Open the shared list search before driving a page's ordinary filtering checks.

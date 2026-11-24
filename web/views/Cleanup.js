@@ -1,15 +1,15 @@
 // Worktrees on disk for every configured repository: which are unused, what blocks the rest, and one way to delete them.
 import { html, useEffect, useState, useRef } from "../lib/h.js";
-import { config, statusSection, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, clock, serverNow, message } from "../lib/store.js";
-import { cleanupResultSummary, projectCleanupResults, ago, clockTime, formatBytes as bytes, ticketLink, threadLink, safeLink, prLabel } from "../lib/format.js";
+import { config, statusSection, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, message } from "../lib/store.js";
+import { cleanupResultSummary, projectCleanupResults, clockTime, formatBytes as bytes, ticketLink, threadLink, safeLink, prLabel } from "../lib/format.js";
 import { follow } from "../lib/router.js";
-import { Button, Select, Field, RowBody, Meta, Tag, Help, Icon, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check } from "../ui/index.js";
+import { Button, Select, Field, RowBody, Meta, Tag, Help, Icon, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check, RelativeTime } from "../ui/index.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { RunFilters } from "./Runs.js";
 
 const keyOf = item => `${item.projectId}:${item.path}`;
 const targetOf = item => ({ projectId: item.projectId, path: item.path });
-const stamp = at => at ? ago(at, serverNow()) : "Not recorded";
+const stamp = at => at ? html`<${RelativeTime} at=${at} />` : "Not recorded";
 const folderOf = item => item.path.split("/").at(-1);
 const projectOf = item => config.value.projects.find(p => p.kanvilId === item.projectId)?.name || item.repository.split("/").at(-1);
 const targetsOf = op => op.cleanupTargets ?? op.input.targets ?? [];
@@ -95,12 +95,12 @@ function CleanupRow({ item, selecting, selected, onSelect, onRemove, refreshing 
         <//>
       </button>
       <span class="cleanup-note">${note && html`<${Help} text=${note} glyph="!" tone=${next.group === "attention" ? "attention" : undefined} />`}</span>
-      <span class="cleanup-age muted small" title=${ageOf(item) ? `Finished ${clockTime(ageOf(item))}` : undefined}>${ageOf(item) ? ago(ageOf(item), serverNow(), true) : ""}</span>
+      <span class="cleanup-age muted small" title=${ageOf(item) ? `Finished ${clockTime(ageOf(item))}` : undefined}>${ageOf(item) && html`<${RelativeTime} at=${ageOf(item)} compact />`}</span>
       <div class="cleanup-row-actions">${primary}</div>
     </div>
     ${open && html`<section class="cleanup-inspector" aria-label=${`Details for ${folder}`}>
       <div class="cleanup-path-line"><code class="cleanup-path">${item.path}</code><${Button} size="sm" variant="ghost" onClick=${async () => { try { await navigator.clipboard.writeText(item.path); setCopied(true); } catch { setError("Couldn't copy the path. Select it here to copy."); } }}>${copied ? "Copied" : "Copy path"}<//></div>
-      <${Facts} items=${[["State", `${groupLabel} · ${next.reason}`], ["Branch", item.branch || "Detached"], ["Size", item.size.bytes != null ? `${bytes(item.size.bytes)} estimated${item.size.state === "stale" ? ", stale" : ""}` : null], ["Last result", previous && `${previous.message}${previous.at ? ` · ${stamp(previous.at)}` : ""}`], ["This request", op && (outcome?.state === "confirmed" ? `${outcome.physicalRemoval === false ? "Already gone" : "Deleted"}${outcome.freeSpaceChange > 0 ? ` · ${bytes(outcome.freeSpaceChange)} freed` : ""}` : outcome?.message || op.result?.data?.message || busy)]]} />
+      <${Facts} items=${[["State", `${groupLabel} · ${next.reason}`], ["Branch", item.branch || "Detached"], ["Size", item.size.bytes != null ? `${bytes(item.size.bytes)} estimated${item.size.state === "stale" ? ", stale" : ""}` : null], ["Last result", previous && html`${previous.message}${previous.at && html` · ${stamp(previous.at)}`}`], ["This request", op && (outcome?.state === "confirmed" ? `${outcome.physicalRemoval === false ? "Already gone" : "Deleted"}${outcome.freeSpaceChange > 0 ? ` · ${bytes(outcome.freeSpaceChange)} freed` : ""}` : outcome?.message || op.result?.data?.message || busy)]]} />
       <div class="links-row small">${item.jobs.map(j => html`<a href=${`/runs/${j.id}`} onClick=${follow}>Run ${j.ticketKey || "details"}</a>`)}${ticket && html`<${Link} href=${ticket}>Ticket<//>`}${item.jobs.flatMap(j => j.prUrls).map(safeLink).filter(Boolean).map(url => html`<${Link} href=${url}>${prLabel(url)}<//>`)}${owner && html`<${Link} href=${threadLink({ threadId: owner })}>Thread<//>`}</div>
       <div class="links-row cleanup-inline-tools"><${Button} variant="ghost" size="sm" label=${`Check ${folder}`} disabled=${loading} onClick=${() => refresh()}>${detail ? "Check again" : "Check"}<//>${loading && html`<${Button} size="sm" variant="ghost" onClick=${() => { inspection.current?.abort(); setLoading(false); }}>Cancel<//>`}${selectable(item) && action !== "force" && html`<${Button} variant="ghost" size="sm" disabled=${reviewing || pending} onClick=${deleteAnyway}>Delete anyway…<//>`}${detail && html`<span class="small muted">Checked ${stamp(detail.checkedAt)}</span>`}</div>
       ${error && html`<p role="alert" class="alert">${error}</p>`}
@@ -113,7 +113,6 @@ function CleanupRow({ item, selecting, selected, onSelect, onRemove, refreshing 
 }
 
 export function Cleanup() {
-  clock.value;
   const [snapshot, setData] = useState(null), [error, setError] = useState(""), [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({ query: new URLSearchParams(location.search).get("query") ?? "", repository: "", ownership: "", view: "present", sort: "action" });
   const [selecting, setSelecting] = useState(false), [selected, setSelected] = useState([]), [revision, setRevision] = useState(0), [preparing, setPreparing] = useState(false);
@@ -190,7 +189,7 @@ export function Cleanup() {
         ${data.items.length < data.total && html`<${Button} size="sm" disabled=${loading} onClick=${more}>Show more<//>`}
         ${!data.total && html`<${Empty}>${data.refreshing ? "Discovering worktrees…" : filters.view === "ready" ? "No unused worktrees." : "No worktrees match."}<//>`}
       <//>
-      <${Section} collapsible class="cleanup-footer" title="Automatic cleanup"><${Facts} items=${[["Last scan", stamp(data.lastSuccessfulScan)], ["Terminal access", data.terminalAccess ? `${data.terminalAccess.state === "available" ? "Available" : "Unavailable"} · checked ${stamp(data.terminalAccess.checkedAt)}` : null], ["Last attempt", stamp(data.maintenance?.lastAttempt)], ["Last removal", stamp(data.maintenance?.lastSuccess)], ["Last error", data.maintenance?.error], ["Next retry", data.nextRetry ? clockTime(data.nextRetry) : "None scheduled"], ["State", data.maintenance?.state || "No attempt recorded"]]} /><//>
+      <${Section} collapsible class="cleanup-footer" title="Automatic cleanup"><${Facts} items=${[["Last scan", stamp(data.lastSuccessfulScan)], ["Terminal access", data.terminalAccess ? html`${data.terminalAccess.state === "available" ? "Available" : "Unavailable"} · checked ${stamp(data.terminalAccess.checkedAt)}` : null], ["Last attempt", stamp(data.maintenance?.lastAttempt)], ["Last removal", stamp(data.maintenance?.lastSuccess)], ["Last error", data.maintenance?.error], ["Next retry", data.nextRetry ? clockTime(data.nextRetry) : "None scheduled"], ["State", data.maintenance?.state || "No attempt recorded"]]} /><//>
     `}
   <//>`;
 }
