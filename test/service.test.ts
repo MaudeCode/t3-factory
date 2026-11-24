@@ -5,7 +5,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globalAgent } from 'node:http';
-import { readPhase } from '../src/read-context.ts';
+import { readPhase, ReadContext } from '../src/read-context.ts';
 import { serveControl, callControl, commandFor } from '../src/control.ts';
 
 // The control socket is how the CLI and the web server hand work to the running scheduler.
@@ -66,7 +66,7 @@ import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
 import { cycle, stopJob } from '../src/scheduler.ts';
 import { readCleanupCatalog } from '../src/cleanup.ts';
-import { dispatchFixture, mockLaunchConnection } from './dispatch-fixture.ts';
+import { dispatchFixture, mockLaunchConnection, serviceFixture } from './dispatch-fixture.ts';
 
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 
@@ -336,4 +336,45 @@ test('run completion refreshes one maintained cleanup catalog and explicit refre
     await publication.promise;
     assert.ok(readCleanupCatalog(f.c, internal.store).items.some(item => item.path === external), 'background discovery finds worktrees outside Factory');
   } finally { await close(); }
+});
+
+test('the stored operations view changes only when an operation starts, changes stage or ends', async t => {
+  const f = serviceFixture(t), context = new ReadContext(), release = deferred();
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const writes: any[] = [], set = f.store.set.bind(f.store);
+  t.mock.method(f.store, 'set', (key: string, value: string) => { if (key === 'serviceWork' && f.store.get(key) !== value) writes.push(JSON.parse(value)); set(key, value); });
+  const settle = (ms: number) => { for (let n = 0; n < ms / 250; n++) t.mock.timers.tick(250); };
+  f.internal.publishWork(); settle(1000);
+  const idle = writes.length;
+  settle(5000);
+  assert.equal(writes.length, idle, 'nothing is written with no operation in flight');
+  const done = f.internal.enqueue(() => release.promise, false, { reason: 'fixture', context });
+  try {
+    settle(1000);
+    assert.equal(writes.length, idle + 1, 'the start is written');
+    for (let n = 0; n < 5; n++) { context.setStage('kanvil.read'); context.setStage('queued'); settle(1000); }
+    assert.equal(writes.length, idle + 1, 'time passing and a stage that returns within the second write nothing');
+    const [operation] = writes.at(-1).operations;
+    assert.equal(operation.ageMs, undefined, 'readers derive age from startedAt');
+    assert.ok(operation.startedAt && operation.stage === 'queued');
+    context.setStage('t3.read'); settle(1000);
+    assert.equal(writes.length, idle + 2, 'a stage change is written within a second');
+    assert.equal(writes.at(-1).active.stage, 't3.read');
+  } finally { release.resolve(); await done; }
+  settle(1000);
+  assert.equal(writes.length, idle + 3, 'the end is written');
+  assert.deepEqual(writes.at(-1).operations, []);
+});
+
+test('health reports each operation\'s live age and the event-loop delay', async t => {
+  const f = serviceFixture(t), release = deferred();
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const done = f.internal.enqueue(() => release.promise, false, { reason: 'fixture' });
+  try {
+    t.mock.timers.tick(3000);
+    const health = (await f.internal.handle({ type: 'health' })).data;
+    assert.equal(health.operations[0].ageMs, 3000);
+    assert.equal(typeof health.eventLoop.maxMs, 'number');
+    assert.equal(typeof health.eventLoop.p99Ms, 'number');
+  } finally { release.resolve(); await done; }
 });
