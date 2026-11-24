@@ -100,13 +100,17 @@ test('manual override runs the specified ticket/model while paused, but retains 
           tasks[0].labels = [{ name: 'sf' }];
           assert.equal((await cycle(c, store, options)).reason, 'no-eligible-ticket', 'difficulty remains mandatory');
           tasks[0].labels = [{ name: 'sf' }, { name: 'high' }];
-          other.enabled = false;
-          if (model === 'auto') assert.equal((await cycle(c, store, { ...options, ticket: 'LIB-1' })).reason, 'no-eligible-ticket');
-          else await assert.rejects(cycle(c, store, { ...options, ticket: 'LIB-1' }), /not enabled/);
-          if (model === 'auto') assert.equal((await cycle(c, store, { ...options, ticket: 'UNKNOWN-1' })).reason, 'no-eligible-ticket');
-          else await assert.rejects(cycle(c, store, { ...options, ticket: 'UNKNOWN-1' }), /not enabled/);
-          other.enabled = true;
           unrelatedUnavailable = false;
+          // Automatic work off stops only what the factory picks itself; a named ticket still starts.
+          other.enabled = false;
+          tasks.push({ ...tasks[0], id: 'lib-1', projectId: other.kanvilId, createdAt: '2025-01-01T00:00:00Z' });
+          const named = await cycle(c, store, { ...options, ticket: 'LIB-1' }, { currentConfig: () => c });
+          assert.deepEqual([named.reason, named.ticket], ['would-dispatch', 'LIB-1'], JSON.stringify(named));
+          assert.equal((await cycle(c, store, { ...options, ticket: undefined }, { currentConfig: () => c })).ticket, 'FIX-1', 'unnamed selection skips the project');
+          tasks.pop();
+          if (model === 'auto') assert.equal((await cycle(c, store, { ...options, ticket: 'UNKNOWN-1' })).reason, 'no-eligible-ticket');
+          else await assert.rejects(cycle(c, store, { ...options, ticket: 'UNKNOWN-1' }), /not configured/);
+          other.enabled = true;
         }
         assert.equal(dispatches.length, 0, 'dry-run probes never launch');
       } finally {

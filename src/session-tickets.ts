@@ -473,7 +473,7 @@ export function dismissSessionTicket(store: Store, taskId: string) {
 }
 
 /** Why Factory cannot start a ticket in this project, or null. */
-export const projectUnavailable = (project: Project | undefined) => !project ? 'Project not configured in Factory' : !project.enabled ? 'Project disabled in Factory settings' : null;
+export const projectUnavailable = (project: Project | undefined) => !project ? 'Project not configured in Factory' : null;
 
 // The list as the page shows it: actionable, not dismissed, not consumed by a confirmed Factory start, in priority order.
 export function sessionTicketStatus(c: Config, store: Store) {

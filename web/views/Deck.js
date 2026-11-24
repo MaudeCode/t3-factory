@@ -99,8 +99,8 @@ export const modelOptions = () => [["auto", "Auto"], ...config.value.models.map(
 // Start bar: project key, dash, ticket number; model; override; start. An empty number means the next eligible ticket.
 export function Composer({ initialTicket } = {}) {
   const linked = initialTicket !== undefined;
-  // Only enabled projects: the scheduler refuses a named ticket from a disabled one.
-  const keys = [...new Set(config.value.projects.filter((p) => p.enabled && p.key).map((p) => p.key))];
+  // Every configured project: automatic work off does not stop a named start.
+  const keys = [...new Set(config.value.projects.filter((p) => p.key).map((p) => p.key))];
   const [linkKey = "", linkNumber = ""] = (ticketKey(initialTicket ?? "") || "").split("-");
   const [project, setProject] = useState(linkKey || keys[0] || "");
   const [number, setNumber] = useState(linkNumber);

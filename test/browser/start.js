@@ -66,11 +66,11 @@ async function run() {
     await pause();
     assert(calls.length === 0, 'invalid launch cannot fall back to the next eligible ticket');
   }
-  // A bad link is repaired by typing a number; only enabled projects are offered.
+  // A bad link is repaired by typing a number; every configured project is offered, automatic work off or not.
   await show('/start?ticket=bad');
   const picker = root.querySelector('[aria-label^="Ticket project"]');
   picker.click(); await pause();
-  assert([...document.getElementById(picker.getAttribute('aria-controls')).children].map(li => li.textContent).join() === 'APP,T3F', 'disabled projects are not offered as ticket keys');
+  assert([...document.getElementById(picker.getAttribute('aria-controls')).children].map(li => li.textContent).join() === 'APP,T3F,OFF', 'a project with automatic work off is still offered as a ticket key');
   picker.click(); await pause();
   const number = root.querySelector('[aria-label="Ticket number"]');
   number.value = '7'; number.dispatchEvent(new Event('input', { bubbles: true })); await pause();
@@ -116,7 +116,7 @@ async function whitespace() {
   }
   return { passed: true, contexts: ['manual', 'linked'] };
 }
-// A pasted key keeps only its own number and selects its enabled project, even when the key contains digits.
+// A pasted key keeps only its own number and selects its configured project, even when the key contains digits.
 async function paste() {
   for (const [text, expected] of [["T3F-48", "T3F-48"], ["app-7", "APP-7"], ["APP-481", "APP-481"], ["XYZ-12", "APP-12"], [" 42 ", "APP-42"], ["See T3F-9: details", "T3F-9"], ["12T3F-48", "T3F-48"]]) {
     await show('/');

@@ -407,7 +407,6 @@ for (const [name, setup, reason, text] of [
   ['an Epic with no unfinished members', f => { f.tasks[0].status = 'done'; f.tasks[1].status = 'cancelled'; }, 'epic-no-unfinished', /no unfinished/],
   ['an Epic with a member in a missing project', f => { foreign(f, 'other'); f.epics[0].members.push('other'); }, 'epic-project-not-included', /OTHER-7 \(OTHER\)/],
   ['an Epic with an outside blocker in a missing project', f => { foreign(f, 'other'); blocks(f, 'other', 'a'); }, 'epic-project-not-included', /OTHER-7 \(OTHER\)/],
-  ['an Epic with a member in a disabled project', f => { setConfig(f, () => { f.c.projects.push({ ...f.c.projects[0], name: 'Paused', key: 'OFF', kanvilId: 'OFF', t3Id: 'OFF', enabled: false }); }); f.tasks.push({ ...f.task('off', 3, 'todo'), projectId: 'OFF' }); f.epics[0].members.push('off'); }, 'epic-project-not-included', /OFF-3 \(Paused\)/],
   ['an Epic with restricted tickets', f => { f.epics[0].restrictedCount = 2; }, 'epic-restricted-tickets', /2 tickets/],
   ['an Epic with a member without automation readiness', f => { f.tasks[1].automationReady = false; }, 'epic-tickets-not-ready', /FIX-2 \(Agent work is not enabled in Kanvil\)/],
   ['an Epic with a member on hold', f => { f.tasks[1].holdReason = 'waiting on legal'; }, 'epic-tickets-not-ready', /FIX-2 \(Ticket is on hold: waiting on legal\)/],
@@ -443,6 +442,15 @@ test('an Epic with an active plan is refused, a finished ticket in a missing pro
   assert.equal(running.planId, plan(f).id);
 });
 
+test('an Epic starts its members in a project with automatic work off', async t => {
+  const f = epicFixture(t, 'a');
+  setConfig(f, () => { f.c.projects.push({ ...f.c.projects[0], name: 'Paused', key: 'OFF', kanvilId: 'OFF', t3Id: 'OFF', enabled: false }); });
+  f.tasks.push({ ...f.task('off', 3, 'todo'), projectId: 'OFF' }); f.epics[0].members.push('off');
+  const started = await startEpic(f, { model: 'sol' });
+  assert.equal(started.reason, 'plan-started', JSON.stringify(started));
+  assert.deepEqual(titles(f), ['FIX-1', 'OFF-3']);
+});
+
 test('a running Epic stays active and reports hidden tickets until none remain', async t => {
   const f = epicFixture(t, 'a');
   await startEpic(f);
@@ -456,10 +464,6 @@ test('a running Epic stays active and reports hidden tickets until none remain',
 
 for (const [name, leave] of [
   ['joins from a missing project', f => { foreign(f, 'late'); f.epics[0].members.push('late'); }],
-  ['has its project disabled', f => {
-    setConfig(f, () => { f.c.projects.push({ ...f.c.projects[0], name: 'Paused', key: 'OFF', kanvilId: 'OFF', t3Id: 'OFF', enabled: false }); });
-    f.tasks.push({ ...f.task('late', 8, 'todo'), projectId: 'OFF' }); f.epics[0].members.push('late');
-  }],
 ] as [string, (f: ReturnType<typeof dispatchFixture>) => void][]) test(`a ticket that ${name} mid-run waits with its note while the rest of the Epic continues`, async t => {
   const f = epicFixture(t, 'a', 'dependent', 'free');
   blocks(f, 'a', 'free');

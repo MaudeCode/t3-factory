@@ -1135,7 +1135,7 @@ test('the Triage page gets each promoted ticket from the target projection, star
   plans = [{ state: 'cancelled', target: { id: created.id } }];
   assert.equal(results(f.c)[0].promotedTicket?.listed, true, 'a cancelled one lists it again');
   const tal = f.c.projects.findIndex(p => p.kanvilId === 'TAL'), withProject = (changes: object) => ({ ...f.c, projects: f.c.projects.map((p, i) => i === tal ? { ...p, ...changes } : p) });
-  assert.equal(results(withProject({ enabled: false }))[0].promotedTicket?.unavailable, 'Project disabled in Factory settings');
+  assert.equal(results(withProject({ enabled: false }))[0].promotedTicket?.unavailable, null, 'automatic work off still lets the ticket start');
   assert.match(results(withProject({ readyStatuses: ['backlog'] }))[0].promotedTicket?.unavailable ?? '', /^Ticket is \w+; it must be in backlog$/);
   assert.equal(results(withProject({ readyStatuses: ['backlog'] }))[0].promotedTicket?.listed, false, 'a ticket outside the ready statuses leaves the list');
   events[0] = { ...events[0], data: { ...data, outcome: 'promotion-failed' } };
