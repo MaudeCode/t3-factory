@@ -563,7 +563,9 @@ export class FactoryService {
 
   private async pass(options: CycleOptions, reason: string, queueWaitMs: number, workKind?: Clients['workKind'], providerDriver?: string) {
     const started = performance.now(), lane = workKind && `${workKind}:${providerDriver}`;
-    const decide = this.store.decisionRecorder({ workKind: workKind ?? 'tickets', providerDriver, manual: options.manual });
+    // Take the decision sequence only when this pass decides: a held decision writes nothing.
+    let recorder: ReturnType<Store['decisionRecorder']> | undefined;
+    const decide = () => recorder ??= this.store.decisionRecorder({ workKind: workKind ?? 'tickets', providerDriver, manual: options.manual });
     let c: Config | undefined;
     try {
       c = this.configure();
@@ -580,7 +582,7 @@ export class FactoryService {
         this.logPass(lane, { reason, outcome: held.decision.reason, ms: performance.now() - started, queueWaitMs, skipped: true });
         return held.decision;
       }
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide, currentConfig: () => this.settings() });
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide: decide(), currentConfig: () => this.settings() });
       const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
@@ -592,7 +594,7 @@ export class FactoryService {
     } catch (error) {
       if (this.stopped && !options.manual) return { reason: 'stopped' };
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
-      decide({ reason: 'error', message, at: new Date().toISOString() });
+      decide()({ reason: 'error', message, at: new Date().toISOString() });
       throw error;
     } finally {
       if ((options.manual || reason === 'once') && !options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }
