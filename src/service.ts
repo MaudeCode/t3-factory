@@ -234,7 +234,7 @@ export class FactoryService {
       const c = this.configure();
       const matches = (model: Config['models'][number]) => model.model.instanceId === driver || !['codex', 'claudeAgent'].includes(model.model.instanceId);
       if (workKind === 'chains') {
-        const plans = this.store.plans().filter(plan => plan.state === 'active');
+        const plans = this.store.plans('active');
         if (!plans.length) return;
         // One lane still observes completion when all capacities are zero. Only a chain that overrides provider limits launches on a provider set to Off.
         if (c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 && (driver === 'claudeAgent' || c.concurrency.claude > 0) && !plans.some(plan => skips({ manual: true, overrideLimits: plan.overrideLimits }).has('providers'))) return;

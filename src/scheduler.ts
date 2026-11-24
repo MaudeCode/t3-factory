@@ -894,7 +894,7 @@ const branchConflict = (key: string, refs: string, released: Map<string, string>
 const activeEpicPlans = (store: Store) => store.plans('active').filter(plan => plan.epic);
 function runningPlanHold(store: Store) {
   const active = activeEpicPlans(store);
-  const queued = new Set(store.plans().filter(plan => plan.state === 'active' && plan.queued).flatMap(plan => planTickets(plan).map(ticket => ticket.id)));
+  const queued = new Set(store.plans('active').filter(plan => plan.queued).flatMap(plan => planTickets(plan).map(ticket => ticket.id)));
   const epics = new Set(active.map(plan => plan.epic!.id)), tickets = new Set(active.flatMap(plan => plan.tickets.map(ticket => ticket.id)));
   return (ticket: Pick<Task, 'id' | 'epicId'>) => queued.has(ticket.id) ? 'Waits for its queued run' : tickets.has(ticket.id) || ticket.epicId && epics.has(ticket.epicId) ? 'Runs with its Epic' : '';
 }
@@ -1168,7 +1168,7 @@ function streamUpdate(store: Store, key: string, drivers = ['claudeAgent', 'code
 
 // Temporary policy holds retain manual intent; invalid requests and uncertain launches never retry.
 const limitHold = (reason: string) => ['label-limit', 'provider-disabled', 'provider-running', 'quota-reserve', 'quota-budget', 'waiting-for-idle', 'personal-provider-running', 'personal-provider-recently-active', 'gate-changed-before-dispatch', 'job-resumed-before-dispatch'].includes(reason);
-const queuedPlan = (store: Store, key: string) => store.plans().find(plan => plan.state === 'active' && plan.queued && plan.target?.key === key);
+const queuedPlan = (store: Store, key: string) => store.plans('active').find(plan => plan.queued && plan.target?.key === key);
 
 export async function cycle(c: Config, store: Store, options: CycleOptions = {}, clients: Clients = {}): Promise<Decision> {
   if (options.provider && (!options.manual || options.model && options.model !== 'auto')) throw new Error('A provider choice requires manual automatic model selection');
@@ -1933,7 +1933,7 @@ function epicRows(c: Config, store: Store) {
 // Advance every active chain: refresh ticket states, finish chains whose tickets are all done, start what can start within the run limits.
 export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], only?: string, providerDriver?: string, currentConfig?: () => Config, decide = store.decisionRecorder({ workKind: 'chains', providerDriver })): Promise<Decision[]> {
   const results: Decision[] = [];
-  for (const original of store.plans().filter(p => p.state === 'active' && (!only || p.id === only))) {
+  for (const original of store.plans('active').filter(p => !only || p.id === only)) {
     await backgroundCheckpoint();
     const plan = store.plan(original.id)!;
     if (plan.state !== 'active') continue;
@@ -2001,7 +2001,7 @@ export function setPlanOverrides(store: Store, id: string, overrideLimits: Overr
 // The order active plans get free slots in. IDs that are no longer active are dropped and active plans left out keep
 // their place after the named ones, so an order sent just as a plan finishes or starts still applies.
 export function orderPlans(store: Store, ids: string[]) {
-  const active = store.plans().filter(plan => plan.state === 'active').map(plan => plan.id), named = [...new Set(ids)].filter(id => active.includes(id));
+  const active = store.plans('active').map(plan => plan.id), named = [...new Set(ids)].filter(id => active.includes(id));
   const order = [...named, ...active.filter(id => !named.includes(id))];
   store.set('planOrder', JSON.stringify(order));
   return { ok: true, order };
