@@ -1,7 +1,7 @@
 import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
-import { authenticated, auth, version, connection, config, statusSection, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
+import { authenticated, auth, version, connection, config, statusSection, live, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen } from "../lib/store.js";
 import { route, NAV, TABS, follow } from "../lib/router.js";
-import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover } from "../ui/index.js";
+import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover, RelativeTime } from "../ui/index.js";
 import { ago, until, moment } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
@@ -42,7 +42,7 @@ function ThemePicker({ open, onClose }) {
 // starting add a count; their list opens from here or from an affected page. Problems never pop up on their own:
 // a reconnecting stream would flicker.
 function Updates() {
-  const anchor = useRef(), list = issues.value, now = serverNow(), state = CONNECTION[connection.value];
+  const anchor = useRef(), list = issues.value, state = CONNECTION[connection.value];
   const problems = (error) => error.problems ?? [{ title: error.message, raw: [], subjects: [] }];
   const count = list.reduce((n, i) => n + problems(i.error).length, 0);
   useEffect(() => { if (!count) issuesOpen.value = false; }, [count]);
@@ -56,7 +56,7 @@ function Updates() {
     </button>
     <${Popover} class="issues" open=${issuesOpen.value} onClose=${close} anchor=${anchor} label="Issues" width=${400}>
       ${list.map((i) => html`<section key=${i.source} class="issue-source">
-        <header><a href=${i.href} onClick=${(e) => { close(); follow(e); }}>${i.source}</a><span>${i.note ?? `Last failure ${ago(i.error.at, now)}`}</span></header>
+        <header><a href=${i.href} onClick=${(e) => { close(); follow(e); }}>${i.source}</a><span>${i.note ?? html`Last failure <${RelativeTime} at=${i.error.at} />`}</span></header>
         ${problems(i.error).map((p) => html`<div class="issue">
           <p class="issue-title">${p.title}</p>
           ${p.cause && html`<p>${p.cause}</p>`}
@@ -145,15 +145,14 @@ function usePhone() {
 
 // The automation switch, with its state and when the scheduler looks next. `bare` is the switch alone.
 function Automation({ bare }) {
-  clock.value;
-  const on = live.value.enabled, d = statusSection("decision").value, now = serverNow();
+  const on = live.value.enabled, d = statusSection("decision").value;
   const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
   // The schedule's next change to this switch, if it has one.
   const timer = on ? live.value.schedule.offAt : live.value.schedule.onAt, turns = on ? "Turns off" : "Turns on";
   return html`<div class="auto" title=${`${on ? "Automation on" : "Automation paused"}${timer ? `. ${turns} ${moment(timer)}` : ""}`}>
     <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
     ${!bare && html`<span class="auto-text"><b>${on ? "Automation on" : "Automation paused"}</b>
-      <small>${timer ? `${turns} ${until(timer, now)}` : on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`}</small></span>`}
+      <small><${RelativeTime} text=${(now) => timer ? `${turns} ${until(timer, now)}` : on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`} /></small></span>`}
   </div>`;
 }
 

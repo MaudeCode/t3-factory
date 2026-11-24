@@ -5,6 +5,7 @@ import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { confirmation, finishConfirmation } from "../../web/lib/confirmation.js";
 import { App } from "../../web/views/App.js";
+import { tickRenders, checkTickRendersTimesOnly } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = () => new Promise((resolve) => setTimeout(resolve, 60));
@@ -75,6 +76,12 @@ async function run() {
   const counts = [...main.querySelectorAll(".now-counts span")].map((el) => el.textContent);
   assert(counts.join() === "3running,4need you,3in your queue", `header counts match the sections: ${counts}`);
   assert([...main.querySelectorAll(".now-section h2 small")].map((el) => el.textContent).join() === "4,2,1,3", "each section title carries its full count");
+  // A clock tick renders only the times, and a run's time and its tooltip still move.
+  await checkTickRendersTimesOnly("Now");
+  const time = () => main.querySelector(".now-time"), before = [time().textContent, time().title];
+  await tickRenders(60 * 60_000);
+  assert(time().textContent !== before[0] && time().title !== before[1], `a run's time and tooltip follow the clock: ${before} -> ${time().textContent}, ${time().title}`);
+  store.clock.value = Date.now();
   // Provider identity and state are not colour alone.
   for (const r of [...rows(s.Working), ...rows(s.CI)]) assert(["Claude", "Codex"].includes(r.querySelector(".now-icon svg").getAttribute("aria-label")), "every run row names its provider");
   const asked = rows(s["Needs you"])[0];

@@ -1,7 +1,8 @@
 // Read-only display pieces: gauges, tags, tables, timelines.
 import { markdown } from "../lib/markdown.js";
 import { html, useEffect, useState } from "../lib/h.js";
-import { clockTime, dayLabel, stateLabel, toneOf, formatBytes } from "../lib/format.js";
+import { clockTime, dayLabel, stateLabel, toneOf, formatBytes, ago, duration, until } from "../lib/format.js";
+import { serverNow } from "../lib/store.js";
 import { Help } from "./controls.js";
 import { ICONS } from "../vendor/icons.js?v=d2b4c3b2cb90";
 
@@ -18,7 +19,7 @@ export function useReady() {
 }
 
 // Remaining allowance. `marker` draws the reserve line; `note` sits under the value.
-export const Meter = ({ label, value, marker, note, noteTitle, lowBelow }) => {
+export const Meter = ({ label, value, marker, note, lowBelow }) => {
   const n = pct(value),
     low = n < (lowBelow ?? marker ?? 20);
   return html`<div class=${`meter ${low ? "meter-low" : ""}`}>
@@ -27,8 +28,18 @@ export const Meter = ({ label, value, marker, note, noteTitle, lowBelow }) => {
       ${marker != null && html`<u style=${`left:${pct(marker)}%`} title=${`Reserve ${Math.round(marker)}%`}></u>`}
     </i>
     <em>${Math.round(n)}<small>%</small></em>
-    <span class="meter-note" title=${noteTitle}>${note}</span>
+    <span class="meter-note">${note}</span>
   </div>`;
+};
+
+// A time said relative to now: `at` in one `form`, "ago" ("3 min ago"), "for" ("2 h 5 min") or "in" ("in 5 min").
+// It reads the one-second clock itself, so a tick re-renders this text and not the page or row around it. `text`, a
+// function of the current server time, replaces the form for text that names several times or changes its words
+// with the time; `title` is a string or such a function. Without `class` or `title` it is bare text.
+export const RelativeTime = ({ at, form = "ago", compact, text, title, class: extra }) => {
+  const now = serverNow();
+  const shown = text ? text(now) : form === "for" ? duration(at, now) : form === "in" ? until(at, now) : ago(at, now, compact);
+  return extra || title ? html`<span class=${extra} title=${typeof title === "function" ? title(now) : title}>${shown}</span>` : shown;
 };
 
 // An inline glyph from the vendored set. With a `label` it is announced; without one it is decoration.

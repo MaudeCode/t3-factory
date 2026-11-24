@@ -1,8 +1,8 @@
 // Synthetic data, actual queue component and dispatch store. No live dispatches.
-import { openSearch, checkPageHead } from "./search.js";
+import { openSearch, checkPageHead, tickRenders, checkTickRendersTimesOnly } from "./search.js";
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
-import { applyState, operations, status, history, setSessionProvider, setSessionOverrides, startRun } from "../../web/lib/store.js";
+import { applyState, operations, status, history, setSessionProvider, setSessionOverrides, startRun, clock } from "../../web/lib/store.js";
 import * as Deck from "../../web/views/Deck.js";
 import { Runs } from "../../web/views/Runs.js";
 import { Queue } from "../../web/views/Queue.js";
@@ -795,6 +795,17 @@ async function hold() {
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 
+// A clock tick on the Queue page renders only the times, and the queue's read time still moves.
+async function clockTick() {
+  await showQueued();
+  await checkTickRendersTimesOnly("Queue");
+  const read = () => [...root.querySelectorAll("p.hint")].find((p) => p.textContent.startsWith("Queue read")).textContent, before = read();
+  await tickRenders(60 * 60_000);
+  assert(read() !== before, `the queue's read time follows the clock: ${before} -> ${read()}`);
+  clock.value = Date.now();
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+
 // Up next with a running Epic, a chain and a queued run in one Queued list, and the order the page sends on a move.
 async function showOrder() {
   await showEpics();
@@ -880,7 +891,7 @@ async function investigate() {
   return { passed: true, viewport: [innerWidth, innerHeight], coarse: matchMedia("(pointer: coarse)").matches };
 }
 
-window.queueTests = { investigate, showOrder, reorder, showQueued, hold, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
+window.queueTests = { clockTick, investigate, showOrder, reorder, showQueued, hold, epics, epicPanel: epicPanelTest, showEpics, phoneHeader, readiness, run, layout, show, showProjects, runProjects, openFilters, pickFilter, closeFilters, progress, runsControls, showRuns, runsHistory, runsHeader, queueTransitions };
 await show();
 
 

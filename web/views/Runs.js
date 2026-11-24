@@ -1,10 +1,10 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useMemo, useRef, useState } from "../lib/h.js";
-import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
+import { config, status, jobs, history, busy, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow, openTicket } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS } from "../lib/format.js";
-import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
+import { duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS } from "../lib/format.js";
+import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Empty, Facts, Timeline, Page, Section, RelativeTime } from "../ui/index.js";
 import { RunList, OrderChoice } from "./Deck.js";
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
@@ -59,7 +59,6 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
 
 const RUNS_PAGE = 100;
 export function Runs({ id } = {}) {
-  clock.value;
   useEffect(() => {
     loadHistory().catch((e) => message(e.message, true));
   }, []);
@@ -67,7 +66,7 @@ export function Runs({ id } = {}) {
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
-  // A clock tick re-renders the page but none of these inputs, so the list is built only when one changes.
+  // The list is built only when one of these inputs changes.
   const { all, counts, list } = useMemo(() => runsList(history.value, jobs.value, { state, filters, query, order }), [history.value, jobs.value, state, filters, query, order]);
   // The list renders a window of rows; a new tab, filter, search or order starts it again.
   const view = [state, filters, query, order];
@@ -101,7 +100,6 @@ export function Runs({ id } = {}) {
 
 // `embedded` is the run inside the ticket panel: its title links to the run's own page and it offers no Ticket button.
 export function RunDetail({ id, embedded }) {
-  clock.value;
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
   // A read answers for the run it was started for; a slower one for another run is dropped.
@@ -117,7 +115,6 @@ export function RunDetail({ id, embedded }) {
   const c = config.value,
     job = live ?? detail.job,
     project = projectOf(c, job),
-    now = serverNow(),
     prs = (job.prUrls || []).map(safeLink).filter(Boolean),
     ticket = ticketLink(c, job),
     report = detail.report,
@@ -143,10 +140,10 @@ export function RunDetail({ id, embedded }) {
         ["Model", html`<${Icon} name=${providerIcon(providerOf(job))} label=${providerName(providerOf(job))} /> ${modelName(c, job)} <span class="muted mono">${job.modelSelection?.model}</span>`],
         ["Why this model", job.modelReason],
         ["Difficulty", job.difficulty && difficultyLabel(job.difficulty)],
-        ["Started", `${clockTime(job.createdAt)}, ${ago(job.createdAt, now)}`],
-        ["Last activity", job.lastExecutionAt && ago(job.lastExecutionAt, now)],
-        ["Your last reply", job.lastPersonalActivity && ago(job.lastPersonalActivity, now)],
-        ["Finished", job.completedAt && `${ago(job.completedAt, now)}, after ${duration(job.createdAt, job.completedAt)}`],
+        ["Started", html`${clockTime(job.createdAt)}, <${RelativeTime} at=${job.createdAt} />`],
+        ["Last activity", job.lastExecutionAt && html`<${RelativeTime} at=${job.lastExecutionAt} />`],
+        ["Your last reply", job.lastPersonalActivity && html`<${RelativeTime} at=${job.lastPersonalActivity} />`],
+        ["Finished", job.completedAt && html`<${RelativeTime} at=${job.completedAt} />, after ${duration(job.createdAt, job.completedAt)}`],
         ["Branch", job.thread?.branch && html`<span class="mono">${job.thread.branch}</span>`],
         ["Worktree", job.thread?.worktreePath && html`<span class="mono">${job.thread.worktreePath}</span>`],
         ["T3 thread", job.thread && `${job.thread.title ? `${job.thread.title}, ` : ""}${job.thread.status}${job.thread.background?.length ? `, background: ${job.thread.background.join(", ")}` : ""}`],

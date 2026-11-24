@@ -104,7 +104,9 @@ export const issues = computed(() => {
 export const issuesOpen = signal(false);
 export const selectedModel = signal(0);
 export const selectedProject = signal(0);
-export const clock = signal(Date.now()); // ticks every second so relative times stay honest
+// Ticks every second while the tab is visible so relative times stay honest. Read it through `RelativeTime`, or in a
+// component whose structure depends on the time: any component that reads it re-renders whole every second.
+export const clock = signal(Date.now());
 let serverOffset = 0; // server clock minus browser clock
 export const serverNow = () => clock.value + serverOffset;
 
@@ -647,7 +649,8 @@ export function subscribe() {
   };
   const tick = () => {
     if (stopped) return;
-    clock.value = Date.now();
+    // A hidden tab keeps its clock still, so nothing re-renders in the background; `resume` sets it on return.
+    if (!document.hidden) clock.value = Date.now();
     if (!authenticated.value) {
       close();
       pending?.abort();
@@ -667,7 +670,9 @@ export function subscribe() {
   };
   const resume = (event) => {
     if (event.type === "online") offline = false;
-    if (document.hidden || offline || stopped) return;
+    if (document.hidden || stopped) return;
+    clock.value = Date.now();
+    if (offline) return;
     nextStream = nextRead = 0;
     if (authenticated.value) connection.value = "retrying";
     close();

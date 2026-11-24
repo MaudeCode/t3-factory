@@ -2,11 +2,11 @@
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
 import { html, useState, useEffect, useRef } from "../lib/h.js";
-import { config, needSection, statusSection, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
+import { config, needSection, statusSection, jobs, history, loadHistory, busy } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, epicPanel, closeEpic, follow } from "../lib/router.js";
-import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel } from "../lib/format.js";
-import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Text, Segmented } from "../ui/index.js";
+import { ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel } from "../lib/format.js";
+import { Button, Dialog, Icon, Tag, Meta, Facts, Empty, Text, Segmented, RelativeTime } from "../ui/index.js";
 import { startHold, runNow, startOptions, Investigate } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
 import { decisions, outcomeText, DuplicateLink } from "./Triage.js";
@@ -16,9 +16,8 @@ const CLOSED = ["done", "cancelled"];
 const Related = ({ list }) => html`<span class="ticket-related">${list.map((t) => html`<span key=${t.key} class=${t.done ? "done" : ""}><b class="key">${t.key}</b> ${t.title}${t.done && html` <${Tag} tone="ok">done<//>`}</span>`)}</span>`;
 
 function Detail({ ticket: t, tab }) {
-  clock.value;
   useEffect(() => { if (!history.value) loadHistory().catch(() => {}); }, []);
-  const c = config.value, now = serverNow(), project = c.projects.find((p) => p.kanvilId === t.projectId);
+  const c = config.value, project = c.projects.find((p) => p.kanvilId === t.projectId);
   const row = { id: t.id, key: t.key, title: t.title, projectId: t.projectId };
   const hold = CLOSED.includes(t.status) ? `${t.key} is ${ticketStatusLabel(t.status).toLowerCase()}.` : startHold(row);
   const start = startOptions();
@@ -35,7 +34,7 @@ function Detail({ ticket: t, tab }) {
     ${runs.length
       ? html`<${RunDetail} id=${runs[0].id} embedded />
         ${runs.length > 1 && html`<h4>Earlier runs</h4>
-          <ul class="ticket-runs">${runs.slice(1).map((j) => html`<li key=${j.id}><a href=${`/runs/${j.id}`} onClick=${follow}><${Tag} tone=${toneOf(j.state)}>${stateLabel(j.state)}<//> started ${ago(j.createdAt, now)}</a></li>`)}</ul>`}`
+          <ul class="ticket-runs">${runs.slice(1).map((j) => html`<li key=${j.id}><a href=${`/runs/${j.id}`} onClick=${follow}><${Tag} tone=${toneOf(j.state)}>${stateLabel(j.state)}<//> started <${RelativeTime} at=${j.createdAt} /></a></li>`)}</ul>`}`
       : html`<${Empty}>${t.inbox ? "Inbox reports are triaged, not run." : "No runs yet."}<//>`}`;
   return html`<h3 class="ticket-title">${t.title}</h3>
     <${Meta} class="ticket-meta" project=${project?.name} automationReady=${t.automationReady} priority=${t.priority} difficulty=${t.difficulty || false} labels=${t.labels}><${Tag}>${ticketStatusLabel(t.status)}<//><//>
@@ -54,7 +53,7 @@ function Detail({ ticket: t, tab }) {
       ["Blocks", t.blocks.length ? html`<${Related} list=${t.blocks} />` : null],
       ["Epic", t.epic],
       ["Not ready", t.automationReady ? null : t.holdReason || t.readiness.join("; ") || "Automation readiness is off"],
-      ["Created", ago(t.createdAt, now)],
+      ["Created", html`<${RelativeTime} at=${t.createdAt} />`],
     ]} />`;
 }
 

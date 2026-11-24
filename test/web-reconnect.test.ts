@@ -97,7 +97,7 @@ test('an expired session stops recovery and opens sign-in without a retry storm'
 });
 
 
-test('returning to a visible page reconnects a stale live stream and cancels stale recovery failures', async t => {
+test('returning to a visible page restarts the clock, reconnects a stale live stream and cancels stale recovery failures', async t => {
   const h = setup(t);
   let rejectRead!: (error: Error) => void;
   t.mock.method(globalThis, 'fetch', () => new Promise((_resolve, reject) => { rejectRead = reject; }));
@@ -105,10 +105,13 @@ test('returning to a visible page reconnects a stale live stream and cancels sta
   h.streams[0].state();
   h.document.hidden = true;
   h.document.dispatchEvent(new Event('visibilitychange'));
+  const still = store.clock.value;
   await h.advance(60000);
   assert.equal(h.streams.length, 1, 'hidden tabs do not create connections');
+  assert.equal(store.clock.value, still, 'a hidden tab keeps its clock still, so nothing re-renders in the background');
   h.document.hidden = false;
   h.document.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(store.clock.value, Date.now(), 'the clock catches up as soon as the tab is visible');
   assert.equal(h.streams.length, 2, 'visibility recovery replaces even a stale live stream');
   assert.equal(h.streams[0].closed, true);
   h.streams[1].state();

@@ -1,9 +1,9 @@
 // Home: what the factory and each provider are doing right now, what waits on the owner, and what the owner queued.
 import { html, useState } from "../lib/h.js";
-import { config, statusSection, jobs, issues, launchOperations, clock, serverNow, busy } from "../lib/store.js";
+import { config, statusSection, jobs, issues, launchOperations, busy } from "../lib/store.js";
 import { follow, ticketClick } from "../lib/router.js";
 import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket } from "../lib/format.js";
-import { Icon, Empty } from "../ui/index.js";
+import { Icon, Empty, RelativeTime } from "../ui/index.js";
 import { Machine, Composer, OperationActions, CancelPlan, planProgress, requestName } from "./Deck.js";
 import { decide, reportRow } from "./Triage.js";
 
@@ -21,17 +21,16 @@ function Row({ icon, iconLabel, tone, id, title, note, end, href, external, onCl
     ${end}
   </li>`;
 }
-const time = (text, title) => html`<span class="now-time" title=${title}>${text}</span>`;
 const runIcon = (job) => ({ icon: providerIcon(providerOf(job)), iconLabel: providerName(providerOf(job)) });
 
-function Run({ job, now, needs }) {
+function Run({ job, needs }) {
   const waited = job.lastExecutionAt ?? job.createdAt;
   // A waiting run says what it waits for; an active one, only how long it has run.
   const note = needs && (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason);
   return html`<${Row} ...${runIcon(job)} tone=${needs ? "attention" : "ok"} id=${job.label} title=${job.thread?.title ?? ""} note=${note} href=${`/runs/${job.id}`} onClick=${ticketClick(factoryTicket(config.value, job)) ?? follow}
     end=${needs && job.threadId
       ? html`<a class="btn btn-sm" href=${threadLink(job)} aria-label=${`Open ${job.label} in T3 Code`} title=${`Open ${job.label} in T3 Code`}>Open</a>`
-      : time(duration(needs ? waited : job.createdAt, now), needs ? `Waiting for you since ${ago(waited, now)}` : `Running for ${duration(job.createdAt, now)}`)} />`;
+      : html`<${RelativeTime} class="now-time" at=${needs ? waited : job.createdAt} form="for" title=${(now) => needs ? `Waiting for you since ${ago(waited, now)}` : `Running for ${duration(job.createdAt, now)}`} />`} />`;
 }
 function Report({ event }) {
   const row = reportRow(event, `open-${event.data.ticketId}`);
@@ -69,16 +68,14 @@ function Section({ title, tone, items, row, empty }) {
 }
 
 export function Now({ initialTicket } = {}) {
-  clock.value; // re-render every second for relative times
   busy.value;
-  const now = serverNow();
   const s = nowSections({ jobs: jobs.value, plans: statusSection("plans").value ?? [], operations: launchOperations.value, reports: statusSection("triageReports").value ?? [], issues: issues.value });
   const newest = (list) => list.toSorted((a, b) => byNewest(a.job, b.job));
-  const needsRow = (item) => item.kind === "run" ? html`<${Run} key=${item.id} job=${item.job} now=${now} needs />`
+  const needsRow = (item) => item.kind === "run" ? html`<${Run} key=${item.id} job=${item.job} needs />`
     : item.kind === "report" ? html`<${Report} key=${item.id} event=${item.event} />`
     : item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} needs />`
     : html`<${Problem} key=${item.id} item=${item} />`;
-  const run = (item) => html`<${Run} key=${item.id} job=${item.job} now=${now} />`;
+  const run = (item) => html`<${Run} key=${item.id} job=${item.job} />`;
   const queued = (item) => item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} />` : html`<${Plan} key=${item.id} plan=${item.plan} />`;
   const sentence = decisionSentence(statusSection("decision").value);
   const count = (n, label, tone) => html`<span class=${tone && n ? tone : ""}><b>${n}</b>${label}</span>`;
