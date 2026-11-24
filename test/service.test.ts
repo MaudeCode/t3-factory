@@ -88,6 +88,7 @@ for (const model of ['sol', 'auto']) for (const afterOwnership of [false, true])
     assert.equal(result.code, 1);
     assert.equal(result.data[afterOwnership ? 'uncertain' : 'notLaunched'], true);
     assert.equal(f.store.jobs().length, afterOwnership ? 1 : 0);
+    assert.equal(existsSync(join(f.c.stateDir, 'status.json')), false, 'readers query the Store; a dispatch writes no status file');
   } finally { release.resolve(); await internal.idle; clearTimeout(internal.timer); clearTimeout(internal.statusTimer); }
 });
 

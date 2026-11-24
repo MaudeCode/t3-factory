@@ -8,7 +8,7 @@ import type { Config } from '../src/config.ts';
 import { dispatchFixture, deferred } from './dispatch-fixture.ts';
 import type { Job } from '../src/store.ts';
 import { Store } from '../src/store.ts';
-import { cycle, refreshQuota, writeStatus } from '../src/scheduler.ts';
+import { cycle, refreshQuota, readStatus } from '../src/scheduler.ts';
 import { readOperation, saveOperation } from '../src/operations.ts';
 
 // Extend the dispatch fixture with the same persisted provider/model rows status consumes.
@@ -25,7 +25,7 @@ function quotaFixture(t: Parameters<typeof dispatchFixture>[0]) {
     models: f.c.models.filter(model => model.model.instanceId === provider.instanceId).map(model => ({ id: model.id, name: model.name, reason })), active: [], planned: [],
   }))));
   seed();
-  const status = () => writeStatus(f.c, f.store);
+  const status = () => readStatus(f.c, f.store);
   const stream = (driver = 'claudeAgent') => status().streams.find((row: { driver: string }) => row.driver === driver);
   return { ...f, providers, seed, status, stream, refresh: () => refreshQuota(f.c, f.store, f.t3) };
 }
@@ -89,7 +89,7 @@ test('refresh failure retains cached allowance and age, recovers independently, 
   assert.notEqual(f.stream().quota.capturedAt, cached.capturedAt);
   assert.match(f.stream('codex').quotaError, /automatic refresh failed.*stale/);
   const reopened = new Store(f.c.stateDir); t.after(() => reopened.close());
-  assert.deepEqual(writeStatus(f.c, reopened).streams, f.status().streams);
+  assert.deepEqual(readStatus(f.c, reopened).streams, f.status().streams);
   assert.equal(f.launches.length, 0);
 });
 
@@ -273,7 +273,7 @@ test('background quota recovery retires stale live reasons while paused and capa
   t.mock.method(f.t3, 'providers', async () => [f.provider('claudeAgent')]);
   t.mock.method(f.t3, 'provider', async () => f.provider('claudeAgent'));
   await refreshQuota(f.c, f.store, f.t3);
-  const status = writeStatus(f.c, f.store), stream = status.streams[0];
+  const status = readStatus(f.c, f.store), stream = status.streams[0];
   assert.equal(stream.quotaError, undefined);
   assert.equal(stream.reason, 'provider-disabled', 'recovered allowance must retire the stale live failure without enabling starts');
   assert.equal(stream.models[0].reason, 'provider-disabled');

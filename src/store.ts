@@ -97,6 +97,8 @@ export interface SessionThread {
   retryAfter?: string; error?: string;
 }
 const STATE_TEXT: Record<Job['state'], string> = { dispatching: 'is starting', running: 'is running', waiting: 'needs you', complete: 'finished', dismissed: 'was dismissed' };
+// Every job state but complete and dismissed, as an SQL list; STATE_TEXT's record type keeps it exhaustive.
+const LIVE_STATES = Object.keys(STATE_TEXT).filter(state => !['complete', 'dismissed'].includes(state)).map(state => `'${state}'`).join(', ');
 const STREAM_TEXT: Record<string, string> = {
   'provider-running': 'working', 'provider-disabled': 'automatic starts off', 'waiting-for-idle': 'waiting for idle time', 'quota-exhausted': 'allowance exhausted',
   'quota-budget': 'waiting for budget', 'no-eligible-model': 'no automatic model', 'difficulty-limit': 'nothing within difficulty limits', 'label-limit': 'label limits are full',
@@ -169,12 +171,38 @@ export class Store {
 `);
       this.set('jobSourcesVersion', '1');
     }
+    // Live-job reads search this index instead of parsing every row. SQLite cannot add a STORED column to an existing
+    // table without rebuilding it; the index holds the extracted value either way.
+    // The web, MCP and scheduler processes can open an old database together; the first to take the write lock adds the column.
+    const hasState = () => this.db.prepare('PRAGMA table_xinfo(jobs)').all().some(column => column.name === 'state');
+    if (!hasState()) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        if (!hasState()) this.db.exec("ALTER TABLE jobs ADD COLUMN state TEXT GENERATED ALWAYS AS (json_extract(data, '$.state')) VIRTUAL");
+        this.db.exec('CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state); COMMIT');
+      } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
+    }
     // task_id is the live claim. Completed and dismissed history retain their ticket IDs in data.
-    this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND json_extract(data, '$.state') IN ('complete', 'dismissed')");
+    this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND state IN ('complete', 'dismissed')");
   }
   jobs(): Job[] { return this.statement('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   // Hot inventory reads need lifecycle metadata, not historical dispatch prompts and commands.
   jobSummaries(): Omit<Job, 'command'>[] { return this.statement("SELECT json_remove(data, '$.command') AS data FROM jobs ORDER BY rowid").all().map(row => JSON.parse(row.data as string)); }
+  // Jobs that are not complete or dismissed, from the state index. `IN` searches the index; `NOT IN` would scan the table.
+  activeJobs(): Omit<Job, 'command'>[] { return this.statement(`SELECT json_remove(data, '$.command') AS data FROM jobs WHERE state IN (${LIVE_STATES}) ORDER BY rowid`).all().map(row => JSON.parse(row.data as string)); }
+  // The newest completed (not dismissed) jobs, oldest first.
+  finishedJobs(limit = 30): Omit<Job, 'command'>[] { return this.statement("SELECT json_remove(data, '$.command') AS data FROM jobs WHERE state = 'complete' ORDER BY rowid DESC LIMIT ?").all(limit).map(row => JSON.parse(row.data as string)).toReversed(); }
+  // Changes when another connection commits. A reader polls it to learn the scheduler wrote, without reading any rows.
+  dataVersion(): number { return this.statement('PRAGMA data_version').get()!.data_version as number; }
+  // Calls notify after another connection writes, checking at most once per interval; returns the stop function.
+  watch(notify: () => void, intervalMs = 1000) {
+    let seen = this.dataVersion();
+    const timer = setInterval(() => {
+      if (this.closed) return clearInterval(timer);
+      const now = this.dataVersion(); if (now !== seen) { seen = now; notify(); }
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }
   // Historical source classification needs identity and kind, never dispatch prompts.
   jobSources(): Pick<Job, 'kind' | 'threadId'>[] {
     return this.statement("SELECT kind, thread_id AS threadId FROM job_sources WHERE id IN (SELECT id FROM jobs UNION ALL SELECT id FROM job_history)").all() as Pick<Job, 'kind' | 'threadId'>[];

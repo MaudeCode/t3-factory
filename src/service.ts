@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, verboseLog, quietDecision, nextDeadline, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients, type Decision } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, verboseLog, quietDecision, nextDeadline, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients, type Decision } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { refuseRunCaller, serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -178,13 +178,11 @@ export class FactoryService {
     this.runLane('reconcile', async () => {
       const c = this.configure(), kanvil = await this.ensureKanvil(c);
       await reconcile(c, this.store, this.t3, kanvil, (await this.t3.shell()).threads, true, false);
-      this.publishWork();
       if (!this.stopped) this.scheduleAdmissions(reason, 'tickets');
     });
     this.runLane('inventory', async () => {
       const c = this.configure();
       await refreshInventory(c, this.store, this.t3, await this.ensureKanvil(c));
-      this.publishWork();
       if (!this.stopped) this.scheduleAdmissions(reason, 'tickets');
     });
     this.scheduleAdmissions(reason, 'tickets');
@@ -216,10 +214,9 @@ export class FactoryService {
         this.store.set('triagePromoted', JSON.stringify(promotedTickets(c, kanvil, this.store.events(TRIAGE_RESULTS, undefined, 'triage'))));
         // ponytail: a result older than the newest 500 triage entries loses its reason and shows its label alone.
         this.store.set('triageReports', JSON.stringify(openReports(c, kanvil, this.store.events(500, undefined, 'triage'), running)));
-        this.publishWork();
       };
       const results = await triagePass(c, this.store, kanvil, { force, budget: inFlight => admitTriage(this.configure(), this.t3, this.store, inFlight, force), signal: this.abort.signal, onRun: publish });
-      if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); this.publishWork(); }
+      if (results.length) { this.store.set('triageDecision', JSON.stringify({ at: new Date().toISOString(), results })); }
       // What the owner sent by hand goes on to promotion past the same limits: a forced pass that leaves an actionable report forces the next.
       if (force && results.some(r => r.outcome === 'triaged' && r.verdict === 'actionable')) { this.forceTriage = true; this.triage(); }
     });
@@ -278,14 +275,15 @@ export class FactoryService {
     return { queueDepth: 0, active: operations[0] ?? null, operations,
       eventLoop: { maxMs: this.eventLoop.max / 1e6, p99Ms: this.eventLoop.percentile(99) / 1e6 } };
   }
+  // The operations view is the one status field only this process knows; it reaches the Store at most once a second.
   private publishWork() {
     if (this.statusTimer) return;
-    this.statusTimer = setTimeout(() => { this.statusTimer = undefined; this.flushWork(); }, 100);
+    this.statusTimer = setTimeout(() => { this.statusTimer = undefined; this.flushWork(); }, 1000);
     this.statusTimer.unref();
   }
   private flushWork() {
     if (!this.store) return;
-    try { this.store.set('serviceWork', JSON.stringify(this.workStatus())); writeStatus(loadConfig(this.configPath), this.store); }
+    try { this.store.set('serviceWork', JSON.stringify(this.workStatus())); }
     catch (error) { log('work-status-failed', { message: safeError(error) }); }
   }
 
@@ -301,7 +299,6 @@ export class FactoryService {
         if (this.stopped) return;
         const c = this.configure(), kanvil = await this.ensureKanvil(c);
         more = await cleanupNextWorkspace(c, this.store, this.t3, kanvil, this.cleanupVisited, { signal: this.abort.signal });
-        this.publishWork();
       } catch (error) { log('workspace-maintenance-failed', { message: safeError(error) }); }
       finally {
         this.cleanupQueued = false;
@@ -323,11 +320,9 @@ export class FactoryService {
         if (this.stopped) return;
         const c = this.configure();
         await refreshCleanupCatalog(c, this.store, this.t3, this.abort.signal);
-        this.publishWork();
       } catch (error) {
         if (!this.stopped) {
           this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: false, errors: [{ repository: 'Inventory', message: safeError(error) }] }));
-          this.publishWork();
         }
       } finally {
         this.inventoryQueued = false;
@@ -346,11 +341,9 @@ export class FactoryService {
         if (this.stopped) return;
         const c = this.configure(), kanvil = await this.ensureKanvil(c);
         more = await collectSessionTickets(c, this.store, this.t3, kanvil);
-        this.publishWork();
       } catch (error) {
         // A batch that could not even start (bad config, no tracker client) is a failure the page must show too.
         recordSessionTicketsFailure(this.store, [{ step: 'start', cause: safeError(error) }]);
-        try { this.publishWork(); } catch { /* Invalid config is already logged. */ }
       }
       finally {
         this.collectionQueued = false;
@@ -384,26 +377,25 @@ export class FactoryService {
     if (command.type === 'job-dismiss') {
       const c = this.configure();
       const result = await this.enqueue(() => dismissDeletedJob(c, this.store, this.t3, () => this.ensureKanvil(c), command.jobId, command.resetTicket), true, { reason: 'job-dismiss' });
-      this.publishWork();
       return { code: 0, data: result };
     }
     if (command.type === 'session-dismiss') {
-      const result = await this.enqueue(async () => { const r = dismissSessionTicket(this.store, command.taskId); this.publishWork(); return r; });
+      const result = await this.enqueue(async () => dismissSessionTicket(this.store, command.taskId));
       return { code: 0, data: result };
     }
     if (command.type === 'plan-cancel') {
-      const result = await this.enqueue(async () => { const r = cancelPlan(this.store, command.planId); this.publishWork(); return r; });
+      const result = await this.enqueue(async () => cancelPlan(this.store, command.planId));
       return { code: 0, data: result };
     }
     if (command.type === 'plan-override') {
       // A pass in flight takes the plan's overrides from the store at each launch and save, so it keeps this change.
-      const result = await this.enqueue(async () => { const r = setPlanOverrides(this.store, command.planId, command.overrideLimits); this.publishWork(); return r; });
+      const result = await this.enqueue(async () => setPlanOverrides(this.store, command.planId, command.overrideLimits));
       this.wake('plan-override');
       return { code: 0, data: result };
     }
     if (command.type === 'plan-order') {
       // A pass in flight keeps the order it read; the wake starts one on the new order.
-      const result = await this.enqueue(async () => { const r = orderPlans(this.store, command.planIds); this.publishWork(); return r; });
+      const result = await this.enqueue(async () => orderPlans(this.store, command.planIds));
       this.wake('plan-order');
       return { code: 0, data: result };
     }
@@ -425,9 +417,7 @@ export class FactoryService {
           const c = this.configure();
           // Inspection also verifies tracker evidence when present. Lazy connection keeps inventory available during tracker outages.
           const lazy = { task: async (id: string) => (await this.ensureKanvil(c)).task(id) } as Kanvil;
-          const r = await manageCleanup(c, this.store, this.t3, lazy, input, command.operator ?? 'local operator', { signal: controller.signal });
-          if (!['inventory', 'inspect', 'review'].includes(input.type)) this.publishWork();
-          return r;
+          return await manageCleanup(c, this.store, this.t3, lazy, input, command.operator ?? 'local operator', { signal: controller.signal });
         });
         return { code: 0, data: result };
       } finally { if (inspectionId) this.inspections.delete(inspectionId); }
@@ -449,7 +439,7 @@ export class FactoryService {
     this.quotaTimer = setTimeout(() => void this.enqueue(async () => {
       if (this.stopped) return;
       let current: Config | undefined;
-      try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3, () => loadConfig(this.configPath)); this.publishWork(); }
+      try { current = loadConfig(this.configPath); await refreshQuota(current, this.store, this.t3, () => loadConfig(this.configPath)); }
       catch (error) { log('quota-refresh-failed', { message: safeError(error) }); }
       finally { this.scheduleQuota(current ?? c); } // an unreadable config keeps the last cadence rather than stopping the refreshes
     }, false, { reason: 'quota-refresh' }), Math.max(15, c.quota.maxAgeSeconds / 2) * 1000);
@@ -488,7 +478,6 @@ export class FactoryService {
       try {
         const c = loadConfig(this.configPath);
         fresh = !c.models.some(p => p.model.instanceId === instanceId) || await refreshQuota(c, this.store, t3, () => loadConfig(this.configPath), instanceId);
-        this.publishWork();
       } catch (error) { log('quota-refresh-failed', { instanceId, message: safeError(error) }); }
       if (!current()) return;
       if (fresh) this.recoverQuota(instanceId);
@@ -577,7 +566,6 @@ export class FactoryService {
         const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
         if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
       }
-      this.publishWork();
       if (lane && live && quietDecision(result)) this.quiet.set(lane, { inputs, decision: result, dueAt: Math.min(Date.now() + Math.max(this.pollSeconds, QUIET_RECHECK_SECONDS) * 1000, nextDeadline(c, this.store, result)) });
       this.logPass(lane, { reason, outcome: result.reason, ms: performance.now() - started, queueWaitMs, ...miss ? { miss } : {} });
       return result;
@@ -585,7 +573,6 @@ export class FactoryService {
       if (this.stopped && !options.manual) return { reason: 'stopped' };
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
       decide({ reason: 'error', message, at: new Date().toISOString() });
-      try { this.publishWork(); } catch { /* Invalid config is already logged. */ }
       throw error;
     } finally {
       if ((options.manual || reason === 'once') && !options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }

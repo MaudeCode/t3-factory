@@ -13,6 +13,7 @@ import { dispatchFixture } from "./dispatch-fixture.ts";
 import { matchesRunFilters } from "../web/lib/format.js";
 import { randomUUID } from 'node:crypto';
 import { saveOperation, type Operation } from '../src/operations.ts';
+import { Store } from "../src/store.ts";
 
 const freePort = () => new Promise<number>((resolve) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); }); });
 async function pairSession(url: string, secret: string) {
@@ -67,7 +68,6 @@ test("the web CLI exposes filterable snapshot metadata through state, history an
   const archived = { ...job, id: 'archived-run', historyOnly: true, state: 'waiting', createdAt: '2025-01-01T00:00:00Z', ticketKey: 'FIX-OLD' };
   f.store.db.exec('CREATE TABLE IF NOT EXISTS job_history(id TEXT PRIMARY KEY, data TEXT NOT NULL)');
   f.store.db.prepare('INSERT INTO job_history VALUES(?,?)').run(archived.id, JSON.stringify(archived));
-  writeFileSync(join(f.c.stateDir, "status.json"), JSON.stringify({ jobs: [job] }));
   const envFile = join(f.dir, ".env"); writeFileSync(envFile, "");
   const child = spawn(process.execPath, [new URL("../src/main.ts", import.meta.url).pathname, "web"], { env: { ...process.env, T3_FACTORY_ENV: envFile, FACTORY_AUTH_MODE: "pairing", FACTORY_WEB_HOST: "127.0.0.1", FACTORY_WEB_PORT: String(port), FACTORY_PUBLIC_ORIGIN: url, FACTORY_WEB_SESSION_SECRET: secret }, stdio: ["ignore", "pipe", "pipe"] });
   let errors = "";
@@ -97,13 +97,17 @@ test("the web CLI exposes filterable snapshot metadata through state, history an
 });
 
 // The web app's live data paths: the event stream, run history, run reports, and stop requests.
-test("state is pushed over the event stream whenever the factory writes, and runs expose history, reports, and stop", async () => {
+test("state is pushed over the event stream whenever the factory writes, and runs expose history, reports, and stop", async t => {
   const dir = mkdtempSync(join(tmpdir(), "factory-web-live-"));
   const secret = "b".repeat(64);
   const port = await freePort();
   let version = 0;
-  let notify: () => void = () => {};
   const stopped: string[] = [];
+  // The web process's own Store connection, and the scheduler's.
+  const store = new Store(dir), scheduler = new Store(dir), checks = t.mock.method(store, "dataVersion");
+  t.after(() => { store.close(); scheduler.close(); });
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const unwatched = Promise.withResolvers<void>();
   const server = createFactoryWeb({
     config: webConfigSchema.parse({ publicOrigin: `http://127.0.0.1:${port}`, host: "127.0.0.1", port }),
     secret,
@@ -111,7 +115,7 @@ test("state is pushed over the event stream whenever the factory writes, and run
     readState: () => ({ config: { enabled: true }, status: { jobs: [], journal: [{ id: 1, text: "hello" }] }, now: new Date().toISOString(), version }),
     history: () => [{ id: "a1", state: "complete" }],
     report: (id) => (id === "a1" ? { job: { id }, events: [], report: { status: "complete", reason: "done" } } : undefined),
-    watch: (fn) => { notify = fn; return () => {}; },
+    watch: (fn) => { const stop = store.watch(fn); return () => { stop(); unwatched.resolve(); }; },
     run: async (args) => { stopped.push(args.join(" ")); return { code: 0, data: args[0] === "sources" ? { t3: [], kanvil: { projects: [], columns: {}, labels: [] } } : { ok: true } }; },
   });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
@@ -120,6 +124,9 @@ test("state is pushed over the event stream whenever the factory writes, and run
     const auth = await pairSession(url, secret);
 
     assert.equal((await fetch(`${url}/api/events`)).status, 401, "the stream needs a session");
+    scheduler.set("idle-write", "1");
+    t.mock.timers.tick(5000);
+    assert.equal(checks.mock.callCount(), 0, "nothing polls the Store while no page is subscribed");
     const stream = await fetch(`${url}/api/events`, { headers: auth });
     assert.equal(stream.headers.get("content-type"), "text/event-stream");
     const reader = stream.body!.getReader();
@@ -128,10 +135,15 @@ test("state is pushed over the event stream whenever the factory writes, and run
     assert.match(first, /^event: state\ndata: \{"config"/, "the first message carries the current state");
     assert.match(first, /"journal":\[\{"id":1/);
     version = 2;
-    notify(); // the factory wrote status.json
+    scheduler.set("fixture", "written"); // the scheduler writes through its own connection
+    t.mock.timers.tick(1000);
     const second = await read();
     assert.match(second, /"version":2/, "a write pushes fresh state without a request");
     await reader.cancel();
+    await unwatched.promise; // the last page closing stops the watch
+    const after = checks.mock.callCount();
+    t.mock.timers.tick(5000);
+    assert.equal(checks.mock.callCount(), after, "nothing polls after the last page closes");
 
     assert.deepEqual(await (await fetch(`${url}/api/history`, { headers: auth })).json(), [{ id: "a1", state: "complete" }]);
     assert.equal((await (await fetch(`${url}/api/jobs/a1/report`, { headers: auth })).json()).report.reason, "done");

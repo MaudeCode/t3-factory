@@ -1200,7 +1200,7 @@ async function queueManual(c: Config, store: Store, options: CycleOptions, clien
     const prior = queuedPlan(store, target.key);
     if (prior) return queued(prior);
     // Recheck ownership after the reads, then save without yielding to another admission.
-    if (store.isLocked(`ticket:${target.id}`) || taskOwners(store.jobSummaries()).has(target.id) || automationHold(task)) return result;
+    if (store.isLocked(`ticket:${target.id}`) || taskOwners(store.activeJobs()).has(target.id) || automationHold(task)) return result;
     target.note = String(hold.message ?? hold.reason);
     const { plan } = await beginPlan(c, store, t3, kanvil, instances, shell.threads, options, skips(options), { target, tickets: [], queued: true }, clients.currentConfig, clients.decide);
     return queued(plan);
@@ -1319,7 +1319,7 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
     const started: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[] = [];
     const labelAvailability = () => {
       if (skip.has('labels')) return (_ticket: Candidate) => true;
-      const full = labelCapacity(c, [...store.jobSummaries(), ...preparingLabels(store), ...started], shell.threads);
+      const full = labelCapacity(c, [...store.activeJobs(), ...preparingLabels(store), ...started], shell.threads);
       return (ticket: Candidate) => !full(ticket);
     };
     // CLI callers hold Store.claim across this entire pass; each durable task claim precedes its RPC.
@@ -1419,7 +1419,7 @@ function preparedInventory(c: Config, store: Store): Queue | undefined {
   const rows = z.object({ tickets: z.array(z.unknown()), held: z.array(z.object({ key: z.string(), reason: z.string() })) }).safeParse(value);
   if (!rows.success) return;
   const rowSchema = z.object({ id: z.string(), key: z.string(), projectId: z.string(), title: z.string(), priority: z.string(), createdAt: z.string(), difficulty: z.enum(['low', 'med', 'high']), automationReady: z.literal(true), labelRank: z.number().nullable().optional(), labels: z.array(z.string()), after: z.array(z.string()) });
-  const ready: Candidate[] = [], owned = taskOwners(store.jobSummaries()), running = runningPlanHold(store);
+  const ready: Candidate[] = [], owned = taskOwners(store.activeJobs()), running = runningPlanHold(store);
   for (const row of rows.data.tickets) {
     const parsed = rowSchema.safeParse(row);
     if (!parsed.success) return; // Older projections are warmed once, not silently reinterpreted.
@@ -1511,7 +1511,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const reservePreparation = !!options.manual && !plan && !activePlanId;
     const pickTicket = () => {
       releaseTicket?.(); releaseTicket = undefined; clearPreparation = undefined;
-      const current = store.jobSummaries(), owned = taskOwners(current);
+      const current = store.activeJobs(), owned = taskOwners(current);
       const full = labelGated && !ticketKey ? labelCapacity(c, [...current, ...preparingLabels(store)], shell.threads) : undefined;
       const candidates = queue.ready.filter(candidate => !owned.has(candidate.id) && (!reservePreparation || !store.isLocked(`ticket:${candidate.id}`)) && !full?.(candidate));
       const ticket = selectTicket(candidates, store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
@@ -2003,7 +2003,7 @@ export function cancelPlan(store: Store, id: string) {
 // What the factory would start next, in order, and which automatic model would take each ticket.
 // A blocked ticket whose blockers are all queued ahead of it or already running joins the queue behind them.
 export function upNext(c: Config, store: Store, queue: Pick<Queue, 'ready' | 'skipped'>) {
-  const activeJobs = store.jobSummaries().filter(job => !['complete', 'dismissed'].includes(job.state));
+  const activeJobs = store.activeJobs();
   const owned = new Set(activeJobs.map(job => job.taskId));
   const order: (Candidate & { after?: string[] })[] = queueOrder(queue.ready.filter(ticket => !owned.has(ticket.id)), store.get('lastProject'), c.projects.filter(p => p.enabled).map(p => p.kanvilId));
   const placed = new Map(order.map(t => [t.id, t.key]));
@@ -2060,7 +2060,7 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
     }
     const jobs = store.jobs();
     const providerConstraint = () => {
-      const busy = busyProviders(store.jobs(), threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
+      const busy = busyProviders(store.activeJobs(), threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
       return c.concurrency[stream.driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : busy.has(stream.driver) ? 'provider-running' : !c.enabled ? 'disabled' : undefined;
     };
     let constraint = providerConstraint();
@@ -2135,7 +2135,7 @@ export function triageRows(c: Config, store: Store, now = Date.now()) {
     return { ...row, limit: inbox.maxPromotionsPerDay ?? null, oldestAgeSeconds: row.oldestUntriagedAt ? Math.max(0, Math.round((now - Date.parse(row.oldestUntriagedAt)) / 1000)) : null };
   });
 }
-/** How many triage results the status file and the Triage page carry. */
+/** How many triage results the status read and the Triage page carry. */
 export const TRIAGE_RESULTS = 30;
 // Recent triage results, each promoted one with its ticket as the triage lane last read it and why it cannot start now.
 // `listed` keeps a promoted ticket on the page's ticket list until a run launches, a queued run or chain takes it, or it leaves the ready statuses.
@@ -2152,22 +2152,28 @@ export function triageResults(c: Config, store: Store) {
   });
 }
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
-export function writeStatus(c: Config, store: Store) {
-  const result = {
-    ticketKeyRevision: store.get('ticketKeyRevision') ?? undefined,
-    work: JSON.parse(store.get('serviceWork') ?? 'null'),
-    triageEnabled: !!c.triage?.enabled, triageStreams: triageRows(c, store), triageDecision: JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: triageResults(c, store), triageReports: JSON.parse(store.get('triageReports') || '[]'),
-    enabled: c.enabled, upstreamEnabled: !!c.upstream?.enabled, concurrency: c.concurrency, at: new Date().toISOString(), upstreams: upstreamRows(c, store),
-    repairEnabled: !!c.repair.enabled, repairs: repairRows(c, store), models: c.models, streams: JSON.parse(store.get('streams') ?? '[]'), decision: store.currentDecision(),
-    discovery: c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
-    upNext: JSON.parse(store.get('upNext') ?? 'null'),
-    plans: store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
-    epics: epicRows(c, store), epicsError: JSON.parse(store.get('epicsError') || 'null'),
-    sessionTickets: sessionTicketStatus(c, store),
-    jobs: store.jobSummaries().filter(j => j.state !== 'dismissed').map(({ ...job }) => ({ ...job, label: jobLabel(job) })),
-    // factory_status (MCP) reads the last finished runs from this file.
-    recent: store.recentJobs().map(job => ({ ...job, label: jobLabel(job) })),
+// Factory status, read from the Store on demand by the web page, factory_status and `t3-factory status`.
+// Only the requested fields are built, and the rows that need every job share one read of the table.
+export function readStatus<K extends keyof ReturnType<typeof statusFields>>(c: Config, store: Store, fields?: readonly K[]) {
+  let all: ReturnType<Store['jobSummaries']> | undefined;
+  const shared: Store = Object.create(store, { jobSummaries: { value: () => all ??= store.jobSummaries() } });
+  const builders = statusFields(c, shared);
+  return Object.fromEntries((fields ?? Object.keys(builders) as K[]).map(key => [key, builders[key]()])) as { [P in K]: ReturnType<ReturnType<typeof statusFields>[P]> };
+}
+function statusFields(c: Config, store: Store) {
+  return {
+    ticketKeyRevision: () => store.get('ticketKeyRevision') ?? undefined,
+    work: () => JSON.parse(store.get('serviceWork') ?? 'null'),
+    triageEnabled: () => !!c.triage?.enabled, triageStreams: () => triageRows(c, store), triageDecision: () => JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: () => triageResults(c, store), triageReports: () => JSON.parse(store.get('triageReports') || '[]'),
+    enabled: () => c.enabled, upstreamEnabled: () => !!c.upstream?.enabled, concurrency: () => c.concurrency, at: () => new Date().toISOString(), upstreams: () => upstreamRows(c, store),
+    repairEnabled: () => !!c.repair.enabled, repairs: () => repairRows(c, store), models: () => c.models, streams: () => JSON.parse(store.get('streams') ?? '[]'), decision: () => store.currentDecision(),
+    discovery: () => c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
+    upNext: () => JSON.parse(store.get('upNext') ?? 'null'),
+    plans: () => store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
+    epics: () => epicRows(c, store), epicsError: () => JSON.parse(store.get('epicsError') || 'null'),
+    sessionTickets: () => sessionTicketStatus(c, store),
+    // Live runs and the last 30 completed ones; dismissed runs and older history stay in the Runs page.
+    jobs: () => [...store.activeJobs(), ...store.finishedJobs(30)].map(job => ({ ...job, label: jobLabel(job) })),
+    recent: () => store.recentJobs().map(job => ({ ...job, label: jobLabel(job) })),
   };
-  const file = join(c.stateDir, 'status.json'); writeFileSync(`${file}.tmp`, JSON.stringify(result, null, 2) + '\n', { mode: 0o600 }); renameSync(`${file}.tmp`, file);
-  return result;
 }

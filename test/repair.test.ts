@@ -10,7 +10,7 @@ import { configSchema, loadConfig } from '../src/config.ts';
 import { saveSettings } from '../src/settings.ts';
 import type { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
-import { cycle, pendingRepairs, reconcile, repairRows, writeStatus } from '../src/scheduler.ts';
+import { cycle, pendingRepairs, reconcile, repairRows, readStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { dispatchFixture } from './dispatch-fixture.ts';
 
@@ -169,7 +169,7 @@ test('repair status: each watched workflow shows its newest result, the run bein
   const [row] = repairRows(c, store, t0);
   assert.deepEqual([row.workflow, row.finished?.id, row.finished?.failedJobs, row.following?.id, row.lastRepair?.runId, row.lastRepair?.unrepaired, row.cooldownEndsAt, row.pending, row.hold],
     ['ci.yml', 5, ['deploy'], 6, 4, ['deploy'], at(50), false, 'Cooling down']);
-  assert.equal(writeStatus(c, store).repairs.length, 1, 'status.json carries the rows');
+  assert.equal(readStatus(c, store).repairs.length, 1, 'status carries the rows');
 });
 
 test('repair config: a file with no repair section has repairs off with the shipped prompt, and watching a workflow from settings adds nothing else to it', t => {

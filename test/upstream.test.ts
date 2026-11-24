@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema, loadConfig } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store, type Job } from '../src/store.ts';
-import { cycle, pendingReviews, reconcile, upstreamRows, writeStatus } from '../src/scheduler.ts';
+import { cycle, pendingReviews, reconcile, upstreamRows, readStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { dispatchFixture, mockLaunchConnection } from './dispatch-fixture.ts';
 
@@ -89,7 +89,7 @@ test('upstream detection: newest counted release, throttled reads, and one revie
     ['up/exp', 'v1', 'exp-3', new Date(now + 61 * 60_000).toISOString(), true],
     ['up/current', 'v2', 'v2', new Date(now + 61 * 60_000).toISOString(), false],
   ], 'status rows report the watermark, the newest release seen, and whether a review is due');
-  assert.equal(writeStatus(c, store).upstreams.length, 3, 'status.json carries the rows');
+  assert.equal(readStatus(c, store).upstreams.length, 3, 'status carries the rows');
   c.projects[0].enabled = false;
   assert.ok(upstreamRows(c, store).every(r => !r.pending), 'a disabled project has no review due');
 });

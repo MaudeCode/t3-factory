@@ -1,12 +1,14 @@
 import { mockTracker } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configSchema } from '../src/config.ts';
 import { T3, Kanvil, KanvilTaskNotFound } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
+import { readStatus } from '../src/scheduler.ts';
+import { Store } from '../src/store.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { ReadContext, readPhase } from '../src/read-context.ts';
 
@@ -52,8 +54,10 @@ function serviceFixture(t: test.TestContext) {
     throw new Error(`Unexpected Kanvil tool ${name}`);
   });
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const statusFile = join(c.stateDir, 'status.json');
-  const status = () => existsSync(statusFile) ? JSON.parse(readFileSync(statusFile, 'utf8')) : {};
+  // The web page's view: its own Store connection beside the service's.
+  let reader: Store | undefined;
+  t.after(() => reader?.close());
+  const status = (): any => readStatus(c, reader ??= new Store(c.stateDir));
   const until = async (ready: (s: any) => boolean, ms = 8000) => { for (let n = 0; n < ms / 25 && !ready(status()); n++) await new Promise(resolve => setTimeout(resolve, 25)); return status(); };
   return { dir, c, path, thread, tasks, turnItems, status, until };
 }
@@ -80,11 +84,12 @@ test('the scheduler collects a session-created ticket into status on its own and
   try {
     await service.start();
     const published = await f.until(s => s.sessionTickets?.rows?.length > 0);
-    assert.deepEqual(published.sessionTickets?.rows.map((r: any) => r.key), ['FIX-7'], 'the creation report reaches status.json without a skill run');
+    assert.deepEqual(published.sessionTickets?.rows.map((r: any) => r.key), ['FIX-7'], 'the creation report reaches status without a skill run');
     const row = published.sessionTickets.rows[0];
     assert.equal(row.taskId, 'task-7');
     assert.deepEqual(row.sources.map((s: any) => [s.threadId, s.messageId]), [['session-1', 'message-a1']], 'the row keeps its source session and message');
     assert.deepEqual(row.labels, ['feat']);
+    assert.equal(existsSync(join(f.c.stateDir, 'status.json')), false, 'a pass writes no status file');
   } finally { await service.stop(); }
   service = new FactoryService(f.path);
   try {
@@ -98,7 +103,6 @@ test('the scheduler collects a session-created ticket into status on its own and
 const { collectSessionTickets, creationReports, dismissSessionTicket, sessionTicketStatus, sessionTicketsError } = await import('../src/session-tickets.ts');
 // The notice's headline and each problem's affected tickets or sessions and raw causes, as one searchable text.
 const errorText = (error?: { message: string; problems?: { subjects: string[]; raw: string[] }[] } | null) => [error?.message, ...(error?.problems ?? []).flatMap(p => [...p.subjects, ...p.raw])].join('\n');
-const { Store } = await import('../src/store.ts');
 const { T3: T3Client, Kanvil: KanvilClient } = await import('../src/clients.ts');
 const LINK = (taskId: string, project = 'FIX', legacy = false) => legacy
   ? `https://tracker.example.test/dashboard/workspace/old-workspace/project/${project}/task/${taskId}`
