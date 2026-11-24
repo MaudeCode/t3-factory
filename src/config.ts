@@ -9,6 +9,8 @@ import { DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketStatuses } from './policy.ts'
 const positive = z.number().positive();
 const absolute = z.string().startsWith('/');
 const loopback = (url: URL) => ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+// A service origin: HTTPS, or HTTP on loopback only, without credentials or a path.
+const origin = (name: string) => z.url().refine(value => { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && loopback(u))) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, `Use a ${name} HTTPS origin, or loopback-only HTTP, without credentials or a path`);
 const model = z.object({
   instanceId: z.string().min(1), model: z.string().min(1),
   options: z.array(z.object({ id: z.string(), value: z.union([z.string(), z.number(), z.boolean()]) }).strict()).default([]),
@@ -78,7 +80,9 @@ export const configSchema = z.preprocess(input => {
   stateDir: absolute,
   t3: z.object({ url: z.url(), credentialFile: absolute, autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
   // Accept and discard the retired readiness-label setting in existing installations.
-  kanvil: z.object({ url: z.url().refine(value => { const u = new URL(value); return (u.protocol === 'https:' || (u.protocol === 'http:' && loopback(u))) && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash; }, 'Use a Kanvil HTTPS origin, or loopback-only HTTP, without credentials or a path'), workspaceId: z.string().min(1), readyLabel: z.string().optional() }).strict().transform(({ readyLabel, ...config }) => config),
+  kanvil: z.object({ url: origin('Kanvil'), workspaceId: z.string().min(1), readyLabel: z.string().optional() }).strict().transform(({ readyLabel, ...config }) => config),
+  // Phone notifications; COWTAIL_TOKEN in the factory .env holds the source's token.
+  cowtail: z.object({ url: origin('Cowtail') }).strict().optional(),
   quota: z.object({
     maxAgeSeconds: positive,
     claude: z.object({ fiveHour: budget, weekly: budget, fable: budget }).strict(),
@@ -134,6 +138,8 @@ export const configSchema = z.preprocess(input => {
     }).strict()).default([]),
   }).strict()).min(1),
 }).strict().superRefine((c, ctx) => {
+  // Both settings turn notifications on, neither leaves them off; one alone is a mistake.
+  if (!!c.cowtail !== !!process.env.COWTAIL_TOKEN?.trim()) ctx.addIssue({ code: 'custom', path: ['cowtail'], message: c.cowtail ? 'cowtail.url needs COWTAIL_TOKEN in the factory .env' : 'COWTAIL_TOKEN needs cowtail.url in config.jsonc' });
   if (c.schedule.offAtReset && !c.schedule.offAt) ctx.addIssue({ code: 'custom', path: ['schedule', 'offAt'], message: 'A weekly reset needs its time in offAt' });
   const ids = c.models.map(p => p.id);
   if (new Set(ids).size !== ids.length || ids.includes('auto')) {

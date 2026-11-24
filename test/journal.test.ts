@@ -34,6 +34,20 @@ test('every job write journals creation, state changes, and delivered pull reque
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('every journal insert reaches the event listener, and a throwing listener does not fail the write', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-journal-'));
+  try {
+    const store = new Store(dir), heard: string[] = [];
+    store.onEvent = event => { heard.push(`${event.id} ${event.kind} ${event.text}`); throw new Error('listener failed'); };
+    store.save(job());
+    store.save(job({ state: 'waiting', reason: 'Question' }));
+    assert.equal(store.job(job().id)?.state, 'waiting');
+    assert.deepEqual(heard, store.events(10).toReversed().map(e => `${e.id} ${e.kind} ${e.text}`));
+    assert.deepEqual(heard.map(line => line.split(' ').slice(1).join(' ')), ['job.created APP-1 started on claude-opus-5-5', 'job.state APP-1 needs you']);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('decisions are journaled only when their outcome changes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-journal-'));
   try {
