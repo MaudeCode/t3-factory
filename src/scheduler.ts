@@ -1074,15 +1074,24 @@ export interface Clients { t3?: T3; kanvil?: Kanvil; github?: Pick<GitHub, 'pull
 export type { Decision } from './store.ts';
 type Queue = Awaited<ReturnType<typeof inventory>>;
 
+const finished = (job: Pick<Job, 'state'>) => ['complete', 'dismissed'].includes(job.state);
 // Running jobs retain reservations while commands can wake them without another admission check.
 const holdsSlot = (job: Pick<Job, 'state'>, thread: Thread | undefined, timeout: number) =>
-  !['complete', 'dismissed'].includes(job.state) && (['running', 'dispatching'].includes(job.state) || !!(thread && executing(thread, timeout)));
+  !finished(job) && (['running', 'dispatching'].includes(job.state) || !!(thread && executing(thread, timeout)));
+// The first thread listed under an ID wins, as a linear search would find it.
+function threadsById(threads: Thread[]) {
+  const byId = new Map<string, Thread>();
+  for (const thread of threads) if (!byId.has(thread.id)) byId.set(thread.id, thread);
+  return byId;
+}
 
 export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<string, string>, timeout: number, limits: Config['concurrency'] = { claude: 1, codex: 1 }, planned = new Map<string, number>(), options: CycleOptions = {}): Set<string> {
   if (skips(options).has('providers')) return new Set();
-  const counts = new Map(planned);
+  const counts = new Map(planned), byId = threadsById(threads);
   for (const job of jobs) {
-    const thread = threads.find(t => t.id === job.threadId);
+    // Most rows are finished history; skip them before any thread lookup.
+    if (finished(job)) continue;
+    const thread = byId.get(job.threadId);
     if (!holdsSlot(job, thread, timeout)) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
@@ -1096,12 +1105,11 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
 // One occupancy snapshot serves every candidate in a synchronous selection. A new
 // snapshot is taken after asynchronous work and again at the reservation boundary.
 function labelCapacity(c: Config, jobs: Pick<Job, 'state' | 'threadId' | 'projectId' | 'labels'>[], threads: Thread[]) {
-  const byThread = new Map<string, Thread>();
-  for (const thread of threads) if (!byThread.has(thread.id)) byThread.set(thread.id, thread);
+  const byThread = threadsById(threads);
   const counts = new Map<string, Map<string, { running: number; full: number }>>();
   for (const job of jobs) {
     if (!counts.has(job.projectId)) counts.set(job.projectId, new Map());
-    const project = counts.get(job.projectId)!, running = holdsSlot(job, byThread.get(job.threadId), c.monitoringTimeoutMinutes), full = !['complete', 'dismissed'].includes(job.state);
+    const project = counts.get(job.projectId)!, running = holdsSlot(job, byThread.get(job.threadId), c.monitoringTimeoutMinutes), full = !finished(job);
     for (const label of new Set(job.labels)) {
       const usage = project.get(label) ?? { running: 0, full: 0 };
       usage.running += Number(running); usage.full += Number(full); project.set(label, usage);
