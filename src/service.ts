@@ -7,7 +7,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { loadConfig, type Config } from './config.ts';
 import { Store } from './store.ts';
 import { T3, Kanvil } from './clients.ts';
-import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, cleanupNextWorkspace, log, verboseLog, quietDecision, nextDeadline, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients, type Decision } from './scheduler.ts';
+import { cycle, skips, reconcile, refreshInventory, pendingReviews, pendingRepairs, pruneActivityMarkers, cleanupNextWorkspace, log, verboseLog, quietDecision, nextDeadline, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, refreshQuota, weeklyResets, TRIAGE_RESULTS, type CycleOptions, type Clients, type Decision } from './scheduler.ts';
 import { collectSessionTickets, dismissSessionTicket, recordSessionTicketsFailure } from './session-tickets.ts';
 import { refuseRunCaller, serveControl, type ControlCommand, type ControlResult } from './control.ts';
 import { ticketDetail } from './ticket-detail.ts';
@@ -200,6 +200,7 @@ export class FactoryService {
       await read(c, this.store, this.store.jobSummaries());
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
+    if (reason === 'timer') this.runLane('activity-markers', () => pruneActivityMarkers(this.t3, this.store));
     this.triage();
     this.scheduleCleanup(true); this.scheduleCollection();
     const now = reason === 'start' || reason === 'config';

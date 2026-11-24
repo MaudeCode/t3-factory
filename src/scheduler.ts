@@ -739,6 +739,15 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
   return { active, last, idleMinutes: Math.max(0, (Date.now() - Date.parse(last)) / 60_000) };
 }
 
+// personalActivity's per-thread markers outlive threads deleted in T3. Once a day, drop those of threads T3 no longer
+// lists, active or archived. A thread that returns costs one more detail read, like a new one. A failed read retries next wake.
+export async function pruneActivityMarkers(t3: T3, store: Store) {
+  if (Date.now() - (Date.parse(store.get('activityMarkersPrunedAt') ?? '') || 0) < 86_400_000) return;
+  const listed = (await backgroundRead(() => t3.shell(true))).threads.map(thread => thread.id);
+  for (const prefix of ['seenOwned:', 'seenPersonal.v3:']) store.deleteUnlisted(prefix, listed);
+  store.set('activityMarkersPrunedAt', new Date().toISOString());
+}
+
 const mergedSchema = z.object({ state: z.string(), headRefName: z.string(), headRefOid: z.string().regex(/^[0-9a-f]{40,64}$/) });
 // A merged pull request is immutable, so its head is remembered and never read from GitHub twice.
 async function mergedPullRequest(project: Project, url: string, store?: Store) {

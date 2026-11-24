@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { personalActivity } from '../src/scheduler.ts';
+import { personalActivity, pruneActivityMarkers } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { T3 } from '../src/clients.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -115,4 +115,52 @@ test('designated autonomous workflows and their child runs do not block personal
     personal.status = 'completed'; personal.activeRunId = null; config.autonomousThreadIds = [];
     assert.equal((await personalActivity(t3, [workflow, child, personal], [], store)).active, true, 'removing the designation restores normal activity checks');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Markers of every listed thread, a thread T3 dropped, and keys the prune must never touch.
+function markerFixture(t: import('node:test').TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), 't3-factory-markers-')), store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  for (const id of ['active', 'archived', 'gone']) { store.set(`seenOwned:${id}`, 'at'); store.set(`seenPersonal.v3:${id}`, 'at'); }
+  store.set('prMerged:https://github.com/owner/repo/pull/1', '{}'); store.set('lastPersonalActivity', 'clock');
+  let failure: Error | undefined;
+  // shell(true) lists active and archived threads together; any other read is not what the prune needs.
+  const t3 = { shell: async (includeArchived: boolean) => {
+    if (includeArchived !== true) throw new Error('the prune reads archived threads too');
+    if (failure) throw failure;
+    return { threads: [v2Thread({ id: 'active' }), v2Thread({ id: 'archived', archivedAt: '2026-01-01T00:00:00.000Z' })], archivedThreads: [] };
+  } } as unknown as T3;
+  const markers = () => ['active', 'archived', 'gone'].flatMap(id => [`seenOwned:${id}`, `seenPersonal.v3:${id}`]).filter(key => store.get(key) !== null);
+  return { store, t3, markers, fail: (error?: Error) => { failure = error; } };
+}
+
+test('a prune drops activity markers of threads T3 no longer lists and keeps every other key', async t => {
+  const { store, t3, markers } = markerFixture(t);
+  await pruneActivityMarkers(t3, store);
+  assert.deepEqual(markers(), ['seenOwned:active', 'seenPersonal.v3:active', 'seenOwned:archived', 'seenPersonal.v3:archived']);
+  assert.equal(store.get('prMerged:https://github.com/owner/repo/pull/1'), '{}');
+  assert.equal(store.get('lastPersonalActivity'), 'clock');
+});
+
+test('a failed shell read removes no marker and the next timer wake prunes', async t => {
+  const { store, t3, markers, fail } = markerFixture(t);
+  fail(new Error('T3 unavailable'));
+  await assert.rejects(pruneActivityMarkers(t3, store), /T3 unavailable/);
+  assert.equal(markers().length, 6);
+  fail();
+  await pruneActivityMarkers(t3, store);
+  assert.equal(markers().length, 4);
+});
+
+test('activity markers are pruned at most once per 24 hours', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-01T00:00:00.000Z') });
+  const { store, t3, markers } = markerFixture(t);
+  await pruneActivityMarkers(t3, store);
+  store.set('seenOwned:gone', 'at');
+  t.mock.timers.setTime(Date.parse('2026-11-01T23:59:59.000Z'));
+  await pruneActivityMarkers(t3, store);
+  assert.ok(markers().includes('seenOwned:gone'), 'a second wake inside 24 hours does not prune');
+  t.mock.timers.setTime(Date.parse('2026-11-02T00:00:00.000Z'));
+  await pruneActivityMarkers(t3, store);
+  assert.ok(!markers().includes('seenOwned:gone'), 'a wake 24 hours after the last prune prunes again');
 });
