@@ -1,6 +1,9 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/store.ts';
 import { serviceFixture } from './dispatch-fixture.ts';
 import { fixtureSocket } from './rpc-fixture.ts';
 import { v2Shell, v2Thread } from './v2-fixture.ts';
@@ -68,7 +71,6 @@ for (const [input, miss, change] of [
   ['the T3 admission revision', ['t3'], f => { f.inputs.views++; }],
   ['a Kanvil ticket version', ['kanvil'], f => { f.tasks[0].version = 2; f.kanvil.revision++; }],
   ['a job write', ['store'], f => { f.store.save({ id: 'other', kind: 'ticket', projectId: 'FIX', taskId: 'other', ticketKey: 'FIX-9', threadId: 'thread-other', messageId: 'm', createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), state: 'complete', reason: 'Done', lastPersonalActivity: null, reportPath: '/dev/null', prUrls: [], command: {} }); }],
-  ['a ticket preparation ending', ['store'], f => f.store.exclusive(['ticket:root'], async () => {})],
   ['the prepared Up next list', ['store'], f => { f.store.set('upNext', JSON.stringify({ tickets: [], held: [] })); }],
   ['the configuration', ['config'], f => { writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, idleMinutes: 2 })); }],
   ['T3 and Kanvil together', ['t3', 'kanvil'], f => { f.inputs.views++; f.kanvil.revision++; }],
@@ -82,6 +84,80 @@ for (const [input, miss, change] of [
   await f.pass();
   assert.ok(f.reads() > reads);
   assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => line.miss), [miss]);
+});
+
+// A ticket lock moves the store revision only when it goes away after an admission read saw it held.
+for (const [name, steps, bumps] of [
+  ['a lock nobody checked', s => { s.tryLock('ticket:a')!(); }, 0],
+  ['a lock an admission read saw', s => { const release = s.tryLock('ticket:a')!; assert.equal(s.isLocked('ticket:a'), true); release(); }, 1],
+  ['a lock seen while a second holder waits', async s => {
+    const first = Promise.withResolvers<void>(), second = Promise.withResolvers<void>(), revisions: number[] = [];
+    const a = s.exclusive(['ticket:a'], () => first.promise), b = s.exclusive(['ticket:a'], async () => { revisions.push(s.revision); await second.promise; });
+    assert.equal(s.isLocked('ticket:a'), true);
+    const start = s.revision; first.resolve(); await a;
+    while (!revisions.length) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(revisions[0], start, 'the lock is still held, so the first release changes nothing');
+    second.resolve(); await b;
+  }, 1],
+] satisfies [string, (s: Store) => unknown, number][]) test(`releasing ${name} moves the store revision by ${bumps}`, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-locks-')), store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const before = store.revision;
+  await steps(store);
+  assert.equal(store.revision - before, bumps);
+});
+
+test('background work that takes and releases a ticket lock nobody checked leaves the held decision', async t => {
+  const f = quietLane(t);
+  const first = await f.pass();
+  await f.pass();
+  const reads = f.reads();
+  verbose(t);
+  const lines = logLines(t) as { event: string; skipped?: true; miss?: string[] }[];
+  await f.store.exclusive(['ticket:root'], async () => {});
+  assert.deepEqual(await f.pass(), first);
+  assert.equal(f.reads(), reads, 'no cycle: no inventory, Kanvil, T3 shell, provider or thread-detail read');
+  assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => [line.skipped, line.miss]), [[true, undefined]]);
+});
+
+test('a pass that left out a locked candidate runs in full once that lock goes away and names store in miss', async t => {
+  const f = quietLane(t);
+  f.tasks[1].status = 'done'; // root is ready, so only its lock keeps this lane quiet
+  const release = f.store.tryLock('ticket:root')!;
+  const first = await f.pass();
+  assert.deepEqual(await f.pass(), first, 'the lock is still held');
+  const reads = f.reads();
+  verbose(t);
+  const lines = logLines(t) as { event: string; miss?: string[] }[];
+  release();
+  await f.pass();
+  assert.ok(f.reads() > reads);
+  assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => line.miss), [['store']]);
+});
+
+test('a lane held by a preparation\'s label reservation runs in full once that preparation fails and names store in miss', async t => {
+  const f = quietLane(t);
+  f.tasks[1].status = 'done';
+  f.c.projects[0].labelLimits = { app: 1 }; f.tasks[0].labels!.push({ name: 'app' });
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  // A manual start holds root's lock and the only app slot while it prepares its launch, then fails.
+  const preparing = Promise.withResolvers<void>(), fail = Promise.withResolvers<void>();
+  t.mock.method(f.t3, 'prepareLaunch', async () => { preparing.resolve(); await fail.promise; throw new Error('Fixture connection failed'); });
+  const manual = f.run().catch((error: Error) => ({ reason: error.message }));
+  await preparing.promise;
+  const first = await f.pass();
+  assert.equal((first.streams as { driver: string; reason: string }[]).find(s => s.driver === 'codex')!.reason, 'label-limit');
+  assert.deepEqual(await f.pass(), first, 'the preparation still holds the slot');
+  const reads = f.reads();
+  verbose(t);
+  const lines = logLines(t) as { event: string; miss?: string[] }[];
+  fail.resolve();
+  assert.notEqual((await manual).reason, 'dispatched');
+  assert.equal(f.store.jobs().length, 0);
+  lines.length = 0;
+  await f.pass();
+  assert.ok(f.reads() > reads);
+  assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => line.miss), [['store']]);
 });
 
 test('a running thread streaming messages leaves the admission revision and the held decision', async t => {

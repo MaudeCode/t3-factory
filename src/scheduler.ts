@@ -876,8 +876,10 @@ function cachedRead<T>(cache: Map<string, Promise<T>>, id: string, read: () => P
 
 const taskOwners = (jobs: Job[]) => new Map(jobs.filter(job => !['complete', 'dismissed'].includes(job.state)).map(job => [job.taskId, job]));
 const ticketPreparations = new WeakMap<Store, Map<string, Candidate>>();
+// A preparation holds its ticket's lock until it clears its entry. Reading it through isLocked records that admission saw
+// the reservation, so its release invalidates a decision the reserved label slot held back.
 function preparingLabels(store: Store) {
-  return [...(ticketPreparations.get(store)?.values() ?? [])].map(ticket => ({ state: 'dispatching' as const, threadId: '', projectId: ticket.projectId, labels: ticket.labels?.map(label => label.name) }));
+  return [...(ticketPreparations.get(store)?.values() ?? [])].filter(ticket => store.isLocked(`ticket:${ticket.id}`)).map(ticket => ({ state: 'dispatching' as const, threadId: '', projectId: ticket.projectId, labels: ticket.labels?.map(label => label.name) }));
 }
 // Refs that name the ticket, apart from released Factory branches at their verified heads.
 function conflictingRefs(key: string, refs: string, released: Map<string, string>) {
