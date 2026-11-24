@@ -927,12 +927,14 @@ export class Kanvil {
   }
   private applyChange(change: Change) {
     const cached = change.ticketId ? this.tasksById.get(change.ticketId) : undefined;
-    if (change.type === 'ticket.updated' && typeof change.data?.version === 'number' && cached?.version && cached.version >= change.data.version) return false;
+    const relations = () => { for (const id of this.relationCache.keys()) if (this.tasksById.get(id)?.projectId === change.projectId) this.relationCache.delete(id); };
+    // A held version can still have changed a parent or blocker that cached relations were read before.
+    if (change.type === 'ticket.updated' && typeof change.data?.version === 'number' && cached?.version && cached.version >= change.data.version) { relations(); return false; }
     this.touchProject(change.projectId); this.eligibility.delete(change.projectId);
     if (change.ticketId) this.ticketVersions.set(change.ticketId, (this.ticketVersions.get(change.ticketId) ?? 0) + 1);
     else this.metadataVersions.set(change.projectId, (this.metadataVersions.get(change.projectId) ?? 0) + 1);
     for (const id of change.ticketId ? this.dependents.get(change.ticketId) ?? [] : []) { this.touchProject(id); this.eligibility.delete(id); }
-    for (const id of this.relationCache.keys()) if (this.tasksById.get(id)?.projectId === change.projectId) this.relationCache.delete(id);
+    relations();
     if (change.ticketId) this.tasksById.delete(change.ticketId);
     const snapshot = this.snapshots.get(change.projectId)?.value;
     if (!change.ticketId || /^(project|workspace|workflow)\./.test(change.type)) {

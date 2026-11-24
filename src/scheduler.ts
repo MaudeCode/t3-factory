@@ -1896,11 +1896,12 @@ async function readPlan(c: Config, kanvil: Kanvil, plan: Plan, cached: boolean):
   return reading;
 }
 // Both provider lanes advance the same plans. While the feed is synchronized they share one reading per plan until a
-// Kanvil change or reconnect, so a pass woken by T3 or the Store reads nothing. A failed reading is not kept.
+// Kanvil change, a reconnect or a project configuration change, so a pass woken by T3 or the Store reads nothing.
+// A failed reading is not kept.
 const planReadings = new WeakMap<Kanvil, Map<string, { key: string; pending: Promise<PlanReading> }>>();
 function sharedPlanReading(c: Config, kanvil: Kanvil, plan: Plan) {
   if (!kanvil.synchronized) return readPlan(c, kanvil, plan, false);
-  const readings = planReadings.get(kanvil) ?? new Map<string, { key: string; pending: Promise<PlanReading> }>(), key = kanvil.readingKey;
+  const readings = planReadings.get(kanvil) ?? new Map<string, { key: string; pending: Promise<PlanReading> }>(), key = `${kanvil.readingKey}:${JSON.stringify(c.projects)}`;
   planReadings.set(kanvil, readings);
   let entry = readings.get(plan.id);
   if (entry?.key !== key) {

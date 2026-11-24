@@ -550,7 +550,7 @@ const trackerPlan = async (t: test.TestContext, synchronized: boolean) => {
   d.c.projects[0] = { ...d.c.projects[0], kanvilId: 'project', key: 'APP' };
   d.c.queue.enabled = false;
   const state = { members: ['a', 'b', 'open'], blocks: [] as [string, string][], gate: undefined as Promise<void> | undefined, held: 0 };
-  const tickets = new Map<string, Record<string, any>>(['a', 'b', 'open', 'dep', 'late'].map((id, n) => [id, ticket({ id, key: `APP-${n + 1}`, number: n + 1, status: ['a', 'b'].includes(id) ? 'done' : 'todo' })]));
+  const tickets = new Map<string, Record<string, any>>(['a', 'b', 'open', 'dep', 'late', 'x'].map((id, n) => [id, ticket({ id, key: `APP-${n + 1}`, number: n + 1, status: ['a', 'b'].includes(id) ? 'done' : 'todo' })]));
   const events: ReadableStreamDefaultController<Uint8Array>[] = [];
   let notifications = 0, cursor = 5;
   const f = fixture(t, async url => {
@@ -614,11 +614,25 @@ test('a synchronized chains pass reads each plan once per Kanvil change, shared 
   assert.equal(p.f.client.revision, revision);
   once(await p.lanes());
   assert.ok(p.stored().tickets.some(ticket => ticket.id === 'late'), 'a ticket that joins the Epic is in the plan by the next pass');
+  // The client reads the new parent first too: the parent's blockers still reach the plan.
+  p.state.blocks.push(['x', 'b']); p.tickets.set('open', { ...p.tickets.get('open')!, parentId: 'b', version: p.tickets.get('open')!.version + 1 });
+  await p.f.client.task('open', 'project');
+  const before = p.notifications();
+  p.send('change', { projectId: 'project', ticketId: 'open', type: 'ticket.updated', data: { version: p.tickets.get('open')!.version } });
+  await until(() => p.notifications() > before);
+  once(await p.lanes());
+  assert.ok(p.stored().tickets.find(ticket => ticket.id === 'open')!.blockedBy.includes('x'), 'a new parent\'s blocker joins on the next pass');
   await p.change('a', { status: 'todo' });
   once(await p.lanes());
   assert.equal(p.done().a, false, 'a reopened ticket is unfinished again');
   assert.deepEqual(await p.lanes(), []);
-  for (const id of ['a', 'open', 'dep', 'late']) await p.change(id, { status: 'done' });
+  await p.change('dep', { status: 'in_review' });
+  await p.lanes();
+  assert.equal(p.done().dep, false);
+  p.d.c.projects[0].doneStatuses = ['done', 'in_review'];
+  await p.lanes();
+  assert.ok(!p.stored().tickets.some(ticket => ticket.id === 'dep'), 'a configuration change takes effect without a Kanvil change: the finished outside blocker leaves');
+  for (const id of ['a', 'open', 'dep', 'late', 'x']) await p.change(id, { status: 'done' });
   await p.lanes();
   assert.equal(p.stored().state, 'done', 'the plan finishes once every ticket is done');
 });
