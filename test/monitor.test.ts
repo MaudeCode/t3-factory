@@ -201,8 +201,12 @@ test('only an archived thread keeps its slot when deleted and unconfirmed launch
     assert.equal(jobs.get('archived')!.state, 'dispatching');
     assert.equal(jobs.get('unseen')!.state, 'dismissed', 'T3 confirmed the unaccepted launch is missing');
     assert.equal(status, 'todo');
-    await reconcile(c, store, t3, kanvil, [v2Thread({ id: unseen.threadId, status: 'running', activeRunId: 'late-run' })]);
+    const late = v2Thread({ id: unseen.threadId, status: 'running', activeRunId: 'late-run' });
+    await reconcile(c, store, t3, kanvil, [late]);
     assert.deepEqual(stopped, [unseen.threadId]);
+    const dismissed = store.job(unseen.id)!;
+    assert.equal(busyProviders([dismissed], [late], new Map(), 30).size, 1, 'an accepted Stop still needs confirmation');
+    assert.equal(busyProviders([dismissed], [v2Thread({ id: unseen.threadId, status: 'interrupted' })], new Map(), 30).size, 0);
     assert.equal(store.job(unseen.id)!.state, 'dismissed');
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

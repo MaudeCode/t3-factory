@@ -352,6 +352,10 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
 }
 // Dismissal keeps the workspace's branch, path and head so cleanup can still verify it.
 const UNCONFIRMED_LAUNCH = 'Dismissed because T3 could not confirm the launch';
+const unconfirmedLaunchDismissed = (job: Pick<Job, 'state' | 'reason'>) =>
+  job.state === 'dismissed' && job.reason === UNCONFIRMED_LAUNCH;
+const lateLaunchHasWork = (thread: Thread, timeout: number) =>
+  executing(thread, timeout) || waiting(thread) || thread.pendingBackgroundTasks.length > 0;
 
 async function dismissJob(store: Store, job: Job, reason: string, at?: { branch: string | null; worktreePath: string | null }) {
   job.state = 'dismissed'; job.reason = reason;
@@ -371,12 +375,12 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
     await backgroundCheckpoint();
     const job = store.job(original.id)!;
     const t = byId.get(job.threadId);
-    if (job.state === 'dismissed' && job.reason === UNCONFIRMED_LAUNCH && t && allowMonitorStop) {
-      if (executing(t, c.monitoringTimeoutMinutes) || waiting(t) || t.pendingBackgroundTasks.length) {
+    if (t && unconfirmedLaunchDismissed(job) && lateLaunchHasWork(t, c.monitoringTimeoutMinutes)) {
+      if (allowMonitorStop) {
         try { await t3.stop(job.threadId); }
         catch (error) { log('late-launch-stop-failed', { jobId: job.id, error: safeError(error) }); }
-        return;
       }
+      return;
     }
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kanvil, job);
     if (job.state === 'dismissed') return;
@@ -730,7 +734,6 @@ export async function personalActivity(t3: T3, threads: Thread[], jobs: Job[], s
     if (autonomous.has(t.id)) continue;
     if ((instances.get(t.providerInstanceId) ?? t.providerInstanceId) !== driver && t.modelSelection.instanceId !== driver) continue;
     const job = owned.get(t.id);
-    if (job?.state === 'dismissed' && job.reason === UNCONFIRMED_LAUNCH) continue;
     if (job?.state === 'dismissed' && t.settledOverride === 'settled' && !executing(t, monitoringTimeoutMinutes)) continue;
     if ((!job || ['complete', 'dismissed'].includes(job.state)) && providerExecuting(t, threadsById, monitoringTimeoutMinutes)) {
       active = true; last = new Date().toISOString();
@@ -1119,14 +1122,17 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
   const counts = new Map(planned), byId = threadsById(threads);
   for (const job of jobs) {
     // Most rows are finished history; skip them before any thread lookup.
-    if (finished(job)) continue;
+    const late = unconfirmedLaunchDismissed(job);
+    if (finished(job) && !late) continue;
     const thread = byId.get(job.threadId);
-    if (!holdsSlot(job, thread, timeout)) continue;
+    if (late ? !thread || !lateLaunchHasWork(thread, timeout) : !holdsSlot(job, thread, timeout)) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
     // Unknown ownership must be reconciled before any further automatic starts.
     if (driver !== 'codex' && driver !== 'claudeAgent') return new Set(['codex', 'claudeAgent']);
-    counts.set(driver, (counts.get(driver) ?? 0) + 1);
+    // A Stop request can fail or be applied after this snapshot. Fence additional starts until T3 shows the late work is gone.
+    const limit = limits[driver === 'codex' ? 'codex' : 'claude'];
+    counts.set(driver, late ? Math.max(counts.get(driver) ?? 0, limit) : (counts.get(driver) ?? 0) + 1);
   }
   return new Set(['claudeAgent', 'codex'].filter(driver => (counts.get(driver) ?? 0) >= limits[driver === 'codex' ? 'codex' : 'claude']));
 }
