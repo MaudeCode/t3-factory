@@ -130,6 +130,8 @@ export class Store {
   private readonly statements = new Map<string, ReturnType<DatabaseSync['prepare']>>();
   private statement(sql: string) { if (!this.statements.has(sql)) this.statements.set(sql, this.db.prepare(sql)); return this.statements.get(sql)!; }
   private readonly locks = new Map<string, Promise<void>>();
+  // Ticket locks an admission read found held. Only those move the revision when they go away.
+  private readonly observedLocks = new Set<string>();
   onCleanupChange?: (projectIds: string[]) => void;
   onClose?: () => void;
   constructor(dir: string) {
@@ -181,8 +183,14 @@ export class Store {
   private lock(key: string) {
     const previous = this.locks.get(key), gate = Promise.withResolvers<void>();
     this.locks.set(key, gate.promise);
-    // A ticket another lane was preparing can be selected again once its lock is gone, even if no job was written.
-    return { previous, release: () => { gate.resolve(); if (this.locks.get(key) === gate.promise) this.locks.delete(key); if (key.startsWith('ticket:')) this.revision++; } };
+    // A ticket a lane left out because it was locked can be selected again once its lock is gone, even if no job was written.
+    // A release nobody observed changes nothing any decision read, so it leaves the revision alone.
+    return { previous, release: () => {
+      gate.resolve();
+      if (this.locks.get(key) !== gate.promise) return;
+      this.locks.delete(key);
+      if (this.observedLocks.delete(key)) this.revision++;
+    } };
   }
   tryLock(key: string) { if (!this.locks.has(key)) return this.lock(key).release; }
   async exclusive<T>(keys: string[], work: () => Promise<T>): Promise<T> {
@@ -194,7 +202,11 @@ export class Store {
       return await work();
     } finally { for (const release of releases.reverse()) release(); }
   }
-  isLocked(key: string) { return this.locks.has(key); }
+  isLocked(key: string) {
+    const locked = this.locks.has(key);
+    if (locked && key.startsWith('ticket:')) this.observedLocks.add(key);
+    return locked;
+  }
   history(): Omit<Job, 'command'>[] {
     return this.statement("SELECT json_remove(data, '$.command') AS data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT json_remove(data, '$.command') AS data FROM jobs").all()
       .map(r => JSON.parse(r.data as string)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
