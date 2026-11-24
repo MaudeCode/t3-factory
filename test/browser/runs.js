@@ -152,6 +152,8 @@ async function windowed(wide) {
     const tab = async (name) => { [...root.querySelectorAll('[aria-label="State"] [role="radio"]')].find((t) => t.textContent.startsWith(name)).click(); await pause(); };
     await reset(() => tab("Finished"), "tab");
     await reset(() => tab("All"), "tab");
+    // Coming back to a view expanded earlier starts at 100 again, not at its old window.
+    await reset(async () => { await tab("Finished"); await tab("All"); }, "tab and back");
     await reset(async () => { root.querySelector('[aria-label="Start order"] [aria-label="Oldest first"]').click(); await pause(); }, "order");
     await reset(async () => { const search = await openSearch(); search.value = "APP-1"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause(); }, "search");
     await reset(async () => { root.querySelector('[aria-label^="Filter runs"]').click(); await pause(); [...document.querySelectorAll('.popover [role="group"][aria-label="Difficulty"] button')].find((b) => b.getAttribute("aria-label") === "Medium").click(); await pause(); }, "filter");

@@ -72,7 +72,9 @@ export function Runs({ id } = {}) {
   // The list renders a window of rows; a new tab, filter, search or order starts it again.
   const view = [state, filters, query, order];
   const [shown, setShown] = useState({ view, size: RUNS_PAGE });
-  const size = shown.view.every((v, i) => v === view[i]) ? shown.size : RUNS_PAGE;
+  const same = shown.view.every((v, i) => v === view[i]);
+  if (!same) setShown({ view, size: RUNS_PAGE });
+  const size = same ? shown.size : RUNS_PAGE;
   // A run opened by its address beyond the window widens it to that run's page.
   const at = id ? list.findIndex((j) => j.id === id) : -1;
   const limit = Math.max(size, Math.ceil((at + 1) / RUNS_PAGE) * RUNS_PAGE);
