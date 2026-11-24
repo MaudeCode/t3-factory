@@ -300,40 +300,78 @@ test('cleanup page reads return stored inventory without waiting for the writer 
 
 
 
-test('run completion refreshes one maintained cleanup catalog and explicit refresh discovers external worktrees', { timeout: 10000 }, async t => {
+// A real worktree and job behind the maintained catalog. Fake timers and Date drive the refresh spacing; each refresh is counted when it starts.
+async function catalogFixture(t: import('node:test').TestContext) {
   const f = await maintenanceFixture(t), service = new FactoryService(f.path), internal = service as any;
   const git = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' });
   git('init', '-qb', 'main'); writeFileSync(join(f.dir, 'tracked'), 'fixture'); git('add', 'tracked'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'fixture');
   const tree = join(f.dir, 'tree'); git('worktree', 'add', '-qb', 'feature', tree);
   f.thread.worktreePath = tree; f.thread.branch = 'feature';
-  const entered = deferred(), release = deferred();
-  let closed = false;
-  const close = async () => { if (closed) return; closed = true; release.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); };
-  t.after(close);
+  const job: Job = { ...f.job, state: 'waiting', completedAt: null, thread: { title: 'Fixture', status: 'completed', worktreePath: tree, branch: 'feature', updatedAt: f.thread.updatedAt, pending: null, background: [] } } as Job;
+  const seed = new Store(f.c.stateDir); seed.save(job); seed.close();
+  // Discovery reads T3 with a fresh shell; a test holds it there to keep a refresh running.
+  let hold: ReturnType<typeof deferred> | undefined, held = deferred();
+  t.mock.method(T3.prototype, 'shell', async (fresh?: boolean) => { if (fresh && hold) { held.resolve(); await hold.promise; } return f.shell(); });
+  t.mock.method(T3.prototype, 'terminals', async () => []);
+  for (const method of ['scheduleCleanup', 'scheduleCollection', 'scheduleQuota']) t.mock.method(internal, method, () => {});
+  const refreshes: number[] = [], set = Store.prototype.set;
+  t.mock.method(Store.prototype, 'set', function (this: Store, key: string, value: string) { if (key === 'cleanupCatalogAttempt') refreshes.push(Date.now() - started); return set.call(this, key, value); });
+  const started = Date.parse('2026-01-03T00:00:00Z');
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: started });
+  // Moves the clock to `ms` after start and waits until every worker it woke has finished.
+  const advance = async (ms: number) => { t.mock.timers.tick(started + ms - Date.now()); await internal.idle; };
+  const refreshing = () => JSON.parse(internal.store.get('cleanupCatalogRefresh') ?? '{}').refreshing;
+  const holdNext = () => { hold = deferred(); held = deferred(); return { started: held.promise, release: () => { const gate = hold!; hold = undefined; gate.resolve(); } }; };
+  t.after(async () => { hold?.resolve(); await service.stop(); rmSync(f.dir, { recursive: true, force: true }); });
+  await service.start(); await advance(0);
+  return { ...f, git, tree, job, service, internal, refreshes, advance, refreshing, holdNext };
+}
 
-  try {
-    await service.start();
-    const held = internal.enqueue(async () => { entered.resolve(); await release.promise; }, false, { reason: 'fixture-maintenance' });
-    await entered.promise;
-    let publication = deferred(), count = 0;
-    const set = internal.store.set.bind(internal.store);
-    t.mock.method(internal.store, 'set', (key: string, value: string) => { set(key, value); if (key === 'cleanupCatalog') { count++; publication.resolve(); } });
-    const job = { ...f.job, state: 'running', thread: { title: 'Fixture', status: 'completed', worktreePath: tree, branch: 'feature', updatedAt: f.thread.updatedAt, pending: null, background: [] } };
-    internal.store.save(job); internal.store.save({ ...job, reason: 'Another update in the same pass' });
-    release.resolve(); await held; await publication.promise;
-    assert.equal(count, 1, 'writes in one pass coalesce into one discovery');
-    assert.equal(readCleanupCatalog(f.c, internal.store).items.find(item => item.path === tree)!.state, 'active');
-    publication = deferred();
-    await internal.enqueue(async () => internal.store.save({ ...job, state: 'complete' }));
-    await publication.promise;
-    const finished = readCleanupCatalog(f.c, internal.store).items.find(item => item.path === tree)!;
-    assert.equal(finished.jobs[0].state, 'complete'); assert.notEqual(finished.next!.group, 'protected');
-    const external = join(f.dir, 'external'); git('worktree', 'add', '-qb', 'external', external);
-    publication = deferred();
-    const response = await internal.handle({ type: 'cleanup', input: { type: 'inventory', refresh: true } });
-    assert.equal(response.data.refreshing, true);
-    assert.ok(!response.data.items.some((item: any) => item.path === external), 'refresh returns the current snapshot immediately');
-    await publication.promise;
-    assert.ok(readCleanupCatalog(f.c, internal.store).items.some(item => item.path === external), 'background discovery finds worktrees outside Factory');
-  } finally { await close(); }
+
+test('job lifecycle changes coalesce cleanup catalog refreshes to one every 30 seconds', { timeout: 10000 }, async t => {
+  const f = await catalogFixture(t);
+  assert.deepEqual(f.refreshes, [0], 'the first refresh after start runs at once');
+  assert.equal(f.refreshing(), false);
+  await f.advance(1000);
+  for (let i = 0; i < 10; i++) f.internal.store.save({ ...f.job, state: i === 9 ? 'complete' : i % 2 ? 'waiting' : 'running' });
+  assert.equal(f.refreshing(), false, 'a waiting background refresh is not shown as refreshing');
+  const read = await f.internal.handle({ type: 'cleanup', input: { type: 'inventory' } });
+  assert.equal(read.data.items.find((item: any) => item.path === f.tree).jobs[0].state, 'complete', 'the read shows the finished job before the rescan');
+  await f.advance(29_999);
+  assert.deepEqual(f.refreshes, [0], 'no refresh inside the 30-second window');
+  const running = f.holdNext();
+  t.mock.timers.tick(1); await running.started;
+  assert.deepEqual(f.refreshes, [0, 30_000], 'ten lifecycle changes cause one refresh');
+  assert.equal(f.refreshing(), true, 'a running refresh is shown as refreshing');
+  f.internal.store.save({ ...f.job, state: 'dismissed' });
+  running.release(); await f.internal.idle;
+  await f.advance(59_999);
+  assert.deepEqual(f.refreshes, [0, 30_000], 'a change during a refresh waits 30 seconds from that refresh start');
+  await f.advance(60_000);
+  assert.deepEqual(f.refreshes, [0, 30_000, 60_000], 'one follow-up refresh');
+  f.internal.store.save({ ...f.job, state: 'running' });
+  await f.service.stop();
+  await f.advance(120_000);
+  assert.deepEqual(f.refreshes, [0, 30_000, 60_000], 'stopping the service drops the waiting refresh');
+});
+
+
+test('owner and configuration refreshes run at once and absorb a waiting background refresh', { timeout: 10000 }, async t => {
+  const f = await catalogFixture(t);
+  await f.advance(1000);
+  f.internal.store.save({ ...f.job, state: 'complete' });
+  const external = join(f.dir, 'external'); f.git('worktree', 'add', '-qb', 'external', external);
+  const response = await f.internal.handle({ type: 'cleanup', input: { type: 'inventory', refresh: true } });
+  assert.equal(response.data.refreshing, true);
+  assert.equal(f.refreshing(), true, 'an owner refresh shows as refreshing at once');
+  assert.ok(!response.data.items.some((item: any) => item.path === external), 'refresh returns the current snapshot immediately');
+  await f.advance(1000);
+  assert.deepEqual(f.refreshes, [0, 1000], 'the owner refresh runs at once');
+  assert.ok(readCleanupCatalog(f.c, f.internal.store).items.some(item => item.path === external), 'the refresh discovers worktrees outside Factory');
+  await f.advance(2000);
+  f.internal.store.save({ ...f.job, state: 'dismissed' });
+  f.internal.wake('config'); await f.advance(2000);
+  assert.deepEqual(f.refreshes, [0, 1000, 2000], 'a configuration change refreshes at once');
+  await f.advance(59_999);
+  assert.deepEqual(f.refreshes, [0, 1000, 2000], 'each immediate refresh absorbed the waiting background refresh');
 });
