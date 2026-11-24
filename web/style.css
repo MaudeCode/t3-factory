@@ -1151,15 +1151,17 @@ body,
   gap: var(--space-1);
   padding-left: var(--space-2);
 }
-.side-foot > :first-child {
+.side-foot > .version {
   margin-right: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
-/* Collapsed to icons. Labels stay in the accessibility tree; only their boxes go. */
+/* Collapsed to icons. Labels stay in the accessibility tree; only their boxes go. The connection dot never shows its label. */
 .shell.rail .side nav a > span,
 .shell.rail .start-btn > span,
-.shell.rail .conn-label,
 .top .start-btn > span,
-.top .conn-label {
+.conn-label {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -1206,7 +1208,7 @@ body,
 .shell.rail .side-foot {
   flex-direction: column;
 }
-.shell.rail .side-foot > :first-child {
+.shell.rail .side-foot > .version {
   margin-right: 0;
 }
 /* Phone: a top bar and a bottom tab bar stand in for the sidebar. */

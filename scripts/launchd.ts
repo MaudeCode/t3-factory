@@ -2,6 +2,7 @@ import { chmodSync, cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from 
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { setTimeout } from "node:timers/promises";
+import { gitVersion } from "../src/version.ts";
 
 // launchd acknowledges bootout before it has finished removing the old service,
 // so both helpers wait up to this long for it to settle.
@@ -85,10 +86,13 @@ export async function installRuntime(root: string, app: string, unload: () => Pr
   try {
     for (const entry of runtimeEntries) cpSync(join(root, entry), join(staging, entry), { recursive: true, verbatimSymlinks: true });
     if (env) { cpSync(env, join(staging, ".env")); chmodSync(join(staging, ".env"), 0o600); }
+    // The runtime has no .git, so the version the web app shows is recorded here; a checkout without Git leaves none.
+    const version = gitVersion(root);
+    if (version) writeFileSync(join(staging, "VERSION"), `${version}\n`);
     await unload();
-    for (const entry of env ? [...runtimeEntries, ".env"] : runtimeEntries) {
+    for (const entry of [...runtimeEntries, ...(env ? [".env"] : []), "VERSION"]) {
       rmSync(join(app, entry), { recursive: true, force: true });
-      renameSync(join(staging, entry), join(app, entry));
+      if (entry !== "VERSION" || version) renameSync(join(staging, entry), join(app, entry));
     }
   } finally {
     rmSync(staging, { recursive: true, force: true });

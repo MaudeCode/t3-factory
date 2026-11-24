@@ -1,5 +1,5 @@
 import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
-import { authenticated, auth, connection, config, status, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
+import { authenticated, auth, version, connection, config, status, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
 import { route, NAV, TABS, follow } from "../lib/router.js";
 import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover } from "../ui/index.js";
 import { ago, until, moment } from "../lib/format.js";
@@ -190,7 +190,7 @@ function Shell() {
         <div class="side-head">${wordmark}<${Button} variant="ghost" size="sm" icon="sidebar" label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
         <${Automation} /><${Start} />
         ${NAV.map(([group, list]) => html`<nav key=${group} aria-label=${group}><h2>${group}</h2>${list.map(link)}</nav>`)}
-        <div class="side-foot"><${Updates} />
+        <div class="side-foot"><${Updates} /><span class="version" title="Version">${version.value}</span>
           <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
           <${Button} variant="ghost" size="sm" icon="signOut" label=${signOut} onClick=${leave} /></div>
       </aside>`}

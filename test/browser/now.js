@@ -16,6 +16,7 @@ const report = (key, outcome, data = {}) => ({ id: key, time: ago(30), kind: "tr
 const light = () => [job(1, "running"), job(2, "running", { prUrls: ["https://github.com/example/app/pull/2"] }), job(5, "dispatching"), job(3, "waiting", { thread: { title: "Asks a question", pending: "question" } }), job(4, "waiting", { reason: "Parked for inspection" }), job(9, "complete", { completedAt: ago(2) })];
 const heavy = () => [...Array.from({ length: 16 }, (_, i) => job(i + 20, "running", i % 2 ? { prUrls: [`https://github.com/example/app/pull/${i}`] } : {})), ...Array.from({ length: 11 }, (_, i) => job(i + 60, "waiting", { thread: { title: `Waiting ${i}`, pending: "approval" } }))];
 const base = (jobs) => ({
+  version: "v0.5.0",
   config: { enabled: true, concurrency: { claude: 16, codex: 2 }, models: [], kanvil: { url: "https://tracker.example", workspaceId: "w" }, triage: { enabled: true }, projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true, inbox: { kanvilId: "pin" } }] },
   status: {
     jobs, journal: [{ id: 1, time: ago(3), kind: "runs", text: "Journal entry that belongs on the Activity page" }],

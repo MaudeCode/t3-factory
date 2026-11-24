@@ -7,6 +7,8 @@ import { clone, uuid, moveItem, repoFromPath, ticketKey, cleanupOperationState, 
 
 // State -----------------------------------------------------------------
 export const auth = signal({ mode: "pairing", loginUrl: "" });
+// The running build: its release tag, else its short commit SHA.
+export const version = signal("");
 export const authenticated = signal(null); // null while unknown
 export const loginError = signal("");
 export const connection = signal("connecting"); // connecting | live | retrying | polling | offline
@@ -93,6 +95,7 @@ export function applyState(data, reset = false) {
     status.value = data.status;
     journal.value = data.status.journal ?? [];
     if (data.now) serverOffset = Date.parse(data.now) - Date.now();
+    version.value = data.version ?? "";
     // Follow the server's config unless there are local edits; those keep their baseline so a save still detects outside changes.
     if (!config.value || reset || !dirty.value) {
       config.value = clone(data.config);
