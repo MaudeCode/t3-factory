@@ -420,6 +420,8 @@ export class Store {
   }
   get(key: string): string | null { return this.statement('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
   set(key: string, value: string) { if (this.statement('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value != excluded.value').run(key, value).changes && ADMISSION_KEYS.test(key)) this.revision++; }
+  // Delete the keys under a prefix whose remainder is not in `keep`, in one statement.
+  deleteUnlisted(prefix: string, keep: string[]) { this.statement('DELETE FROM metadata WHERE substr(key, 1, length(?1)) = ?1 AND substr(key, length(?1) + 1) NOT IN (SELECT value FROM json_each(?2))').run(prefix, JSON.stringify(keep)); }
   claim(): boolean {
     this.db.exec('BEGIN IMMEDIATE');
     try {
