@@ -75,6 +75,7 @@ export const configSchema = z.preprocess(input => {
   minFreeSpaceBytes: z.number().int().min(0).default(1_073_741_824),
   concurrency: z.object({ claude: z.number().int().min(0).default(1), codex: z.number().int().min(0).default(1) }).strict().default({ claude: 1, codex: 1 }),
   models: z.array(preset).min(1),
+  launchWindowMinutes: positive.default(30),
   monitoringTimeoutMinutes: positive.default(DEFAULT_MONITORING_TIMEOUT_MINUTES),
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
   stateDir: absolute,
