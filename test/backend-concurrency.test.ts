@@ -467,9 +467,13 @@ test('streamed thread counters do not restart all backend domains', async t => {
   }
   assert.deepEqual(wakes, ['t3'], 'streaming content and visit counters must not continuously restart expensive scheduling and collection');
   assert.equal(invalidations, 101, 'manual final reads must still see the latest shell');
-  f.internal.onShellItem({ kind: 'thread.updated', thread: { ...thread, status: 'waiting', pendingRuntimeRequest: { kind: 'user_input', createdAt: new Date().toISOString() } } });
+  const waiting = { ...thread, status: 'waiting', pendingRuntimeRequest: { kind: 'user_input', createdAt: new Date().toISOString() } };
+  f.internal.onShellItem({ kind: 'thread.updated', thread: waiting });
   t.mock.timers.tick(25);
   assert.deepEqual(wakes, ['t3', 't3'], 'a real run or human-request transition still wakes work immediately');
+  f.internal.onShellItem({ kind: 'thread.removed', threadId: 'streaming' }); t.mock.timers.tick(25);
+  f.internal.onShellItem({ kind: 'thread.updated', thread: waiting }); t.mock.timers.tick(25);
+  assert.deepEqual(wakes, ['t3', 't3', 't3', 't3'], 'a removed thread keeps no wake identity, so its return is a change');
 });
 
 test('zero provider capacity still observes completed explicit chains without launching', async t => {
