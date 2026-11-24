@@ -6,7 +6,7 @@ import { parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
-import { cycle, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, readStatus } from './scheduler.ts';
+import { cycle, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, readStatus, readCachedStatus } from './scheduler.ts';
 import { FactoryService } from './service.ts';
 import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
@@ -53,10 +53,28 @@ if (command === 'web') {
     return (command && await callControl(c.stateDir, command)) ?? runFactory(args, input);
   };
   let inventoryRefresh: Promise<unknown> | undefined, inventoryError: string | undefined;
+  let cachedStatus: ReturnType<typeof readCachedStatus> | undefined;
+  let cachedConfig: ReturnType<typeof loadConfig> | undefined, configJSON: string | undefined;
+  let compactSource: NonNullable<typeof cachedStatus>['status']['jobs'] | undefined;
+  let refreshRequested = false;
+  let compactJobs: ReturnType<typeof compact>[] = [];
   const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
     readState: () => {
-      const config = loadConfig(configPath), status = readStatus(config, store);
-      return { config, status: { ...status, jobs: status.jobs.map(compact), journal: store.events(80) }, version, now: new Date().toISOString() };
+      refreshRequested = true;
+      const current = loadConfig(configPath), serialized = JSON.stringify(current);
+      if (serialized !== configJSON) {
+        cachedConfig = current;
+        configJSON = serialized;
+        cachedStatus = undefined;
+      }
+      cachedStatus = readCachedStatus(cachedConfig!, store, cachedStatus);
+      const { status } = cachedStatus;
+      if (status.jobs !== compactSource) {
+        compactSource = status.jobs;
+        compactJobs = status.jobs.map(compact);
+      }
+      refreshRequested = false;
+      return { config: cachedConfig!, status: { ...status, jobs: compactJobs }, version, now: new Date().toISOString() };
     },
     cleanupInventory: input => {
       const current = loadConfig(configPath), data = readCleanupCatalog(current, store, input.offset, input.limit, input);
@@ -75,7 +93,8 @@ if (command === 'web') {
     },
     // Runs only while a page is subscribed: the scheduler's writes show in the Store's data version, settings in the config file.
     watch: (notify) => {
-      const stopStore = store.watch(notify), config = watch(dirname(configPath), (_, name) => { if (name === basename(configPath)) notify(); });
+      const stopStore = store.watch(notify, 1000, () => refreshRequested || (cachedStatus?.expiresAt ?? 0) <= Date.now());
+      const config = watch(dirname(configPath), (_, name) => { if (!name || name === basename(configPath)) refreshRequested = true; });
       return () => { stopStore(); config.close(); };
     },
   });

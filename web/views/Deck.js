@@ -1,6 +1,6 @@
 // Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
 import { html, useRef, useState } from "../lib/h.js";
-import { config, status, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
+import { config, statusSection, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { follow, followRun, ticketClick } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -42,7 +42,7 @@ export const SectionSwitch = ({ kind, label, on, off }) => html`<label class="au
 
 export function Machine({ provider }) {
   const now = serverNow();
-  const stream = (status.value.streams || []).find((s) => s.driver === provider.driver) || {};
+  const stream = (statusSection("streams").value || []).find((s) => s.driver === provider.driver) || {};
   const active = jobs.value.filter((j) => providerOf(j) === provider.driver && isActive(j)).length;
   const limit = live.value.concurrency?.[provider.concurrency] ?? 1;
   const quota = quotaFor(provider.driver);
@@ -74,7 +74,7 @@ export function Machine({ provider }) {
 export const requestName = ({ upstream, ticket, epic, reconcile }) => {
   if (reconcile) return `Investigate ${ticket}`;
   if (!epic) return upstream || ticket;
-  const known = [...(status.value.epics ?? []), ...(status.value.plans ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
+  const known = [...(statusSection("epics").value ?? []), ...(statusSection("plans").value ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
   return `Epic ${known?.title ?? epic}`;
 };
 
@@ -169,7 +169,7 @@ export const openRun = (t) => {
   const key = ticketKey(t.key);
   // Held queue rows carry a key without a tracker ID.
   const matches = (id, otherKey) => (t.id && id === t.id) || (key && ticketKey(otherKey) === key);
-  return jobs.value.some(j => matches(j.taskId, j.ticketKey) && isOpen(j)) || (status.value.plans ?? []).some(p => p.state === "active" && p.target && matches(p.target.id, p.target.key));
+  return jobs.value.some(j => matches(j.taskId, j.ticketKey) && isOpen(j)) || (statusSection("plans").value ?? []).some(p => p.state === "active" && p.target && matches(p.target.id, p.target.key));
 };
 
 // Why a ticket cannot be started from here right now, or null when it can.
@@ -247,7 +247,7 @@ export const Investigate = ({ held: h }) => h.conflict === "artifacts" && html`<
 export function UpNext({ limit = 5, children, filters, query = "", start }) {
   clock.value;
   const c = config.value,
-    q = status.value.upNext,
+    q = statusSection("upNext").value,
     visible = t => !startHold(t) && matchesRunFilters(t, filters, query),
     tickets = (q?.tickets ?? []).filter(visible),
     held = (q?.held ?? []).filter(visible),

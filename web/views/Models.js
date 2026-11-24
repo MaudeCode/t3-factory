@@ -1,11 +1,11 @@
 import { html, useEffect } from "../lib/h.js";
-import { config, status, providers, jobs, selectedModel, actions, chooseModel, setModelOption, instanceDriver } from "../lib/store.js";
+import { config, statusSection, providers, jobs, selectedModel, actions, chooseModel, setModelOption, instanceDriver } from "../lib/store.js";
 import { DIFFICULTIES, difficultyLabel, providerName, providerIcon, streamReason, isOpen } from "../lib/format.js";
 import { Button, Field, Input, Select, Segmented, Toggle, Tag, Icon, SortableList, Page, RowBody } from "../ui/index.js";
 
 // What the scheduler thinks of each model right now.
 function liveState(m) {
-  const streams = status.value.streams || [];
+  const streams = statusSection("streams").value || [];
   for (const s of streams) {
     if (s.quota?.factoryRouting?.modelId === m.id) return { text: "next automatic run", tone: "ok", next: true };
     const entry = (s.models || []).find((x) => x.id === m.id);

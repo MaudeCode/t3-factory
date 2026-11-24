@@ -1,5 +1,5 @@
 import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
-import { authenticated, auth, version, connection, config, status, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
+import { authenticated, auth, version, connection, config, statusSection, live, clock, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen, serverNow } from "../lib/store.js";
 import { route, NAV, TABS, follow } from "../lib/router.js";
 import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover } from "../ui/index.js";
 import { ago, until, moment } from "../lib/format.js";
@@ -146,7 +146,7 @@ function usePhone() {
 // The automation switch, with its state and when the scheduler looks next. `bare` is the switch alone.
 function Automation({ bare }) {
   clock.value;
-  const on = live.value.enabled, d = status.value.decision, now = serverNow();
+  const on = live.value.enabled, d = statusSection("decision").value, now = serverNow();
   const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
   // The schedule's next change to this switch, if it has one.
   const timer = on ? live.value.schedule.offAt : live.value.schedule.onAt, turns = on ? "Turns off" : "Turns on";

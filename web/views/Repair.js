@@ -1,6 +1,6 @@
 // The Settings area's Repair tab: the switch, how runs are read, each project's watched workflows and what they last did.
 import { html } from "../lib/h.js";
-import { config, status, jobs, clock, serverNow } from "../lib/store.js";
+import { config, statusSection, jobs, clock, serverNow } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, safeLink, span } from "../lib/format.js";
 import { Field, Input, Range, Chips, Tag, Empty, Link, Section, Page, RowBody } from "../ui/index.js";
 import { RunGroup, SectionSwitch } from "./Deck.js";
@@ -32,7 +32,7 @@ function WorkflowRow({ row: r, now }) {
 export function Repair({ lead } = {}) {
   clock.value;
   const c = config.value, now = serverNow();
-  const rows = status.value.repairs || [];
+  const rows = statusSection("repairs").value || [];
   const repairs = jobs.value.filter((j) => j.kind === "repair").sort(byNewest);
   return html`<${Page} class="settings-page" title="Settings" hint="A failed run of a watched workflow on a project's base branch starts one repair run. Pull request checks are left to the run that owns the pull request."
     actions=${html`<${SectionSwitch} kind="repair" label="CI repairs" on="Repairs on" off="Repairs paused" />`}>

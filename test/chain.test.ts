@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
-import { cycle, runPlans, cancelPlan, setPlanOverrides, orderPlans, refreshInventory, readStatus } from '../src/scheduler.ts';
+import { cycle, runPlans, cancelPlan, setPlanOverrides, orderPlans, refreshInventory, readStatus, readCachedStatus } from '../src/scheduler.ts';
 import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -440,6 +440,17 @@ test('an Epic with an active plan is refused, a finished ticket in a missing pro
   const running = readStatus(f.c, f.store).epics[0];
   assert.deepEqual([running.startBlock?.reason, running.startBlock?.message], [refused.reason, refused.message]);
   assert.equal(running.planId, plan(f).id);
+});
+
+test('refreshing inventory invalidates open Epic details while keeping the unchanged projection', async t => {
+  const f = epicFixture(t, 'a');
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  const before = readCachedStatus(f.c, f.store);
+  await refreshInventory(f.c, f.store, f.t3, f.kanvil);
+  const after = readCachedStatus(f.c, f.store, before);
+  assert.equal(after.status.epics, before.status.epics, 'the Epic list should reuse the unchanged projection');
+  assert.equal(after.status.epicDetailsRevision, (before.status.epicDetailsRevision ?? 0) + 1,
+    'the detail panel must refresh independently of the projection');
 });
 
 test('an Epic starts its members in a project with automatic work off', async t => {

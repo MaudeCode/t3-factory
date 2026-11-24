@@ -366,3 +366,13 @@ Cleanup discovery and page projection are separate. The scheduler coalesces `Sto
 ## macOS control-service resource class
 
 Both installers use the shared `writeControlAgent` definition writer. It assigns `ProcessType=Interactive` to the scheduler and web control plane, whose RPC deadlines and user-facing state must remain responsive while build workers are busy. The optional one-shot DNS updater keeps its existing policy. The shared writer owns this key and rejects a caller-supplied duplicate, so reinstalling either control service cannot silently restore Background or unspecified resource throttling. Builds remain in their isolated runners; this setting does not add CPU or memory capacity and does not patch system daemons.
+
+The web status reader caches sections by SQLite revision. Each trigger updates
+its tokens in the source write's transaction, including writes from an older
+scheduler process. Unchanged sections keep their previous values. The web
+checks for changes while a browser is subscribed and gives each new stream a
+full snapshot followed by section deltas. The browser applies each delta in a
+single signal batch. Cleanup refreshes on its own catalog and action revision.
+The backend concurrency and web live tests cover revision dependencies,
+indexed read plans, idle subscriptions, and reconnects. The web UI test
+covers delta convergence and subscriber isolation.

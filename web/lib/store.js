@@ -14,14 +14,35 @@ export const loginError = signal("");
 export const connection = signal("connecting"); // connecting | live | retrying | polling | offline
 export const config = signal(null);
 export const base = signal(null);
-export const status = signal({});
+const sectionSignals = new Map();
+const sectionKeys = signal([]);
+export function statusSection(key) {
+  if (!sectionSignals.has(key)) sectionSignals.set(key, signal(undefined));
+  return sectionSignals.get(key);
+}
+function writeStatus(next, delta = false) {
+  batch(() => {
+    const previous = sectionKeys.peek();
+    const keys = delta ? [...new Set([...previous, ...Object.keys(next)])] : Object.keys(next);
+    if (previous.length !== keys.length || keys.some((key, i) => key !== previous[i])) sectionKeys.value = keys;
+    if (!delta) for (const key of previous) {
+      if (!Object.hasOwn(next, key)) statusSection(key).value = undefined;
+    }
+    for (const [key, value] of Object.entries(next)) statusSection(key).value = value;
+  });
+}
+const snapshot = computed(() => Object.fromEntries(sectionKeys.value.map(key => [key, statusSection(key).value])));
+export const status = {
+  get value() { return snapshot.value; },
+  set value(next) { writeStatus(next); },
+};
 // A decision is historical; a later provider reading owns the current allowance display.
 export function quotaFor(driver) {
-  const direct = status.value.decision?.quota;
-  return [(status.value.streams || []).find(s => s.driver === driver)?.quota, direct?.driver === driver ? direct : null]
+  const direct = statusSection("decision").value?.quota;
+  return [(statusSection("streams").value || []).find(s => s.driver === driver)?.quota, direct?.driver === driver ? direct : null]
     .filter(Boolean).sort((a, b) => (Date.parse(b.capturedAt) || 0) - (Date.parse(a.capturedAt) || 0))[0];
 }
-export const journal = signal([]);
+export const journal = computed(() => statusSection("journal").value ?? []);
 export const history = signal(null); // every job, newest first, loaded on demand
 export const providers = signal([]);
 // The driver behind a provider instance, from T3's catalog once loaded; an instance named after its driver needs no catalog.
@@ -48,8 +69,8 @@ export const issues = computed(() => {
     return list.length && { problems: list.map(startProblem) };
   };
   return [
-    { source: "Session tickets", href: "/queue?origin=sessions", error: status.value.sessionTickets?.error },
-    { source: "Epics", href: "/queue?view=epics", error: status.value.epicsError },
+    { source: "Session tickets", href: "/queue?origin=sessions", error: statusSection("sessionTickets").value?.error },
+    { source: "Epics", href: "/queue?view=epics", error: statusSection("epicsError").value },
     { source: "Session ticket starts", href: "/queue?origin=sessions", note: "Not started", error: failed(SESSION_ORIGIN) },
     { source: "Triage starts", href: "/queue?origin=reports", note: "Not started", error: failed(TRIAGE_ORIGIN) },
   ].filter((i) => i.error);
@@ -64,7 +85,7 @@ export const serverNow = () => clock.value + serverOffset;
 export const dirty = computed(
   () => !!config.value && JSON.stringify(config.value) !== JSON.stringify(base.value),
 );
-export const jobs = computed(() => status.value.jobs || []);
+export const jobs = computed(() => statusSection("jobs").value || []);
 
 api.onUnauthorized = () => (authenticated.value = false);
 
@@ -92,28 +113,29 @@ export function update(mutate) {
 // Server state ----------------------------------------------------------
 export function applyState(data, reset = false) {
   batch(() => {
-    status.value = data.status;
-    journal.value = data.status.journal ?? [];
+    writeStatus(data.status, data.delta);
     if (data.now) serverOffset = Date.parse(data.now) - Date.now();
-    version.value = data.version ?? "";
-    // Follow the server's config unless there are local edits; those keep their baseline so a save still detects outside changes.
-    if (!config.value || reset || !dirty.value) {
-      config.value = clone(data.config);
-      base.value = clone(data.config);
+    if (!data.delta || Object.hasOwn(data, "version")) version.value = data.version ?? "";
+    if (data.config) {
+      // Follow the server's config unless there are local edits; those keep their baseline so a save still detects outside changes.
+      if (!config.value || reset || !dirty.value) {
+        config.value = clone(data.config);
+        base.value = clone(data.config);
+      }
+      live.value = {
+        enabled: data.config.enabled,
+        schedule: data.config.schedule ?? {},
+        queue: data.config.queue?.enabled !== false,
+        upstream: !!data.config.upstream?.enabled,
+        repair: !!data.config.repair?.enabled,
+        triage: !!data.config.triage?.enabled,
+        concurrency: data.config.concurrency,
+      };
     }
-    live.value = {
-      enabled: data.config.enabled,
-      schedule: data.config.schedule ?? {},
-      queue: data.config.queue?.enabled !== false,
-      upstream: !!data.config.upstream?.enabled,
-      repair: !!data.config.repair?.enabled,
-      triage: !!data.config.triage?.enabled,
-      concurrency: data.config.concurrency,
-    };
     authenticated.value = true;
     if (!["live", "retrying"].includes(connection.value)) connection.value = "polling";
   });
-  if (history.value) loadHistory().catch(() => {});
+  if (history.value && (!data.delta || Object.hasOwn(data.status, "recent"))) loadHistory().catch(() => {});
 }
 // Number of settings that differ between the saved config and the edits.
 export const changes = computed(() => (config.value && base.value ? diff(base.value, config.value) : 0));
@@ -216,7 +238,7 @@ export const actions = {
   // The order queued runs, chains and running Epics get free slots in. The list moves at once; the reload settles it.
   orderPlans: async (ids) => {
     const at = (p) => { const i = ids.indexOf(p.id); return i < 0 ? ids.length : i; };
-    status.value = { ...status.value, plans: [...(status.value.plans ?? [])].sort((a, b) => at(a) - at(b)) };
+    statusSection("plans").value = [...(statusSection("plans").value ?? [])].sort((a, b) => at(a) - at(b));
     try { await post("/api/plans/order", { ids }); } catch (error) { message(error.message, true); }
     await load();
   },
@@ -465,7 +487,7 @@ export function startRun(input, origin) {
 }
 function enqueueOperation(input, kind = "dispatch", cleanupTargets, origin) {
   const id = uuid();
-  if (kind === "dispatch" && input.ticket && !("ticketKeyRevision" in input) && status.value.ticketKeyRevision) input = { ...input, ticketKeyRevision: status.value.ticketKeyRevision };
+  if (kind === "dispatch" && input.ticket && !("ticketKeyRevision" in input) && statusSection("ticketKeyRevision").value) input = { ...input, ticketKeyRevision: statusSection("ticketKeyRevision").value };
   operations.value = [...operations.value, { id, input: clone(input), kind, state: "queued", ...(cleanupTargets ? { cleanupTargets: clone(cleanupTargets) } : {}), ...(origin ? { origin } : {}) }];
   saveOperations();
   void drainOperations();

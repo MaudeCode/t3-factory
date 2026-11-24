@@ -145,7 +145,7 @@ export const launched = (job: Job) => job.state !== 'dispatching' || job.reason 
 // A ticket the start lists no longer offer: a run launched for it, or it waits as the target of a queued run or a chain.
 // A queued run or chain that is cancelled lists the ticket again.
 export function startedTickets(store: Pick<Store, 'jobSummaries' | 'plans'>) {
-  const jobs = store.jobSummaries(), targets = new Set(store.plans().flatMap(plan => plan.state === 'active' && plan.target ? [plan.target.id] : []));
+  const jobs = store.jobSummaries('tickets'), targets = new Set(store.plans('active').flatMap(plan => plan.state === 'active' && plan.target ? [plan.target.id] : []));
   return (taskId: string) => targets.has(taskId) || jobs.some(j => j.taskId === taskId && launched(j));
 }
 
@@ -479,7 +479,7 @@ export const projectUnavailable = (project: Project | undefined) => !project ? '
 export function sessionTicketStatus(c: Config, store: Store) {
   const started = startedTickets(store), cat = JSON.parse(store.get('sessionCatalog') ?? 'null') as Catalog | null;
   const includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
-  const rows = store.sessionTickets().filter(r => !r.archived && !r.missing && !r.dismissedAt && !r.consumed && !started(r.taskId)).flatMap(r => {
+  const rows = store.sessionTickets(true).filter(r => !started(r.taskId)).flatMap(r => {
     const bySession = new Map<string, SessionSource>();
     for (const source of r.sources) {
       if (!includeSource(source.threadId, source.title)) continue;

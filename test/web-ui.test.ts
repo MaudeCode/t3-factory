@@ -397,6 +397,27 @@ test('server pushes replace status but keep local config edits until saved', () 
   assert.equal(store.dirty.value, false);
 });
 
+test('a jobs delta preserves other section identities and converges with a full snapshot', async () => {
+  const { effect } = await import('../web/lib/h.js');
+  const initial = { ...fixture(), status: { jobs: [], plans: [{ id: 'plan' }], journal: [{ id: 1 }] } };
+  store.applyState(initial, true);
+  const before = store.status.value;
+  let reads = 0;
+  const dispose = effect(() => { void store.statusSection('plans').value; reads++; });
+  try {
+    const jobs = [{ id: 'job', state: 'running' }];
+    store.applyState({ delta: true, status: { jobs } });
+    assert.equal(store.jobs.value, jobs);
+    for (const key of Object.keys(before).filter(key => key !== 'jobs')) assert.equal(store.status.value[key], before[key]);
+    assert.equal(reads, 1);
+    const journal = [{ id: 2 }];
+    store.applyState({ delta: true, status: { journal } });
+    const after = store.status.value;
+    store.applyState({ ...initial, status: { ...initial.status, jobs, journal } });
+    assert.deepEqual(store.status.value, after);
+  } finally { dispose(); store.applyState(fixture(), true); }
+});
+
 test('a project added from the catalogs starts with its path, prefix, and columns filled in', () => {
   store.applyState(fixture(), true);
   store.sources.value = {

@@ -2,7 +2,7 @@
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
 import { html, useState, useEffect, useRef } from "../lib/h.js";
-import { config, status, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
+import { config, statusSection, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, epicPanel, closeEpic, follow } from "../lib/router.js";
 import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel } from "../lib/format.js";
@@ -23,12 +23,12 @@ function Detail({ ticket: t, tab }) {
   const hold = CLOSED.includes(t.status) ? `${t.key} is ${ticketStatusLabel(t.status).toLowerCase()}.` : startHold(row);
   const start = startOptions();
   // Where the scheduler has this ticket right now, in its own words.
-  const up = status.value.upNext, position = up?.tickets.findIndex((x) => x.id === t.id) ?? -1, held = up?.held.find((h) => ticketKey(h.key) === t.key);
+  const up = statusSection("upNext").value, position = up?.tickets.findIndex((x) => x.id === t.id) ?? -1, held = up?.held.find((h) => ticketKey(h.key) === t.key);
   const line = position >= 0 ? `Up next: ${position + 1} of ${up.tickets.length} in the queue.` : held ? html`Held back: ${held.reason} <${Investigate} held=${held} />` : null;
   const seen = new Set(), runs = [...jobs.value, ...(history.value ?? [])].filter((j) => j.taskId === t.id && !seen.has(j.id) && seen.add(j.id)).toSorted(byNewest);
   const tracker = safeLink(t.url);
   // An inbox report still open: what triage made of it and what the owner can do about it.
-  const report = t.inbox ? (status.value.triageReports ?? []).find((e) => e.data.ticketId === t.id) : undefined, verdict = report?.data.outcome === "triaged" && report.data.verdict;
+  const report = t.inbox ? (statusSection("triageReports").value ?? []).find((e) => e.data.ticketId === t.id) : undefined, verdict = report?.data.outcome === "triaged" && report.data.verdict;
   const advice = { "needs-info": "The reporter cannot be asked from here. Make a ticket from what the report says, or close it.", duplicate: "Confirm it if that ticket covers this report. If not, make this a ticket of its own." }[verdict];
   // A run link is ordinary navigation: it leaves the panel's address, which closes the panel without a second history step.
   if (tab === "factory") return html`${line && html`<p class="ticket-line">${line}</p>`}
@@ -63,8 +63,8 @@ export function TicketPanel() {
   const path = key ? `/api/tickets/${encodeURIComponent(key)}` : epicKey ? `/api/epics/${encodeURIComponent(epicKey)}` : null;
   const [read, setRead] = useState({ path: null }), [retry, setRetry] = useState(0);
   const [tab, setTab] = useState("ticket"), resource = useRef(null);
-  // Published status snapshots refresh open Epic panels even when the ticket queue is unchanged.
-  const refreshed = epicKey ? status.value.at : null;
+  // Inventory checks refresh open Epic panels even when the ticket queue is unchanged.
+  const refreshed = epicKey ? statusSection("epicDetailsRevision").value : null;
   useEffect(() => {
     if (!path) return;
     let current = true, queued = false, running = false;

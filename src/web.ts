@@ -165,7 +165,7 @@ export function createFactoryWeb(options: {
   secret: string;
   oidc?: Awaited<ReturnType<typeof createOidc>>;
   dataDir: string;
-  readState: () => unknown;
+  readState: () => { status?: object; config?: object; now?: string; version?: unknown; [key: string]: unknown };
   history?: () => unknown;
   cleanupInventory?: (input: Extract<import("./cleanup.ts").CleanupRequest, { type: "inventory" }>) => unknown;
   report?: (id: string) => unknown;
@@ -212,19 +212,45 @@ export function createFactoryWeb(options: {
         },
       });
   }
-  // Live updates: every open event stream receives the full state whenever the factory writes it.
-  // The watch runs only while a stream is open, and one state read serves every stream.
+  // Subscribers share a baseline, including joiners; the next publish brings all clients forward.
   const streams = new Set<(data?: string) => void>();
+  let previous: ReturnType<typeof options.readState> | undefined;
   let pushTimer: NodeJS.Timeout | undefined, stopWatching: (() => void) | undefined;
-  // A failed read (an invalid config, a busy database) skips this push; the next change tries again.
-  const readState = () => { try { return JSON.stringify(options.readState()); } catch { return undefined; } };
+  const readState = () => { try { return options.readState(); } catch { return undefined; } };
+  const changed = (before: unknown, after: unknown) => before !== after && JSON.stringify(before) !== JSON.stringify(after);
+  const publish = (state: ReturnType<typeof options.readState>) => {
+    const before = previous;
+    previous = state;
+    if (!before) {
+      for (const push of streams) push(JSON.stringify(state));
+      return;
+    }
+    const old = (before.status ?? {}) as Record<string, unknown>, next = (state.status ?? {}) as Record<string, unknown>;
+    const status = Object.fromEntries([...new Set([...Object.keys(old), ...Object.keys(next)])]
+      .filter(key => key !== "at" && changed(old[key], next[key])).map(key => [key, next[key] ?? null]));
+    const config = changed(before.config, state.config) ? state.config : undefined;
+    const version = before.version !== state.version ? state.version : undefined;
+    if (!Object.keys(status).length && !config && version === undefined) return;
+    const data = JSON.stringify({ delta: true, status, config, version, now: state.now });
+    for (const push of streams) push(data);
+  };
   const notify = () => {
-    clearTimeout(pushTimer);
-    pushTimer = setTimeout(() => { const data = streams.size ? readState() : undefined; if (data) for (const push of streams) push(data); }, 150);
+    if (pushTimer) return;
+    pushTimer = setTimeout(() => {
+      pushTimer = undefined;
+      const state = streams.size ? readState() : undefined;
+      if (state) publish(state);
+    }, 150);
   };
   const unsubscribe = (push: (data?: string) => void) => {
     streams.delete(push);
-    if (!streams.size) { stopWatching?.(); stopWatching = undefined; clearTimeout(pushTimer); }
+    if (!streams.size) {
+      stopWatching?.();
+      stopWatching = undefined;
+      clearTimeout(pushTimer);
+      pushTimer = undefined;
+      previous = undefined;
+    }
   };
   const sign = (value: string) =>
     createHmac("sha256", secret).update(value).digest("base64url");
@@ -384,10 +410,12 @@ export function createFactoryWeb(options: {
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
           const push = (data?: string) => { try { if (data) res.write(`event: state\ndata: ${data}\n\n`); } catch { unsubscribe(push); } };
           const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
+          const state = previous ?? readState();
+          if (state) { previous = state; push(JSON.stringify(state)); }
           streams.add(push);
           stopWatching ??= options.watch?.(notify);
           req.on("close", () => { unsubscribe(push); clearInterval(heartbeat); });
-          return push(readState());
+          return;
         }
         if (path === "/api/history" && req.method === "GET")
           return json(res, 200, options.history?.() ?? []);
