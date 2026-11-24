@@ -10,6 +10,8 @@ const stoppedStatuses = ['failed', 'interrupted', 'cancelled', 'rolled_back'] as
 const at = z.iso.datetime({ offset: true });
 export const threadSchema = z.object({
   id: z.string(), projectId: z.string(), title: z.string(), providerInstanceId: z.string(),
+  // Session collection reads these straight from the shell, so they are validated here once.
+  createdAt: z.string(), deletedAt: z.string().nullish(),
   modelSelection: z.object({ instanceId: z.string(), model: z.string() }).passthrough(),
   branch: z.string().nullable(), worktreePath: z.string().nullable(),
   updatedAt: at, latestUserMessageAt: at.nullable(), archivedAt: z.string().nullable(),

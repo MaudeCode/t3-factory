@@ -360,10 +360,12 @@ export class Store {
     ? `SELECT data FROM session_tickets WHERE (${listedSessionTicket}) = 1 ORDER BY rowid`
     : 'SELECT data FROM session_tickets ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   sessionTicket(taskId: string): SessionTicket | undefined { const row = this.statement('SELECT data FROM session_tickets WHERE task_id=?').get(taskId); return row ? JSON.parse(row.data as string) : undefined; }
-  saveSessionTicket(ticket: SessionTicket) {
+  // Returns the row as stored: a dismissal or consumption already recorded is kept.
+  saveSessionTicket(ticket: SessionTicket): SessionTicket {
     const current = this.sessionTicket(ticket.taskId);
     ticket = { ...ticket, ...current?.dismissedAt && !Object.hasOwn(ticket, 'dismissedAt') ? { dismissedAt: current.dismissedAt } : {}, ...current?.consumed && !Object.hasOwn(ticket, 'consumed') ? { consumed: current.consumed } : {} };
     this.statement('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data WHERE data != excluded.data').run(ticket.taskId, JSON.stringify(ticket));
+    return ticket;
   }
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
     this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));

@@ -1129,3 +1129,75 @@ test('the collection notice names each problem once, in plain words, with its af
     { title: "Couldn't refresh 1 listed ticket", cause: 'HTTP 503', raw: [], subjects: ['FIX-8'] },
   ]);
 });
+
+// Each table is read once per batch; the idle batch reads no session row by ID and no whole jobs table.
+test('an idle batch reads each session table once and no row by ID or whole jobs table', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  for (const id of ['s1', 's2', 's3']) {
+    f.sessions.push(f.session(id));
+    f.bounded.set(id, { items: [message(`a-${id}`, 'assistant_message', id === 's1' ? 'Created FIX-7.' : 'Nothing filed.', 1, AT.reported, id)], cursor: null, more: false });
+  }
+  await f.drain();
+  assert.deepEqual(f.keys(), ['FIX-7']);
+  const reads = Object.fromEntries((['sessionThreads', 'sessionThread', 'sessionTickets', 'sessionTicket', 'jobs', 'jobSummaries'] as const).map(name => [name, t.mock.method(f.store, name)]));
+  assert.equal(await f.collect(), false);
+  assert.deepEqual(Object.fromEntries(Object.entries(reads).map(([name, spy]) => [name, spy.mock.callCount()])),
+    { sessionThreads: 1, sessionThread: 0, sessionTickets: 1, sessionTicket: 0, jobs: 0, jobSummaries: 1 });
+  assert.deepEqual(reads.jobSummaries!.mock.calls[0]!.arguments, ['tickets'], 'the consumed check reads only ticket jobs');
+  assert.deepEqual(f.keys(), ['FIX-7'], 'the idle batch keeps the list');
+});
+
+test('a ticket confirmed in a batch is consumed by its launched job in the same batch, and a prepared or unknown dispatch does not consume', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7), task('task-8', 8), task('task-9', 9));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7, FIX-8 and FIX-9.', 1, AT.reported, 's1')], cursor: null, more: false });
+  const job = (taskId: string, n: number, reason: string) => ({ id: `job-${taskId}-${n}`, kind: 'ticket' as const, projectId: 'FIX', taskId, ticketKey: taskId, threadId: `thread-${n}`, messageId: 'message', createdAt: AT.reported, state: 'dispatching' as const, reason, lastPersonalActivity: null, reportPath: join(f.dir, 'report'), command: null, prUrls: [], completedAt: null });
+  f.store.save(job('task-7', 2, 'T3 accepted dispatch'));
+  f.store.save(job('task-8', 4, 'Dispatch prepared'));
+  f.store.save(job('task-9', 5, 'Dispatch outcome unknown; retain the execution slot until T3 can be reconciled'));
+  await f.collect();
+  assert.equal(f.store.sessionTicket('task-7')?.consumed?.jobId, 'job-task-7-2', 'the launched job consumes the ticket confirmed in the same batch');
+  assert.equal(f.store.sessionTicket('task-8')?.consumed, undefined, 'a prepared dispatch does not consume');
+  assert.equal(f.store.sessionTicket('task-9')?.consumed, undefined, 'an unknown dispatch outcome does not consume');
+});
+
+test('a row dismissed by another writer while its refresh reads the tracker is not rewritten', async t => {
+  const f = collectorFixture(t);
+  f.tasks.push(task('task-7', 7));
+  f.sessions.push(f.session('s1'));
+  f.bounded.set('s1', { items: [message('a1', 'assistant_message', 'Created FIX-7.', 1, AT.reported, 's1')], cursor: null, more: false });
+  await f.drain();
+  f.store.saveSessionTicket({ ...f.store.sessionTicket('task-7')!, refreshedAt: '2000-01-01T00:00:00.000Z', refreshAfter: '2000-01-01T00:00:00.000Z' });
+  f.tasks[0] = task('task-7', 7, 'FIX', { title: 'Renamed' });
+  const other = new Store(f.c.stateDir);
+  t.after(() => other.close());
+  const read = f.kanvil.task.bind(f.kanvil);
+  t.mock.method(f.kanvil, 'task', async (...args: Parameters<typeof read>) => { const found = await read(...args); dismissSessionTicket(other, 'task-7'); return found; });
+  await f.collect();
+  const row = f.store.sessionTicket('task-7')!;
+  assert.ok(row.dismissedAt, 'the dismissal stands');
+  assert.equal(row.title, 'Ticket 7', 'the dismissed row is not rewritten with the refresh');
+  assert.equal(row.refreshedAt, '2000-01-01T00:00:00.000Z');
+});
+
+test('T3 sessions are the same top-level, undeleted threads on the persistent and the one-shot client', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-sessions-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const credentialFile = join(dir, 'credential');
+  writeFileSync(credentialFile, JSON.stringify({ token: 'fixture-token' }));
+  const threads = [v2Thread({ id: 'active', title: 'Active' }), v2Thread({ id: 'deleted', deletedAt: AT.threadEnd }),
+    v2Thread({ id: 'subagent', lineage: { parentThreadId: 'active', relationshipToParent: 'subagent' } })];
+  const archivedThreads = [v2Thread({ id: 'archived', title: 'Archived', archivedAt: AT.threadEnd })];
+  const shell = { schemaVersion: 2, snapshotSequence: 1, threads, archivedThreads, projects: [] };
+  const fields = (sessions: { id: string; projectId: string; title: string; createdAt: string; updatedAt: string }[]) => sessions.map(({ id, projectId, title, createdAt, updatedAt }) => ({ id, projectId, title, createdAt, updatedAt }));
+  const results = [];
+  for (const persistent of [true, false]) {
+    const client = new T3({ url: 'http://127.0.0.1:3773', credentialFile }, { persistent });
+    t.mock.method(client, 'request', async (route: string) => { assert.equal(route, '/api/orchestration/shell'); return structuredClone(shell); });
+    results.push(fields(await client.sessions()));
+  }
+  assert.deepEqual(results[0]!.map(s => s.id), ['active', 'archived'], 'deleted and subagent threads are not sessions');
+  assert.deepEqual(results[0], results[1]);
+});
