@@ -84,7 +84,11 @@ if (command === 'web') {
       }
       return { ...data, errors: inventoryError ? [...data.errors, { repository: 'Inventory', message: inventoryError }] : data.errors, refreshing: !inventoryError && (data.refreshing || !!input.refresh) };
     },
-    history: () => store.history().map(compact).toReversed(),
+    history: (after) => {
+      if (after === undefined) return store.history().map(compact).toReversed();
+      const { jobs, changed } = store.historySince(after);
+      return { jobs: jobs.map(compact).toReversed(), cursor: new Date(changed).toISOString() };
+    },
     threadLink: (id) => new T3(loadConfig(configPath).t3).threadLink(id),
     report: (id) => {
       const job = store.job(id);

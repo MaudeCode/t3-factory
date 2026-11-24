@@ -162,6 +162,9 @@ const statusJobs = {
 };
 // The provider instance a job reserved quota on; jobs from before model selection ran on Claude.
 const jobInstance = "coalesce(json_extract(data, '$.modelSelection.instanceId'), 'claudeAgent')", jobCreated = "json_extract(data, '$.createdAt')";
+// A job's last change in milliseconds: the latest of its creation, completion and dismissal. Date.parse's order, so differently written timestamps still compare.
+// History deltas rely on writers taking these times in the same synchronous step as Store.save, so change times follow commit order.
+const jobChanged = `max(${['createdAt', 'completedAt', 'dismissedAt'].map(field => `coalesce(round(unixepoch(json_extract(data, '$.${field}'), 'subsec') * 1000), 0)`).join(', ')})`;
 /** Dispatches recorded on one provider instance: how many, and the newest one's `createdAt` in epoch milliseconds. */
 export type Reservations = { count: number; lastCreatedAt?: number };
 const jobValue = (row: string, key: string) => `json_extract(${row}.data, '$.${key}')`;
@@ -278,7 +281,9 @@ export class Store {
       CREATE INDEX IF NOT EXISTS plans_state_finish ON plans(${planState}, ${planFinished});
       CREATE INDEX IF NOT EXISTS session_tickets_visible ON session_tickets((${listedSessionTicket}));
       ${Object.entries(statusJobs).map(([kind, where]) => `CREATE INDEX IF NOT EXISTS jobs_status_${kind} ON jobs((${where}));`).join(' ')}
-      CREATE INDEX IF NOT EXISTS jobs_instance ON jobs(${jobInstance}, ${jobCreated});`);
+      CREATE INDEX IF NOT EXISTS jobs_instance ON jobs(${jobInstance}, ${jobCreated});
+      CREATE INDEX IF NOT EXISTS jobs_changed ON jobs(${jobChanged});
+      CREATE INDEX IF NOT EXISTS history_changed ON job_history(${jobChanged});`);
     if (this.get('jobSourcesVersion') !== '1') {
       this.db.exec(`      INSERT OR IGNORE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM job_history;
       INSERT OR REPLACE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM jobs;
@@ -371,6 +376,11 @@ export class Store {
   history(): Omit<Job, 'command'>[] {
     return this.statement('SELECT data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT data FROM jobs').all()
       .map(r => JSON.parse(r.data as string)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  // The history() rows whose last change is later than `after` (milliseconds), with the newest change they cover.
+  historySince(after: number): { jobs: Omit<Job, 'command'>[]; changed: number } {
+    const rows = this.statement(`SELECT data, ${jobChanged} AS changed FROM job_history WHERE ${jobChanged} > ? AND id NOT IN (SELECT id FROM jobs) UNION ALL SELECT data, ${jobChanged} FROM jobs WHERE ${jobChanged} > ?`).all(after, after);
+    return { jobs: rows.map(r => JSON.parse(r.data as string)).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), changed: Math.max(after, ...rows.map(r => r.changed as number)) };
   }
   archiveJob(job: Job) {
     const { command, ...row } = job, branch = assignedBranch(job);

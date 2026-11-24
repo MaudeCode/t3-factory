@@ -191,7 +191,8 @@ export function createFactoryWeb(options: {
   oidc?: Awaited<ReturnType<typeof createOidc>>;
   dataDir: string;
   readState: () => { status?: object; config?: object; now?: string; version?: unknown; [key: string]: unknown };
-  history?: () => unknown;
+  // `after` is a cursor in milliseconds: only jobs changed later, with the newest change they cover.
+  history?: (after?: number) => unknown;
   cleanupInventory?: (input: Extract<import("./cleanup.ts").CleanupRequest, { type: "inventory" }>) => unknown;
   report?: (id: string) => unknown;
   threadLink?: (id: string) => Promise<string>;
@@ -461,8 +462,13 @@ export function createFactoryWeb(options: {
           req.on("close", () => { unsubscribe(push); clearInterval(heartbeat); });
           return;
         }
-        if (path === "/api/history" && req.method === "GET")
-          return json(res, 200, options.history?.() ?? []);
+        if (path === "/api/history" && req.method === "GET") {
+          const after = new URL(req.url!, localOrigin).searchParams.get("after");
+          if (after === null) return json(res, 200, options.history?.() ?? []);
+          const cursor = z.iso.datetime({ offset: true }).safeParse(after);
+          if (!cursor.success) return json(res, 400, { message: "after must be an ISO time" });
+          return json(res, 200, options.history?.(Date.parse(cursor.data)) ?? { jobs: [], cursor: after });
+        }
         const thread = path.match(/^\/api\/threads\/([^/]{1,2048})\/open$/);
         if (thread && req.method === "GET" && options.threadLink) {
           const href = await options.threadLink(decodeURIComponent(thread[1]));

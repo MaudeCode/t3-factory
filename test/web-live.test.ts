@@ -68,6 +68,11 @@ test("the web CLI exposes filterable snapshot metadata through state, history an
   const archived = { ...job, id: 'archived-run', historyOnly: true, state: 'waiting', createdAt: '2025-01-01T00:00:00Z', ticketKey: 'FIX-OLD' };
   f.store.db.exec('CREATE TABLE IF NOT EXISTS job_history(id TEXT PRIMARY KEY, data TEXT NOT NULL)');
   f.store.db.prepare('INSERT INTO job_history VALUES(?,?)').run(archived.id, JSON.stringify(archived));
+  // Change times either side of the cursor: a live run settled after it completed, and an archived run that completed later than it started.
+  f.store.save({ ...job, id: 'settled', taskId: 'settled-task', state: 'dismissed', createdAt: '2025-02-01T00:00:00.000Z', completedAt: '2025-02-02T00:00:00.000Z', dismissedAt: '2025-03-01T00:00:00.000Z' });
+  f.store.save({ ...job, id: 'finished', taskId: 'finished-task', state: 'complete', createdAt: '2025-01-20T00:00:00.000Z', completedAt: '2025-02-03T00:00:00.000Z' });
+  const archivedLate = { ...archived, id: 'archived-late', state: 'complete', createdAt: '2025-01-02T00:00:00Z', completedAt: '2025-02-10T00:00:00Z' };
+  f.store.db.prepare('INSERT INTO job_history VALUES(?,?)').run(archivedLate.id, JSON.stringify(archivedLate));
   const envFile = join(f.dir, ".env"); writeFileSync(envFile, "");
   const child = spawn(process.execPath, [new URL("../src/main.ts", import.meta.url).pathname, "web"], { env: { ...process.env, T3_FACTORY_ENV: envFile, FACTORY_AUTH_MODE: "pairing", FACTORY_WEB_HOST: "127.0.0.1", FACTORY_WEB_PORT: String(port), FACTORY_PUBLIC_ORIGIN: url, FACTORY_WEB_SESSION_SECRET: secret }, stdio: ["ignore", "pipe", "pipe"] });
   let errors = "";
@@ -82,7 +87,14 @@ test("the web CLI exposes filterable snapshot metadata through state, history an
     const state = await (await fetch(`${url}/api/state`, { headers })).json();
     const history = await (await fetch(`${url}/api/history`, { headers })).json();
     const report = await (await fetch(`${url}/api/jobs/metadata/report`, { headers })).json();
-    assert.equal(history.length, 2, 'the actual Runs API must retain the archived backend history');
+    assert.equal(history.length, 5, 'the actual Runs API must retain the archived backend history');
+    const since = async (after: string) => fetch(`${url}/api/history?after=${encodeURIComponent(after)}`, { headers });
+    const delta = await (await since('2025-02-05T00:00:00Z')).json();
+    assert.deepEqual(delta.jobs?.map((row: any) => row.id).sort(), ['archived-late', 'metadata', 'settled'], 'only jobs whose latest change is after the cursor, from both tables');
+    assert.equal(delta.cursor, job.createdAt, 'the newest change the delta covers');
+    assert.deepEqual(delta.jobs.find((row: any) => row.id === 'settled'), history.find((row: any) => row.id === 'settled'), 'delta rows have the full read\'s fields');
+    assert.deepEqual(await (await since(job.createdAt)).json(), { jobs: [], cursor: job.createdAt }, 'nothing changed after the newest change');
+    assert.equal((await since('yesterday')).status, 400);
     assert.equal(history.find((row: any) => row.id === archived.id)?.historyOnly, true);
     const archivedReport = await (await fetch(`${url}/api/jobs/${archived.id}/report`, { headers })).json();
     assert.equal(archivedReport.job.historyOnly, true, 'historical report routes remain readable and read-only');
