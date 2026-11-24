@@ -1,5 +1,5 @@
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, statusSection, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
+import { config, statusSection, needSection, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
 import { Button, Field, Input, Select, Segmented, Chips, Slots, Toggle, Range, Tag, Icon, Link, Facts, Dialog, Empty, Section, Page, RowBody, SortableList } from "../ui/index.js";
 import { follow } from "../lib/router.js";
@@ -47,7 +47,7 @@ function PriorityTiers({ index, project }) {
   const path = ["projects", String(index), "priorityLabels"];
   const tiers = project.priorityLabels ?? [];
   const ranked = new Set(tiers.flat());
-  const queued = (statusSection("upNext").value?.tickets ?? []).filter((t) => t.projectId === project.kanvilId);
+  const queued = (needSection("upNext").value?.tickets ?? []).filter((t) => t.projectId === project.kanvilId);
   const rankOf = (t) => tiers.findIndex((tier) => t.labels?.some((l) => tier.includes(l)));
   const count = (rank) => queued.filter((t) => rankOf(t) === rank).length;
   const save = (next) => set(path, next.filter((tier) => tier.length));

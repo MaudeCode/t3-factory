@@ -378,3 +378,19 @@ single signal batch. Cleanup refreshes on its own catalog and action revision.
 The backend concurrency and web live tests cover revision dependencies,
 indexed read plans, idle subscriptions, and reconnects. The web UI test
 covers delta convergence and subscriber isolation.
+
+Three status sections are on demand: `epics`, `upNext` and the rows of
+`sessionTickets`. A page receives them only after it asks. `/api/events` takes
+`with=`, a comma-separated list of those names; the server keeps one baseline
+and delta and narrows each stream's snapshot and deltas to its set. A stream
+without `sessionTickets` still gets that section as `at`, `error` and `total`,
+which the shell's problem list and the Sources count read through
+`sessionTicketCount`. `/api/state?with=` returns the base sections plus the
+named ones, `/api/state?fields=` returns only the named ones, an unknown name
+answers 400, and `/api/state` with neither returns everything. A view reads an
+on-demand section through `needSection(key)` in `web/lib/store.js` instead of
+`statusSection`: the first ask reads the missing sections once with `fields=`,
+then reopens the stream with the wider set. The set only grows while the page
+is open and is kept across reconnects; the fallback read asks for the same set.
+`test/web-live.test.ts` covers the server narrowing and
+`test/web-reconnect.test.ts` the store's read, reopen and reconnect.

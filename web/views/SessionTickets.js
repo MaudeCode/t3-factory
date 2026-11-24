@@ -1,6 +1,6 @@
 // Tickets that T3 sessions reported creating: start one through the ordinary checks, or take it off the list.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, statusSection, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, TRIAGE_ORIGIN } from "../lib/store.js";
+import { config, needSection, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, TRIAGE_ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, overrideText } from "../lib/format.js";
 import { Button, Check, Icon, Empty, Page, Section } from "../ui/index.js";
@@ -19,7 +19,7 @@ export function SessionTickets({ lead } = {}) {
   const [selected, setSelected] = useState([]);
   const { provider, overrideLimits } = startOptions();
   const c = config.value,
-    s = statusSection("sessionTickets").value,
+    s = needSection("sessionTickets").value,
     now = serverNow();
   // A ticket being started moves to the top and shows its progress in place; failures go to the notification area.
   const requests = launchOperations.value;

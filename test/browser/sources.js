@@ -29,7 +29,8 @@ const base = (inbox = true) => ({
     upstreams: [{ repo: "example/lib", reviewed: "v1.1.0", latest: "v1.2.0", pending: true, checkedAt: ago(30) }],
     triageStreams: inbox ? [{ project: "Example", projectId: "p", inboxId: "pin", label: "intake", synchronized: true, untriaged: 1, failed: 0, running: null, oldestUntriagedAt: ago(30), promoted: 2, queued: 0, blocked: 0, needsOwner: 1, limit: 10 }] : [],
     triageResults: [], triageReports: inbox ? [report("PIN-12", "triaged", "owner"), report("PIN-6", "needs-owner", "owner"), report("PIN-13", "waiting", "working")] : [],
-    sessionTickets: { at: ago(2), error: null, rows: [{ taskId: "s1", key: "APP-7", title: "From a session", projectId: "p", sources: [{ title: "Plan", at: ago(5) }], createdAt: ago(9) }, { taskId: "s2", key: "APP-8", title: "Another", projectId: "p", sources: [{ title: "Plan", at: ago(5) }], createdAt: ago(8) }] },
+    // Sources holds no session-ticket rows: the stream sends it the count and the collection error.
+    sessionTickets: { at: ago(2), error: null, total: 2 },
   },
 });
 let state, posts = [];
@@ -109,6 +110,10 @@ async function run() {
   assert(here() === "/sources?view=sessions" && main().textContent.includes("2 tickets not started") && link, "T3 sessions counts the unstarted tickets and links to them");
   store.status.value = { ...store.status.value, sessionTickets: { ...store.status.value.sessionTickets, error: { message: "T3 could not be read" } } }; await pause();
   assert(main().textContent.includes("T3 could not be read"), "a session read error is shown with the source");
+  assert(root.querySelector("button.conn .badge")?.textContent === "1", "the shell's problem list counts the collection error without session-ticket rows");
+  root.querySelector("button.conn").click(); await pause();
+  assert(document.querySelector(".issues")?.textContent.includes("T3 could not be read"), "the problem list shows the collection error");
+  root.querySelector("button.conn").click(); await pause();
   link.click(); await pause(150);
   assert(here() === "/queue?origin=sessions", "the link opens the Queue's Sessions view");
   // Without an inbox there is no triage view; the page opens on Discovery.

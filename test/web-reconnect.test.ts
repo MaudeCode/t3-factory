@@ -13,7 +13,8 @@ function setup(t: any) {
     readyState = 0;
     onerror: null | (() => void) = null;
     closed = false;
-    constructor(_url: string) { super(); streams.push(this); }
+    url: string;
+    constructor(url: string) { super(); this.url = url; streams.push(this); }
     close() { this.closed = true; this.readyState = 2; }
     fail(closed = true) { this.readyState = closed ? 2 : 0; this.onerror?.(); }
     state() { this.readyState = 1; this.dispatchEvent(new MessageEvent('state', { data: JSON.stringify(state()) })); }
@@ -134,4 +135,32 @@ test('browser offline closes a stale live stream immediately and online resumes 
   h.streams[1].state();
   assert.equal(store.connection.value, 'live');
   assert.equal(store.notice.value, null);
+});
+
+test('a view that needs an on-demand section reads it once and widens the stream, and reconnects keep it', async t => {
+  const h = setup(t);
+  const reads: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    reads.push(url);
+    return Response.json(url.includes('fields=') ? { status: { upNext: { tickets: [{ id: 't1' }], held: [] } } } : state());
+  });
+  await h.advance();
+  assert.equal(h.streams[0].url, '/api/events?with=', 'a page starts with the base sections only');
+  h.streams[0].state();
+  const before = store.statusSection('jobs').value;
+  // The Queue and its ticket panel both read Up next in the same render.
+  store.needSection('upNext'); store.needSection('upNext');
+  await h.advance(0);
+  assert.deepEqual(reads, ['/api/state?fields=upNext']);
+  assert.deepEqual(store.statusSection('upNext').value.tickets, [{ id: 't1' }]);
+  assert.equal(store.statusSection('jobs').value, before, 'the section read leaves the other sections in place');
+  assert.equal(h.streams.length, 2); assert.equal(h.streams[0].closed, true);
+  assert.equal(h.streams[1].url, '/api/events?with=upNext');
+  store.needSection('upNext');
+  await h.advance(0);
+  assert.equal(reads.length, 1); assert.equal(h.streams.length, 2, 'a held section needs no read and no reopen');
+  h.streams[1].fail();
+  await h.advance(2000);
+  assert.equal(h.streams.at(-1)!.url, '/api/events?with=upNext', 'a reconnect keeps the widened set');
+  assert.equal(reads.at(-1), '/api/state?with=upNext', 'the fallback read asks for the held set too');
 });

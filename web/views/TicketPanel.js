@@ -2,7 +2,7 @@
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
 import { html, useState, useEffect, useRef } from "../lib/h.js";
-import { config, statusSection, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
+import { config, needSection, statusSection, jobs, history, loadHistory, clock, serverNow, busy } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, epicPanel, closeEpic, follow } from "../lib/router.js";
 import { ago, ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel } from "../lib/format.js";
@@ -23,7 +23,7 @@ function Detail({ ticket: t, tab }) {
   const hold = CLOSED.includes(t.status) ? `${t.key} is ${ticketStatusLabel(t.status).toLowerCase()}.` : startHold(row);
   const start = startOptions();
   // Where the scheduler has this ticket right now, in its own words.
-  const up = statusSection("upNext").value, position = up?.tickets.findIndex((x) => x.id === t.id) ?? -1, held = up?.held.find((h) => ticketKey(h.key) === t.key);
+  const up = needSection("upNext").value, position = up?.tickets.findIndex((x) => x.id === t.id) ?? -1, held = up?.held.find((h) => ticketKey(h.key) === t.key);
   const line = position >= 0 ? `Up next: ${position + 1} of ${up.tickets.length} in the queue.` : held ? html`Held back: ${held.reason} <${Investigate} held=${held} />` : null;
   const seen = new Set(), runs = [...jobs.value, ...(history.value ?? [])].filter((j) => j.taskId === t.id && !seen.has(j.id) && seen.add(j.id)).toSorted(byNewest);
   const tracker = safeLink(t.url);

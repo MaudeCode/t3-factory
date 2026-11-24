@@ -1,7 +1,7 @@
 // Everything that can start: what the owner queued, the scheduler's Up next list, Epics, and the tickets that came
 // from T3 sessions and inbox reports. The automatic queue and the owner's own stay visibly apart.
 import { html, signal, useState } from "../lib/h.js";
-import { config, statusSection, live, jobs, clock, serverNow, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
+import { config, statusSection, needSection, sessionTicketCount, live, jobs, clock, serverNow, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
 import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText, ticketStatusLabel, safeLink, ago, until } from "../lib/format.js";
 import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, Text, SortableList } from "../ui/index.js";
 import { UpNext, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow, SectionSwitch } from "./Deck.js";
@@ -15,7 +15,7 @@ import { search, navigate, epicClick } from "../lib/router.js";
 const epicLists = () => {
   const plans = (statusSection("plans").value ?? []).filter((p) => p.epic).map((p) => ({ ...p, title: p.epic.title, restrictedCount: p.epic.restrictedCount }));
   const running = plans.filter((p) => p.state === "active");
-  const open = [...running, ...(statusSection("epics").value ?? []).filter((row) => !running.some((p) => p.epic.id === row.id))];
+  const open = [...running, ...(needSection("epics").value ?? []).filter((row) => !running.some((p) => p.epic.id === row.id))];
   // One row per Epic: its open row, else its newest finished run. A run cancelled and then run again is not listed.
   const listed = new Set(open.map((e) => e.epic?.id ?? e.id)), latest = new Map();
   for (const p of plans) if (p.state !== "active" && !listed.has(p.epic.id) && !(latest.get(p.epic.id)?.createdAt > p.createdAt)) latest.set(p.epic.id, p);
@@ -157,9 +157,9 @@ export function Queue() {
   const view = queueView(search.value);
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
-  const start = startOptions(), epics = epicLists(), up = statusSection("upNext").value;
+  const start = startOptions(), epics = epicLists(), up = needSection("upNext").value;
   const tabs = html`<${Segmented} label="Queue view" value=${view} onChange=${(v) => navigate(VIEWS[v])}
-    options=${[["next", "Up next", up?.tickets.length ?? 0], ["epics", "Epics", epics.open.length], ["sessions", "Sessions", statusSection("sessionTickets").value?.rows?.length ?? 0], ["reports", "Reports", readyReportCount()]]} />`;
+    options=${[["next", "Up next", up?.tickets.length ?? 0], ["epics", "Epics", epics.open.length], ["sessions", "Sessions", sessionTicketCount()], ["reports", "Reports", readyReportCount()]]} />`;
   if (view === "sessions") return html`<${SessionTickets} lead=${tabs} />`;
   if (view === "reports") return html`<${ReadyReports} lead=${tabs} />`;
   const rows = [...(up?.tickets ?? []), ...(up?.held ?? []), ...[...epics.open, ...epics.finished].flatMap((epic) => epic.tickets)];

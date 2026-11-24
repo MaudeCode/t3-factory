@@ -480,7 +480,7 @@ test('recovery migrates one saved operation and restores queued order without re
   saved.set('factoryOperation', JSON.stringify({ id: 'legacy', input, state: 'running' }));
   const writes: any[] = [], reads: string[] = [];
   globalThis.fetch = async (url: any, init?: RequestInit) => {
-    if (url === '/api/state') return Response.json(fixture());
+    if (url.startsWith('/api/state')) return Response.json(fixture());
     if (url === '/api/dispatch') {
       const id = (init!.headers as any)['Idempotency-Key'], input = JSON.parse(init!.body as string);
       writes.push({ id, input });
@@ -520,7 +520,7 @@ test('lost POST responses are reconciled by ID and a missing request retries onl
   const posts: any[] = [];
   let first = true;
   globalThis.fetch = async (url: any, init?: RequestInit) => {
-    if (url === '/api/state') return Response.json(fixture());
+    if (url.startsWith('/api/state')) return Response.json(fixture());
     if (url === '/api/dispatch') {
       const id = (init!.headers as any)['Idempotency-Key'], input = JSON.parse(init!.body as string);
       posts.push({ id, input });
@@ -548,7 +548,7 @@ test('an accepted request keeps the next check queued until polling settles its 
   const held = new Promise<void>(resolve => { release = resolve; });
   let polling = false;
   globalThis.fetch = async (url: any, init?: RequestInit) => {
-    if (url === '/api/state') return Response.json(fixture());
+    if (url.startsWith('/api/state')) return Response.json(fixture());
     if (url === '/api/dispatch') {
       const input = JSON.parse(init!.body as string), id = (init!.headers as any)['Idempotency-Key'];
       posts.push(input.ticket);

@@ -1,6 +1,6 @@
 // Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
 import { html, useRef, useState } from "../lib/h.js";
-import { config, statusSection, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
+import { config, statusSection, needSection, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { follow, followRun, ticketClick } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -74,7 +74,7 @@ export function Machine({ provider }) {
 export const requestName = ({ upstream, ticket, epic, reconcile }) => {
   if (reconcile) return `Investigate ${ticket}`;
   if (!epic) return upstream || ticket;
-  const known = [...(statusSection("epics").value ?? []), ...(statusSection("plans").value ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
+  const known = [...(needSection("epics").value ?? []), ...(statusSection("plans").value ?? []).flatMap(p => p.epic ?? [])].find(e => e.id === epic);
   return `Epic ${known?.title ?? epic}`;
 };
 
@@ -247,7 +247,7 @@ export const Investigate = ({ held: h }) => h.conflict === "artifacts" && html`<
 export function UpNext({ limit = 5, children, filters, query = "", start }) {
   clock.value;
   const c = config.value,
-    q = statusSection("upNext").value,
+    q = needSection("upNext").value,
     visible = t => !startHold(t) && matchesRunFilters(t, filters, query),
     tickets = (q?.tickets ?? []).filter(visible),
     held = (q?.held ?? []).filter(visible),
