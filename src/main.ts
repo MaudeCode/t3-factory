@@ -18,6 +18,7 @@ import { T3, Kanvil } from './clients.ts';
 import { ticketDetail, epicDetail } from './ticket-detail.ts';
 import { createFactoryWeb, runFactory, webSettings } from './web.ts';
 import { serveMcp } from './mcp.ts';
+import { runtimeVersion } from './version.ts';
 
 import { loadEnvironment } from './env.ts';
 import { createOidc } from './oidc.ts';
@@ -44,7 +45,7 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
 const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', triage: 'No inbox triage is configured' };
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
-  const c = loadConfig(configPath), store = new Store(c.stateDir);
+  const c = loadConfig(configPath), store = new Store(c.stateDir), version = runtimeVersion(join(import.meta.dirname, '..'));
   const compact = (j: any) => ({ id: j.id, historyOnly: j.historyOnly, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, repair: j.repair, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
   // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
   const viaService = async (args: string[], input?: unknown) => {
@@ -59,7 +60,7 @@ if (command === 'web') {
       const jobs = (status.jobs ?? []).filter((j: any) => j.state !== 'dismissed');
       status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map(compact);
       status.journal = store.events(80);
-      return { config, status, now: new Date().toISOString() };
+      return { config, status, version, now: new Date().toISOString() };
     },
     cleanupInventory: input => {
       const current = loadConfig(configPath), data = readCleanupCatalog(current, store, input.offset, input.limit, input);

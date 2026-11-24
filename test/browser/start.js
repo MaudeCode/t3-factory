@@ -188,7 +188,7 @@ async function duoLayout() {
       const live = bar.querySelector('[role="status"]'), label = bar.querySelector('.conn-label'), style = getComputedStyle(label);
       assert(live.textContent === (state === 'live' ? 'Live' : 'Retrying') && !live.hasAttribute('aria-label'), 'connection changes remain readable live-region text with and without issues');
       assert(style.display !== 'none' && style.visibility !== 'hidden', 'connection text stays in the accessibility tree');
-      if (phone) assert(bounds(label).width === 1 && bounds(label).height === 1 && style.clipPath !== 'none', 'the compact connection label is visually clipped instead of hidden');
+      assert(bounds(label).width === 1 && bounds(label).height === 1 && style.clipPath !== 'none', 'the connection dot shows no text: its label is visually clipped instead of hidden');
     }
   }
   store.status.value = priorStatus;

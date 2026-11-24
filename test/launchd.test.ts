@@ -1,7 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
@@ -139,4 +139,16 @@ test('a copy that fails leaves the service loaded on its previous runtime', asyn
     assert.equal(unloads, 0, `the service was unloaded before the copy could fail without ${missing}`);
     assert.equal(readFileSync(join(app, 'src/index'), 'utf8'), 'old');
   }
+});
+
+test('an install records the checkout version in the runtime and drops one a checkout without Git cannot replace', async t => {
+  const { root, app } = runtimeFixture(t);
+  const git = (...args: string[]) => childProcess.execFileSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args]);
+  const recorded = () => existsSync(join(app, 'VERSION')) ? readFileSync(join(app, 'VERSION'), 'utf8') : undefined;
+  git('init', '-q'); git('add', '.'); git('commit', '-qm', 'release'); git('tag', 'v1.2.3');
+  await launchd.installRuntime(root, app, async () => {});
+  assert.equal(recorded(), 'v1.2.3\n');
+  rmSync(join(root, '.git'), { recursive: true });
+  await launchd.installRuntime(root, app, async () => {});
+  assert.equal(recorded(), undefined, 'a version from an earlier install would misname this runtime');
 });
