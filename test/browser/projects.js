@@ -4,6 +4,7 @@ import '../../web/lib/theme.js';
 import * as store from '../../web/lib/store.js';
 import { navigate } from '../../web/lib/router.js';
 import { App } from '../../web/views/App.js';
+import { checkTimesFollowClock } from './search.js';
 const project = (over) => ({ name: 'Example app', key: 'APP', kanvilId: 'app-project', t3Id: 'app-project', enabled: true, repoPath: '/example/app', githubRepo: 'example/app', baseBranch: 'main', readyStatuses: ['todo'], doneStatuses: ['done'], priorityLabels: [], labelLimits: {}, upstreams: [], ...over });
 const initial = {
   enabled: false, concurrency: { claude: 2, codex: 6 }, models: [], pollSeconds: 60, idleMinutes: 30, monitoringTimeoutMinutes: 30, maxWaitingPRs: null,
@@ -16,7 +17,8 @@ const initial = {
 const ticket = (n, labels, priority = 'low') => ({ id: `t${n}`, key: `APP-${n}`, title: `Ticket ${n}`, projectId: 'app-project', difficulty: 'med', priority, labels, after: [], model: null, modelId: null });
 const upNext = { at: '2026-11-05T10:00:00Z', tickets: [ticket(1, ['user-report']), ticket(2, ['sec', 'agent-compat']), ticket(3, ['agent-compat'], 'high'), ticket(4, ['perf'], 'urgent')], held: [] };
 let saved = structuredClone(initial), writes = [];
-const state = () => ({ config: saved, status: { jobs: [], journal: [], upNext } });
+const discovery = [{ projectId: 'app-project', lastAt: new Date(Date.now() - 3 * 3_600_000).toISOString() }];
+const state = () => ({ config: saved, status: { jobs: [], journal: [], upNext, discovery } });
 window.fetch = async (url, init) => {
   if (url === '/api/config' && init?.method === 'POST') { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
   if (url === '/api/sources') return Response.json({ t3: [{ id: 'app-project', title: 'Example app', workspaceRoot: '/example/app' }, { id: 'lib-project', title: 'Library', workspaceRoot: '/example/lib' }, { id: 'second-t3', title: 'Second app', workspaceRoot: '/example/second' }], kanvil: {
@@ -47,6 +49,7 @@ async function pick(label, text, scope = root) {
 }
 async function run() {
   await show();
+  await checkTimesFollowClock('Projects', () => root.querySelector('.detail .facts').textContent);
   assert(views().querySelector('[aria-checked="true"]').textContent.startsWith('Scheduling'), 'the settings switch marks the open view');
   assert(ranks().length === 2 && labelsOf(ranks()[0]).join() === 'user-report,sec' && labelsOf(ranks()[1]).join() === 'agent-compat', 'ranks render highest first with their labels');
   const counts = () => [...root.querySelectorAll('.tier-count')].map(el => el.textContent.trim());

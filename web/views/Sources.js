@@ -1,9 +1,9 @@
 // Where new tickets come from: inbox triage, discovery, upstream releases and T3 sessions. One view each, in the address.
 import { html } from "../lib/h.js";
-import { config, statusSection, sessionTicketCount, jobs, clock, serverNow } from "../lib/store.js";
+import { config, statusSection, sessionTicketCount, jobs } from "../lib/store.js";
 import { search, navigate, follow } from "../lib/router.js";
 import { ago, until, byNewest, stateLabel, toneOf } from "../lib/format.js";
-import { Segmented, Tag, Icon, Empty, Page, Section, RowBody } from "../ui/index.js";
+import { Segmented, Tag, Icon, Empty, Page, Section, RowBody, RelativeTime } from "../ui/index.js";
 import { Triage } from "./Triage.js";
 import { Upstream } from "./Upstream.js";
 
@@ -15,7 +15,7 @@ export const sourcesView = (query) => {
 
 // One line per project: when discovery last looked there, and whether it is leaving the project alone for now.
 function Discovery({ lead }) {
-  const c = config.value, now = serverNow();
+  const c = config.value;
   const state = new Map((statusSection("discovery").value || []).map((d) => [d.projectId, d]));
   const runs = jobs.value.filter((j) => j.kind === "discovery").sort(byNewest);
   return html`<${Page} title="Sources" hint="When no tickets are eligible, a free provider investigates one included project for new work and files tickets.">
@@ -23,11 +23,11 @@ function Discovery({ lead }) {
     <${Section} class="list">
       ${c.projects.length
         ? c.projects.map((p) => {
-            const d = state.get(p.kanvilId), resting = d?.nextAt && Date.parse(d.nextAt) > now, last = runs.find((j) => j.projectId === p.kanvilId);
-            const text = !p.enabled ? "Not included in automatic work" : resting ? `Found nothing; resting, looks again ${until(d.nextAt, now)}` : d?.lastAt ? `Last looked ${ago(d.lastAt, now)}` : "Never run";
+            const d = state.get(p.kanvilId), last = runs.find((j) => j.projectId === p.kanvilId);
+            const text = (now) => !p.enabled ? "Not included in automatic work" : d?.nextAt && Date.parse(d.nextAt) > now ? `Found nothing; resting, looks again ${until(d.nextAt, now)}` : d?.lastAt ? `Last looked ${ago(d.lastAt, now)}` : "Never run";
             return html`<div class="next" key=${p.kanvilId}>
-              <span class="next-ticket"><${RowBody} title=${html`<b>${p.name}</b>`}><span class=${p.enabled ? "muted" : "tone-attention"}>${text}</span><//></span>
-              ${last && html`<a class="source-run" href=${`/runs/${last.id}`} onClick=${follow} title="Latest discovery run"><${Tag} tone=${toneOf(last.state)}>${stateLabel(last.state)}<//> <span class="muted">${ago(last.createdAt, now)}</span></a>`}
+              <span class="next-ticket"><${RowBody} title=${html`<b>${p.name}</b>`}><${RelativeTime} class=${p.enabled ? "muted" : "tone-attention"} text=${text} /><//></span>
+              ${last && html`<a class="source-run" href=${`/runs/${last.id}`} onClick=${follow} title="Latest discovery run"><${Tag} tone=${toneOf(last.state)}>${stateLabel(last.state)}<//> <${RelativeTime} class="muted" at=${last.createdAt} /></a>`}
             </div>`;
           })
         : html`<${Empty}>No projects yet.<//>`}
@@ -37,13 +37,13 @@ function Discovery({ lead }) {
 
 // T3 sessions report tickets on their own; the list itself is a view of the Queue.
 function Sessions({ lead }) {
-  const s = statusSection("sessionTickets").value, now = serverNow(), n = sessionTicketCount();
+  const s = statusSection("sessionTickets").value, n = sessionTicketCount();
   return html`<${Page} title="Sources" hint="Tickets that T3 sessions reported creating, confirmed against the tracker. Nothing here starts on its own.">
     ${lead}
     <${Section} class="list">
       ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message}</p>`}
       <div class="next">
-        <span class="next-ticket"><${RowBody} title=${html`<b>${n} ${n === 1 ? "ticket" : "tickets"} not started</b>`}><span class="muted">${s?.at ? `Sessions read ${ago(s.at, now)}` : "Sessions have not been read yet"}</span><//></span>
+        <span class="next-ticket"><${RowBody} title=${html`<b>${n} ${n === 1 ? "ticket" : "tickets"} not started</b>`}>${s?.at ? html`<${RelativeTime} class="muted" text=${(now) => `Sessions read ${ago(s.at, now)}`} />` : html`<span class="muted">Sessions have not been read yet</span>`}<//></span>
         <a class="btn btn-sm" href="/queue?origin=sessions" onClick=${follow}>Open in Queue</a>
       </div>
     <//>
@@ -51,7 +51,6 @@ function Sessions({ lead }) {
 }
 
 export function Sources() {
-  clock.value;
   const c = config.value;
   // Triage has a view only when a project has an inbox.
   const inboxes = !!c.triage || (statusSection("triageStreams").value || []).length > 0;

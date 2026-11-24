@@ -5,6 +5,7 @@ import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { confirmation, finishConfirmation } from "../../web/lib/confirmation.js";
 import { App } from "../../web/views/App.js";
+import { checkTimesFollowClock } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,6 +76,8 @@ async function run() {
   if (root.querySelector(".tabbar")) assert([...root.querySelectorAll(".tabbar a, .tabbar button")].map((el) => el.textContent.trim().replace(/\d+$/, "")).join() === "Now,Queue,Runs,Sources,More", "the phone tab bar reads Now, Queue, Runs, Sources, More");
   // Inbox triage: the inboxes, what waits on the owner, and the same decisions as before.
   assert(main().querySelector(".triage-inbox").textContent.includes("2 need you") && [...section("Needs you").querySelectorAll(".key")].map((k) => k.textContent).join() === "PIN-12,PIN-6", "a needs-info report older than the recent results stays under Needs you");
+  // Each view's times follow the clock without re-rendering the page.
+  await checkTimesFollowClock("Sources' Inbox triage view", () => main().querySelector(".triage-inbox").textContent);
   button("Make a ticket of PIN-12").click(); await pause();
   assert(confirmation.value?.title === "Make a ticket of PIN-12?" && !posts.some((p) => p.url.endsWith("/promote")), "making a ticket asks first");
   finishConfirmation(true); await pause();
@@ -92,10 +95,12 @@ async function run() {
   assert(/Last looked [34] h/.test(lines.Example) && lines.Example.includes("Done") && main().querySelector(".source-run").getAttribute("href") === "/runs/d1", `an included project shows its last look and its latest run: ${lines.Example}`);
   assert(/Found nothing; resting, looks again in 1[34] h/.test(lines.Resting), `a resting project says until when: ${lines.Resting}`);
   assert(lines.Excluded.includes("Not included in automatic work") && lines.Untouched.includes("Never run"), "an excluded project and one never looked at say so");
+  await checkTimesFollowClock("Sources' Discovery view", () => main().querySelector(".section.list").textContent);
   // Upstream releases: the switch, the watched repository, a due review and the review runs.
   await show("/upstream");
   assert(here() === "/sources?view=upstream" && tab("Upstream releases").getAttribute("aria-checked") === "true", "the old Upstream address lands on its view");
   assert(main().textContent.includes("Library") && main().textContent.includes("review due") && main().textContent.includes("v1.2.0") && section("Reviews").querySelectorAll(".next").length === 1, "the watched repository, its due review and the review runs are listed");
+  await checkTimesFollowClock("Sources' Upstream releases view", () => main().querySelector(".release-versions").textContent);
   main().querySelector('input[role="switch"][aria-label="Upstream reviews"]').click(); await pause(150);
   assert(posts.some((p) => p.url === "/api/upstream/enabled" && p.body.enabled === false), "the reviews switch posts upstream.enabled = false");
   [...main().querySelectorAll("button")].find((b) => b.textContent.trim() === "Watch a repository").click(); await pause();
@@ -108,6 +113,7 @@ async function run() {
   tab("T3 sessions").click(); await pause(150);
   const link = main().querySelector('a.btn[href="/queue?origin=sessions"]');
   assert(here() === "/sources?view=sessions" && main().textContent.includes("2 tickets not started") && link, "T3 sessions counts the unstarted tickets and links to them");
+  await checkTimesFollowClock("Sources' T3 sessions view", () => main().querySelector(".section.list").textContent);
   store.status.value = { ...store.status.value, sessionTickets: { ...store.status.value.sessionTickets, error: { message: "T3 could not be read" } } }; await pause();
   assert(main().textContent.includes("T3 could not be read"), "a session read error is shown with the source");
   assert(root.querySelector("button.conn .badge")?.textContent === "1", "the shell's problem list counts the collection error without session-ticket rows");

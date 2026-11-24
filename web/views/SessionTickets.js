@@ -1,17 +1,22 @@
 // Tickets that T3 sessions reported creating: start one through the ordinary checks, or take it off the list.
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, needSection, busy, clock, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, TRIAGE_ORIGIN } from "../lib/store.js";
+import { config, needSection, busy, serverNow, actions, issuesOpen, launchOperations, SESSION_ORIGIN, TRIAGE_ORIGIN } from "../lib/store.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, overrideText } from "../lib/format.js";
-import { Button, Check, Icon, Empty, Page, Section } from "../ui/index.js";
+import { Button, Check, Icon, Empty, Page, Section, RelativeTime } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, Operations, StartOptions, startOptions, OrderChoice } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 
 const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. Factory discovery and upstream release-review sessions are excluded. A ticket here still needs its readiness checks to start, and nothing starts on its own.";
 
+// A ticket's Open session link, for its latest report. Its tooltip says how long ago that was, so it reads the clock for itself.
+function SessionLink({ ticket: t, latest }) {
+  const label = `Open in T3 Code: ${latest.title || "session"}, reported ${ago(latest.at, serverNow())}${t.sources.length > 1 ? `; ${t.sources.length - 1} more ${t.sources.length === 2 ? "session" : "sessions"} reported it` : ""}`;
+  return html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(latest)} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${label}><${Icon} name="commentDiscussion" /><span class="next-action-label">Open session</span></a>`;
+}
+
 // The Queue page's Sessions view; `lead` is the Queue's view switch.
 export function SessionTickets({ lead } = {}) {
-  clock.value;
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
@@ -19,8 +24,7 @@ export function SessionTickets({ lead } = {}) {
   const [selected, setSelected] = useState([]);
   const { provider, overrideLimits } = startOptions();
   const c = config.value,
-    s = needSection("sessionTickets").value,
-    now = serverNow();
+    s = needSection("sessionTickets").value;
   // A ticket being started moves to the top and shows its progress in place; failures go to the notification area.
   const requests = launchOperations.value;
   const progress = (t) => requests.find((op) => ["queued", "running"].includes(op.state) && ticketKey(op.input.ticket) === ticketKey(t.key));
@@ -59,17 +63,17 @@ export function SessionTickets({ lead } = {}) {
               return html`<${TicketRow} key=${t.taskId} ticket=${ticket} project=${project(t.projectId)}
                 selection=${selecting && html`<${Check} aria-label=${`Select ${t.key}`} checked=${selected.includes(t.taskId)} disabled=${busy.value} onChange=${e => setSelected(previous => e.target.checked ? [...previous, t.taskId] : previous.filter(id => id !== t.taskId))} />`}
                 actions=${html`<${RunNow} ticket=${ticket} hold=${hold} origin=${SESSION_ORIGIN} overrideLimits=${overrideLimits} provider=${provider} />`}
-                secondaryActions=${html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(latest)} aria-label=${`Open the session that reported ${t.key} in T3 Code`} title=${`Open in T3 Code: ${latest.title || "session"}, reported ${ago(latest.at, now)}${t.sources.length > 1 ? `; ${t.sources.length - 1} more ${t.sources.length === 2 ? "session" : "sessions"} reported it` : ""}`}><${Icon} name="commentDiscussion" /><span class="next-action-label">Open session</span></a>
+                secondaryActions=${html`<${SessionLink} ticket=${t} latest=${latest} />
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss([t])}><${Icon} name="x" /><span class="next-action-label">Remove</span><//>`}>
                 ${op && html`<span class="row-progress" role="status"><i class="spinner"></i>${operationText(op)}</span>`}
                 <span class="session-sources" title="The T3 session that reported creating this ticket">${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
-                <span class="muted" title=${new Date(t.createdAt).toLocaleString()}>${ago(t.createdAt, now, true)}</span>
+                <${RelativeTime} class="muted" at=${t.createdAt} compact title=${new Date(t.createdAt).toLocaleString()} />
                 ${t.refreshError && html`<span class="tone-attention" title=${`Last read failed: ${t.refreshError}`}>tracker read failed</span>`}
                 ${t.unavailable && html`<b class="tone-attention" title=${t.unavailable}><${Icon} name="circleSlash" label=${t.unavailable} /></b>`}
               <//>`;
             })
           : html`<${Empty}>${narrowed ? "No session tickets match." : "No session has reported creating a ticket that is still open."}<//>`}
-      ${s?.at && html`<p class="hint">Sessions read ${ago(s.at, now)}.</p>`}
+      ${s?.at && html`<p class="hint">Sessions read <${RelativeTime} at=${s.at} />.</p>`}
     <//>
   <//>`;
 }

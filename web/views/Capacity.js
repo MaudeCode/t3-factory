@@ -1,22 +1,21 @@
 import { html } from "../lib/h.js";
-import { config, jobs, clock, serverNow, quotaFor, set } from "../lib/store.js";
-import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, ago, span, moment } from "../lib/format.js";
-import { Field, Range, Stepper, Slots, Toggle, Budget, Section, Segmented, Input, useReady, Page, Icon } from "../ui/index.js";
+import { config, jobs, serverNow, quotaFor, set } from "../lib/store.js";
+import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, span, moment } from "../lib/format.js";
+import { Field, Range, Stepper, Slots, Toggle, Budget, Section, Segmented, Input, useReady, Page, Icon, RelativeTime } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
 
 function Allowance({ provider, title, windows }) {
   const ready = useReady();
-  const now = serverNow();
   const quota = quotaFor(provider.driver);
   const live = Object.fromEntries((quota?.windows || []).map((w) => [w.name, w]));
   if (quota?.factoryRouting?.fableRemainingPercent != null) live.fable = { remaining: quota.factoryRouting.fableRemainingPercent };
-  return html`<${Section} title=${html`<${Icon} name=${providerIcon(provider.driver)} /> ${title}`} hint="The dashed line is what is held back right now; the reserve relaxes as the window nears its reset, the floor never does." aside=${html`<small class="muted">${quota?.capturedAt ? `read ${ago(quota.capturedAt, now)}` : "no reading yet"}</small>`}>
+  return html`<${Section} title=${html`<${Icon} name=${providerIcon(provider.driver)} /> ${title}`} hint="The dashed line is what is held back right now; the reserve relaxes as the window nears its reset, the floor never does." aside=${html`<small class="muted">${quota?.capturedAt ? html`read <${RelativeTime} at=${quota.capturedAt} />` : "no reading yet"}</small>`}>
     ${windows.filter(([key]) => key !== "fiveHour" || !Array.isArray(quota?.windows) || live[key]).map(([key, label]) => {
       const w = live[key];
       return html`<${Budget} key=${key} ready=${ready} label=${label} remaining=${w?.remaining} reserved=${w?.reserved}
-        note=${w?.resetsAt ? `resets ${until(w.resetsAt, now)}` : ""}
+        note=${w?.resetsAt ? html`resets <${RelativeTime} at=${w.resetsAt} form="in" />` : ""}
         reservePath=${["quota", provider.concurrency, key, "reservePercent"]} floorPath=${["quota", provider.concurrency, key, "minRemainingPercent"]} />`;
     })}
   <//>`;
@@ -24,9 +23,9 @@ function Allowance({ provider, title, windows }) {
 
 // One-shot timers for the Automation switch and the queue's. A weekly reset stores that provider's reset as it reads now.
 function Schedule() {
-  const now = serverNow(), s = config.value.schedule ?? {};
+  const s = config.value.schedule ?? {};
   const resets = PROVIDERS.map((p) => [p.concurrency, p.name, quotaFor(p.driver)?.windows?.find((w) => w.name === "weekly")?.resetsAt]).filter(([id, , at]) => at || s.offAtReset === id);
-  const nextHour = () => new Date(Math.ceil((now + 1) / 3_600_000) * 3_600_000).toISOString();
+  const nextHour = () => new Date(Math.ceil((serverNow() + 1) / 3_600_000) * 3_600_000).toISOString();
   const atReset = (id) => set(["schedule"], { ...s, offAtReset: id, offAt: resets.find(([p]) => p === id)[2] ?? s.offAt });
   // Weekly reset starts on the provider that resets first; choosing it again keeps the provider already picked.
   const turnOff = (mode) => {
@@ -47,7 +46,7 @@ function Schedule() {
           options=${[["", "By hand"], ...(resets.some(([, , at]) => at) || s.offAtReset ? [["reset", "Weekly reset"]] : []), ["at", "At a time"]]} />
         ${s.offAtReset
           ? html`<${Segmented} label="Weekly reset of" value=${s.offAtReset} onChange=${atReset} options=${resets.map(([id, name]) => [id, name])} />
-              <small class="muted">${moment(s.offAt)}, ${until(s.offAt, now)}</small>`
+              <small class="muted"><${RelativeTime} text=${(now) => `${moment(s.offAt)}, ${until(s.offAt, now)}`} /></small>`
           : s.offAt && html`<${Input} kind="datetime" path=${["schedule", "offAt"]} aria-label="Turn off at" />`}
       </div>
     <//>
@@ -56,7 +55,6 @@ function Schedule() {
 
 // The Settings area's Limits tab; `lead` is its tab strip.
 export function Capacity({ lead } = {}) {
-  clock.value;
   const running = Object.fromEntries(PROVIDERS.map((p) => [p.driver, jobs.value.filter((j) => providerOf(j) === p.driver && isActive(j)).length]));
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
   const limit = config.value.maxWaitingPRs;

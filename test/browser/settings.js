@@ -4,6 +4,7 @@ import "../../web/lib/theme.js";
 import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
+import { checkTimesFollowClock } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,6 +120,7 @@ async function runRepair() {
   assert(c().repair.promptFile === "/prompts/repair-2.md" && c().projects[0].repairWorkflows.join() === "ci.yml,release.yml", `the prompt and workflows edit the config: ${c().projects[0].repairWorkflows}`);
   const row = main().querySelector(".release");
   assert(row && /failing/.test(row.textContent) && /812 failure: test \(ubuntu-latest\), lint/.test(row.textContent) && /813 in progress/.test(row.textContent) && /run 807/.test(row.textContent) && /left deploy/.test(row.textContent) && /cooldown ends in/.test(row.textContent), `the workflow row shows its result, followed run, last repair and cooldown: ${row?.textContent}`);
+  await checkTimesFollowClock("the Repair tab", () => row.textContent);
   assert(document.documentElement.scrollWidth <= innerWidth, "the Repair tab fits the viewport");
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }

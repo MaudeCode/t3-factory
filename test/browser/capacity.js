@@ -4,6 +4,7 @@ import '../../web/lib/theme.js';
 import * as store from '../../web/lib/store.js';
 import { navigate } from '../../web/lib/router.js';
 import { App } from '../../web/views/App.js';
+import { checkTimesFollowClock } from './search.js';
 const budget = { reservePercent: 10, minRemainingPercent: 5 };
 const initial = {
   enabled: false, concurrency: { claude: 2, codex: 6 }, models: [], projects: [], pollSeconds: 60, idleMinutes: 30, monitoringTimeoutMinutes: 30, maxWaitingPRs: null,
@@ -252,6 +253,7 @@ async function schedule() {
   [...root.querySelectorAll('[role="radiogroup"][aria-label="Weekly reset of"] button')].find(b => b.textContent.trim() === 'Codex').click(); await pause();
   assert(JSON.stringify(store.config.value.schedule) === JSON.stringify({ onAt: null, offAt: RESETS.codex, offAtReset: 'codex' }), 'a reset choice stores that provider and its reset time');
   assert(!timerBox('off'), 'a reset shows its time without a box to edit');
+  await checkTimesFollowClock('Limits', () => root.querySelector('.timer small').textContent);
   await pick('off', 'Weekly reset');
   assert(store.config.value.schedule.offAtReset === 'codex', 'choosing Weekly reset again keeps the picked provider');
   await pick('off', 'At a time'); await pick('on', 'At a time');

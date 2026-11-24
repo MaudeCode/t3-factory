@@ -1,7 +1,7 @@
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, statusSection, needSection, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
+import { config, statusSection, needSection, jobs, history, sources, selectedProject, actions, set, update } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
-import { Button, Field, Input, Select, Segmented, Chips, Slots, Toggle, Range, Tag, Icon, Link, Facts, Dialog, Empty, Section, Page, RowBody, SortableList } from "../ui/index.js";
+import { Button, Field, Input, Select, Segmented, Chips, Slots, Toggle, Range, Tag, Icon, Link, Facts, Dialog, Empty, Section, Page, RowBody, SortableList, RelativeTime } from "../ui/index.js";
 import { follow } from "../lib/router.js";
 
 const t3Options = (current) => {
@@ -169,13 +169,11 @@ const views = { setup: Setup, scheduling: Scheduling, releases: Releases };
 
 // The Settings area's Projects tab; `lead` is its tab strip.
 export function Projects({ lead } = {}) {
-  clock.value;
   useEffect(actions.ensureSources, []);
   const [adding, setAdding] = useState(false);
   const [view, setView] = useState("setup");
   const c = config.value,
-    entries = c.projects,
-    now = serverNow();
+    entries = c.projects;
   const i = Math.min(selectedProject.value, entries.length - 1),
     current = entries[i];
   const all = history.value ?? jobs.value;
@@ -226,7 +224,7 @@ export function Projects({ lead } = {}) {
             ["Running", String(s.active)],
             ["Needs you", String(s.waiting)],
             ["Completed", String(s.done)],
-            ["Discovery", discovery?.nextAt && Date.parse(discovery.nextAt) > now ? `paused until ${until(discovery.nextAt, now).replace("in ", "")} from now` : discovery?.lastAt ? `last ran ${ago(discovery.lastAt, now)}` : "never run"],
+            ["Discovery", html`<${RelativeTime} text=${(now) => discovery?.nextAt && Date.parse(discovery.nextAt) > now ? `paused until ${until(discovery.nextAt, now).replace("in ", "")} from now` : discovery?.lastAt ? `last ran ${ago(discovery.lastAt, now)}` : "never run"} />`],
           ]}
         />
         <${Toggle} path=${["projects", String(i), "enabled"]} label="Included in automatic work" hint=${current.enabled ? "Its ready tickets, discovery, and watched releases are all eligible." : "The factory picks nothing here by itself. Tickets you start, queue or run in an Epic still start."} />
