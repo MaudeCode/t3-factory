@@ -74,6 +74,34 @@ for (const scenario of ['override', 'model', 'provider', 'same', 'omitted'] as c
   if (['override', 'model', 'provider'].includes(scenario)) assert.equal(f.store.plan(prior.id)?.state, 'cancelled');
 });
 
+test('queued redispatch waits for ticket preparation before cancellation', async t => {
+  const f = dispatchFixture(t);
+  f.c.concurrency.codex = 0;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const initial = await f.run('auto');
+  assert.equal(initial.reason, 'plan-started');
+  const prior = f.store.plans('active')[0];
+  assert.ok(prior?.queued);
+
+  const entered = deferred(), release = deferred();
+  const preparation = f.store.exclusive(['ticket:root'], async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  const redispatch = cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', overrideLimits: ['providers'] }, { t3: f.t3, kanvil: f.kanvil });
+  await new Promise(resolve => setImmediate(resolve));
+  const stateDuringPreparation = f.store.plan(prior.id)?.state;
+  release.resolve();
+  await preparation;
+
+  const result = await redispatch;
+  assert.equal(stateDuringPreparation, 'active');
+  assert.equal(result.reason, 'dispatched');
+  assert.equal(f.store.plan(prior.id)?.state, 'cancelled');
+  assert.equal(f.launches.length, 1);
+});
+
 for (const model of ['auto', 'sol']) test(`manual ${model} rechecks provider capacity before launch`, async t => {
   const f = dispatchFixture(t);
   let occupied = false;

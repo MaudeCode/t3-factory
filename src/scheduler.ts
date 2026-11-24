@@ -1200,7 +1200,9 @@ async function queueManual(c: Config, store: Store, options: CycleOptions, clien
       || options.model !== undefined && options.model !== existing.model
       || options.provider !== undefined && options.provider !== existing.provider;
     if (!choicesChanged) return queued(existing);
-    cancelPlan(store, existing.id);
+    await store.exclusive([`ticket:${existing.target!.id}`], async () => {
+      if (store.plan(existing.id)?.state === 'active') cancelPlan(store, existing.id);
+    });
   }
   const result = await cycleNow(c, store, options, clients);
   const outcomes = [result, ...(result.dispatches as Decision[] | undefined ?? [])];
