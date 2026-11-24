@@ -68,3 +68,33 @@ test('duplicate config notifications do not enqueue unchanged scheduler work', a
     assert.deepEqual(passes, ['start', 'config', 'config', 'config'], 'restoring the previous valid configuration must wake again after an error');
   } finally { await service.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a T3 thread event wakes every lane but inbox triage; tracker, timer, config and triage commands still start it', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-wake-routing-'));
+  const config = loadConfig(new URL('../config.example.jsonc', import.meta.url).pathname);
+  config.stateDir = join(dir, 'state');
+  const path = join(dir, 'config.jsonc'); writeFileSync(path, JSON.stringify(config));
+  let emit!: (item: unknown) => void;
+  t.mock.method(T3.prototype, 'subscribe', async (onItem: typeof emit, signal: AbortSignal) => {
+    emit = onItem;
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+  });
+  const service = new FactoryService(path), internal = service as any, lanes: string[] = [];
+  t.mock.method(internal, 'pass', async () => ({ reason: 'disabled' }));
+  t.mock.method(internal, 'ensureKanvil', async () => ({}));
+  t.mock.method(internal, 'runLane', (name: string) => { lanes.push(name); });
+  const wake = internal.wake.bind(internal);
+  let woke: (reason: string) => void = () => {};
+  t.mock.method(internal, 'wake', (reason: string) => { wake(reason); woke(reason); });
+  const started = async (act: () => unknown) => { lanes.length = 0; await act(); return [...lanes]; };
+  try {
+    await service.start(); await internal.idle;
+    const threadWake = new Promise<string>(resolve => { woke = resolve; });
+    const t3 = await started(async () => { emit({ kind: 'thread.updated', thread: { id: 'thread-1', title: 'Work' } }); assert.equal(await threadWake, 't3'); });
+    assert.ok(t3.includes('reconcile') && t3.includes('tickets:codex'), 'a thread event still reconciles and admits');
+    assert.ok(!t3.includes('inbox-triage'), 'a thread event changes nothing the triage lane reads');
+    assert.ok((await started(() => internal.handle({ type: 'triage-run' }))).includes('inbox-triage'), 'Triage now runs a pass right after a thread wake');
+    assert.ok((await started(() => internal.handle({ type: 'triage-report', ticketId: 'report-1', action: 'retry' }))).includes('inbox-triage'), 'a report decision runs a pass right after a thread wake');
+    for (const reason of ['kanvil', 'timer', 'config']) assert.ok((await started(() => internal.wake(reason))).includes('inbox-triage'), `a ${reason} wake starts the triage lane`);
+  } finally { await service.stop(); rmSync(dir, { recursive: true, force: true }); }
+});

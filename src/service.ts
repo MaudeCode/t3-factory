@@ -22,6 +22,8 @@ const EVENT_SETTLE_MS = 25;
 /** Quota recovery retries after these delays, then every 30 seconds until a fresh reading arrives. */
 const QUOTA_RETRY_SECONDS = [1, 2, 5, 10, 30];
 const KINDS_WITHOUT_WORK = new Set(['snapshot', 'synchronized']);
+// Lanes a wake reason cannot give new input. Inbox triage reads Kanvil, config, allowance and stored triage events; a T3 thread changes none of them.
+const LANES_UNCHANGED_BY = new Map([['t3', ['inbox-triage']]]);
 /** A quiet lane with unchanged inputs still runs a full pass this often, so time policies such as quota reserves and run timeouts are rechecked. */
 const QUIET_RECHECK_SECONDS = 300;
 type AdmissionInputs = { t3: string | undefined; kanvil: number | undefined; store: number; config: string };
@@ -201,7 +203,7 @@ export class FactoryService {
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
     if (reason === 'timer') this.runLane('activity-markers', () => pruneActivityMarkers(this.t3, this.store));
-    this.triage();
+    if (!LANES_UNCHANGED_BY.get(reason)?.includes('inbox-triage')) this.triage();
     this.scheduleCleanup(true); this.scheduleCollection();
     const now = reason === 'start' || reason === 'config';
     if (now || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory(now);
