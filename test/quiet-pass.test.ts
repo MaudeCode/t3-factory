@@ -109,7 +109,7 @@ for (const [name, steps, bumps] of [
   assert.equal(store.revision - before, bumps);
 });
 
-// Plan notes and a running job's progress timestamps are display only: the row keeps them, the store revision does not move.
+// Plan notes and every job field outside JOB_INPUTS are display only: the row keeps them, the store revision does not move.
 const planTicket = (key: string, note?: string): PlanTicket => ({ id: key, key, title: key, projectId: 'FIX', status: 'todo', priority: 'medium', createdAt: '2026-01-01T00:00:00.000Z', runnable: true, blockedBy: [], done: false, ...note ? { note } : {} });
 const activePlan = (note: string, changes: Partial<Plan> = {}): Plan => ({ id: 'plan', createdAt: '2026-01-01T00:00:00.000Z', target: planTicket('FIX-2', note), tickets: [planTicket('FIX-1', note)], model: 'auto', overrideLimits: false, state: 'active', ...changes });
 const runningJob = (at: string, changes: Partial<Job> = {}): Job => ({ id: 'job', kind: 'ticket', projectId: 'FIX', taskId: 'running', ticketKey: 'FIX-9', threadId: 'thread-running', messageId: 'm', createdAt: '2026-01-01T00:00:00.000Z', state: 'running', reason: 'Claude is executing', lastPersonalActivity: null, reportPath: '/dev/null', prUrls: [], completedAt: null, lastExecutionAt: at, thread: { title: 'Run', status: 'running', branch: 'b', worktreePath: '/w', updatedAt: at, pending: null, background: [] }, ...changes });
@@ -120,6 +120,19 @@ for (const [name, write, bumps] of [
   ['a plan whose target changes', activePlan('personal-provider-running', { target: { ...planTicket('FIX-2'), done: true } }), 1],
   ['a running job whose progress timestamps alone change', runningJob('2026-01-01T00:01:00.000Z'), 0],
   ['a running job whose state changes', runningJob('2026-01-01T00:00:00.000Z', { state: 'waiting' }), 1],
+  // Display and maintenance fields: no admission reader looks at them.
+  ...Object.entries({
+    workspaceCleanupAttemptedAt: '2026-01-01T00:05:00.000Z', workspaceCleanupError: 'Worktree has uncommitted changes', workspaceCleanupBlockedAt: '2026-01-01T00:05:00.000Z',
+    workspaceCleanup: { path: '/w', branch: 'b', head: 'abc' }, workspaceCleanedAt: '2026-01-01T00:06:00.000Z', commandStop: { status: 'requested', requestedAt: '2026-01-01T00:05:00.000Z' },
+    reason: 'Waiting on pull request checks and review', thread: { title: 'Run', status: 'ready', branch: 'b', worktreePath: '/w', updatedAt: '2026-01-01T00:00:00.000Z', pending: 'checks', background: ['ci'] },
+    prUrls: ['https://github.com/o/r/pull/1'], resumedAt: '2026-01-01T00:05:00.000Z',
+  }).map(([field, value]) => [`a running job whose ${field} alone changes`, runningJob('2026-01-01T00:00:00.000Z', { [field]: value }), 0] as [string, Job, number]),
+  // Admission inputs: JOB_INPUTS in src/store.ts names each one's reader.
+  ...Object.entries({
+    state: 'complete', taskId: 'other', labels: ['app'], modelSelection: { instanceId: 'codex', model: 'gpt', options: [] }, providerDriver: 'codex',
+    completedAt: '2026-01-01T00:05:00.000Z', dismissedAt: '2026-01-01T00:05:00.000Z', upstream: { name: 'Up', repo: 'o/up', base: 'v1', candidate: 'v2' },
+    repair: { workflow: 'CI', runId: 1, runUrl: 'https://github.com/o/r/actions/runs/1', sha: 'abc', failedJobs: ['test'] }, lastPersonalActivity: '2026-01-01T00:05:00.000Z',
+  }).map(([field, value]) => [`a running job whose ${field} changes`, runningJob('2026-01-01T00:00:00.000Z', { [field]: value }), 1] as [string, Job, number]),
 ] satisfies [string, Plan | Job, number][]) test(`saving ${name} moves the store revision by ${bumps}`, t => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-saves-')), store = new Store(dir);
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -148,6 +161,24 @@ test('a plan note flapping between hold reasons and a running job advancing its 
   }
   assert.equal(f.reads(), reads, 'no cycle: no inventory, Kanvil, T3 shell, provider or thread-detail read');
   assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => [line.skipped, line.miss]), [[true, undefined], [true, undefined], [true, undefined]]);
+});
+
+test('a blocked cleanup attempt on a finished job leaves the held decision and that job changing state drops it', async t => {
+  const f = quietLane(t);
+  f.store.save(runningJob(now(), { taskId: 'old', ticketKey: 'FIX-7', state: 'complete', completedAt: now(), reason: 'Delivered', workspaceCleanup: { path: '/w', branch: 'b', head: 'abc' } }));
+  const first = await f.pass();
+  await f.pass();
+  const reads = f.reads();
+  verbose(t);
+  const lines = logLines(t) as { event: string; skipped?: true; miss?: string[] }[];
+  const at = now();
+  f.store.save({ ...f.store.job('job')!, workspaceCleanupAttemptedAt: at, workspaceCleanupError: 'Worktree has uncommitted changes', workspaceCleanupBlockedAt: at, reason: 'Cleanup blocked' });
+  assert.deepEqual(await f.pass(), first);
+  assert.equal(f.reads(), reads, 'no cycle: no inventory, Kanvil, T3 shell, provider or thread-detail read');
+  f.store.save({ ...f.store.job('job')!, state: 'dismissed', dismissedAt: now() });
+  await f.pass();
+  assert.ok(f.reads() > reads);
+  assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => [line.skipped, line.miss]), [[true, undefined], [undefined, ['store']]]);
 });
 
 test('background work that takes and releases a ticket lock nobody checked leaves the held decision', async t => {
