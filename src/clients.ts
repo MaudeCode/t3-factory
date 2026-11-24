@@ -496,6 +496,7 @@ const epicSchema = z.object({
 }).passthrough();
 const epicCommentSchema = z.object({ id: z.string(), workspaceId: z.string(), epicId: z.string(), actorId: z.string(), body: z.string(), createdAt: z.string() });
 export type Epic = z.infer<typeof epicSchema>;
+const EPIC_READ_MS = 60_000;
 const projectSchema = z.object({ id: z.string(), workspaceId: z.string(), name: z.string(), key: z.string(), description: z.string().optional(), archivedAt: z.string().nullish() }).passthrough();
 const snapshotSchema = z.object({ project: projectSchema, tickets: z.array(nativeTicket), cursor: z.string().regex(/^\d+$/) });
 type Snapshot = z.infer<typeof snapshotSchema>;
@@ -532,6 +533,8 @@ export class Kanvil {
   private readonly relationCache = new Map<string, Map<boolean, Promise<TaskRelation[]>>>();
   private readonly snapshots = new Map<string, SnapshotRead>();
   private readonly eligibility = new Map<string, Promise<Task[]>>();
+  // Epic records change on the workspace feed this client does not follow, so a reading also expires.
+  private readonly epicReads = new Map<string, { pending: Promise<unknown>; at: number; revision: number; epoch: number }>();
   private readonly projectVersions = new Map<string, number>();
   private readonly metadataVersions = new Map<string, number>();
   private readonly ticketVersions = new Map<string, number>();
@@ -632,14 +635,27 @@ export class Kanvil {
     return { items, restrictedCount };
   }
   // Archived Epics are included so a start can refuse one by name. A Kanvil without Epics has none.
-  async epics(): Promise<Epic[]> {
-    return (await readAll(this.workspaceIds().map(async workspaceId => {
+  async epics(fresh = false): Promise<Epic[]> {
+    return this.epicRead('epics', fresh, async () => (await readAll(this.workspaceIds().map(async workspaceId => {
       try {
         const { items } = await this.allPages(`/workspaces/${encodeURIComponent(workspaceId)}/epics?archived=include`, epicSchema);
         if (items.some(epic => epic.workspaceId !== workspaceId)) throw new Error('Kanvil Epic workspace mismatch');
         return items;
       } catch (error) { if (error instanceof KanvilTaskNotFound || error instanceof KanvilError && error.status === 404) return []; throw error; }
-    }))).flat();
+    }))).flat());
+  }
+  // While the feed is synchronized a reading is kept until any ticket change, a reconnect or EPIC_READ_MS; callers during a read share it.
+  private epicRead<T>(key: string, fresh: boolean, read: () => Promise<T>): Promise<T> {
+    if (!this.synchronized) return read();
+    let entry = this.epicReads.get(key);
+    if (fresh || !entry || entry.revision !== this.revision || entry.epoch !== this.connectionEpoch || Date.now() - entry.at >= EPIC_READ_MS) {
+      const pending = new ReadContext().run(read);
+      entry = { pending, at: Date.now(), revision: this.revision, epoch: this.connectionEpoch };
+      this.epicReads.set(key, entry);
+      void pending.catch(() => { if (this.epicReads.get(key)?.pending === pending) this.epicReads.delete(key); });
+    }
+    const pending = entry.pending as Promise<T>;
+    return readPhase('kanvil.epics', signal => waitFor(pending, signal));
   }
   // A fresh workspace record for the panel, independent of the plan that may be running it.
   async epic(epicId: string) {
@@ -667,12 +683,14 @@ export class Kanvil {
     return { epic, comments: comments.items, members };
   }
   // The tickets the caller can read and a count of the rest. A missing Epic stays an error: a running plan must not read it as empty.
-  async epicTickets(epicId: string) {
-    const workspaceId = this.workspaceIds().length === 1 ? this.config.workspaceId : (await this.epics()).find(epic => epic.id === epicId)?.workspaceId;
-    if (!workspaceId) throw new KanvilTaskNotFound('Kanvil Epic not found or inaccessible');
-    const { items, restrictedCount } = await this.allPages(`/workspaces/${encodeURIComponent(workspaceId)}/epics/${encodeURIComponent(epicId)}/tickets`, nativeTicket);
-    if (restrictedCount === undefined) throw new Error('Kanvil Epic read omitted its restricted count');
-    return { tickets: items.map(normalized), restrictedCount };
+  async epicTickets(epicId: string, fresh = false) {
+    return this.epicRead(`tickets:${epicId}`, fresh, async () => {
+      const workspaceId = this.workspaceIds().length === 1 ? this.config.workspaceId : (await this.epics(fresh)).find(epic => epic.id === epicId)?.workspaceId;
+      if (!workspaceId) throw new KanvilTaskNotFound('Kanvil Epic not found or inaccessible');
+      const { items, restrictedCount } = await this.allPages(`/workspaces/${encodeURIComponent(workspaceId)}/epics/${encodeURIComponent(epicId)}/tickets`, nativeTicket);
+      if (restrictedCount === undefined) throw new Error('Kanvil Epic read omitted its restricted count');
+      return { tickets: items.map(normalized), restrictedCount };
+    });
   }
   generations() { return { epoch: this.connectionEpoch, projects: new Map(this.projectVersions), metadata: new Map(this.metadataVersions), tickets: new Map(this.ticketVersions) }; }
   unchanged(before: ReturnType<Kanvil['generations']>, projects: Iterable<string>, tickets?: Iterable<string>) {

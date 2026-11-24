@@ -1555,7 +1555,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
               reader.task(queue.selected.id), rules.blockersOf(queue.selected.id), rules.openChildren(queue.selected.id), openPullRequests(project!, store, true), repositoryRead(store, `refs:${project!.repoPath}`, () => git(project!.repoPath, ['for-each-ref', '--format=%(refname)\t%(objectname)', 'refs/heads', 'refs/remotes']), true),
             ]);
             // Prepared rows can predate the setting or the ticket's membership, so an unnamed start judges the fresh ticket.
-            const epics = (!options.ticket || plan?.unnamed) && c.holdEpicTicketsUntilStarted && task.epicId ? await kanvil.epics().catch(() => undefined) : undefined;
+            const epics = (!options.ticket || plan?.unnamed) && c.holdEpicTicketsUntilStarted && task.epicId ? await kanvil.epics(true).catch(() => undefined) : undefined;
             return { task, labels: task.labels ?? [], blockers, children, prs, refs, epics, projects: reader.projects, tickets: new Set([...watched, ...reader.ids]) };
           })(),
           // Read with the other final snapshots; the verdict below stays inside the synchronous admission checks.
@@ -1827,8 +1827,8 @@ async function beginPlan(c: Config, store: Store, t3: T3, kanvil: Kanvil, instan
 
 // Epics --------------------------------------------------------------------------------------------
 // An Epic's unfinished members and everything they wait for. A cancelled ticket counts as finished, so it cannot stall the group.
-async function epicTree(c: Config, kanvil: Kanvil, epicId: string, cached = false) {
-  const { tickets: members, restrictedCount } = await kanvil.epicTickets(epicId);
+async function epicTree(c: Config, kanvil: Kanvil, epicId: string, cached = false, fresh = false) {
+  const { tickets: members, restrictedCount } = await kanvil.epicTickets(epicId, fresh);
   const reader = taskReader(c, kanvil, { cancelledFinished: true, cached }), memberIds = new Set(members.map(member => member.id));
   const open = (await readAll(members.map(async member => await reader.done(member) ? [] : [member.id]))).flat();
   const { tickets } = await blockerTree(c, kanvil, open, reader);
@@ -1857,9 +1857,10 @@ function epicStartBlock(c: Config, epic: Pick<Epic, 'title' | 'archived'>, ticke
 // Reads run before the verdict, and the verdict and the saved plan share a synchronous step, so simultaneous starts make one plan.
 async function startEpic(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], options: CycleOptions, skip: Set<OverridableLimit>, decision: (reason: string, extra?: Record<string, unknown>) => Decision, currentConfig?: () => Config, decide?: ReturnType<Store['decisionRecorder']>): Promise<Decision> {
   if (options.model && options.model !== 'auto' && !c.models.some(model => model.id === options.model)) throw new Error('Unknown model; select a configured model');
-  const epic = (await kanvil.epics()).find(epic => epic.id === options.epic);
+  // A start acts on fresh readings, never on the client's cached ones.
+  const epic = (await kanvil.epics(true)).find(epic => epic.id === options.epic);
   if (!epic) return decision('epic-not-found', { epic: options.epic, message: 'Kanvil has no such Epic in the configured workspaces.' });
-  const { tickets, restrictedCount } = await epicTree(c, kanvil, epic.id);
+  const { tickets, restrictedCount } = await epicTree(c, kanvil, epic.id, false, true);
   const block = epicStartBlock(c, epic, tickets, restrictedCount, activeEpicPlans(store).some(plan => plan.epic!.id === epic.id));
   if (block) return decision(block.reason, { epic: epic.id, ...block });
   if (options.dryRun) return decision('would-dispatch', { kind: 'epic', epic: epic.id, tickets, message: `Epic ${epic.title} would start with ${plural(tickets.length, 'ticket')}.` });

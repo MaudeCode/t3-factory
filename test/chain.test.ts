@@ -286,6 +286,7 @@ test('an Epic starts every free member at once and the rest as their blockers fi
   blocks(f, 'a', 'c');
   const started = await startEpic(f, { model: 'sol' });
   assert.equal(started.reason, 'plan-started', JSON.stringify(started));
+  assert.deepEqual([(f.kanvil.epics as any).mock.calls[0].arguments, (f.kanvil.epicTickets as any).mock.calls[0].arguments], [[true], ['epic', true]], 'a start never acts on a cached Epic reading');
   assert.deepEqual(titles(f), ['FIX-1', 'FIX-2'], 'both free members start in the same pass');
   assert.equal(plan(f).target, undefined);
   assert.deepEqual(plan(f).epic, { id: 'epic', title: 'Launch', restrictedCount: 0 });

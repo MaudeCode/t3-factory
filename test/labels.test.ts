@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Kanvil, KanvilTaskNotFound, listTasks } from '../src/clients.ts';
 import { taskDifficulty, taskHold } from '../src/policy.ts';
 import { ReadContext } from '../src/read-context.ts';
-import { inventory } from '../src/scheduler.ts';
+import { inventory, refreshInventory } from '../src/scheduler.ts';
 import { dispatchFixture } from './dispatch-fixture.ts';
 
 export const ticket = (extra: Record<string, unknown> = {}) => ({
@@ -408,4 +408,95 @@ test('session-only ticket reads enroll in scoped access monitoring', async t => 
   for (let n=0; n<5; n++) await turn();
   assert.equal(disconnected, 1, 'a session-only row needs an access-loss invalidation even when global checkpoints continue');
   await f.client.close(); await stream;
+});
+
+test('a synchronized feed lets inventory reuse the Epic list and membership until a change, 60 seconds or a reconnect', async t => {
+  const d = dispatchFixture(t);
+  d.c.projects[0] = { ...d.c.projects[0], kanvilId: 'project', key: 'APP' };
+  const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+  let notifications = 0;
+  const f = fixture(t, url => {
+    if (url.pathname.endsWith('/checkpoint')) return json({ cursor: '5' });
+    if (url.pathname.endsWith('/eligibility')) return json({ items: [{ ticket: ticket({ epicId: 'live' }), readiness: { ready: true, reasons: [] } }], total: 1 });
+    if (url.pathname.endsWith('/snapshot')) return json(snapshot([ticket({ epicId: 'live' })]));
+    if (url.pathname.endsWith('/relations')) return json([]);
+    if (url.searchParams.has('parentId')) return json({ items: [], total: 0 });
+    if (url.pathname === '/api/v1/workspaces/workspace/epics') return json({ items: [{ id: 'live', workspaceId: 'workspace', title: 'Live', archived: false }], total: 1 });
+    if (url.pathname === '/api/v1/workspaces/workspace/epics/live/tickets') return json({ items: [ticket({ epicId: 'live' })], total: 1, restrictedCount: 0 });
+    if (url.pathname.endsWith('/tickets/outsider')) return json({ error: { code: 'not_found' } }, 404);
+    if (url.pathname.includes('/tickets/')) return json({ ticket: ticket({ epicId: 'live' }), readiness: { ready: true, reasons: [] } });
+    if (url.pathname.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(c) { controllers.push(c); } }), { headers: { 'content-type': 'text/event-stream' } });
+    throw new Error(url.pathname);
+  });
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  const send = (event: string, id: string, data: unknown) => controllers.at(-1)!.enqueue(new TextEncoder().encode(`event: ${event}\nid: ${id}\ndata: ${JSON.stringify(data)}\n\n`));
+  const stream = f.client.subscribe(event => { if (!event?.type.startsWith('stream.')) notifications++; }, new AbortController().signal);
+  await until(() => controllers.length === 1); send('checkpoint', '5', { cursor: '5' }); await until(() => notifications === 1);
+  const reads = () => [f.calls.filter(path => /\/epics\?/.test(path)).length, f.calls.filter(path => path.includes('/epics/live/tickets')).length];
+  const run = async () => { const before = reads(); await refreshInventory(d.c, d.store, d.t3, f.client); const after = reads(); return [after[0] - before[0], after[1] - before[1]]; };
+  assert.deepEqual(await run(), [1, 1]);
+  assert.deepEqual(await run(), [0, 0], 'an unchanged synchronized tracker needs no Epic request');
+  assert.equal(JSON.parse(d.store.get('epics')!)[0].id, 'live', 'the cached reading still publishes the Epic');
+  send('change', '6', { id: '6', projectId: 'project', ticketId: 'ticket', type: 'ticket.updated' }); await until(() => notifications === 2);
+  assert.deepEqual(await run(), [1, 1], 'a member change reads the membership again');
+  send('change', '7', { id: '7', projectId: 'project', ticketId: 'outsider', type: 'ticket.updated' }); await until(() => notifications === 3);
+  assert.deepEqual(await run(), [1, 1], 'a ticket that may have joined the Epic reads the membership again');
+  assert.deepEqual(await run(), [0, 0]);
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(await run(), [1, 1], 'Epic record changes are not on the project feed, so a reading expires');
+  controllers[0].close(); await turn(); t.mock.timers.tick(1000);
+  await until(() => controllers.length === 2); send('checkpoint', '7', { cursor: '7' }); await until(() => f.client.synchronized);
+  assert.deepEqual(await run(), [1, 1], 'a reconnected feed cannot vouch for readings from before it');
+  await f.client.close(); await stream;
+});
+
+// Two configured workspaces, so a membership read must find its Epic's workspace in the list.
+async function epicClient(t: test.TestContext, synchronized: boolean) {
+  let controller!: ReadableStreamDefaultController<Uint8Array>, notifications = 0;
+  const state = { failing: false }, epics = { workspace: ['a', 'b'], other: ['c'] } as Record<string, string[]>;
+  const f = fixture(t, url => {
+    if (url.pathname.endsWith('/checkpoint')) return json({ cursor: '5' });
+    if (url.pathname.endsWith('/events')) return new Response(new ReadableStream<Uint8Array>({ start(c) { controller = c; } }), { headers: { 'content-type': 'text/event-stream' } });
+    const [, workspaceId, epicId] = url.pathname.match(/^\/api\/v1\/workspaces\/([^/]+)\/epics(?:\/([^/]+)\/tickets)?$/) ?? [];
+    if (!workspaceId) throw new Error(url.pathname);
+    if (!epicId) return json({ items: epics[workspaceId].map(id => ({ id, workspaceId, title: id, archived: false })), total: epics[workspaceId].length });
+    if (state.failing) return json({ error: { code: 'unavailable' } }, 503);
+    return json({ items: [ticket({ id: `member-${epicId}`, epicId })], total: 1, restrictedCount: 0 });
+  });
+  const client = new Kanvil(f.client.config, [{ kanvilId: 'second', kanvilWorkspaceId: 'other' }]), abort = new AbortController();
+  if (synchronized) {
+    const stream = client.subscribe(() => notifications++, abort.signal);
+    t.after(async () => { abort.abort(); await stream; });
+    await until(() => !!controller); controller.enqueue(new TextEncoder().encode('event: checkpoint\nid: 5\ndata: {"cursor":"5"}\n\n')); await until(() => notifications === 1);
+  }
+  t.after(() => client.close());
+  const lists = () => f.calls.filter(path => /\/epics\?/.test(path)).length, members = (id: string) => f.calls.filter(path => path.includes(`/epics/${id}/tickets`)).length;
+  return { client, state, lists, members };
+}
+
+test('without a synchronized feed every Epic read makes its requests', async t => {
+  const { client, lists, members } = await epicClient(t, false);
+  await client.epics(); await client.epics(); await client.epicTickets('a'); await client.epicTickets('a');
+  assert.deepEqual([lists(), members('a')], [8, 2], 'two workspaces listed for each of two lists and two membership lookups');
+});
+
+test('synchronized Epic membership reads list two workspaces once and share concurrent requests', async t => {
+  const { client, lists, members } = await epicClient(t, true);
+  const read = await Promise.all(['a', 'b', 'c', 'a'].map(id => client.epicTickets(id)));
+  assert.deepEqual(read.map(row => row.tickets[0].id), ['member-a', 'member-b', 'member-c', 'member-a']);
+  assert.deepEqual([lists(), members('a'), members('c')], [2, 1, 1]);
+  await client.epics();
+  assert.equal(lists(), 2, 'the list is cached too');
+});
+
+test('a fresh Epic read bypasses cached readings and a failed read is not kept', async t => {
+  const { client, state, lists, members } = await epicClient(t, true);
+  await client.epicTickets('a'); await client.epicTickets('c');
+  await client.epics(true); await client.epicTickets('a', true);
+  assert.deepEqual([lists(), members('a')], [6, 2], 'a fresh read never uses a cached reading, including the workspace lookup');
+  state.failing = true;
+  await assert.rejects(client.epicTickets('c', true));
+  state.failing = false;
+  assert.equal((await client.epicTickets('c')).tickets[0].id, 'member-c');
+  assert.equal(members('c'), 3, 'the next call reads again');
 });
