@@ -59,6 +59,7 @@ export class FactoryService {
   private readonly passLog = new Map<string, string>();
   private forceTriage = false;
   private statusTimer?: NodeJS.Timeout;
+  private storedWork?: string;
   private readonly eventLoop = monitorEventLoopDelay({ resolution: 20 });
   private readonly retiredClients = new Set<T3>();
   private readonly threadWork = new Map<string, string>();
@@ -270,12 +271,14 @@ export class FactoryService {
 
   private async drainWork() { while (this.operations.size || this.lanes.size) await Promise.allSettled([...this.operations.values()].map(item => item.done).concat([...this.lanes.values()].map(lane => lane.done))); }
   private get idle() { return this.drainWork(); }
-  private workStatus() {
-    const operations = [...this.operations.values()].map(item => ({ reason: item.reason, requestId: item.id, queuedAt: item.queuedAt, startedAt: item.startedAt, ageMs: Date.now() - Date.parse(item.startedAt), stage: item.context.stage }));
-    return { queueDepth: 0, active: operations[0] ?? null, operations,
-      eventLoop: { maxMs: this.eventLoop.max / 1e6, p99Ms: this.eventLoop.percentile(99) / 1e6 } };
+  // Age is live: `health` passes the current time, while the stored view leaves it out so it only changes when an operation does.
+  private workView(now?: number) {
+    const operations = [...this.operations.values()].map(item => ({ reason: item.reason, requestId: item.id, queuedAt: item.queuedAt, startedAt: item.startedAt, ...(now === undefined ? {} : { ageMs: now - Date.parse(item.startedAt) }), stage: item.context.stage }));
+    return { queueDepth: 0, active: operations[0] ?? null, operations };
   }
-  // The operations view is the one status field only this process knows; it reaches the Store at most once a second.
+  private workStatus() { return { ...this.workView(Date.now()), eventLoop: this.eventLoopDelay() }; }
+  private eventLoopDelay() { return { maxMs: this.eventLoop.max / 1e6, p99Ms: this.eventLoop.percentile(99) / 1e6 }; }
+  // The operations view is the one status field only this process knows; it reaches the Store at most once a second, and only when an operation started, ended or changed stage.
   private publishWork() {
     if (this.statusTimer) return;
     this.statusTimer = setTimeout(() => { this.statusTimer = undefined; this.flushWork(); }, 1000);
@@ -283,8 +286,13 @@ export class FactoryService {
   }
   private flushWork() {
     if (!this.store) return;
-    try { this.store.set('serviceWork', JSON.stringify(this.workStatus())); }
-    catch (error) { log('work-status-failed', { message: safeError(error) }); }
+    try {
+      const view = this.workView(), key = JSON.stringify(view);
+      if (key === this.storedWork) return;
+      // Event-loop delay rides along with a write that happens anyway; it never causes one.
+      this.store.set('serviceWork', JSON.stringify({ ...view, eventLoop: this.eventLoopDelay() }));
+      this.storedWork = key;
+    } catch (error) { log('work-status-failed', { message: safeError(error) }); }
   }
 
   // Cleanup owns its sweep; each step retains the existing job/path safety boundary.
