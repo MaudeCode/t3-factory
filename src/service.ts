@@ -27,6 +27,8 @@ const QUIET_RECHECK_SECONDS = 300;
 type AdmissionInputs = { t3: string | undefined; kanvil: number | undefined; store: number; config: string };
 /** Without verbose logging, a pass is logged when its wake reason or outcome changes, or when it takes longer than this. */
 const SLOW_PASS_MS = 5_000;
+// Background cleanup-catalog refreshes start at most this often; reads overlay live job state meanwhile.
+const INVENTORY_SPACING_MS = 30_000;
 
 export class FactoryService {
   private store!: Store;
@@ -46,8 +48,9 @@ export class FactoryService {
   private cleanupTimer?: NodeJS.Timeout;
   private cleanupQueued = false;
   private inventoryTimer?: NodeJS.Timeout;
-  private inventoryQueued = false;
-  private inventoryRequested = 0;
+  private inventoryRunning = false;
+  private inventoryStartedAt = 0;
+  private inventoryAgain?: 'later' | 'now';
   private collectionTimer?: NodeJS.Timeout;
   private collectionQueued = false;
   private readonly inspections = new Map<string, AbortController>();
@@ -199,7 +202,8 @@ export class FactoryService {
     });
     this.triage();
     this.scheduleCleanup(true); this.scheduleCollection();
-    if (reason === 'start' || reason === 'config' || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory();
+    const now = reason === 'start' || reason === 'config';
+    if (now || !this.store.get('cleanupCatalog') || Date.now() - (Date.parse(this.store.get('cleanupCatalogAttempt') ?? '') || 0) >= this.pollSeconds * 1000) this.scheduleInventory(now);
   }
 
   // One pass owns the bounded triage workers. Publish the queue even while triage is off.
@@ -316,28 +320,35 @@ export class FactoryService {
     }, false, { reason: 'workspace-cleanup' }), 0);
   }
 
-  private scheduleInventory() {
+  // One pending refresh absorbs every trigger. Background triggers wait until INVENTORY_SPACING_MS after the last start;
+  // `now` (owner, start, config) replaces a waiting refresh, or follows a running one at once.
+  private scheduleInventory(now = false) {
     if (this.stopped) return;
-    this.inventoryRequested++;
-    if (this.inventoryQueued) return;
-    this.inventoryQueued = true;
-    this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: true }));
-    this.inventoryTimer = setTimeout(() => void this.enqueue(async () => {
-      const requested = this.inventoryRequested;
-      this.store.set('cleanupCatalogAttempt', new Date().toISOString());
+    if (now) this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: true }));
+    if (this.inventoryRunning) { if (this.inventoryAgain !== 'now') this.inventoryAgain = now ? 'now' : 'later'; return; }
+    if (this.inventoryTimer && !now) return;
+    clearTimeout(this.inventoryTimer);
+    this.inventoryTimer = setTimeout(() => { this.inventoryTimer = undefined; this.inventoryRunning = true; void this.refreshInventory(); }, now ? 0 : Math.max(0, this.inventoryStartedAt + INVENTORY_SPACING_MS - Date.now()));
+  }
+
+  private refreshInventory() {
+    return this.enqueue(async () => {
+      this.inventoryStartedAt = Date.now();
       try {
         if (this.stopped) return;
-        const c = this.configure();
-        await refreshCleanupCatalog(c, this.store, this.t3, this.abort.signal);
+        this.store.set('cleanupCatalogAttempt', new Date().toISOString());
+        this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: true }));
+        await refreshCleanupCatalog(this.configure(), this.store, this.t3, this.abort.signal);
       } catch (error) {
         if (!this.stopped) {
           this.store.set('cleanupCatalogRefresh', JSON.stringify({ refreshing: false, errors: [{ repository: 'Inventory', message: safeError(error) }] }));
         }
       } finally {
-        this.inventoryQueued = false;
-        if (!this.stopped && requested !== this.inventoryRequested) this.scheduleInventory();
+        this.inventoryRunning = false;
+        const again = this.inventoryAgain; this.inventoryAgain = undefined;
+        if (again) this.scheduleInventory(again === 'now');
       }
-    }, false, { reason: 'cleanup-inventory' }), 0);
+    }, false, { reason: 'cleanup-inventory' });
   }
 
   // Session collection owns bounded batches and durable cursors, independent of admission.
@@ -413,7 +424,7 @@ export class FactoryService {
       const input = cleanupRequestSchema.parse(command.input);
       if (input.type === 'inventory') {
         const c = loadConfig(this.configPath), data = readCleanupCatalog(c, this.store, input.offset, input.limit, input);
-        if (input.refresh || !data.checkedAt && !this.inventoryQueued) this.scheduleInventory();
+        if (input.refresh || !data.checkedAt) this.scheduleInventory(!!input.refresh);
         return { code: 0, data: { ...data, refreshing: data.refreshing || !!input.refresh } };
       }
       const inspectionId = 'inspectionId' in input ? input.inspectionId : undefined;

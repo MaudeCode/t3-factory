@@ -216,7 +216,7 @@ printf '%s\n' '{"type":"inventory","offset":0,"limit":50}' | t3-factory cleanup
 
 Manual bulk deletion uses the shared inspection and removal executor, including final rechecks after idle bindings are detached. It reads the remote release tip without rewriting repository refs; stale local tracking refs cannot establish merge safety. Automatic maintenance and Retry now retain their Factory completion/report/tracker gates.
 
-Factory refreshes the cleanup catalog in the background after job and removal changes, and on its normal reconciliation passes to discover external worktrees. Completed run state and verified removal outcomes appear from the ledger immediately, even before that sweep finishes. Refresh requests a background sweep and keeps the current list visible. The displayed discovery time stays unchanged until a successful scan; a failed refresh retains the last catalog and shows its error. Cached inventory is for browsing only: deletion always repeats the live safety checks.
+Factory refreshes the cleanup catalog in the background after job and removal changes, and on its normal reconciliation passes to discover external worktrees. Those background refreshes start at most once every 30 seconds; Refresh, a restart and a configuration change rescan at once. Completed run state and verified removal outcomes appear from the ledger immediately, even before that sweep finishes. Refresh requests a background sweep and keeps the current list visible. The displayed discovery time stays unchanged until a successful scan; a failed refresh retains the last catalog and shows its error. Cached inventory is for browsing only: deletion always repeats the live safety checks.
 
 ## Backend concurrency and deployment checks
 
