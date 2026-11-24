@@ -1,4 +1,4 @@
-import { bootout, bootstrap, installRuntime, plistString as string, writeControlAgent } from './launchd.ts';
+import { bootout, bootstrap, installRuntime, plistString as string, schedulerArguments, writeControlAgent } from './launchd.ts';
 import { mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -23,7 +23,7 @@ await installRuntime(root, app, () => bootout(domain, label), existsSync(envPath
 mkdirSync(dirname(plist), { recursive: true });
 mkdirSync(join(home, 'Library/Logs'), { recursive: true });
 writeControlAgent(plist, `<key>Label</key>${string(label)}
-<key>ProgramArguments</key><array>${[process.execPath, join(app, 'src/main.ts'), 'run'].map(string).join('')}</array>
+<key>ProgramArguments</key><array>${schedulerArguments(process.execPath, app).map(string).join('')}</array>
 <key>WorkingDirectory</key>${string(app)}
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>
 <key>EnvironmentVariables</key><dict><key>PATH</key>${string(path)}<key>T3_FACTORY_CONFIG</key>${string(config)}<key>NODE_NO_WARNINGS</key><string>1</string></dict>

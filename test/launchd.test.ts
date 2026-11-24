@@ -97,6 +97,11 @@ test('control-agent definitions retain one Interactive resource class without ca
   }
 });
 
+test('the scheduler agent launches with a 1,024 MB V8 old-space limit', () => {
+  assert.deepEqual(launchd.schedulerArguments('/opt/node/bin/node', '/home/u/app'),
+    ['/opt/node/bin/node', '--max-old-space-size=1024', '/home/u/app/src/main.ts', 'run']);
+});
+
 // A checkout with every runtime entry, whose node_modules/.bin link is relative as npm writes it.
 function runtimeFixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-install-'));
