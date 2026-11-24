@@ -40,6 +40,20 @@ test('provider quota displays use the newest matching snapshot and prefer the li
     assert.equal(store.quotaFor('claudeAgent'), undefined);
   } finally { store.status.value = {}; }
 });
+test('the Runs list merges live jobs into history by ID and counts every row', async () => {
+  const { runsList } = await import('../web/lib/format.js');
+  const run = (id: string, state: string, createdAt: string, extra = {}) => ({ id, label: id, state, createdAt, providerDriver: 'codex', ...extra });
+  const history = [run('a', 'complete', '2026-01-01'), run('b', 'complete', '2026-01-02'), run('c', 'dismissed', '2026-01-03')];
+  const jobs = [run('b', 'running', '2026-01-02'), run('d', 'waiting', '2026-01-01'), run('e', 'running', '2026-01-04', { providerDriver: 'claudeAgent' })];
+  const open = runsList(history, jobs, { state: 'open' });
+  const ids = (rows: { id: string }[]) => rows.map(j => j.id);
+  assert.deepEqual(open.all.map((j: { id: string; state: string }) => `${j.id}:${j.state}`).sort(), ['a:complete', 'b:running', 'c:dismissed', 'd:waiting', 'e:running'], 'a live job replaces its history row and a new one is added once');
+  assert.deepEqual(open.counts, { open: 3, all: 5, dispatching: 0, running: 2, waiting: 1, complete: 1, dismissed: 1 });
+  assert.deepEqual(ids(open.list), ['d', 'e', 'b'], 'Open puts what waits on the owner first, then newest');
+  assert.deepEqual(ids(runsList(history, jobs, { state: 'all', order: 'oldest' }).list), ['a', 'd', 'b', 'c', 'e']);
+  assert.deepEqual(ids(runsList(history, jobs, { state: 'all', filters: { providers: ['claudeAgent'] }, query: '' }).list), ['e'], 'the provider filter applies to runs');
+  assert.deepEqual(ids(runsList(null, jobs).list), ['d', 'e', 'b'], 'before history loads, the live jobs are listed');
+});
 test('run filters combine categories, support tag AND/OR, and preserve missing metadata', async () => {
   const { matchesRunFilters } = await import('../web/lib/format.js');
   assert.equal(typeof matchesRunFilters, 'function', 'one shared matcher owns queue and run filtering');

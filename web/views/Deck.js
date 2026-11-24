@@ -302,17 +302,17 @@ export function RunRow({ job, now = serverNow(), showProject = true, selected })
   <//>`;
 }
 
-export function RunList({ list, title, count, aside, now = serverNow(), selected }) {
+// `limit` shows the first rows and one control, labelled `more`, that calls `onMore`.
+export function RunList({ list, title, count, aside, now = serverNow(), selected, limit = Infinity, more, onMore }) {
   return html`<${Section} class="list" title=${title} count=${count} aside=${aside}>
-    ${list.map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} selected=${selected === undefined ? undefined : j.id === selected} />`)}
+    ${list.slice(0, limit).map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} selected=${selected === undefined ? undefined : j.id === selected} />`)}
+    ${list.length > limit && html`<${Button} variant="ghost" size="sm" onClick=${onMore}>${more}<//>`}
   <//>`;
 }
 
 export function RunGroup({ title, list, limit = 8, empty, children }) {
   const [all, setAll] = useState(false);
-  const visible = all ? list : list.slice(0, limit);
   return html`<${Section} title=${list.length ? null : title} count=${list.length || null} aside=${list.length ? null : children}>
-    ${list.length ? html`<${RunList} list=${visible} title=${title} count=${list.length} aside=${children} />` : empty && html`<${Empty}>${empty}<//>`}
-    ${!all && list.length > limit && html`<${Button} variant="ghost" size="sm" onClick=${() => setAll(true)}>Show all ${list.length}<//>`}
+    ${list.length ? html`<${RunList} list=${list} limit=${all ? Infinity : limit} more=${`Show all ${list.length}`} onMore=${() => setAll(true)} title=${title} count=${list.length} aside=${children} />` : empty && html`<${Empty}>${empty}<//>`}
   <//>`;
 }

@@ -1,9 +1,9 @@
 // Every run the factory has made, and one run in full.
-import { html, useEffect, useRef, useState } from "../lib/h.js";
+import { html, useEffect, useMemo, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, clock, serverNow, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { follow, openTicket } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
-import { ago, duration, clockTime, PROVIDERS, STATES, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, byNewest, STOPS, stopOf, RUN_KINDS } from "../lib/format.js";
+import { ago, duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Empty, Facts, Timeline, Page, Section } from "../ui/index.js";
 import { RunList, OrderChoice } from "./Deck.js";
 
@@ -57,6 +57,7 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
     <//>`;
 }
 
+const RUNS_PAGE = 100;
 export function Runs({ id } = {}) {
   clock.value;
   useEffect(() => {
@@ -66,18 +67,18 @@ export function Runs({ id } = {}) {
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const [order, setOrder] = useState("newest");
-  // Live jobs win over the history snapshot for anything still open.
-  const liveById = new Map(jobs.value.map((j) => [j.id, j]));
-  const all = (history.value ?? jobs.value).map((j) => liveById.get(j.id) ?? j);
-  for (const j of jobs.value) if (!all.some((x) => x.id === j.id)) all.unshift(j);
-  const counts = Object.fromEntries(STATES.map((s) => [s, all.filter((j) => j.state === s).length]));
-  const list = all.filter(
-    (j) =>
-      (state === "all" || (state === "open" ? isOpen(j) : j.state === state)) &&
-      matchesRunFilters(j, filters, query) &&
-      (!filters.providers?.length || filters.providers.includes(providerOf(j))),
-  // Under Open, what waits on the owner comes first.
-  ).toSorted((a, b) => (state === "open" ? (b.state === "waiting") - (a.state === "waiting") : 0) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
+  // A clock tick re-renders the page but none of these inputs, so the list is built only when one changes.
+  const { all, counts, list } = useMemo(() => runsList(history.value, jobs.value, { state, filters, query, order }), [history.value, jobs.value, state, filters, query, order]);
+  // The list renders a window of rows; a new tab, filter, search or order starts it again.
+  const view = [state, filters, query, order];
+  const [shown, setShown] = useState({ view, size: RUNS_PAGE });
+  const same = shown.view.every((v, i) => v === view[i]);
+  if (!same) setShown({ view, size: RUNS_PAGE });
+  const size = same ? shown.size : RUNS_PAGE;
+  // A run opened by its address beyond the window widens it to that run's page.
+  const at = id ? list.findIndex((j) => j.id === id) : -1;
+  const limit = Math.max(size, Math.ceil((at + 1) / RUNS_PAGE) * RUNS_PAGE);
+  const rest = list.length - limit;
   // With no run named in the address, the first run listed is shown beside the list.
   const selected = id ?? list[0]?.id;
   return html`<div class=${`runs-split${id ? " has-run" : ""}`}>
@@ -86,12 +87,12 @@ export function Runs({ id } = {}) {
       label="State"
       value=${state}
       onChange=${setState}
-      options=${[["open", "Open", all.filter(isOpen).length], ["waiting", "Needs you", counts.waiting], ["complete", "Finished", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", all.length]]}
+      options=${[["open", "Open", counts.open], ["waiting", "Needs you", counts.waiting], ["complete", "Finished", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", counts.all]]}
     />
     ${history.value === null && !jobs.value.length
         ? html`<${Empty}>Loading runs.<//>`
         : list.length
-          ? html`<${RunList} list=${list} selected=${selected ?? ""} />`
+          ? html`<${RunList} list=${list} selected=${selected ?? ""} limit=${limit} more=${`Show ${Math.min(RUNS_PAGE, rest)} more of ${rest}`} onMore=${() => setShown({ view, size: limit + RUNS_PAGE })} />`
           : html`<${Empty}>No runs match.<//>`}
   <//></div>
   <div class="runs-detail">${selected ? html`<${RunDetail} id=${selected} />` : html`<${Page} narrow><${Empty}>No run to show.<//><//>`}</div>

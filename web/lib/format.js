@@ -218,6 +218,21 @@ export const factoryTicket = (config, job) => {
 // Runs that are not ticket runs: the short name on a run row and the long one on a run's page.
 export const RUN_KINDS = { upstream: ["review", "Upstream review"], discovery: ["discovery", "Discovery run"], repair: ["repair", "CI repair"] };
 export const byNewest = (a, b) => String(b.createdAt).localeCompare(String(a.createdAt));
+// The Runs page's rows: history merged with live jobs by ID (live wins), each tab's count, and the tab's
+// filtered, sorted list. Under Open, what waits on the owner comes first.
+export function runsList(history, jobs, { state = "open", filters = {}, query = "", order = "newest" } = {}) {
+  const byId = new Map((history ?? []).map((j) => [j.id, j]));
+  for (const j of jobs) byId.set(j.id, j);
+  const all = [...byId.values()];
+  const counts = { open: 0, all: all.length, ...Object.fromEntries(STATES.map((s) => [s, 0])) };
+  for (const j of all) { counts[j.state] = (counts[j.state] ?? 0) + 1; if (isOpen(j)) counts.open++; }
+  const list = all.filter((j) =>
+    (state === "all" || (state === "open" ? isOpen(j) : j.state === state)) &&
+    matchesRunFilters(j, filters, query) &&
+    (!filters.providers?.length || filters.providers.includes(providerOf(j))),
+  ).sort((a, b) => (state === "open" ? (b.state === "waiting") - (a.state === "waiting") : 0) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));
+  return { all, counts, list };
+}
 
 // Convert an input's string value to the configured type.
 export const coerce = (kind, el) =>

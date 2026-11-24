@@ -5,6 +5,7 @@ import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { confirmation, finishConfirmation } from "../../web/lib/confirmation.js";
 import { App } from "../../web/views/App.js";
+import { openSearch } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,22 +18,22 @@ const state = {
   config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], kanvil: { url: "https://tracker.example", workspaceId: "w" }, projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true }] },
   status: { jobs, journal: [] },
 };
-let reads = [], posts = [];
+let reads = [], posts = [], historyRows = jobs;
 window.fetch = async (url, init) => {
-  if (url === "/api/history") return Response.json(jobs);
+  if (url === "/api/history") return Response.json(historyRows);
   const read = /^\/api\/jobs\/([\w-]+)\/report$/.exec(url);
   if (read) {
     reads.push(read[1]);
-    const found = jobs.find((j) => j.id === read[1]);
+    const found = jobs.find((j) => j.id === read[1]) ?? historyRows.find((j) => j.id === read[1]);
     return found ? Response.json({ job: found, events: [{ id: 1, time: ago(4), kind: "job.created", text: `Started ${found.label}`, data: {} }], report: found.state === "complete" ? { status: "complete", reason: "Merged and verified." } : null }) : Response.json({ message: "Run not found" }, { status: 404 });
   }
   if (init?.method === "POST") { posts.push(url); return Response.json({ ok: true }); }
   if (/^\/api\/tickets\//.test(url)) return Response.json({ id: "t1", projectId: "p", key: "APP-1", title: "Synthetic ticket 1", status: "in_progress", priority: "high", difficulty: "med", kind: "feature", labels: [], scopes: [], description: "", acceptanceCriteria: "", automationReady: true, holdReason: null, readiness: [], blockedBy: [], blocks: [], epic: null, createdAt: ago(900), url: "https://tracker.example/projects/p/tickets/t1" });
   return Response.json(state);
 };
-async function show(path = "/runs") {
+async function show(path = "/runs", rows = jobs) {
   render(null, root);
-  reads = []; posts = [];
+  reads = []; posts = []; historyRows = rows;
   store.operations.value = [];
   store.history.value = null;
   store.applyState(state, true);
@@ -113,7 +114,55 @@ async function run() {
   assert(detail().textContent.includes("Run not found") && (!wide || (visible(list()) && keys().length === 29)), "an unknown run is reported in the detail area");
   if (wide) { rowLink("APP-2").click(); await pause(200); assert(detail().textContent.includes("Synthetic ticket 2") && !detail().textContent.includes("Run not found"), "the list still selects a run after an error"); }
   assert(document.documentElement.scrollWidth <= innerWidth, "Runs fits the viewport");
+  await windowed(wide);
   return { passed: true, viewport: [innerWidth, innerHeight], beside: wide };
 }
-window.runsTests = { show, run };
+
+// 500 finished runs in history: the list renders a window of 100 rows and counts all of them.
+// History also holds a stale copy of the live APP-1; the live job wins and appears once.
+const finished = Array.from({ length: 500 }, (_, i) => job(1000 + i, "complete", { completedAt: ago(3000 + i) }));
+const longHistory = [{ ...jobs[0], state: "complete", completedAt: ago(2) }, ...finished];
+const more = () => [...list().querySelectorAll("button")].find((b) => /^Show \d+ more of \d+$/.test(b.textContent.trim()));
+async function windowed(wide) {
+  await show("/runs?state=all", longHistory);
+  const tabs = [...root.querySelectorAll('[aria-label="State"] [role="radio"]')].map((t) => t.textContent);
+  assert(tabs.join() === "Open29,Needs you1,Finished501,Settled0,All530", `tab counts count every row, live state winning: ${tabs}`);
+  assert(list().querySelector(".page-head h1 small").textContent === "530", "the title counts every matching row");
+  assert(keys().length === 100 && keys().filter((k) => k === "APP-1").length === 1, `All renders a window of 100 rows with APP-1 once: ${keys().length}`);
+  assert(more()?.textContent.trim() === "Show 100 more of 430", `the expand control names what remains: ${more()?.textContent}`);
+  if (matchMedia("(pointer: coarse)").matches) assert(more().getBoundingClientRect().height >= 44, "the expand control is a 44px touch target");
+  // A clock tick re-renders the page but recomputes none of the list: the merge reads history once per call.
+  let merges = 0;
+  const counted = store.history.value;
+  store.history.value = new Proxy(counted, { get: (target, key, receiver) => (key === "map" && merges++, Reflect.get(target, key, receiver)) });
+  await pause();
+  merges = 0;
+  const timing = () => list().querySelector(".next .muted[title]").textContent;
+  const shownAt = timing();
+  for (let i = 1; i <= 3; i++) { store.clock.value = Date.now() + i * 60_000; await pause(30); }
+  assert(timing() !== shownAt && merges === 0, `a clock tick re-renders the rows without rebuilding the list: ${shownAt} -> ${timing()}, ${merges} merges`);
+  // The control adds 100 rows and leaves the list where it was scrolled.
+  {
+    more().scrollIntoView({ block: "center" }); await pause();
+    const before = scrollY;
+    more().click(); await pause();
+    assert(keys().length === 200 && Math.abs(scrollY - before) < 2 && more().textContent.trim() === "Show 100 more of 330", `the control adds 100 rows in place: ${keys().length}, ${before} -> ${scrollY}`);
+    // A new tab, order, search or filter starts again at 100.
+    const reset = async (change, what) => { more().click(); await pause(); assert(keys().length > 100, `expanded before changing the ${what}`); await change(); assert(keys().length === 100, `changing the ${what} returns to 100 rows: ${keys().length}`); };
+    const tab = async (name) => { [...root.querySelectorAll('[aria-label="State"] [role="radio"]')].find((t) => t.textContent.startsWith(name)).click(); await pause(); };
+    await reset(() => tab("Finished"), "tab");
+    await reset(() => tab("All"), "tab");
+    // Coming back to a view expanded earlier starts at 100 again, not at its old window.
+    await reset(async () => { await tab("Finished"); await tab("All"); }, "tab and back");
+    await reset(async () => { root.querySelector('[aria-label="Start order"] [aria-label="Oldest first"]').click(); await pause(); }, "order");
+    await reset(async () => { const search = await openSearch(); search.value = "APP-1"; search.dispatchEvent(new Event("input", { bubbles: true })); await pause(); }, "search");
+    await reset(async () => { root.querySelector('[aria-label^="Filter runs"]').click(); await pause(); [...document.querySelectorAll('.popover [role="group"][aria-label="Difficulty"] button')].find((b) => b.getAttribute("aria-label") === "Medium").click(); await pause(); }, "filter");
+  }
+  // A run opened by its address beyond the window widens it: its row is shown and marked.
+  await show("/runs/run-1400?state=all", longHistory);
+  const target = rowLink("APP-1400");
+  assert(target?.getAttribute("aria-current") === "true" && detail().textContent.includes("Synthetic ticket 1400") && keys().length > 100, `a run beyond the window is listed and marked: ${keys().length}`);
+  if (wide) assert(visible(target) && visible(detail()), "the widened row sits beside its run");
+}
+window.runsTests = { show, run, showLong: () => show("/runs?state=all", longHistory) };
 await show();
