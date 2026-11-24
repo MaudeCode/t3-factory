@@ -37,6 +37,43 @@ for (const overrideLimits of [false, ['providers'], true] as const) test(`explic
   assert.equal(f.launches.length, overrideLimits === false ? 0 : 1);
 });
 
+for (const scenario of ['override', 'model', 'provider', 'same', 'omitted'] as const) test(`queued redispatch applies request choices: ${scenario}`, async t => {
+  const f = dispatchFixture(t);
+  f.c.concurrency.codex = 0;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const dispatch = (choices: Partial<Parameters<typeof cycle>[2]> = {}) =>
+    cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', ...choices }, { t3: f.t3, kanvil: f.kanvil });
+  const initial = await dispatch({ model: 'auto', overrideLimits: ['idle', 'labels'] });
+  assert.equal(initial.reason, 'plan-started');
+  const prior = f.store.plans('active')[0];
+  assert.ok(prior?.queued);
+
+  const choices: Record<typeof scenario, Partial<Parameters<typeof cycle>[2]>> = {
+    override: { overrideLimits: ['providers'] },
+    model: { model: 'sol' },
+    provider: { provider: 'codex' },
+    same: { model: 'auto', overrideLimits: ['labels', 'idle'] },
+    omitted: {},
+  };
+  const result = await dispatch(choices[scenario]);
+  const active = f.store.plans('active');
+  if (scenario === 'override') {
+    assert.equal(result.reason, 'dispatched');
+    assert.equal(f.launches.length, 1);
+    assert.deepEqual(active, []);
+  } else {
+    assert.equal(result.reason, 'plan-started');
+    assert.equal(active.length, 1);
+    if (scenario === 'same' || scenario === 'omitted') assert.deepEqual(active[0], prior);
+    else {
+      assert.notEqual(active[0].id, prior.id);
+      assert.equal(active[0].model, scenario === 'model' ? 'sol' : 'auto');
+      assert.equal(active[0].provider, scenario === 'provider' ? 'codex' : undefined);
+    }
+  }
+  if (['override', 'model', 'provider'].includes(scenario)) assert.equal(f.store.plan(prior.id)?.state, 'cancelled');
+});
+
 for (const model of ['auto', 'sol']) test(`manual ${model} rechecks provider capacity before launch`, async t => {
   const f = dispatchFixture(t);
   let occupied = false;

@@ -1191,7 +1191,17 @@ async function queueManual(c: Config, store: Store, options: CycleOptions, clien
     clients.decide!(result); log('decision', result); return result;
   };
   const existing = options.ticket && queuedPlan(store, options.ticket.trim().toUpperCase());
-  if (existing) return queued(existing);
+  if (existing) {
+    const overrides = skips(options);
+    const queuedOverrides = skips({ manual: true, overrideLimits: existing.overrideLimits });
+    const limitsChanged = options.overrideLimits !== undefined
+      && (overrides.size !== queuedOverrides.size || [...queuedOverrides].some(limit => !overrides.has(limit)));
+    const choicesChanged = limitsChanged
+      || options.model !== undefined && options.model !== existing.model
+      || options.provider !== undefined && options.provider !== existing.provider;
+    if (!choicesChanged) return queued(existing);
+    cancelPlan(store, existing.id);
+  }
   const result = await cycleNow(c, store, options, clients);
   const outcomes = [result, ...(result.dispatches as Decision[] | undefined ?? [])];
   const hold = outcomes.find(outcome => limitHold(outcome.reason) || outcome.reason === 'no-ready-model' && (outcome.streams as { reason: string; models: { reason: string }[] }[] | undefined)?.some(stream => limitHold(stream.reason) || stream.models.some(model => limitHold(model.reason))));
