@@ -6,7 +6,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { randomBytes, createHmac, timingSafeEqual } from "node:crypto";
+import { randomBytes, createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   readFileSync,
   writeFileSync,
@@ -14,6 +14,7 @@ import {
   existsSync,
   renameSync,
   readdirSync,
+  statSync,
 } from "node:fs";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -190,6 +191,8 @@ export function createFactoryWeb(options: {
   ];
   const assets =
     options.assetDir ?? fileURLToPath(new URL("../web/", import.meta.url));
+  // Static files by name, refreshed when their mtime or size changes on disk.
+  const staticFiles = new Map<string, { mtime: number; size: number; body: Buffer; etag: string }>();
   const pairs = new Map<string, number>(),
     attempts = new Map<string, { count: number; until: number }>();
   const operations = join(dataDir, "web-requests");
@@ -601,13 +604,22 @@ export function createFactoryWeb(options: {
       // Extensionless paths are app routes and load the page shell.
       const file = path === "/" || !extname(path) ? "index.html" : path.slice(1);
       const type = staticTypes[extname(file)];
-      if (!type || !/^[\w-]+(\/[\w-]+)*\.\w+$/.test(file) || !existsSync(join(assets, file)))
-        return json(res, 404, { message: "Not found" });
-      res.writeHead(200, {
+      const stat = type && /^[\w-]+(\/[\w-]+)*\.\w+$/.test(file) ? statSync(join(assets, file), { throwIfNoEntry: false }) : undefined;
+      if (!stat?.isFile()) return json(res, 404, { message: "Not found" });
+      let cached = staticFiles.get(file);
+      if (cached?.mtime !== stat.mtimeMs || cached.size !== stat.size) {
+        const body = readFileSync(join(assets, file));
+        cached = { mtime: stat.mtimeMs, size: stat.size, body, etag: `"${createHash("sha256").update(body).digest("base64url")}"` };
+        staticFiles.set(file, cached);
+      }
+      // If-None-Match compares weakly (RFC 9110), so a proxy that weakens the tag still gets a 304.
+      const fresh = (req.headers["if-none-match"] ?? "").split(",").some((tag) => tag.trim().replace(/^W\//, "") === cached.etag);
+      res.writeHead(fresh ? 304 : 200, {
         "Content-Type": type,
         "Cache-Control": file.startsWith("vendor/") || file.startsWith("fonts/") ? "max-age=86400" : "no-cache",
+        ETag: cached.etag,
       });
-      res.end(readFileSync(join(assets, file)));
+      res.end(fresh ? undefined : cached.body);
     } catch (error) {
       json(
         res,

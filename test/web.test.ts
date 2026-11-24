@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -380,3 +380,88 @@ test("web binding accepts the requested private LAN address but rejects public H
     }),
   );
 });
+
+// One server over a temporary web directory whose files carry a fixed whole-second mtime.
+async function staticFixture(run: (get: (path: string, headers?: Record<string, string>) => Promise<{ status: number; headers: Record<string, string>; body: Buffer }>, assets: string) => Promise<void>) {
+  const dir = mkdtempSync(join(tmpdir(), "factory-static-")), assets = join(dir, "web"), mtime = new Date("2026-01-01T00:00:00Z");
+  const files: Record<string, string | Buffer> = {
+    "index.html": "<!doctype html>",
+    "app.js": "export {}",
+    "vendor/lib.js": "export const v = 1",
+    "fonts/face.woff2": Buffer.from("wOF2fixture"),
+    "icon.png": Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  };
+  for (const [name, body] of Object.entries(files)) {
+    mkdirSync(join(assets, name, ".."), { recursive: true });
+    writeFileSync(join(assets, name), body);
+    utimesSync(join(assets, name), mtime, mtime);
+  }
+  const server = createFactoryWeb({
+    config: webConfigSchema.parse({ publicOrigin: "https://factory.example.test" }),
+    secret: "a".repeat(64),
+    dataDir: dir,
+    readState: () => ({}),
+    assetDir: assets,
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const get = (path: string, headers: Record<string, string> = {}) =>
+    new Promise<{ status: number; headers: Record<string, string>; body: Buffer }>((resolve, reject) => {
+      const req = httpRequest(`http://127.0.0.1:${address.port}${path}`, { headers: { Host: "factory.example.test", ...headers } }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => resolve({ status: res.statusCode!, headers: res.headers as Record<string, string>, body: Buffer.concat(chunks) }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  try {
+    await run(get, assets);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("static files carry a content ETag and answer a matching If-None-Match with 304", () =>
+  staticFixture(async (get) => {
+    for (const [path, cache] of [["/app.js", "no-cache"], ["/icon.png", "no-cache"], ["/vendor/lib.js", "max-age=86400"], ["/fonts/face.woff2", "max-age=86400"]]) {
+      const first = await get(path);
+      assert.equal(first.status, 200, path);
+      assert.match(first.headers.etag ?? "", /^"[\w-]+"$/, `${path} carries a strong ETag`);
+      assert.equal(first.headers["cache-control"], cache, path);
+      // If-None-Match compares weakly, and a list matches on any member.
+      for (const tag of [first.headers.etag, `W/${first.headers.etag}`, `"other", ${first.headers.etag}`]) {
+        const again = await get(path, { "If-None-Match": tag });
+        assert.equal(again.status, 304, `${path} with If-None-Match ${tag}`);
+        assert.equal(again.body.length, 0, `${path} 304 has no body`);
+        assert.equal(again.headers["cache-control"], cache, `${path} 304 keeps its Cache-Control`);
+        assert.equal(again.headers.etag, first.headers.etag);
+        assert.equal(again.headers["x-content-type-options"], "nosniff", "304 keeps the security headers");
+        assert.match(again.headers["content-security-policy"] ?? "", /default-src 'self'/);
+      }
+      assert.equal((await get(path, { "If-None-Match": '"stale"' })).status, 200, `${path} with a stale tag is sent in full`);
+    }
+    assert.equal((await get("/missing.js")).status, 404, "an unknown file is still not found");
+    assert.equal((await get("/app.js", { Host: "attacker.example" })).status, 403, "a rejected host still cannot read static files");
+  }));
+
+test("an unchanged static file is served from memory and a changed one is read again with a new ETag", () =>
+  staticFixture(async (get, assets) => {
+    const app = join(assets, "app.js"), first = await get("/app.js"), { mtime } = statSync(app);
+    assert.equal(first.body.toString(), "export {}");
+    // Same size and mtime, different bytes: only a fresh disk read could see them.
+    writeFileSync(app, "export []");
+    utimesSync(app, mtime, mtime);
+    const cached = await get("/app.js");
+    assert.equal(cached.body.toString(), "export {}", "a second request for an unchanged file does not read it again");
+    assert.equal(cached.headers.etag, first.headers.etag);
+    writeFileSync(app, "export const changed = true");
+    utimesSync(app, new Date(mtime.getTime() + 60_000), new Date(mtime.getTime() + 60_000));
+    const changed = await get("/app.js", { "If-None-Match": first.headers.etag });
+    assert.equal(changed.status, 200, "a changed file answers the old tag in full");
+    assert.equal(changed.body.toString(), "export const changed = true");
+    assert.notEqual(changed.headers.etag, first.headers.etag);
+    assert.equal((await get("/app.js", { "If-None-Match": changed.headers.etag })).status, 304);
+  }));
