@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { readStatus, log, refreshQuota } from '../src/scheduler.ts';
+import { readStatus, readCachedStatus, log, refreshQuota } from '../src/scheduler.ts';
 import { readModelQuota } from '../src/models.ts';
 import { dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts';
 import { cycle } from '../src/scheduler.ts';
@@ -184,6 +184,72 @@ test('status lists live runs and the last 30 finished ones from the state index,
   const sql = prepared.mock.calls.map(call => call.arguments[0]).find(sql => sql.includes('WHERE state IN'));
   const plan = f.store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map(row => row.detail).join('; ');
   assert.match(plan, /USING INDEX jobs_state/);
+});
+
+test('status revisions track source writes and rebuild only the affected sections', t => {
+  const f = dispatchFixture(t), writer = new Store(f.c.stateDir);
+  t.after(() => writer.close());
+  const before = readCachedStatus(f.c, f.store);
+  const events = t.mock.method(f.store, 'events');
+  const active = t.mock.method(f.store, 'activeJobs');
+  const plans = t.mock.method(f.store, 'plans');
+  writer.set('unused-status-fixture', '1');
+  assert.equal(readCachedStatus(f.c, f.store, before).status, before.status);
+  writer.record('fixture', 'journal changed');
+  const after = readCachedStatus(f.c, f.store, before);
+  assert.equal(after.status.journal[0].text, 'journal changed');
+  assert.equal(after.status.plans, before.status.plans);
+  assert.equal(after.status.jobs, before.status.jobs);
+  assert.equal(events.mock.callCount(), 1);
+  assert.equal(active.mock.callCount(), 0);
+  assert.equal(plans.mock.callCount(), 0);
+
+  const initial = { id: 'fixture', taskId: null, kind: 'ticket', state: 'running' };
+  const statements: [string, string[]][] = [
+    [`INSERT INTO jobs VALUES('fixture', NULL, '${JSON.stringify(initial)}')`, ['jobs']],
+    ["UPDATE jobs SET data=json_set(data, '$.lastExecutionAt', 'new') WHERE id='fixture'", ['jobs']],
+    ["INSERT INTO job_history VALUES('old', '{}')", ['recent', 'sessionTickets']],
+    ["INSERT INTO plans VALUES('plan', '{}')", ['epics', 'plans', 'sessionTickets', 'triageResults']],
+    ["INSERT INTO session_tickets VALUES('task', '{}')", ['sessionTickets']],
+    ["INSERT INTO session_threads VALUES('thread', '{}')", ['sessionTickets']],
+    ["INSERT INTO cleanup_actions VALUES('action', '{}')", ['cleanupRevision']],
+    ["INSERT INTO events(time,kind,text,data) VALUES('', 'triage', '', '{}')", ['journal', 'triageResults']],
+  ];
+  const assertTokens = (write: () => void, expected: string[]) => {
+    const old = f.store.statusRevisions();
+    write();
+    const next = f.store.statusRevisions();
+    assert.deepEqual(Object.keys(next).filter(key => old[key] !== next[key]).sort(), expected.sort());
+  };
+  for (const [sql, expected] of statements) assertTokens(() => writer.db.exec(sql), expected);
+  const metadata: Record<string, string[]> = {
+    ticketKeyRevision: ['ticketKeyRevision'], serviceWork: ['work'], streams: ['streams'],
+    lastDecision: ['decision'], chainDecision: ['decision'], upstreamDecision: ['decision'], upNext: ['upNext'],
+    planOrder: ['epics', 'plans'], epics: ['epics'], epicsError: ['epicsError'],
+    triageStreams: ['triageStreams'], triageDecision: ['triageDecision'], triageReports: ['triageReports'], triagePromoted: ['triageResults'],
+    sessionCatalog: ['sessionTickets'], 'sessionTickets:error': ['sessionTickets'],
+    'upstreamCheckedAt:repo': ['upstreams'], 'upstreamReviewed:repo': ['upstreams'], 'upstreamLatest:repo': ['upstreams'],
+    'upstreamCandidate:repo': ['upstreams'], 'upstreamCheckError:repo': ['upstreams'], 'repairWatch:project:ci': ['repairs'],
+    'discoveryLast:project': ['discovery'], 'discoveryAfter:project': ['discovery'],
+    cleanupCatalog: ['cleanupRevision'], cleanupCatalogRefresh: ['cleanupRevision'],
+    unrelated: [],
+  };
+  for (const [key, expected] of Object.entries(metadata)) assertTokens(() => writer.set(key, '1'), expected);
+  assertTokens(() => writer.set('serviceWork', '1'), []);
+});
+
+test('filtered status queries use indexes', t => {
+  const f = dispatchFixture(t), reader = new Store(f.c.stateDir);
+  t.after(() => reader.close());
+  const prepare = t.mock.method(reader.db, 'prepare');
+  readStatus(f.c, reader);
+  const sql = prepare.mock.calls.map(call => call.arguments[0] as string).filter(query =>
+    /SELECT .*FROM (jobs|job_history|plans|events|session_tickets)\b.*WHERE/.test(query));
+  assert.ok(sql.length >= 10, sql.join('\n'));
+  for (const query of sql) {
+    const plan = reader.db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(...Array(query.split('?').length - 1).fill(1)).map(row => row.detail).join('; ');
+    assert.doesNotMatch(plan, /\bSCAN (jobs|job_history|plans|events|session_tickets)\b/, query);
+  }
 });
 
 for (const lane of ['reconcile', 'inventory', 'automatic', 'upstream', 'workspace-cleanup', 'cleanup-inventory', 'session-tickets', 'quota-refresh']) test(`held ${lane} work cannot block dispatch or unrelated Stop`, async t => {

@@ -1,5 +1,5 @@
 import { html, useState } from "../lib/h.js";
-import { config, status, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
+import { config, statusSection, jobs, clock, serverNow, actions, operations, pendingReview, startRun } from "../lib/store.js";
 import { ago, until, byNewest, repoLink, releaseLink, span } from "../lib/format.js";
 import { Button, Field, Input, Select, Toggle, Range, Tag, Empty, Link, Dialog, Section, Page, RowBody, Icon } from "../ui/index.js";
 import { RunGroup, Operations, SectionSwitch } from "./Deck.js";
@@ -60,7 +60,7 @@ export function Upstream({ lead } = {}) {
       ${lead}
       <${Empty}>No watched repositories. Add <code>upstream</code> with a prompt file to the config file to turn reviews on.<//>
     <//>`;
-  const byRepo = Object.fromEntries((status.value.upstreams || []).map((r) => [r.repo, r]));
+  const byRepo = Object.fromEntries((statusSection("upstreams").value || []).map((r) => [r.repo, r]));
   const watched = c.projects.flatMap((p, project) => p.upstreams.map((u, index) => ({ project, index, entry: u, projectName: p.name, enabled: p.enabled, live: byRepo[u.repo] })));
   const requests = operations.value.filter(op => op.input.upstream);
   const reviews = jobs.value.filter((j) => j.kind === "upstream").sort(byNewest),

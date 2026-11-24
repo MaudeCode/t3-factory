@@ -1,6 +1,6 @@
 // Where new tickets come from: inbox triage, discovery, upstream releases and T3 sessions. One view each, in the address.
 import { html } from "../lib/h.js";
-import { config, status, jobs, clock, serverNow } from "../lib/store.js";
+import { config, statusSection, jobs, clock, serverNow } from "../lib/store.js";
 import { search, navigate, follow } from "../lib/router.js";
 import { ago, until, byNewest, stateLabel, toneOf } from "../lib/format.js";
 import { Segmented, Tag, Icon, Empty, Page, Section, RowBody } from "../ui/index.js";
@@ -16,7 +16,7 @@ export const sourcesView = (query) => {
 // One line per project: when discovery last looked there, and whether it is leaving the project alone for now.
 function Discovery({ lead }) {
   const c = config.value, now = serverNow();
-  const state = new Map((status.value.discovery || []).map((d) => [d.projectId, d]));
+  const state = new Map((statusSection("discovery").value || []).map((d) => [d.projectId, d]));
   const runs = jobs.value.filter((j) => j.kind === "discovery").sort(byNewest);
   return html`<${Page} title="Sources" hint="When no tickets are eligible, a free provider investigates one included project for new work and files tickets.">
     ${lead}
@@ -37,7 +37,7 @@ function Discovery({ lead }) {
 
 // T3 sessions report tickets on their own; the list itself is a view of the Queue.
 function Sessions({ lead }) {
-  const s = status.value.sessionTickets, now = serverNow(), n = s?.rows?.length ?? 0;
+  const s = statusSection("sessionTickets").value, now = serverNow(), n = s?.rows?.length ?? 0;
   return html`<${Page} title="Sources" hint="Tickets that T3 sessions reported creating, confirmed against the tracker. Nothing here starts on its own.">
     ${lead}
     <${Section} class="list">
@@ -52,14 +52,14 @@ function Sessions({ lead }) {
 
 export function Sources() {
   clock.value;
-  const c = config.value, st = status.value;
+  const c = config.value;
   // Triage has a view only when a project has an inbox.
-  const inboxes = !!c.triage || (st.triageStreams || []).length > 0;
+  const inboxes = !!c.triage || (statusSection("triageStreams").value || []).length > 0;
   const requested = sourcesView(search.value), view = requested === "triage" && !inboxes ? "discovery" : requested;
-  const owed = (st.triageReports || []).filter((event) => event.data.stage === "owner").length;
-  const due = (st.upstreams || []).filter((r) => r.pending).length;
+  const owed = (statusSection("triageReports").value || []).filter((event) => event.data.stage === "owner").length;
+  const due = (statusSection("upstreams").value || []).filter((r) => r.pending).length;
   const tabs = html`<${Segmented} label="Source" value=${view} onChange=${(v) => navigate(PATHS[v])}
-    options=${[...(inboxes ? [["triage", "Inbox triage", owed]] : []), ["discovery", "Discovery"], ["upstream", "Upstream releases", due], ["sessions", "T3 sessions", st.sessionTickets?.rows?.length ?? 0]]} />`;
+    options=${[...(inboxes ? [["triage", "Inbox triage", owed]] : []), ["discovery", "Discovery"], ["upstream", "Upstream releases", due], ["sessions", "T3 sessions", statusSection("sessionTickets").value?.rows?.length ?? 0]]} />`;
   return view === "triage" ? html`<${Triage} lead=${tabs} />`
     : view === "upstream" ? html`<${Upstream} lead=${tabs} />`
     : view === "sessions" ? html`<${Sessions} lead=${tabs} />`

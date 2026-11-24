@@ -1,6 +1,6 @@
 // Worktrees on disk for every configured repository: which are unused, what blocks the rest, and one way to delete them.
 import { html, useEffect, useState, useRef } from "../lib/h.js";
-import { config, status, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, clock, serverNow, message } from "../lib/store.js";
+import { config, statusSection, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, clock, serverNow, message } from "../lib/store.js";
 import { cleanupResultSummary, projectCleanupResults, ago, clockTime, formatBytes as bytes, ticketLink, threadLink, safeLink, prLabel } from "../lib/format.js";
 import { follow } from "../lib/router.js";
 import { Button, Select, Field, RowBody, Meta, Tag, Help, Icon, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check } from "../ui/index.js";
@@ -134,7 +134,7 @@ export function Cleanup() {
     const keep = value => { const live = new Set(value.items.filter(selectable).map(keyOf)); return current => current.every(key => live.has(key)) ? current : current.filter(key => live.has(key)); };
     const timer = setTimeout(() => { rescan.current = false; return loadRows({ ...filters, ...force ? { refresh: true } : {} }, silent ? Math.max(50, snapshot.items.length) : 50, abort.signal).then(value => { if (!abort.signal.aborted) { setData(value); setSelected(silent ? keep(value) : []); } }, e => { if (!abort.signal.aborted) setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); }); }, 120);
     return () => { clearTimeout(timer); abort.abort(); };
-  }, [JSON.stringify(filters), revision, status.value.at]);
+  }, [JSON.stringify(filters), revision, statusSection("cleanupRevision").value ?? statusSection("at").value]);
   useEffect(() => () => batchRead.current?.abort(), []);
   const refresh = () => { rescan.current = true; setRevision(n => n + 1); };
   const change = (key, value) => { setSelected([]); setFilters(current => ({ ...current, [key]: value })); };

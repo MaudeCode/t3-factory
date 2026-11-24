@@ -1,6 +1,6 @@
 // Home: what the factory and each provider are doing right now, what waits on the owner, and what the owner queued.
 import { html, useState } from "../lib/h.js";
-import { config, status, jobs, issues, launchOperations, clock, serverNow, busy } from "../lib/store.js";
+import { config, statusSection, jobs, issues, launchOperations, clock, serverNow, busy } from "../lib/store.js";
 import { follow, ticketClick } from "../lib/router.js";
 import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket } from "../lib/format.js";
 import { Icon, Empty } from "../ui/index.js";
@@ -72,7 +72,7 @@ export function Now({ initialTicket } = {}) {
   clock.value; // re-render every second for relative times
   busy.value;
   const now = serverNow();
-  const s = nowSections({ jobs: jobs.value, plans: status.value.plans ?? [], operations: launchOperations.value, reports: status.value.triageReports ?? [], issues: issues.value });
+  const s = nowSections({ jobs: jobs.value, plans: statusSection("plans").value ?? [], operations: launchOperations.value, reports: statusSection("triageReports").value ?? [], issues: issues.value });
   const newest = (list) => list.toSorted((a, b) => byNewest(a.job, b.job));
   const needsRow = (item) => item.kind === "run" ? html`<${Run} key=${item.id} job=${item.job} now=${now} needs />`
     : item.kind === "report" ? html`<${Report} key=${item.id} event=${item.event} />`
@@ -80,7 +80,7 @@ export function Now({ initialTicket } = {}) {
     : html`<${Problem} key=${item.id} item=${item} />`;
   const run = (item) => html`<${Run} key=${item.id} job=${item.job} now=${now} />`;
   const queued = (item) => item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} />` : html`<${Plan} key=${item.id} plan=${item.plan} />`;
-  const sentence = decisionSentence(status.value.decision);
+  const sentence = decisionSentence(statusSection("decision").value);
   const count = (n, label, tone) => html`<span class=${tone && n ? tone : ""}><b>${n}</b>${label}</span>`;
   return html`<div class="now">
     <header class="now-head">

@@ -117,6 +117,52 @@ export type DecisionOrigin = { workKind: 'tickets' | 'upstream' | 'chains'; prov
 type CheckDecision = Decision & { origin?: DecisionOrigin & { sequence: number; startedAt: string }; checks?: Record<string, CheckDecision> };
 const decisionKeys = ['lastDecision', 'upstreamDecision', 'chainDecision'] as const;
 // Metadata that automatic admission reads, beside jobs and plans: the prepared Up next list, plan order, project rotation, discovery cooldowns and upstream/repair source state.
+// Match the status readers' metadata dependencies. A trailing colon denotes a prefix.
+const STATUS_METADATA = {
+  ticketKeyRevision: ['ticketKeyRevision'], work: ['serviceWork'], streams: ['streams'],
+  decision: decisionKeys, upNext: ['upNext'], plans: ['planOrder'],
+  epics: ['epics', 'planOrder'], epicsError: ['epicsError'],
+  triageStreams: ['triageStreams'], triageDecision: ['triageDecision'], triageReports: ['triageReports'],
+  triageResults: ['triagePromoted'], sessionTickets: ['sessionCatalog', 'sessionTickets:'],
+  upstreams: ['upstreamReviewed:', 'upstreamLatest:', 'upstreamCandidate:', 'upstreamCheckedAt:', 'upstreamCheckError:'],
+  repairs: ['repairWatch:'], discovery: ['discoveryLast:', 'discoveryAfter:'],
+  cleanupRevision: ['cleanupCatalog', 'cleanupCatalogRefresh'],
+};
+const STATUS_TABLES = {
+  jobs: ['jobs', 'recent', 'upstreams', 'repairs', 'sessionTickets', 'triageResults'],
+  job_history: ['recent', 'sessionTickets'], plans: ['plans', 'epics', 'sessionTickets', 'triageResults'],
+  session_tickets: ['sessionTickets'], session_threads: ['sessionTickets'],
+  cleanup_actions: ['cleanupRevision'], events: ['journal', 'triageResults'],
+};
+const planState = "json_extract(data, '$.state')";
+const planFinished = "julianday(coalesce(json_extract(data, '$.finishedAt'), json_extract(data, '$.createdAt')))";
+const listedSessionTicket = ["archived", "missing", "dismissedAt", "consumed"].map(key =>
+  `coalesce(json_extract(data, '$.${key}'), 0) IN (0, '')`).join(' AND ');
+const statusJobs = {
+  upstream: "json_extract(data, '$.upstream') IS NOT NULL",
+  repair: "json_extract(data, '$.kind') = 'repair'",
+  tickets: "json_extract(data, '$.taskId') IS NOT NULL",
+};
+const jobValue = (row: string, key: string) => `json_extract(${row}.data, '$.${key}')`;
+function statusCondition(table: string, action: string, section: string) {
+  const rows = action === 'UPDATE' ? ['old', 'new'] : [action === 'DELETE' ? 'old' : 'new'];
+  const either = (condition: (row: string) => string) => rows.map(condition).join(' OR ');
+  if (table === 'events' && section === 'triageResults') return either(row => `${row}.kind = 'triage'`);
+  if (table !== 'jobs') return '1';
+  if (section === 'recent') return either(row => `${jobValue(row, 'state')} IN ('complete', 'dismissed')`);
+  if (section === 'upstreams') return either(row => `${jobValue(row, 'upstream')} IS NOT NULL`);
+  if (section === 'repairs') return either(row => `${jobValue(row, 'kind')} = 'repair'`);
+  if (section === 'sessionTickets' || section === 'triageResults') {
+    const started = (row: string) => `CASE WHEN ${jobValue(row, 'state')} <> 'dispatching' OR ${jobValue(row, 'reason')} = 'T3 accepted dispatch' THEN ${jobValue(row, 'taskId')} END`;
+    const sources = ['kind', 'threadId'].map(key => `${jobValue('old', key)} IS NOT ${jobValue('new', key)}`);
+    if (action !== 'UPDATE') return either(row => `${started(row)} IS NOT NULL OR ${jobValue(row, 'kind')} IN ('upstream', 'discovery')`);
+    return [`${started('old')} IS NOT ${started('new')}`, ...(section === 'sessionTickets' ? sources : [])].join(' OR ');
+  }
+  return '1';
+}
+const bumpStatus = (section: string, where = '1') =>
+  `INSERT INTO revisions SELECT '${section}', 1 WHERE ${where} ON CONFLICT(section) DO UPDATE SET n=n+1;`;
+
 const ADMISSION_KEYS = /^(upNext|planOrder|lastProject)$|^(discoveryAfter|discoveryLast|repairWatch|repairExpect|upstreamReviewed|upstreamLatest|upstreamCandidate|upstreamCheckedAt|upstreamCheckError):/;
 // The parts of a job and a plan admission reads. A running job's progress timestamps and a plan's hold notes are display only:
 // rows still persist them, but they leave the revision alone. Time policies that read them run on the quiet-pass deadline.
@@ -165,6 +211,22 @@ export class Store {
         INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
       CREATE INDEX IF NOT EXISTS jobs_recent ON jobs(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');
       CREATE INDEX IF NOT EXISTS history_recent ON job_history(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');`);
+    this.db.exec('CREATE TABLE IF NOT EXISTS revisions(section TEXT PRIMARY KEY, n INTEGER NOT NULL)');
+    for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
+      for (const [table, sections] of Object.entries(STATUS_TABLES)) {
+        const body = sections.map(section => bumpStatus(section, statusCondition(table, action, section))).join(' ');
+        this.db.exec(`CREATE TRIGGER IF NOT EXISTS status_${table}_${action} AFTER ${action} ON ${table} BEGIN ${body} END`);
+      }
+      // Runs within Store.set's write, including when an older scheduler still owns the database.
+      const row = action === 'DELETE' ? 'old' : 'new';
+      const body = Object.entries(STATUS_METADATA).map(([section, keys]) => bumpStatus(section, keys.map(key =>
+        key.endsWith(':') ? `substr(${row}.key, 1, ${key.length}) = '${key}'` : `${row}.key = '${key}'`).join(' OR '))).join(' ');
+      this.db.exec(`CREATE TRIGGER IF NOT EXISTS status_metadata_${action} AFTER ${action} ON metadata BEGIN ${body} END`);
+    }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS events_kind ON events(kind);
+      CREATE INDEX IF NOT EXISTS plans_state_finish ON plans(${planState}, ${planFinished});
+      CREATE INDEX IF NOT EXISTS session_tickets_visible ON session_tickets((${listedSessionTicket}));
+      ${Object.entries(statusJobs).map(([kind, where]) => `CREATE INDEX IF NOT EXISTS jobs_status_${kind} ON jobs((${where}));`).join(' ')}`);
     if (this.get('jobSourcesVersion') !== '1') {
       this.db.exec(`      INSERT OR IGNORE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM job_history;
       INSERT OR REPLACE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM jobs;
@@ -187,29 +249,35 @@ export class Store {
   }
   jobs(): Job[] { return this.statement('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   // Hot inventory reads need lifecycle metadata, not historical dispatch prompts and commands.
-  jobSummaries(): Omit<Job, 'command'>[] { return this.statement("SELECT json_remove(data, '$.command') AS data FROM jobs ORDER BY rowid").all().map(row => JSON.parse(row.data as string)); }
+  jobSummaries(filter?: keyof typeof statusJobs): Omit<Job, 'command'>[] {
+    const source = filter ? `jobs WHERE (${statusJobs[filter]}) = 1` : 'jobs';
+    return this.statement(`SELECT json_remove(data, '$.command') AS data FROM ${source} ORDER BY rowid`).all().map(row => JSON.parse(row.data as string));
+  }
   // Jobs that are not complete or dismissed, from the state index. `IN` searches the index; `NOT IN` would scan the table.
   activeJobs(): Omit<Job, 'command'>[] { return this.statement(`SELECT json_remove(data, '$.command') AS data FROM jobs WHERE state IN (${LIVE_STATES}) ORDER BY rowid`).all().map(row => JSON.parse(row.data as string)); }
   // The newest completed (not dismissed) jobs, oldest first.
   finishedJobs(limit = 30): Omit<Job, 'command'>[] { return this.statement("SELECT json_remove(data, '$.command') AS data FROM jobs WHERE state = 'complete' ORDER BY rowid DESC LIMIT ?").all(limit).map(row => JSON.parse(row.data as string)).toReversed(); }
+  statusRevisions(): Record<string, number> {
+    return Object.fromEntries(this.statement('SELECT section, n FROM revisions').all().map(row => [row.section, row.n]));
+  }
   // Changes when another connection commits. A reader polls it to learn the scheduler wrote, without reading any rows.
   dataVersion(): number { return this.statement('PRAGMA data_version').get()!.data_version as number; }
   // Calls notify after another connection writes, checking at most once per interval; returns the stop function.
-  watch(notify: () => void, intervalMs = 1000) {
+  watch(notify: () => void, intervalMs = 1000, needsRefresh?: () => boolean) {
     let seen = this.dataVersion();
     const timer = setInterval(() => {
       if (this.closed) return clearInterval(timer);
-      const now = this.dataVersion(); if (now !== seen) { seen = now; notify(); }
+      const now = this.dataVersion(); if (now !== seen || needsRefresh?.()) { seen = now; notify(); }
     }, intervalMs);
     return () => clearInterval(timer);
   }
   // Historical source classification needs identity and kind, never dispatch prompts.
   jobSources(): Pick<Job, 'kind' | 'threadId'>[] {
-    return this.statement("SELECT kind, thread_id AS threadId FROM job_sources WHERE id IN (SELECT id FROM jobs UNION ALL SELECT id FROM job_history)").all() as Pick<Job, 'kind' | 'threadId'>[];
+    return this.statement("SELECT kind, thread_id AS threadId FROM job_sources WHERE EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_sources.id) OR EXISTS (SELECT 1 FROM job_history WHERE job_history.id = job_sources.id)").all() as Pick<Job, 'kind' | 'threadId'>[];
   }
   recentJobs(limit = 15): Omit<Job, 'command'>[] {
     const at = "coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt'))";
-    return (['jobs', 'job_history'] as const).flatMap(table => this.statement(`SELECT json_remove(data, '$.command') AS data, ${at} AS at FROM ${table} WHERE json_extract(data, '$.state') IN ('complete', 'dismissed') ${table === 'job_history' ? 'AND id NOT IN (SELECT id FROM jobs)' : ''} ORDER BY ${at} DESC LIMIT ?`).all(limit))
+    return (['jobs', 'job_history'] as const).flatMap(table => this.statement(`SELECT json_remove(data, '$.command') AS data, ${at} AS at FROM ${table} WHERE json_extract(data, '$.state') IN ('complete', 'dismissed') AND ${at} > '' ${table === 'job_history' ? 'AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_history.id)' : ''} ORDER BY ${at} DESC LIMIT ?`).all(limit))
       .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit).map(row => JSON.parse(row.data as string));
   }
   private lock(key: string) {
@@ -267,8 +335,11 @@ export class Store {
     if (!before || action.outcomes.some(outcome => outcome.state === 'confirmed' && outcome.physicalRemoval === true && !before.outcomes.some(old => old.path === outcome.path && old.physicalRemoval === true))) this.onCleanupChange?.([...new Set(action.targets.map(target => target.projectId))]);
   }
   // Plans in the order the scheduler serves them: the owner's saved order first, then the rest as created.
-  plans(): Plan[] {
-    const plans = this.statement('SELECT data FROM plans ORDER BY rowid').all().map(r => JSON.parse(r.data as string) as Plan);
+  plans(filter?: 'active' | string): Plan[] {
+    const rows = filter === undefined ? this.statement('SELECT data FROM plans ORDER BY rowid').all()
+      : filter === 'active' ? this.statement(`SELECT data FROM plans WHERE ${planState} = 'active' ORDER BY rowid`).all()
+      : this.statement(`SELECT data FROM plans WHERE ${planState} = 'active' OR (${planState} IN ('done', 'cancelled') AND ${planFinished} > julianday(?)) ORDER BY rowid`).all(filter);
+    const plans = rows.map(r => JSON.parse(r.data as string) as Plan);
     const rank = new Map((JSON.parse(this.get('planOrder') || '[]') as string[]).map((id, i) => [id, i]));
     return rank.size ? plans.map((plan, i) => ({ plan, at: rank.get(plan.id) ?? rank.size + i })).sort((a, b) => a.at - b.at).map(row => row.plan) : plans;
   }
@@ -284,13 +355,15 @@ export class Store {
   }
   sessionThreads(): SessionThread[] { return this.statement('SELECT data FROM session_threads ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   sessionThread(id: string): SessionThread | undefined { const row = this.statement('SELECT data FROM session_threads WHERE id=?').get(id); return row ? JSON.parse(row.data as string) : undefined; }
-  saveSessionThread(thread: SessionThread) { this.statement('INSERT INTO session_threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(thread.id, JSON.stringify(thread)); }
-  sessionTickets(): SessionTicket[] { return this.statement('SELECT data FROM session_tickets ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
+  saveSessionThread(thread: SessionThread) { this.statement('INSERT INTO session_threads VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE data != excluded.data').run(thread.id, JSON.stringify(thread)); }
+  sessionTickets(visible = false): SessionTicket[] { return this.statement(visible
+    ? `SELECT data FROM session_tickets WHERE (${listedSessionTicket}) = 1 ORDER BY rowid`
+    : 'SELECT data FROM session_tickets ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
   sessionTicket(taskId: string): SessionTicket | undefined { const row = this.statement('SELECT data FROM session_tickets WHERE task_id=?').get(taskId); return row ? JSON.parse(row.data as string) : undefined; }
   saveSessionTicket(ticket: SessionTicket) {
     const current = this.sessionTicket(ticket.taskId);
     ticket = { ...ticket, ...current?.dismissedAt && !Object.hasOwn(ticket, 'dismissedAt') ? { dismissedAt: current.dismissedAt } : {}, ...current?.consumed && !Object.hasOwn(ticket, 'consumed') ? { consumed: current.consumed } : {} };
-    this.statement('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data').run(ticket.taskId, JSON.stringify(ticket));
+    this.statement('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data WHERE data != excluded.data').run(ticket.taskId, JSON.stringify(ticket));
   }
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
     this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
@@ -299,7 +372,8 @@ export class Store {
     const rows = jobId
       ? this.statement('SELECT * FROM events WHERE job_id=? ORDER BY id DESC LIMIT ?').all(jobId, limit)
       : kind ? this.statement('SELECT * FROM events WHERE kind=? ORDER BY id DESC LIMIT ?').all(kind, limit)
-      : this.statement('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit);
+      // Start at the minimum signed rowid so migrated events with negative IDs stay visible.
+      : this.statement('SELECT * FROM events WHERE id >= -9223372036854775808 ORDER BY id DESC LIMIT ?').all(limit);
     return rows.map(r => ({ id: r.id as number, time: r.time as string, kind: r.kind as string, jobId: r.job_id as string | null, text: r.text as string, data: JSON.parse(r.data as string) }));
   }
   // Capture order before any reads, and share this recorder with nested dispatches and the error path.

@@ -1,5 +1,5 @@
 import { html, useEffect, useState } from "../lib/h.js";
-import { config, status, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
+import { config, statusSection, jobs, history, sources, selectedProject, clock, serverNow, actions, set, update } from "../lib/store.js";
 import { isOpen, isActive, ago, until, projectLink, repoLink, span } from "../lib/format.js";
 import { Button, Field, Input, Select, Segmented, Chips, Slots, Toggle, Range, Tag, Icon, Link, Facts, Dialog, Empty, Section, Page, RowBody, SortableList } from "../ui/index.js";
 import { follow } from "../lib/router.js";
@@ -47,7 +47,7 @@ function PriorityTiers({ index, project }) {
   const path = ["projects", String(index), "priorityLabels"];
   const tiers = project.priorityLabels ?? [];
   const ranked = new Set(tiers.flat());
-  const queued = (status.value.upNext?.tickets ?? []).filter((t) => t.projectId === project.kanvilId);
+  const queued = (statusSection("upNext").value?.tickets ?? []).filter((t) => t.projectId === project.kanvilId);
   const rankOf = (t) => tiers.findIndex((tier) => t.labels?.some((l) => tier.includes(l)));
   const count = (rank) => queued.filter((t) => rankOf(t) === rank).length;
   const save = (next) => set(path, next.filter((tier) => tier.length));
@@ -189,7 +189,7 @@ export function Projects({ lead } = {}) {
   };
   const s = stats(current);
   const inUse = jobs.value.some((j) => j.projectId === current.kanvilId && isOpen(j));
-  const discovery = (status.value.discovery || []).find((d) => d.projectId === current.kanvilId);
+  const discovery = (statusSection("discovery").value || []).find((d) => d.projectId === current.kanvilId);
   const t3Project = sources.value?.t3.find((x) => x.id === current.t3Id);
   const pathMismatch = t3Project && t3Project.workspaceRoot !== current.repoPath;
   const ranks = (current.priorityLabels ?? []).length, limits = Object.keys(current.labelLimits ?? {}).length;

@@ -889,7 +889,7 @@ function conflictingRefs(key: string, refs: string, released: Map<string, string
 const branchConflict = (key: string, refs: string, released: Map<string, string>) => conflictingRefs(key, refs, released).length > 0;
 
 // Unnamed scheduling never takes a ticket from a running Epic, so the model and overrides chosen for the Epic always apply.
-const activeEpicPlans = (store: Store) => store.plans().filter(plan => plan.state === 'active' && plan.epic);
+const activeEpicPlans = (store: Store) => store.plans('active').filter(plan => plan.epic);
 function runningPlanHold(store: Store) {
   const active = activeEpicPlans(store);
   const queued = new Set(store.plans().filter(plan => plan.state === 'active' && plan.queued).flatMap(plan => planTickets(plan).map(ticket => ticket.id)));
@@ -2104,7 +2104,7 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
 
 // One row per watched repository: the release reviewed through, the newest release seen, and whether a review runs or is due.
 export function upstreamRows(c: Config, store: Store) {
-  const jobs = store.jobSummaries();
+  const jobs = store.jobSummaries('upstream');
   return c.projects.flatMap(p => p.upstreams.map(u => {
     const { reviewing, reviewed, latest, candidate, due } = releaseState(p, u, store, jobs), checked = Number(store.get(`upstreamCheckedAt:${u.repo}`) ?? 0);
     // A verified candidate is what Review now starts, even when a newer release sits behind the watermark.
@@ -2115,7 +2115,7 @@ export function upstreamRows(c: Config, store: Store) {
 
 // One row per project and watched workflow: the newest finished run, the run being followed, the last repair and its cooldown.
 export function repairRows(c: Config, store: Store, now = Date.now()) {
-  const jobs = store.jobSummaries();
+  const jobs = store.jobSummaries('repair');
   return c.projects.flatMap(p => p.repairWorkflows.map(workflow => {
     const { watch, active, last, cooldownEndsAt, due, hold } = repairState(c, p, workflow, store, jobs, now);
     return { project: p.name, projectId: p.kanvilId, repo: p.githubRepo, branch: p.baseBranch, workflow, finished: watch.finished ?? null, following: watch.following ?? null,
@@ -2153,15 +2153,38 @@ export function triageResults(c: Config, store: Store) {
 }
 const iso = (ms: string | null) => (ms && Number(ms) ? new Date(Number(ms)).toISOString() : null);
 // Factory status, read from the Store on demand by the web page, factory_status and `t3-factory status`.
-// Only the requested fields are built, and the rows that need every job share one read of the table.
+// Only the requested fields are built. Sections that use the same job subset share a read.
 export function readStatus<K extends keyof ReturnType<typeof statusFields>>(c: Config, store: Store, fields?: readonly K[]) {
-  let all: ReturnType<Store['jobSummaries']> | undefined;
-  const shared: Store = Object.create(store, { jobSummaries: { value: () => all ??= store.jobSummaries() } });
+  const jobs = new Map<Parameters<Store['jobSummaries']>[0], ReturnType<Store['jobSummaries']>>();
+  const shared: Store = Object.create(store, { jobSummaries: { value: (filter: Parameters<Store['jobSummaries']>[0]) => {
+    if (!jobs.has(filter)) jobs.set(filter, store.jobSummaries(filter));
+    return jobs.get(filter);
+  } } });
   const builders = statusFields(c, shared);
   return Object.fromEntries((fields ?? Object.keys(builders) as K[]).map(key => [key, builders[key]()])) as { [P in K]: ReturnType<ReturnType<typeof statusFields>[P]> };
 }
+type StatusSnapshot = ReturnType<typeof readStatus>;
+const STATUS_PLAN_AGE = 86_400_000;
+export function readCachedStatus(c: Config, store: Store, previous?: { status: StatusSnapshot; revisions: Record<string, number>; expiresAt: number }) {
+  const revisions = store.statusRevisions();
+  const fields = previous ? (Object.keys(previous.status) as (keyof StatusSnapshot)[]).filter(key => revisions[key] !== previous.revisions[key]) : [];
+  if (previous && previous.expiresAt <= Date.now()) {
+    if (!fields.includes('plans')) fields.push('plans');
+    if (!fields.includes('repairs')) fields.push('repairs');
+  }
+  if (previous && !fields.length) return previous;
+  const status = previous ? { ...previous.status, ...readStatus(c, store, [...fields, 'at']) } : readStatus(c, store);
+  const expiresAt = Math.min(
+    ...status.plans.filter(plan => plan.state !== 'active').map(plan => Date.parse(plan.finishedAt ?? plan.createdAt) + STATUS_PLAN_AGE),
+    ...status.repairs.flatMap(repair => repair.cooldownEndsAt ? [Date.parse(repair.cooldownEndsAt)] : []),
+    Infinity,
+  );
+  return { status, revisions, expiresAt };
+}
 function statusFields(c: Config, store: Store) {
   return {
+    journal: () => store.events(80),
+    cleanupRevision: () => store.statusRevisions().cleanupRevision ?? 0,
     ticketKeyRevision: () => store.get('ticketKeyRevision') ?? undefined,
     work: () => JSON.parse(store.get('serviceWork') ?? 'null'),
     triageEnabled: () => !!c.triage?.enabled, triageStreams: () => triageRows(c, store), triageDecision: () => JSON.parse(store.get('triageDecision') ?? 'null'), triageResults: () => triageResults(c, store), triageReports: () => JSON.parse(store.get('triageReports') || '[]'),
@@ -2169,7 +2192,7 @@ function statusFields(c: Config, store: Store) {
     repairEnabled: () => !!c.repair.enabled, repairs: () => repairRows(c, store), models: () => c.models, streams: () => JSON.parse(store.get('streams') ?? '[]'), decision: () => store.currentDecision(),
     discovery: () => c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: () => JSON.parse(store.get('upNext') ?? 'null'),
-    plans: () => store.plans().filter(p => p.state === 'active' || Date.now() - Date.parse(p.finishedAt ?? p.createdAt) < 86_400_000),
+    plans: () => store.plans(new Date(Date.now() - STATUS_PLAN_AGE).toISOString()),
     epics: () => epicRows(c, store), epicsError: () => JSON.parse(store.get('epicsError') || 'null'),
     sessionTickets: () => sessionTicketStatus(c, store),
     // Live runs and the last 30 completed ones; dismissed runs and older history stay in the Runs page.

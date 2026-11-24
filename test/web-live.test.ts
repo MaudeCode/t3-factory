@@ -102,20 +102,22 @@ test("state is pushed over the event stream whenever the factory writes, and run
   const secret = "b".repeat(64);
   const port = await freePort();
   let version = 0;
+  let jobs: { id: string }[] = [];
   const stopped: string[] = [];
   // The web process's own Store connection, and the scheduler's.
   const store = new Store(dir), scheduler = new Store(dir), checks = t.mock.method(store, "dataVersion");
   t.after(() => { store.close(); scheduler.close(); });
-  t.mock.timers.enable({ apis: ["setInterval"] });
-  const unwatched = Promise.withResolvers<void>();
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  const unwatched = Promise.withResolvers<void>(), reclosed = Promise.withResolvers<void>();
+  let closes = 0;
   const server = createFactoryWeb({
     config: webConfigSchema.parse({ publicOrigin: `http://127.0.0.1:${port}`, host: "127.0.0.1", port }),
     secret,
     dataDir: dir,
-    readState: () => ({ config: { enabled: true }, status: { jobs: [], journal: [{ id: 1, text: "hello" }] }, now: new Date().toISOString(), version }),
+    readState: () => ({ config: { enabled: true }, status: { jobs, journal: [{ id: 1, text: "hello" }] }, now: new Date().toISOString(), version }),
     history: () => [{ id: "a1", state: "complete" }],
     report: (id) => (id === "a1" ? { job: { id }, events: [], report: { status: "complete", reason: "done" } } : undefined),
-    watch: (fn) => { const stop = store.watch(fn); return () => { stop(); unwatched.resolve(); }; },
+    watch: (fn) => { const stop = store.watch(fn); return () => { stop(); (++closes === 1 ? unwatched : reclosed).resolve(); }; },
     run: async (args) => { stopped.push(args.join(" ")); return { code: 0, data: args[0] === "sources" ? { t3: [], kanvil: { projects: [], columns: {}, labels: [] } } : { ok: true } }; },
   });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
@@ -130,17 +132,40 @@ test("state is pushed over the event stream whenever the factory writes, and run
     const stream = await fetch(`${url}/api/events`, { headers: auth });
     assert.equal(stream.headers.get("content-type"), "text/event-stream");
     const reader = stream.body!.getReader();
-    const read = async () => new TextDecoder().decode((await reader.read()).value);
+    const decoder = new TextDecoder();
+    let buffered = '';
+    const read = async () => {
+      while (!buffered.includes("\n\n")) {
+        const chunk = await reader.read();
+        assert.equal(chunk.done, false, 'the stream should stay open for a complete frame');
+        buffered += decoder.decode(chunk.value, { stream: true });
+      }
+      const end = buffered.indexOf("\n\n"), frame = buffered.slice(0, end);
+      buffered = buffered.slice(end + 2);
+      return frame;
+    };
     const first = await read();
     assert.match(first, /^event: state\ndata: \{"config"/, "the first message carries the current state");
     assert.match(first, /"journal":\[\{"id":1/);
-    version = 2;
+    scheduler.set("irrelevant", "written");
+    t.mock.timers.tick(1000);
+    t.mock.timers.tick(150);
+    jobs = [{ id: "running" }];
     scheduler.set("fixture", "written"); // the scheduler writes through its own connection
     t.mock.timers.tick(1000);
+    t.mock.timers.tick(150);
     const second = await read();
-    assert.match(second, /"version":2/, "a write pushes fresh state without a request");
     await reader.cancel();
-    await unwatched.promise; // the last page closing stops the watch
+    await unwatched.promise;
+    const { now, ...delta } = JSON.parse(second.split("data: ")[1]);
+    assert.ok(Number.isFinite(Date.parse(now)));
+    assert.deepEqual(delta, { delta: true, status: { jobs } });
+    const reconnected = await fetch(`${url}/api/events`, { headers: auth });
+    const nextReader = reconnected.body!.getReader();
+    const snapshot = new TextDecoder().decode((await nextReader.read()).value);
+    await nextReader.cancel();
+    assert.deepEqual(JSON.parse(snapshot.split("data: ")[1]).status, { jobs, journal: [{ id: 1, text: "hello" }] });
+    await reclosed.promise; // the last page closing stops the watch
     const after = checks.mock.callCount();
     t.mock.timers.tick(5000);
     assert.equal(checks.mock.callCount(), after, "nothing polls after the last page closes");
