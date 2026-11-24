@@ -2,6 +2,7 @@
 	tls {
 		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 	}
+	encode zstd gzip
 	reverse_proxy {$FACTORY_WEB_UPSTREAM} {
 		transport http {
 			# Retire idle connections before the Node server's default five-second timeout.

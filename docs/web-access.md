@@ -56,6 +56,8 @@ node scripts/run-caddy.ts
 
 The launcher reads `.env` without evaluating it as shell code. DNS challenges do not require a public inbound HTTP listener. Certificate issuance still needs DNS-provider and certificate-authority access. Manage Caddy with your own service manager if it should stay running; the factory installers do not install Caddy or create DNS records. Other DNS providers need a different Caddy configuration.
 
+The Factory server sends responses uncompressed; the proxy compresses them. The template's `encode zstd gzip` shrinks the stylesheet, the app modules and the large state, history and event-stream bodies, and Caddy flushes each event of the live stream as it is written. A deployment that uses its own Caddy site needs the same `encode zstd gzip` line ahead of `reverse_proxy`; another proxy needs its own compression setting.
+
 ### Follow a Mac's LAN address
 
 For a Mac that changes networks, the optional DNS updater changes an existing UniFi A record to the active LAN IPv4 address. It does not require client devices to run VPN software. DNS does not create network routes: a client must still be able to reach the Mac's current network.
