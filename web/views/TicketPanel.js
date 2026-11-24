@@ -63,8 +63,8 @@ export function TicketPanel() {
   const path = key ? `/api/tickets/${encodeURIComponent(key)}` : epicKey ? `/api/epics/${encodeURIComponent(epicKey)}` : null;
   const [read, setRead] = useState({ path: null }), [retry, setRetry] = useState(0);
   const [tab, setTab] = useState("ticket"), resource = useRef(null);
-  // Published status snapshots refresh open Epic panels even when the ticket queue is unchanged.
-  const refreshed = epicKey ? statusSection("at").value : null;
+  // Inventory checks refresh open Epic panels even when the ticket queue is unchanged.
+  const refreshed = epicKey ? statusSection("epicDetailsRevision").value : null;
   useEffect(() => {
     if (!path) return;
     let current = true, queued = false, running = false;

@@ -225,7 +225,7 @@ test('status revisions track source writes and rebuild only the affected section
   const metadata: Record<string, string[]> = {
     ticketKeyRevision: ['ticketKeyRevision'], serviceWork: ['work'], streams: ['streams'],
     lastDecision: ['decision'], chainDecision: ['decision'], upstreamDecision: ['decision'], upNext: ['upNext'],
-    planOrder: ['epics', 'plans'], epics: ['epics'], epicsError: ['epicsError'],
+    planOrder: ['epics', 'plans'], epics: ['epics'], epicDetailsRevision: ['epicDetailsRevision'], epicsError: ['epicsError'],
     triageStreams: ['triageStreams'], triageDecision: ['triageDecision'], triageReports: ['triageReports'], triagePromoted: ['triageResults'],
     sessionCatalog: ['sessionTickets'], 'sessionTickets:error': ['sessionTickets'],
     'upstreamCheckedAt:repo': ['upstreams'], 'upstreamReviewed:repo': ['upstreams'], 'upstreamLatest:repo': ['upstreams'],

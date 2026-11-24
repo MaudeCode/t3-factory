@@ -1906,6 +1906,8 @@ async function refreshEpics(c: Config, store: Store, kanvil: Kanvil) {
     log('epics-read-failed', { message });
     store.set('epicsError', JSON.stringify({ at: new Date().toISOString(), message, problems: [{ title: "Couldn't read Kanvil Epics", cause: message, subjects: [], raw: [] }] }));
   }
+  // Descriptions and discussion can change while queue membership stays identical.
+  store.set('epicDetailsRevision', String(Number(store.get('epicDetailsRevision') ?? 0) + 1));
 }
 // The stored reading, judged against the current configuration and plans so a start and its status cannot disagree.
 function epicRows(c: Config, store: Store) {
@@ -2193,6 +2195,7 @@ function statusFields(c: Config, store: Store) {
     discovery: () => c.projects.map(p => ({ projectId: p.kanvilId, lastAt: iso(store.get(`discoveryLast:${p.kanvilId}`)), nextAt: iso(store.get(`discoveryAfter:${p.kanvilId}`)) })),
     upNext: () => JSON.parse(store.get('upNext') ?? 'null'),
     plans: () => store.plans(new Date(Date.now() - STATUS_PLAN_AGE).toISOString()),
+    epicDetailsRevision: () => Number(store.get('epicDetailsRevision') ?? 0),
     epics: () => epicRows(c, store), epicsError: () => JSON.parse(store.get('epicsError') || 'null'),
     sessionTickets: () => sessionTicketStatus(c, store),
     // Live runs and the last 30 completed ones; dismissed runs and older history stay in the Runs page.

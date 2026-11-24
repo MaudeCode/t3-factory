@@ -121,7 +121,7 @@ const decisionKeys = ['lastDecision', 'upstreamDecision', 'chainDecision'] as co
 const STATUS_METADATA = {
   ticketKeyRevision: ['ticketKeyRevision'], work: ['serviceWork'], streams: ['streams'],
   decision: decisionKeys, upNext: ['upNext'], plans: ['planOrder'],
-  epics: ['epics', 'planOrder'], epicsError: ['epicsError'],
+  epics: ['epics', 'planOrder'], epicDetailsRevision: ['epicDetailsRevision'], epicsError: ['epicsError'],
   triageStreams: ['triageStreams'], triageDecision: ['triageDecision'], triageReports: ['triageReports'],
   triageResults: ['triagePromoted'], sessionTickets: ['sessionCatalog', 'sessionTickets:'],
   upstreams: ['upstreamReviewed:', 'upstreamLatest:', 'upstreamCandidate:', 'upstreamCheckedAt:', 'upstreamCheckError:'],

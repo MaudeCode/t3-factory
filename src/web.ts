@@ -231,7 +231,6 @@ export function createFactoryWeb(options: {
     const config = changed(before.config, state.config) ? state.config : undefined;
     const version = before.version !== state.version ? state.version : undefined;
     if (!Object.keys(status).length && !config && version === undefined) return;
-    if (next.at && ('epics' in status || 'plans' in status)) status.at = next.at;
     const data = JSON.stringify({ delta: true, status, config, version, now: state.now });
     for (const push of streams) push(data);
   };
