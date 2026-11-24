@@ -1151,11 +1151,18 @@ body,
   gap: var(--space-1);
   padding-left: var(--space-2);
 }
-.side-foot > .version {
-  margin-right: auto;
-  font-size: 11px;
-  color: var(--muted);
+/* The running version: a pill set apart from the connection dot in the sidebar and the wordmark in the top bar. */
+.tag.version {
+  padding: 2px 8px;
+  border-radius: 999px;
   font-variant-numeric: tabular-nums;
+}
+.side-foot > .version {
+  margin-left: var(--space-2);
+}
+/* Appearance and sign-out end the row whether or not a version shows. */
+.side-foot > :nth-last-child(2) {
+  margin-left: auto;
 }
 /* Collapsed to icons. Labels stay in the accessibility tree; only their boxes go. The connection dot never shows its label. */
 .shell.rail .side nav a > span,
@@ -1209,7 +1216,10 @@ body,
   flex-direction: column;
 }
 .shell.rail .side-foot > .version {
-  margin-right: 0;
+  margin: var(--space-1) 0 0;
+}
+.shell.rail .side-foot > :nth-last-child(2) {
+  margin-left: 0;
 }
 /* Phone: a top bar and a bottom tab bar stand in for the sidebar. */
 .top {

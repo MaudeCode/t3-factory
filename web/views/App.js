@@ -177,6 +177,7 @@ function Shell() {
   const badge = (path) => path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`;
   const signOut = auth.value.mode === "oidc" ? "Sign out" : "Disconnect";
   const leave = () => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout();
+  const versionTag = version.value && html`<${Tag} tone="label" class="version" title="Version">${version.value}<//>`;
   const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory: Now"><img src="/icon.svg" width="24" height="24" alt="" /><span>Factory</span></a>`;
   const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); follow(e); }} aria-current=${current(path) ? "page" : undefined}>
     <${Icon} name=${icon} /><span>${name}</span>${badge(path)}
@@ -185,12 +186,12 @@ function Shell() {
   const inMore = NAV.flatMap(([, list]) => list).filter(([path]) => !tabbed.has(path));
   return html`<div class=${`shell${phone ? " phone" : rail.value ? " rail" : ""}`}>
     ${phone
-      ? html`<header class="top">${wordmark}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
+      ? html`<header class="top">${wordmark}${versionTag}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
       : html`<aside class="side" aria-label="Sidebar">
         <div class="side-head">${wordmark}<${Button} variant="ghost" size="sm" icon="sidebar" label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
         <${Automation} /><${Start} />
         ${NAV.map(([group, list]) => html`<nav key=${group} aria-label=${group}><h2>${group}</h2>${list.map(link)}</nav>`)}
-        <div class="side-foot"><${Updates} /><span class="version" title="Version">${version.value}</span>
+        <div class="side-foot"><${Updates} />${versionTag}
           <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
           <${Button} variant="ghost" size="sm" icon="signOut" label=${signOut} onClick=${leave} /></div>
       </aside>`}

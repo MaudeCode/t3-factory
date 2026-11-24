@@ -6,6 +6,7 @@ import { navigate } from "../../web/lib/router.js";
 import { App } from "../../web/views/App.js";
 
 const state = {
+  version: "v0.5.1",
   config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true }, { kanvilId: "f", key: "T3F", name: "Factory", enabled: true }, { kanvilId: "off", key: "OFF", name: "Disabled", enabled: false }], kanvil: { url: "https://tracker.example", workspaceId: "w" } },
   status: { jobs: [], journal: [] },
 };
@@ -193,6 +194,17 @@ async function duoLayout() {
   }
   store.status.value = priorStatus;
   store.connection.value = priorConnection; await pause();
+  // The running version is a filled tag, apart from its neighbours, in both the sidebar and the top bar.
+  const version = bar.querySelector('.version'), pad = parseFloat(getComputedStyle(version ?? bar).paddingLeft);
+  assert(version?.matches('.tag.tag-label') && version.textContent === 'v0.5.1' && pad >= 6, 'the bar shows the running version as a padded tag');
+  const near = phone ? bar.querySelector('.wordmark') : bar.querySelector('.conn');
+  const [v, n] = [bounds(version), bounds(near)];
+  assert(Math.max(v.left - n.right, v.top - n.bottom) >= 8 && v.right <= bounds(bar).right, 'the version tag keeps clear of its neighbour inside the bar');
+  store.version.value = ''; await pause();
+  assert(!bar.querySelector('.version'), 'no version shows no empty tag');
+  const foot = bar.querySelector('.side-foot');
+  if (foot && !shell.classList.contains('rail')) assert(bounds(foot.lastElementChild).right >= bounds(foot).right - 1, 'without a version the footer buttons stay at its end');
+  store.version.value = 'v0.5.1'; await pause();
   const b0 = bounds(bar);
   for (const el of bar.querySelectorAll('a, button')) {
     if (!visible(el)) continue;
@@ -226,6 +238,8 @@ async function duoLayout() {
     assert(localStorage.getItem('factoryRail') === (was ? 'expanded' : 'collapsed'), 'the sidebar choice is stored');
     assert([...root.querySelectorAll('.side nav a')].every(a => a.textContent.trim()), 'collapsed links keep their names for assistive technology');
     noOverflow();
+    const railTag = bounds(root.querySelector('.side .version')), side = bounds(root.querySelector('.side'));
+    if (!was) assert(railTag.width > 0 && railTag.left >= side.left && railTag.right <= side.right, 'the version tag fits the icon rail');
     toggle().click(); await pause();
     assert(shell.classList.contains('rail') === was, 'the sidebar toggles back');
     localStorage.removeItem('factoryRail');
