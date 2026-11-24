@@ -441,6 +441,10 @@ test('a synchronized feed lets inventory reuse the Epic list and membership unti
   assert.deepEqual(await run(), [1, 1], 'a member change reads the membership again');
   send('change', '7', { id: '7', projectId: 'project', ticketId: 'outsider', type: 'ticket.updated' }); await until(() => notifications === 3);
   assert.deepEqual(await run(), [1, 1], 'a ticket that may have joined the Epic reads the membership again');
+  const revision = f.client.revision;
+  send('change', '8', { id: '8', projectId: 'project', ticketId: 'ticket', type: 'ticket.updated', data: { version: 1 } }); await until(() => notifications === 4);
+  assert.equal(f.client.revision, revision, 'the client already holds this version, so the ticket projection skips the event');
+  assert.deepEqual(await run(), [1, 1], 'a change the projection already holds can still have moved the ticket between Epics');
   assert.deepEqual(await run(), [0, 0]);
   t.mock.timers.tick(60_000);
   assert.deepEqual(await run(), [1, 1], 'Epic record changes are not on the project feed, so a reading expires');

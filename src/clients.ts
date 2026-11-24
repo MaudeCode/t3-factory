@@ -974,6 +974,8 @@ export class Kanvil {
               const change = eventSchema.parse(JSON.parse(message.data));
               if (change.id !== id) throw new Error('Kanvil event cursor mismatch');
               if (!/^(comment|evidence)\./.test(change.type)) {
+                // A version the projection already holds can still have moved a ticket between Epics.
+                if (change.ticketId) this.epicReads.clear();
                 if (this.applyChange(change) !== false) this.revision++;
                 onChange(change);
               } // Invalidation and notification precede cursor advancement.
