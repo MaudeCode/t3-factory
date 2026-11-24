@@ -351,6 +351,12 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
   }
 }
 // Dismissal keeps the workspace's branch, path and head so cleanup can still verify it.
+const UNCONFIRMED_LAUNCH = 'Dismissed because T3 could not confirm the launch';
+const unconfirmedLaunchDismissed = (job: Pick<Job, 'state' | 'reason'>) =>
+  job.state === 'dismissed' && job.reason === UNCONFIRMED_LAUNCH;
+const lateLaunchHasWork = (thread: Thread, timeout: number) =>
+  executing(thread, timeout) || waiting(thread) || thread.pendingBackgroundTasks.length > 0;
+
 async function dismissJob(store: Store, job: Job, reason: string, at?: { branch: string | null; worktreePath: string | null }) {
   job.state = 'dismissed'; job.reason = reason;
   job.dismissedBranch = at?.branch ?? undefined; job.dismissedWorktreePath = at?.worktreePath ?? undefined;
@@ -369,6 +375,13 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
     await backgroundCheckpoint();
     const job = store.job(original.id)!;
     const t = byId.get(job.threadId);
+    if (t && unconfirmedLaunchDismissed(job) && lateLaunchHasWork(t, c.monitoringTimeoutMinutes)) {
+      if (allowMonitorStop) {
+        try { await t3.stop(job.threadId); }
+        catch (error) { log('late-launch-stop-failed', { jobId: job.id, error: safeError(error) }); }
+      }
+      return;
+    }
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kanvil, job);
     if (job.state === 'dismissed') return;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
@@ -388,7 +401,21 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
       if (job.thread && !(await (listed ??= t3.shell(true).then(s => s.threads))).some(x => x.id === job.threadId)) {
         await dismissJob(store, job, 'Dismissed because its T3 thread was deleted', job.thread); return;
       }
-      if (Date.now() - Date.parse(job.createdAt) > 5 * 60_000) {
+      const age = Date.now() - Date.parse(job.createdAt);
+      if (!job.thread && job.state === 'dispatching' && job.reason === 'T3 accepted dispatch') return;
+      if (allowMonitorStop && !job.thread && job.state === 'dispatching' && age >= c.launchWindowMinutes * 60_000) {
+        const release = job.taskId ? store.tryLock(`ticket:${job.taskId}`) : undefined;
+        if (job.taskId && !release) return;
+        try {
+          if (await t3.threadMissing(job.threadId) !== true) return;
+          if (job.taskId) await returnTicketToReady(c, kanvil, job, UNCONFIRMED_LAUNCH);
+          await dismissJob(store, job, UNCONFIRMED_LAUNCH);
+          store.record('job.dismiss', UNCONFIRMED_LAUNCH, { ticketKey: job.ticketKey, projectId: job.projectId }, job.id);
+        } catch (error) { log('unconfirmed-launch-reconcile-failed', { jobId: job.id, error: safeError(error) }); }
+        finally { release?.(); }
+        return;
+      }
+      if (age > 5 * 60_000) {
         job.state = 'dispatching'; job.reason = 'Dispatch outcome unknown; retain the execution slot until T3 can be reconciled';
       }
       store.save(job); return;
@@ -1095,14 +1122,17 @@ export function busyProviders(jobs: Job[], threads: Thread[], instances: Map<str
   const counts = new Map(planned), byId = threadsById(threads);
   for (const job of jobs) {
     // Most rows are finished history; skip them before any thread lookup.
-    if (finished(job)) continue;
+    const late = unconfirmedLaunchDismissed(job);
+    if (finished(job) && !late) continue;
     const thread = byId.get(job.threadId);
-    if (!holdsSlot(job, thread, timeout)) continue;
+    if (late ? !thread || !lateLaunchHasWork(thread, timeout) : !holdsSlot(job, thread, timeout)) continue;
     const instance = job.modelSelection?.instanceId ?? thread?.modelSelection.instanceId ?? 'claudeAgent';
     const driver = job.providerDriver ?? instances.get(instance) ?? (thread && instances.get(thread.providerInstanceId)) ?? (['codex', 'claudeAgent'].includes(instance) ? instance : null);
     // Unknown ownership must be reconciled before any further automatic starts.
     if (driver !== 'codex' && driver !== 'claudeAgent') return new Set(['codex', 'claudeAgent']);
-    counts.set(driver, (counts.get(driver) ?? 0) + 1);
+    // A Stop request can fail or be applied after this snapshot. Fence additional starts until T3 shows the late work is gone.
+    const limit = limits[driver === 'codex' ? 'codex' : 'claude'];
+    counts.set(driver, late ? Math.max(counts.get(driver) ?? 0, limit) : (counts.get(driver) ?? 0) + 1);
   }
   return new Set(['claudeAgent', 'codex'].filter(driver => (counts.get(driver) ?? 0) >= limits[driver === 'codex' ? 'codex' : 'claude']));
 }
@@ -1715,7 +1745,7 @@ export async function stopJob(c: Config, store: Store, t3: T3, jobId: string) {
 }
 
 // An operator's recovery for a run whose T3 thread was deleted: dismiss it only on T3's own answer that the thread is gone,
-// optionally returning its ticket to the project's first ready status first. Automatic reconciliation stays conservative.
+// optionally returning its ticket to the project's first ready status first. This applies to both seen and unseen jobs.
 export async function dismissDeletedJob(c: Config, store: Store, t3: T3, kanvil: () => Promise<Kanvil>, jobId: string, resetTicket = false) {
   const found = store.job(jobId);
   if (!found) throw new Error(`No run ${jobId}; check the run ID in factory status`);
@@ -1734,7 +1764,7 @@ export async function dismissDeletedJob(c: Config, store: Store, t3: T3, kanvil:
   });
 }
 // The ticket goes back before the run is dismissed, so a failure leaves the run and its claim for a retry.
-async function returnTicketToReady(c: Config, kanvil: Kanvil, job: Job) {
+async function returnTicketToReady(c: Config, kanvil: Kanvil, job: Job, reason = 'Dismissed because its T3 thread was deleted') {
   const project = projectFor(c, job), ready = project.readyStatuses[0], key = job.ticketKey ?? job.taskId!;
   if (!(await kanvil.columns(project.kanvilId)).some(column => column.slug === ready)) throw new Error(`${project.name} has no ${ready} column; fix its ready statuses before resetting ${key}`);
   const task = await kanvil.task(job.taskId!, project.kanvilId);
@@ -1749,7 +1779,7 @@ async function returnTicketToReady(c: Config, kanvil: Kanvil, job: Job) {
     if (task.claim || task.claimRequired) {
       // Recovery reschedules to To do and lifts the expired claim; a worker cannot move a claimed ticket any other way.
       if (ready !== 'todo') throw new Error(`${key} has a worker claim, which only returns to todo, not ${ready}`);
-      await kanvil.recoverClaim(project.kanvilId, task.id, { ...task.claim ? { claimId: task.claim.id } : {}, reason: `Factory run ${job.id} was dismissed because its T3 thread was deleted`, reschedule: true, expectedVersion: task.version! }, requestId);
+      await kanvil.recoverClaim(project.kanvilId, task.id, { ...task.claim ? { claimId: task.claim.id } : {}, reason: `Factory run ${job.id}: ${reason}`, reschedule: true, expectedVersion: task.version! }, requestId);
     } else await kanvil.updateTicket(project.kanvilId, task.id, task.version!, { status: ready }, requestId);
   } catch (error) { throw new Error(`${key} was not reset; the run keeps its claim: ${safeError(error)}`); }
   const readback = await kanvil.task(job.taskId!, project.kanvilId);

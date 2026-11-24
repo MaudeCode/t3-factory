@@ -11,6 +11,7 @@
   // Free bytes required on the repository's filesystem before a run starts; 0 disables the check.
   "minFreeSpaceBytes": 1073741824,
   "concurrency": { "claude": 1, "codex": 1 },
+  "launchWindowMinutes": 30,
   "monitoringTimeoutMinutes": 30,
   "runtimeMode": "auto",
   "stateDir": "/absolute/path/to/factory-state",
