@@ -194,10 +194,10 @@ export class FactoryService {
     this.scheduleAdmissions(reason, 'chains');
     this.scheduleAdmissions(reason, 'upstream');
     // Each pass begins here, so a followed workflow run is read again on every pass until it finishes.
-    for (const [lane, on, read] of [['upstream-sources', (c: Config) => c.upstream?.enabled, pendingReviews], ['repair-sources', (c: Config) => c.repair.enabled, pendingRepairs]] as const) this.runLane(lane, async () => {
+    for (const [lane, on, jobs, read] of [['upstream-sources', (c: Config) => c.upstream?.enabled, 'upstream', pendingReviews], ['repair-sources', (c: Config) => c.repair.enabled, 'repair', pendingRepairs]] as const) this.runLane(lane, async () => {
       const c = this.configure();
       if (!on(c)) return;
-      await read(c, this.store, this.store.jobSummaries());
+      await read(c, this.store, this.store.jobSummaries(jobs));
       if (!this.stopped) this.scheduleAdmissions(reason, 'upstream');
     });
     this.triage();
@@ -583,9 +583,8 @@ export class FactoryService {
         return held.decision;
       }
       const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide: decide(), currentConfig: () => this.settings() });
-      const jobs = this.store.jobs();
       for (const id of this.uncertainRequests) {
-        const job = jobs.find(j => j.requestId === id), operation = readOperation(c.stateDir, id);
+        const job = this.store.jobByRequest(id), operation = readOperation(c.stateDir, id);
         if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
       }
       if (lane && live && quietDecision(result)) this.quiet.set(lane, { inputs, decision: result, dueAt: Math.min(Date.now() + Math.max(this.pollSeconds, QUIET_RECHECK_SECONDS) * 1000, nextDeadline(c, this.store, result)) });

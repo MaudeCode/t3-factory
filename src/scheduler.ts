@@ -362,10 +362,11 @@ async function dismissJob(store: Store, job: Job, reason: string, at?: { branch:
 
 export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil, threads: Thread[], allowMonitorStop = true, allowCleanup = true) {
   let listed: Promise<Thread[]> | undefined;
-  await readAll(store.jobs().filter(j => j.state !== 'dismissed' || !j.workspaceCleanedAt).map(original => store.exclusive([`job:${original.id}`], async () => {
+  const byId = new Map(threads.map(t => [t.id, t]));
+  await readAll(store.jobSummaries('unsettled').map(original => store.exclusive([`job:${original.id}`], async () => {
     await backgroundCheckpoint();
     const job = store.job(original.id)!;
-    const t = threads.find(t => t.id === job.threadId);
+    const t = byId.get(job.threadId);
     if (t && allowMonitorStop && allowCleanup && cleanupPending(job)) await cleanupCompletedWorkspace(c, store, t3, kanvil, job);
     if (job.state === 'dismissed') return;
     if (t?.settledOverride === 'settled' && !executing(t, c.monitoringTimeoutMinutes)) {
@@ -457,7 +458,7 @@ async function settleFinished(t3: T3, job: Job, t: Thread) {
 // intermediate steps resume on the next pass, even after a service restart. Factory jobs go first;
 // then the catalog's merged unused worktrees, one removal per step.
 export async function cleanupNextWorkspace(c: Config, store: Store, t3: T3, kanvil: Kanvil, visited: Set<string>, boundary: Parameters<typeof reclaimUnusedWorkspace>[5] = {}): Promise<boolean> {
-  const job = store.jobs().find(job => !visited.has(job.id) && cleanupPending(job));
+  const job = store.jobSummaries('unsettled').find(job => !visited.has(job.id) && cleanupPending(job));
   if (!job) return reclaimUnusedWorkspace(c, store, t3, kanvil, visited, boundary);
   visited.add(job.id);
   const path = job.workspaceCleanup?.path ?? job.thread?.worktreePath ?? job.dismissedWorktreePath;
@@ -1138,7 +1139,7 @@ export function weeklyResets(c: Config, store: Store, t3?: Pick<T3, 'peekProvide
     const provider = t3?.peekProvider(preset.model.instanceId), name = provider?.driver === 'codex' ? 'codex' : 'claude';
     if (!provider || read.has(name)) continue;
     // A stale or unusable reading leaves the published one; admission cannot start on it either.
-    try { const reset = modelQuota(c, [], preset.id, provider, false).windows.find(w => w.name === 'weekly')?.resetsAt; if (reset) { resets[name] = reset; read.add(name); } } catch { /* keep the published reading */ }
+    try { const reset = modelQuota(c, {}, preset.id, provider, false).windows.find(w => w.name === 'weekly')?.resetsAt; if (reset) { resets[name] = reset; read.add(name); } } catch { /* keep the published reading */ }
   }
   return resets;
 }
@@ -1193,7 +1194,7 @@ async function queueManual(c: Config, store: Store, options: CycleOptions, clien
     const models = c.models.filter(model => options.model && options.model !== 'auto' ? model.id === options.model : (model.automatic || !!options.provider) && (!options.provider || instances.get(model.model.instanceId) === options.provider));
     // Provider capacity can refuse before quota is read; only existing hard allowance may become queued intent.
     const compatible = models.filter(model => inventoryNow.ready.some(ticket => acceptsDifficulty(model, ticket)));
-    const quotas = (await readAll([...Map.groupBy(compatible, model => model.model.instanceId).values()].map(models => readModelQuotas(t3, c, store.jobSummaries(), models.map(model => model.id))))).flat();
+    const quotas = (await readAll([...Map.groupBy(compatible, model => model.model.instanceId).values()].map(models => readModelQuotas(t3, c, store.instanceReservations(models[0].model.instanceId), models.map(model => model.id))))).flat();
     const allowance = new Set(quotas.filter(result => result.quota?.hasAllowance).map(result => result.id));
     const candidate = selectTicket(inventoryNow.ready.filter(ticket => models.some(model => allowance.has(model.id) && acceptsDifficulty(model, ticket))), store.get('lastProject'), c.projects.filter(project => project.enabled).map(project => project.kanvilId));
     if (!candidate) return result;
@@ -1252,7 +1253,7 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
       if (!stream || busy.has(driver!)) continue;
       let reason = 'ready';
       try {
-        const quota = await backgroundRead(() => readModelQuota(t3, c, store.jobSummaries(), preset.id, !!options.manual));
+        const quota = await backgroundRead(() => readModelQuota(t3, c, store.instanceReservations(preset.model.instanceId), preset.id, !!options.manual));
         stream.quota ??= quota;
         const manualCodex = options.manual && driver === 'codex';
         if (!quota.hasAllowance) reason = 'quota-exhausted';
@@ -1275,7 +1276,7 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
       await backgroundCheckpoint();
       const preset = c.models.find(p => instances.get(p.model.instanceId) === stream.driver);
       if (!preset) { stream.quotaError = 'No model is configured for this provider'; continue; }
-      try { stream.quota = await backgroundRead(() => readModelQuota(t3, c, store.jobSummaries(), preset.id)); }
+      try { stream.quota = await backgroundRead(() => readModelQuota(t3, c, store.instanceReservations(preset.model.instanceId), preset.id)); }
       catch (error) { stream.quotaError = safeError(error); }
     }
     // The queue is read on every pass, paused or not, so the page always shows what would start next.
@@ -1304,9 +1305,9 @@ async function cycleNow(c: Config, store: Store, options: CycleOptions, clients:
     const refreshSources = !clients.workKind && !options.dryRun && !options.doctor;
     const cleanupRun = options.reconcile ? await pendingReconcile(c, store, kanvil, shell.threads, store.jobs(), options.reconcile) : undefined;
     if (cleanupRun && 'reason' in cleanupRun) return decision(cleanupRun.reason, { message: cleanupRun.message });
-    const reviews = cleanupRun ? [cleanupRun] : options.upstream ? (await pendingReviews(c, store, store.jobs(), Date.now(), false)).filter(r => r.upstream?.repo === options.upstream!.toLowerCase()) : [
-      ...options.manual || (!repairsOn && !options.doctor) ? [] : await pendingRepairs(c, store, store.jobs(), Date.now(), refreshSources),
-      ...options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobs(), Date.now(), refreshSources),
+    const reviews = cleanupRun ? [cleanupRun] : options.upstream ? (await pendingReviews(c, store, store.jobSummaries('upstream'), Date.now(), false)).filter(r => r.upstream?.repo === options.upstream!.toLowerCase()) : [
+      ...options.manual || (!repairsOn && !options.doctor) ? [] : await pendingRepairs(c, store, store.jobSummaries('repair'), Date.now(), refreshSources),
+      ...options.manual || (!reviewsOn && !options.doctor) ? [] : await pendingReviews(c, store, store.jobSummaries('upstream'), Date.now(), refreshSources),
     ];
     if (options.upstream && !reviews.length) return decision('upstream-not-due', { message: 'This repository has no review due. Refresh its status before trying again.' });
     const candidates = ticketsOn ? [...queue.ready] : [];
@@ -1492,10 +1493,10 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     // A chain continuation is still user-authorized work, but it starts later and on its own, so only the chain's recorded overrides waive the automatic quota and idle policy.
     // An agent's request is not the owner's, so it keeps the automatic reserve and idle policy too.
     const manualPolicy = !!options.manual && !options.continuation && !options.agent;
-    const quotaBaseline = store.jobSummaries();
+    const quotaBaseline = store.instanceReservations(preset.model.instanceId);
     const readSelectedQuota = (refresh = false) => {
       const live = liveModelQuota(t3, c, quotaBaseline, preset.id, manualPolicy);
-      return live ? Promise.resolve(live) : readModelQuota(t3, c, store.jobSummaries(), preset.id, manualPolicy, refresh);
+      return live ? Promise.resolve(live) : readModelQuota(t3, c, store.instanceReservations(preset.model.instanceId), preset.id, manualPolicy, refresh);
     };
     const quota = await readSelectedQuota();
     if (plan && quota.driver !== plan.driver || options.provider && quota.driver !== options.provider) return decision('provider-mapping-changed');
@@ -1539,8 +1540,8 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     if (!project) return decision('no-eligible-work', { skipped: queue.skipped });
     prepared = await t3.prepareLaunch();
     for (;;) {
-      const reservationIds = () => store.jobSummaries().filter(job => (job.modelSelection?.instanceId ?? 'claudeAgent') === preset.model.instanceId).map(job => job.id).join(',');
-      const quotaGeneration = reservationIds(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId), streamingShell = !!t3.peekShell?.();
+      const reservations = () => JSON.stringify(store.instanceReservations(preset.model.instanceId));
+      const quotaGeneration = reservations(), streamingQuota = !!t3.peekProvider?.(preset.model.instanceId), streamingShell = !!t3.peekShell?.();
       const trackerRevision = kanvil.generations();
       // Each final phase owns fresh snapshots; only independent reads overlap. Artifact cache writes stay after the reads.
       let { fresh, currentQuota, checked, currentActivity, artifacts, space } = await backgroundRead(async () => {
@@ -1584,7 +1585,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const latestQuota = liveModelQuota(t3, c, quotaBaseline, preset.id, manualPolicy);
       if (streamingQuota && !latestQuota) continue;
       if (latestQuota) currentQuota = latestQuota;
-      else if (reservationIds() !== quotaGeneration) continue;
+      else if (reservations() !== quotaGeneration) continue;
       const selected = queue.selected, selectionProject = project;
       const refusal = selected && (() => {
         if (!checked || checked.task.projectId !== selectionProject.kanvilId || `${selectionProject.key}-${checked.task.number}` !== selected.key || !selectionProject.readyStatuses.includes(checked.task.status) || taskHold(checked.task) || checked.task.readiness?.ready !== true) return { reason: 'ticket-changed-before-dispatch' };
@@ -2045,7 +2046,7 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
   catch (error) { shellError = safeError(error); }
   let fresh = true, covered = !instanceId;
   const read = async (instance: string, ids: string[]) => {
-    const results = await backgroundRead(() => readModelQuotas(t3, c, store.jobs(), ids, false, true));
+    const results = await backgroundRead(() => readModelQuotas(t3, c, store.instanceReservations(instance), ids, false, true));
     if (!instanceId || instance === instanceId) fresh &&= results.every(result => result.quota && !result.quota.retained);
     return results;
   };
@@ -2062,7 +2063,6 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
       results.push(...await read(instance, presets.filter(preset => preset.model.instanceId === instance).map(preset => preset.id)));
       evaluatedProviders.set(instance, t3.peekProvider(instance));
     }
-    const jobs = store.jobs();
     const providerConstraint = () => {
       const busy = busyProviders(store.activeJobs(), threads, instances, c.monitoringTimeoutMinutes, c.concurrency);
       return c.concurrency[stream.driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : busy.has(stream.driver) ? 'provider-running' : !c.enabled ? 'disabled' : undefined;
@@ -2070,7 +2070,7 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
     let constraint = providerConstraint();
     let activity = shellError;
     if (!constraint && presets.some(preset => preset.automatic)) {
-      try { if (!shellError && idleBlocked(c, await personalActivity(t3, threads, jobs, store, c.monitoringTimeoutMinutes, stream.driver, instances))) activity = 'waiting-for-idle'; }
+      try { if (!shellError && idleBlocked(c, await personalActivity(t3, threads, store.jobs(), store, c.monitoringTimeoutMinutes, stream.driver, instances))) activity = 'waiting-for-idle'; }
       catch (error) { activity = safeError(error); }
     }
     constraint = providerConstraint();
@@ -2082,7 +2082,7 @@ export async function refreshQuota(c: Config, store: Store, t3: T3, currentConfi
       const snapshot = changed ? current : result.snapshot;
       try {
         if (!snapshot || snapshot.driver !== stream.driver) throw new Error('Provider identity changed during quota refresh');
-        return { id: result.id, quota: modelQuota(c, store.jobs(), result.id, snapshot, false) };
+        return { id: result.id, quota: modelQuota(c, store.instanceReservations(preset.model.instanceId), result.id, snapshot, false) };
       } catch (error) { return { id: result.id, error }; }
     });
     stream.models = presets.map(preset => {

@@ -11,7 +11,7 @@ import { ReadContext, ManualDeadline, readFailure } from './read-context.ts';
 type Enqueue = (work: (queueWaitMs: number) => Promise<void>, foreground: boolean, metadata: { reason: string; context: ReadContext; id: string }) => Promise<void>;
 
 export function recoverOperation(stateDir: string, store: Store, operation: Operation) {
-  const job = store.jobs().find(j => j.requestId === operation.id);
+  const job = store.jobByRequest(operation.id);
   const confirmed = job && (job.reason === 'T3 accepted dispatch' || job.thread);
   const plan = store.plans().find(p => p.requestId === operation.id || p.id === operation.progress?.planId);
   if (plan) {

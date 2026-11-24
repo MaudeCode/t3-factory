@@ -688,7 +688,7 @@ test('trusted live quota avoids a foreground provider probe within configured fr
   t.mock.method(f.t3, 'peekProvider', () => quote);
   t.mock.method(f.t3, 'provider', async () => { assert.fail('a current connected allowance must not force provider discovery'); });
   const { readModelQuota } = await import('../src/models.ts');
-  const quota = await readModelQuota(f.t3, f.c, [], 'sol', true, true);
+  const quota = await readModelQuota(f.t3, f.c, {}, 'sol', true, true);
   assert.equal(quota.hasAllowance, true);
 });
 
@@ -808,7 +808,7 @@ test('quota recovery runs one bounded backoff per provider, ends on a fresh read
   assert.equal(Number.isInteger(capped), true);
 
   // Another provider recovers independently while the first is still backing off.
-  await readModelQuota(f.t3, f.c, [], 'opus').catch(() => {});
+  await readModelQuota(f.t3, f.c, {}, 'opus').catch(() => {});
   assert.equal(rounds('claudeAgent'), 1);
   await step(1000); assert.equal(rounds('claudeAgent'), 2, 'the first retry is within 2 seconds');
   failing.delete('claudeAgent');

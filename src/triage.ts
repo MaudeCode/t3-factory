@@ -9,8 +9,8 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { Config, Project } from './config.ts';
 import { stableRequestId, type T3, type Task } from './clients.ts';
-import type { Job } from './store.ts';
 import { readModelQuota } from './models.ts';
+import type { Reservations } from './store.ts';
 import { log, safeError } from './scheduler.ts';
 
 const exec = promisify(execFile);
@@ -585,7 +585,7 @@ export async function triagePass(c: Config, store: Store, kanvil: TriageKanvil, 
  * quota reading taken after it (forcing a refresh), and public reports cannot reuse one snapshot.
  * A forced admission (Triage now) skips the pause, the reserve and that freshness wait, but never runs on an exhausted allowance.
  */
-export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { jobSummaries(): Job[] }, inFlight = 0, force = false): Promise<Admission> {
+export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provider' | 'peekProvider'>, store: Store & { instanceReservations(instanceId: string): Reservations }, inFlight = 0, force = false): Promise<Admission> {
   try {
     // Triage takes no T3 run slot, so Claude T3 concurrency does not gate it; the quota reserve does.
     if (!c.triage || !c.triage.enabled && !force) return { blocked: 'triage-disabled' };
@@ -593,8 +593,9 @@ export async function admitTriage(c: Config, t3: Pick<T3, 'providers' | 'provide
     const preset = c.models.find(m => providers.find(p => p.instanceId === m.model.instanceId)?.driver === 'claudeAgent');
     if (!preset) return { blocked: 'No Claude model is configured' };
     const key = `triageAdmittedAt:${preset.model.instanceId}`, last = store.get(key);
-    const jobs = [...store.jobSummaries(), ...last && !force ? [{ modelSelection: preset.model, createdAt: last } as Job] : []];
-    const quota = await readModelQuota(t3 as T3, c, jobs, preset.id, force, false, force ? 0 : (inFlight + 1) * c.triage.quotaReservePercent);
+    // The last admission counts as a dispatch: a reading from before it is stale.
+    const { lastCreatedAt = 0 } = store.instanceReservations(preset.model.instanceId), admitted = last && !force ? Date.parse(last) : 0;
+    const quota = await readModelQuota(t3 as T3, c, { lastCreatedAt: Math.max(lastCreatedAt, admitted) }, preset.id, force, false, force ? 0 : (inFlight + 1) * c.triage.quotaReservePercent);
     if (!quota.hasAllowance) return { blocked: 'quota-exhausted' };
     if (!force && !quota.allowed) return { blocked: 'quota-budget' };
     const completed = store.get(key);

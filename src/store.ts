@@ -157,7 +157,13 @@ const statusJobs = {
   upstream: "json_extract(data, '$.upstream') IS NOT NULL",
   repair: "json_extract(data, '$.kind') = 'repair'",
   tickets: "json_extract(data, '$.taskId') IS NOT NULL",
+  // Jobs reconciliation and workspace cleanup still visit: all but those dismissed with their workspace cleaned up.
+  unsettled: "json_extract(data, '$.state') IS NOT 'dismissed' OR coalesce(json_extract(data, '$.workspaceCleanedAt'), '') = ''",
 };
+// The provider instance a job reserved quota on; jobs from before model selection ran on Claude.
+const jobInstance = "coalesce(json_extract(data, '$.modelSelection.instanceId'), 'claudeAgent')", jobCreated = "json_extract(data, '$.createdAt')";
+/** Dispatches recorded on one provider instance: how many, and the newest one's `createdAt` in epoch milliseconds. */
+export type Reservations = { count: number; lastCreatedAt?: number };
 const jobValue = (row: string, key: string) => `json_extract(${row}.data, '$.${key}')`;
 function statusCondition(table: string, action: string, section: string) {
   const rows = action === 'UPDATE' ? ['old', 'new'] : [action === 'DELETE' ? 'old' : 'new'];
@@ -260,7 +266,8 @@ export class Store {
     this.db.exec(`CREATE INDEX IF NOT EXISTS events_kind ON events(kind);
       CREATE INDEX IF NOT EXISTS plans_state_finish ON plans(${planState}, ${planFinished});
       CREATE INDEX IF NOT EXISTS session_tickets_visible ON session_tickets((${listedSessionTicket}));
-      ${Object.entries(statusJobs).map(([kind, where]) => `CREATE INDEX IF NOT EXISTS jobs_status_${kind} ON jobs((${where}));`).join(' ')}`);
+      ${Object.entries(statusJobs).map(([kind, where]) => `CREATE INDEX IF NOT EXISTS jobs_status_${kind} ON jobs((${where}));`).join(' ')}
+      CREATE INDEX IF NOT EXISTS jobs_instance ON jobs(${jobInstance}, ${jobCreated});`);
     if (this.get('jobSourcesVersion') !== '1') {
       this.db.exec(`      INSERT OR IGNORE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM job_history;
       INSERT OR REPLACE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM jobs;
@@ -289,6 +296,15 @@ export class Store {
   }
   // Jobs that are not complete or dismissed, from the state index. `IN` searches the index; `NOT IN` would scan the table.
   activeJobs(): Omit<Job, 'command'>[] { return this.statement(`SELECT data FROM jobs WHERE state IN (${LIVE_STATES}) ORDER BY rowid`).all().map(row => JSON.parse(row.data as string)); }
+  // From the jobs_instance index alone. Date.parse's order, not the strings', so differently written timestamps still compare.
+  instanceReservations(instanceId: string): Reservations {
+    const row = this.statement(`SELECT count(*) AS count, max(round(unixepoch(${jobCreated}, 'subsec') * 1000)) AS last FROM jobs WHERE ${jobInstance} = ?`).get(instanceId)!;
+    return { count: row.count as number, ...row.last !== null ? { lastCreatedAt: row.last as number } : {} };
+  }
+  jobByRequest(requestId: string): Omit<Job, 'command'> | undefined {
+    const row = this.statement("SELECT data FROM jobs WHERE json_extract(data, '$.requestId') = ? ORDER BY rowid LIMIT 1").get(requestId);
+    return row && JSON.parse(row.data as string);
+  }
   // The newest completed (not dismissed) jobs, oldest first.
   finishedJobs(limit = 30): Omit<Job, 'command'>[] { return this.statement("SELECT data FROM jobs WHERE state = 'complete' ORDER BY rowid DESC LIMIT ?").all(limit).map(row => JSON.parse(row.data as string)).toReversed(); }
   statusRevisions(): Record<string, number> {

@@ -291,7 +291,8 @@ const claudeConfig: Pick<Config, 'models' | 'quota'> = {
   models: [{ id: 'opus', name: 'Opus', automatic: true, maxDifficulty: 'high', model: { instanceId: 'claudeAgent', model: 'claude-test', options: [] } }],
   quota: { maxAgeSeconds: 300, claude: { fiveHour: budget, weekly: budget, fable: budget }, codex: { weekly: budget } },
 };
-const reservation = (createdAt: number, instanceId = 'claudeAgent'): Job => ({ id: `job-${createdAt}`, kind: 'ticket', projectId: 'FIX', taskId: 'task', ticketKey: 'FIX-9', threadId: 'thread', messageId: 'message', state: 'running', reason: 'Executing', createdAt: new Date(createdAt).toISOString(), lastExecutionAt: new Date(createdAt).toISOString(), lastPersonalActivity: null, completedAt: null, reportPath: '/unused', command: null, prUrls: [], modelSelection: { instanceId, model: 'claude-test', options: [] } });
+// The newest dispatch on the instance, as Store.instanceReservations reports it.
+const reservation = (lastCreatedAt: number) => ({ count: 1, lastCreatedAt });
 
 // Models the installed T3 server: Claude usage comes from a capability probe cached for five
 // minutes. An ordinary targeted refresh replies from that cache; only a selected-instance
@@ -339,7 +340,7 @@ test('a forced Claude quota refresh invalidates the T3 capability cache over RPC
   assert.equal(ordinary.providers[0].usageLimits.checkedAt, cachedAt, 'an ordinary targeted refresh replies from the cached probe');
   f.requests.length = 0;
   // A launch after the cached reading needs a reading that postdates it.
-  const quota = await readModelQuota(f.t3, claudeConfig, [reservation(Date.now() - 10_000)], 'opus').then(q => q.capturedAt, (error: Error) => error.message);
+  const quota = await readModelQuota(f.t3, claudeConfig, reservation(Date.now() - 10_000), 'opus').then(q => q.capturedAt, (error: Error) => error.message);
   assert.equal(quota, new Date().toISOString(), 'the same production quota path succeeds with a genuinely fresh reply');
   assert.deepEqual(f.refreshes().map(r => r.payload), [{ instanceId: 'claudeAgent', workspaceSnapshotsOnDemand: true, refreshModels: true }], 'only the selected instance is invalidated; no fresh:true or workspace scan');
   assert.deepEqual([...new Set(f.requests.map(r => r.tag))].sort(), ['server.getConfig', 'server.refreshProviders'], 'no prompt, dispatch or other mutation');
@@ -349,31 +350,31 @@ test('execution heartbeats do not force a new provider quota probe', async t => 
   const f = dispatchFixture(t), at = Date.now(); let forced = 0;
   const job: Job = { id: 'active', kind: 'ticket', projectId: 'FIX', taskId: 'active-task', ticketKey: 'FIX-9', threadId: 'active-thread', messageId: 'message', state: 'running', reason: 'Executing', createdAt: new Date(at - 10_000).toISOString(), lastExecutionAt: new Date(at).toISOString(), lastPersonalActivity: null, completedAt: null, reportPath: '/unused', command: null, prUrls: [], modelSelection: f.c.models[0].model };
   t.mock.method(f.t3, 'provider', async (_id: string, refresh: boolean) => { const provider = f.provider(); if (refresh) forced++; provider.usageLimits.checkedAt = new Date(refresh ? at + 1000 : at - 1000).toISOString(); return provider; });
-  assert.equal((await readModelQuota(f.t3, f.c, [job], 'sol')).hasAllowance, true);
+  assert.equal((await readModelQuota(f.t3, f.c, { lastCreatedAt: Date.parse(job.createdAt) }, 'sol')).hasAllowance, true);
   assert.equal(forced, 0, 'an unchanged reservation must not invalidate quota on each execution heartbeat');
 });
 
 test('transient Claude probe failures retry within the bound and never permit pre-reservation quota', async t => {
   const f = cachedClaudeT3(t);
-  assert.equal((await readModelQuota(f.t3, claudeConfig, [], 'opus')).hasAllowance, true);
+  assert.equal((await readModelQuota(f.t3, claudeConfig, {}, 'opus')).hasAllowance, true);
   assert.equal(f.refreshes().length, 0, 'a valid cached reading avoids unnecessary probes');
 
   f.server.failures = 1; f.requests.length = 0; t.mock.timers.tick(1001);
-  assert.equal((await readModelQuota(f.t3, claudeConfig, [reservation(Date.now() - 1)], 'opus')).hasAllowance, true, 'retry a transient probe failure automatically');
+  assert.equal((await readModelQuota(f.t3, claudeConfig, reservation(Date.now() - 1), 'opus')).hasAllowance, true, 'retry a transient probe failure automatically');
   assert.equal(f.refreshes().length, 2);
 
   f.server.failures = 1; f.requests.length = 0; t.mock.timers.tick(1001);
-  assert.equal((await readModelQuota(f.t3, claudeConfig, [reservation(Date.now() - 1)], 'opus', true, true)).hasAllowance, true, 'dispatch-boundary refresh also retries a transient failure');
+  assert.equal((await readModelQuota(f.t3, claudeConfig, reservation(Date.now() - 1), 'opus', true, true)).hasAllowance, true, 'dispatch-boundary refresh also retries a transient failure');
   assert.equal(f.refreshes().length, 2);
 
   f.requests.length = 0; t.mock.timers.tick(1001);
   const job = reservation(Date.now() - 1);
-  const shared = await Promise.all([readModelQuota(f.t3, claudeConfig, [job], 'opus', true, true), readModelQuota(f.t3, claudeConfig, [job], 'opus', false, true)]);
+  const shared = await Promise.all([readModelQuota(f.t3, claudeConfig, job, 'opus', true, true), readModelQuota(f.t3, claudeConfig, job, 'opus', false, true)]);
   assert.equal(shared[0].capturedAt, shared[1].capturedAt);
   assert.equal(f.refreshes().length, 1, 'concurrent manual and background reads share one probe');
 
   f.server.failures = 5; f.requests.length = 0; t.mock.timers.tick(1001);
-  await assert.rejects(readModelQuota(f.t3, claudeConfig, [reservation(Date.now() - 1)], 'opus'), /automatic refresh failed.*snapshot is stale/);
+  await assert.rejects(readModelQuota(f.t3, claudeConfig, reservation(Date.now() - 1), 'opus'), /automatic refresh failed.*snapshot is stale/);
   assert.equal(f.refreshes().length, 2, 'failed refresh stays bounded and a retained pre-reservation reading never authorizes a start');
 });
 
@@ -409,7 +410,7 @@ test('a failed refresh serves the newest retained reading only while the shared 
   const probeFailed = (patch: Record<string, unknown> = {}) => reading(Date.now(), 0, { usageLimits: { checkedAt: new Date().toISOString(), windows: [], unavailable: { reason: 'probeFailed' } }, ...patch });
   let reply: ReturnType<typeof reading> = reading(Date.now());
   t.mock.method(t3 as any, 'rpcCall', async () => ({ providers: [structuredClone(reply)] }));
-  const read = (next: ReturnType<typeof reading>, jobs: Job[] = []) => { reply = next; t.mock.timers.tick(1); return readModelQuota(t3, claudeConfig, jobs, 'opus', false, true); };
+  const read = (next: ReturnType<typeof reading>, reservations = {}) => { reply = next; t.mock.timers.tick(1); return readModelQuota(t3, claudeConfig, reservations, 'opus', false, true); };
   let goodAt = new Date().toISOString();
   assert.equal((await read(reply)).capturedAt, goodAt);
 
@@ -418,9 +419,9 @@ test('a failed refresh serves the newest retained reading only while the shared 
   assert.equal(served.capturedAt, goodAt, 'a failed refresh serves the retained reading with its original capture time');
   assert.deepEqual(reports, [true, false], 'a fresh forced reading reports health; a failed one reports to the recovery owner');
   assert.equal(served.allowed, true); assert.equal('retained' in served && served.retained, true);
-  assert.equal((await readModelQuota(t3, claudeConfig, [], 'opus', false, true, 80)).allowed, false, 'retained readings preserve outstanding quota headroom');
+  assert.equal((await readModelQuota(t3, claudeConfig, {}, 'opus', false, true, 80)).allowed, false, 'retained readings preserve outstanding quota headroom');
   t.mock.method(t3, 'peekProvider', () => probeFailed());
-  assert.equal(liveModelQuota(t3, claudeConfig, [], 'opus')?.capturedAt, goodAt, 'the synchronous reservation boundary shares the fallback');
+  assert.equal(liveModelQuota(t3, claudeConfig, {}, 'opus')?.capturedAt, goodAt, 'the synchronous reservation boundary shares the fallback');
   t.mock.timers.tick(1000); const probedAt = new Date().toISOString();
   assert.equal((await read(reading(Date.now()))).capturedAt, probedAt, 'a forced read still probes instead of returning the retained live fallback');
   t.mock.restoreAll(); t.mock.method(t3 as any, 'rpcCall', async () => ({ providers: [structuredClone(reply)] }));
@@ -434,7 +435,7 @@ test('a failed refresh serves the newest retained reading only while the shared 
   await assert.rejects(read(probeFailed({ auth: { email: 'other@example.test' } })), /automatic refresh failed/, 'another account cannot reuse the reading');
   await assert.rejects(read(probeFailed({ status: 'error' })), /not ready/, 'an unavailable provider never authorizes a start');
   await assert.rejects(read(probeFailed({ usageLimits: { checkedAt: new Date().toISOString(), windows: [], unavailable: { reason: 'unsupported' } } })), /automatic refresh failed/, 'an authoritative unavailable reading is not overridden');
-  await assert.rejects(read(probeFailed(), [reservation(Date.parse(goodAt) + 1)]), /automatic refresh failed/, 'a reading from before a reservation never authorizes a start');
+  await assert.rejects(read(probeFailed(), reservation(Date.parse(goodAt) + 1)), /automatic refresh failed/, 'a reading from before a reservation never authorizes a start');
 
   t.mock.timers.tick(1000);
   const exhaustedAt = new Date().toISOString(), exhausted = await read(reading(Date.now(), 100));
@@ -447,5 +448,5 @@ test('a failed refresh serves the newest retained reading only while the shared 
 
   const restarted = new T3({ url: 'http://localhost', credentialFile: '/unused' });
   t.mock.method(restarted as any, 'rpcCall', async () => ({ providers: [probeFailed()] }));
-  await assert.rejects(readModelQuota(restarted, claudeConfig, [], 'opus', false, true), /automatic refresh failed/, 'a restarted client retains nothing and reads persisted status as display only');
+  await assert.rejects(readModelQuota(restarted, claudeConfig, {}, 'opus', false, true), /automatic refresh failed/, 'a restarted client retains nothing and reads persisted status as display only');
 });

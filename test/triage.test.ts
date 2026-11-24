@@ -400,7 +400,7 @@ test('each admission counts as Claude consumption, so the next report needs a ne
   const provider = () => quotaProvider(checkedAt, usedPercent);
   const client = { providers: async () => [provider()], provider: async (_id: string, force?: boolean) => { reads.push(!!force); return provider(); }, peekProvider: () => undefined };
   const t3 = client as never;
-  const store = { ...f.store, jobSummaries: () => [] };
+  const store = { ...f.store, instanceReservations: () => ({ count: 0 }) };
   const allowed = async (config = f.c, inFlight = 0) => {
     const admission = await admitTriage(config, t3, store, inFlight);
     assert.ok(!('blocked' in admission), JSON.stringify(admission));
@@ -444,7 +444,7 @@ test('a forced admission skips the pause, reserve and freshness gates but not an
   let usedPercent = 97;
   const checkedAt = new Date(Date.now() - 1000).toISOString(), provider = () => quotaProvider(checkedAt, usedPercent);
   const t3 = { providers: async () => [provider()], provider: async () => provider(), peekProvider: () => undefined } as never;
-  const store = { ...f.store, jobSummaries: () => [] }, paused = { ...f.c, triage: { ...f.c.triage!, enabled: false } };
+  const store = { ...f.store, instanceReservations: () => ({ count: 0 }) }, paused = { ...f.c, triage: { ...f.c.triage!, enabled: false } };
   assert.deepEqual(await admitTriage(f.c, t3, store), { blocked: 'quota-budget' }, '3% remaining cannot cover a 5% run reservation');
   assert.equal((await admitTriage(paused, t3, store, 2, true) as { model?: string }).model, 'fixture');
   assert.equal((await admitTriage(paused, t3, store, 0, true) as { model?: string }).model, 'fixture', 'the same reading admits a second forced report');
@@ -470,7 +470,7 @@ test('pre-launch follow-up reservations hold quota while reading tickets', async
   let admissions = 0, second: Awaited<ReturnType<typeof admitTriage>> | undefined;
   const pending = triagePass(f.c, f.store, f.kanvil, { command: join(f.bin, 'claude'), budget: async inFlight => {
     t.mock.timers.tick(1000);
-    const admission = await admitTriage(f.c, t3, { ...f.store, jobSummaries: () => [] }, inFlight);
+    const admission = await admitTriage(f.c, t3, { ...f.store, instanceReservations: () => ({ count: 0 }) }, inFlight);
     if (++admissions === 2) { second = admission; considered.resolve(); }
     return admission;
   } });

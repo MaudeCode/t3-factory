@@ -64,7 +64,7 @@ import { T3, Kanvil } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 import { Store, type Job } from '../src/store.ts';
-import { cycle, stopJob } from '../src/scheduler.ts';
+import { cycle, stopJob, reconcile, cleanupNextWorkspace, refreshQuota } from '../src/scheduler.ts';
 import { readCleanupCatalog } from '../src/cleanup.ts';
 import { dispatchFixture, mockLaunchConnection, serviceFixture } from './dispatch-fixture.ts';
 
@@ -415,4 +415,37 @@ test('health reports each operation\'s live age and the event-loop delay', async
     assert.equal(typeof health.eventLoop.maxMs, 'number');
     assert.equal(typeof health.eventLoop.p99Ms, 'number');
   } finally { release.resolve(); await done; }
+});
+
+// On a long-lived database nearly every job is dismissed with its workspace cleaned up. The paths that run on every pass
+// read only the rows they use, so a whole-table read fails this fixture.
+test('reconcile, cleanup, quota refresh, the pass tail and the source lanes read only the jobs they use', async t => {
+  const f = serviceFixture(t), at = new Date().toISOString();
+  Object.assign(f.c, { upstream: { enabled: true, promptFile: f.c.factorySkill, checkMinutes: 360 }, repair: { ...f.c.repair, enabled: true } });
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const job = (id: string, state: Job['state'], extra: Partial<Job> = {}): Job => ({ id, kind: 'ticket', projectId: 'FIX', taskId: `task-${id}`, ticketKey: 'FIX-1', threadId: `thread-${id}`, messageId: 'm', createdAt: at, state, reason: 'Fixture', lastPersonalActivity: null, completedAt: null, reportPath: join(f.dir, `${id}.json`), prUrls: [], command: null, modelSelection: f.c.models[0].model, ...extra });
+  f.store.save(job('live', 'running'));
+  // Its cleanup is not yet due; the cleanup module's own reads are out of this test's scope.
+  f.store.save(job('finished', 'complete', { completedAt: at, workspaceCleanupBlockedAt: at }));
+  f.store.save(job('settled', 'dismissed', { dismissedAt: at, workspaceCleanedAt: at }));
+  f.threads.push(v2Thread({ id: 'thread-live', projectId: 'FIX', status: 'running', activeRunId: 'run-live' }));
+  f.store.set('streams', JSON.stringify([{ driver: 'codex', provider: 'Codex', reason: 'ready', active: [], planned: [], models: [] }]));
+  const filtered = f.store.jobSummaries.bind(f.store);
+  t.mock.method(f.store, 'jobs', () => assert.fail('whole-table jobs() read'));
+  t.mock.method(f.store, 'jobSummaries', (filter?: Parameters<Store['jobSummaries']>[0]) => filter ? filtered(filter) : assert.fail('whole-table jobSummaries() read'));
+
+  await reconcile(f.c, f.store, f.t3, f.kanvil, f.threads, true, false);
+  assert.deepEqual(['live', 'finished', 'settled'].map(id => f.store.job(id)!.state), ['running', 'complete', 'dismissed']);
+  assert.equal(await cleanupNextWorkspace(f.c, f.store, f.t3, f.kanvil, new Set()), false);
+  // Paused, so the idle rule's activity read, which classifies every job, does not run.
+  assert.equal(await refreshQuota({ ...f.c, enabled: false }, f.store, f.t3), true);
+  assert.equal((await f.internal.pass({}, 'test', 0, 'chains')).reason, 'plans-checked');
+
+  const lanes = new Map<string, Promise<void>>();
+  t.mock.method(f.internal, 'runLane', (name: string, work: () => Promise<void>) => { if (['reconcile', 'upstream-sources', 'repair-sources'].includes(name)) lanes.set(name, work()); });
+  t.mock.method(f.internal, 'scheduleAdmissions', () => {});
+  t.mock.method(f.internal, 'triage', () => {});
+  f.internal.wake('test'); clearTimeout(f.internal.timer);
+  assert.deepEqual([...lanes.keys()], ['reconcile', 'upstream-sources', 'repair-sources']);
+  await Promise.all(lanes.values());
 });
