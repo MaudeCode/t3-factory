@@ -185,9 +185,20 @@ const bumpStatus = (section: string, where = '1') =>
   `INSERT INTO revisions SELECT '${section}', 1 WHERE ${where} ON CONFLICT(section) DO UPDATE SET n=n+1;`;
 
 const ADMISSION_KEYS = /^(upNext|planOrder|lastProject)$|^(discoveryAfter|discoveryLast|repairWatch|repairExpect|upstreamReviewed|upstreamLatest|upstreamCandidate|upstreamCheckedAt|upstreamCheckError):/;
-// The parts of a job and a plan admission reads. A running job's progress timestamps and a plan's hold notes are display only:
-// rows still persist them, but they leave the revision alone. Time policies that read them run on the quiet-pass deadline.
-const jobInputs = (job: Job) => JSON.stringify({ ...job, lastExecutionAt: undefined, thread: job.thread && { ...job.thread, updatedAt: undefined } });
+// The parts of a job and a plan admission reads. Everything else on a job (reason, the thread snapshot, PR links, progress
+// timestamps, cleanup bookkeeping) and a plan's hold notes are display or maintenance: rows still persist them, but they
+// leave the revision alone. Time policies that read them run on the quiet-pass deadline.
+// ponytail: earlier-work checks (historicalArtifacts) read finished jobs' cleanup and PR fields; a held lane that depends on
+// them re-runs within QUIET_RECHECK_SECONDS. Add a field here when an admission reader starts using it.
+const JOB_INPUTS = [
+  'id', 'state', 'taskId', 'ticketKey', // taskOwners, chainReady, pendingReconcile, upNext, quota reservation IDs, the waiting cap
+  'threadId', 'modelSelection', 'providerDriver', // busyProviders, holdsSlot, labelCapacity, modelQuota
+  'projectId', 'labels', 'kind', // labelCapacity, discoveryAvailable, repairState
+  'upstream', 'repair', 'completedAt', 'dismissedAt', // releaseState, repairState and its cooldown
+  'createdAt', // modelQuota freshness, refreshEpicPlan
+  'lastPersonalActivity', 'messageId', 'automationMessageIds', // personalActivity
+] as const satisfies (keyof Job)[];
+const jobInputs = (job: Job) => JSON.stringify(JOB_INPUTS.map(key => job[key]));
 const planInputs = (plan: Plan) => JSON.stringify({ ...plan, target: plan.target && { ...plan.target, note: undefined }, tickets: plan.tickets.map(ticket => ({ ...ticket, note: undefined })) });
 const newestDecision = (a: CheckDecision, b: CheckDecision) => (b.origin?.sequence ?? 0) - (a.origin?.sequence ?? 0) || b.at.localeCompare(a.at);
 function selectDecision(checks: CheckDecision[]): CheckDecision | undefined {
