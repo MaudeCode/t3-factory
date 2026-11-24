@@ -558,6 +558,10 @@ export class Kanvil {
   get realtime() { return this.watching; }
   /** True while the durable feed is connected, so every ticket change bumps revision. */
   get synchronized() { return this.watching && this.connected; }
+  // A version the projection already holds skips revision, but can still have moved a ticket between Epics.
+  private heldChanges = 0;
+  /** Moves with every ticket event and every reconnect: a reading built from the projection holds until it moves. */
+  get readingKey() { return `${this.connectionEpoch}:${this.revision}:${this.heldChanges}`; }
   private connected = false;
   private subscription?: Promise<void>;
   private streamSignal?: AbortSignal;
@@ -923,12 +927,14 @@ export class Kanvil {
   }
   private applyChange(change: Change) {
     const cached = change.ticketId ? this.tasksById.get(change.ticketId) : undefined;
-    if (change.type === 'ticket.updated' && typeof change.data?.version === 'number' && cached?.version && cached.version >= change.data.version) return false;
+    const relations = () => { for (const id of this.relationCache.keys()) if (this.tasksById.get(id)?.projectId === change.projectId) this.relationCache.delete(id); };
+    // A held version can still have changed a parent or blocker that cached relations were read before.
+    if (change.type === 'ticket.updated' && typeof change.data?.version === 'number' && cached?.version && cached.version >= change.data.version) { relations(); return false; }
     this.touchProject(change.projectId); this.eligibility.delete(change.projectId);
     if (change.ticketId) this.ticketVersions.set(change.ticketId, (this.ticketVersions.get(change.ticketId) ?? 0) + 1);
     else this.metadataVersions.set(change.projectId, (this.metadataVersions.get(change.projectId) ?? 0) + 1);
     for (const id of change.ticketId ? this.dependents.get(change.ticketId) ?? [] : []) { this.touchProject(id); this.eligibility.delete(id); }
-    for (const id of this.relationCache.keys()) if (this.tasksById.get(id)?.projectId === change.projectId) this.relationCache.delete(id);
+    relations();
     if (change.ticketId) this.tasksById.delete(change.ticketId);
     const snapshot = this.snapshots.get(change.projectId)?.value;
     if (!change.ticketId || /^(project|workspace|workflow)\./.test(change.type)) {
@@ -1012,7 +1018,7 @@ export class Kanvil {
               if (!/^(comment|evidence)\./.test(change.type)) {
                 // A version the projection already holds can still have moved a ticket between Epics.
                 if (change.ticketId) this.epicReads.clear();
-                if (this.applyChange(change) !== false) this.revision++;
+                if (this.applyChange(change) !== false) this.revision++; else this.heldChanges++;
                 onChange(change);
               } // Invalidation and notification precede cursor advancement.
             }
