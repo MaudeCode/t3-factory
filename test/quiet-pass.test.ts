@@ -135,6 +135,31 @@ test('a pass that left out a locked candidate runs in full once that lock goes a
   assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => line.miss), [['store']]);
 });
 
+test('a lane held by a preparation\'s label reservation runs in full once that preparation fails and names store in miss', async t => {
+  const f = quietLane(t);
+  f.tasks[1].status = 'done';
+  f.c.projects[0].labelLimits = { app: 1 }; f.tasks[0].labels!.push({ name: 'app' });
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  // A manual start holds root's lock and the only app slot while it prepares its launch, then fails.
+  const preparing = Promise.withResolvers<void>(), fail = Promise.withResolvers<void>();
+  t.mock.method(f.t3, 'prepareLaunch', async () => { preparing.resolve(); await fail.promise; throw new Error('Fixture connection failed'); });
+  const manual = f.run().catch((error: Error) => ({ reason: error.message }));
+  await preparing.promise;
+  const first = await f.pass();
+  assert.equal((first.streams as { driver: string; reason: string }[]).find(s => s.driver === 'codex')!.reason, 'label-limit');
+  assert.deepEqual(await f.pass(), first, 'the preparation still holds the slot');
+  const reads = f.reads();
+  verbose(t);
+  const lines = logLines(t) as { event: string; miss?: string[] }[];
+  fail.resolve();
+  assert.notEqual((await manual).reason, 'dispatched');
+  assert.equal(f.store.jobs().length, 0);
+  lines.length = 0;
+  await f.pass();
+  assert.ok(f.reads() > reads);
+  assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => line.miss), [['store']]);
+});
+
 test('a running thread streaming messages leaves the admission revision and the held decision', async t => {
   const thread = running('streaming'), f = await liveLane(t, [thread, v2Thread({ id: 'idle' })]);
   const first = await f.pass();
