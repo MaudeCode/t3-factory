@@ -49,6 +49,14 @@ export async function bootstrap(domain: string, plist: string) {
 export const plistString = (value: string) =>
   `<string>${value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</string>`;
 
+// The scheduler's live heap measured ~260 MB after a full GC (2026-11-24). Under Node's ~4 GB default V8 rarely ran a
+// full mark-compact and the process idled at 2-3 GB RSS of garbage; about 4x the live set forces regular collections.
+const schedulerHeapLimitMb = 1024;
+
+// The scheduler LaunchAgent's command line. The heap limit is a flag rather than NODE_OPTIONS so it binds this process alone.
+export const schedulerArguments = (node: string, app: string) =>
+  [node, `--max-old-space-size=${schedulerHeapLimitMb}`, join(app, "src/main.ts"), "run"];
+
 // Writes a LaunchAgent definition around `body`, the keys inside its top-level dict.
 export function writeAgent(plist: string, body: string) {
   writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
