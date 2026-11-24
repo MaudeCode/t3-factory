@@ -1,6 +1,6 @@
 // Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
 import { html, useRef, useState } from "../lib/h.js";
-import { config, statusSection, needSection, live, busy, jobs, launchOperations, clock, serverNow, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
+import { config, statusSection, needSection, live, busy, jobs, launchOperations, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
 import { follow, followRun, ticketClick } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
@@ -34,14 +34,13 @@ import {
   operationText,
   RUN_KINDS,
 } from "../lib/format.js";
-import { Button, Select, Segmented, Chips, Meter, Icon, Tag, Empty, Meta, RowBody, Section, More, Popover, Switch } from "../ui/index.js";
+import { Button, Select, Segmented, Chips, Meter, Icon, Tag, Empty, Meta, RowBody, Section, More, Popover, Switch, RelativeTime } from "../ui/index.js";
 
 // The switch of a section with its own pause (queued runs, inbox triage, upstream reviews, CI repairs), for its page's actions.
 export const SectionSwitch = ({ kind, label, on, off }) => html`<label class="automation"><${Switch} label=${label} checked=${live.value[kind]} disabled=${busy.value} onChange=${() => actions.toggle(kind)} /><b>${live.value[kind] ? on : off}</b></label>`;
 
 
 export function Machine({ provider }) {
-  const now = serverNow();
   const stream = (statusSection("streams").value || []).find((s) => s.driver === provider.driver) || {};
   const active = jobs.value.filter((j) => providerOf(j) === provider.driver && isActive(j)).length;
   const limit = live.value.concurrency?.[provider.concurrency] ?? 1;
@@ -57,11 +56,11 @@ export function Machine({ provider }) {
   return html`<section class="machine ready">
     <header>
       <h2><${Icon} name=${providerIcon(provider.driver)} /> ${provider.name} <span class="load" title="Running now of the automatic limit"><b>${active}</b>${limit ? ` of ${limit}` : ""} ${limit === 1 ? "slot" : "slots"}</span></h2>
-      <span class=${`reason${held ? " tone-attention" : ""}`}>${reason}${quota?.capturedAt && html`<span class="muted" title=${`Allowance read ${ago(quota.capturedAt, now)}`}> · ${ago(quota.capturedAt, now)}</span>`}</span>
+      <span class=${`reason${held ? " tone-attention" : ""}`}>${reason}${quota?.capturedAt && html`<${RelativeTime} class="muted" text=${(now) => ` · ${ago(quota.capturedAt, now)}`} title=${(now) => `Allowance read ${ago(quota.capturedAt, now)}`} />`}</span>
       ${held && html`<${Button} size="sm" disabled=${busy.value} title=${`Start the next eligible ticket on ${provider.name}, overriding its limits`} onClick=${() => startRun(anyway)}>Start anyway<//>`}
     </header>
     ${windows.length
-      ? windows.map((w) => html`<${Meter} key=${w.label} label=${w.label} value=${w.value} marker=${w.marker} note=${w.reset ? until(w.reset, now) : ""} noteTitle=${w.reset ? `Resets ${until(w.reset, now)}` : ""} />`)
+      ? windows.map((w) => html`<${Meter} key=${w.label} label=${w.label} value=${w.value} marker=${w.marker} note=${w.reset ? html`<${RelativeTime} at=${w.reset} form="in" title=${(now) => `Resets ${until(w.reset, now)}`} />` : ""} />`)
       : html`<p class="muted small">${stream.quotaError ? `Allowance unavailable: ${stream.quotaError}` : "No allowance reading yet."}</p>`}
     ${(stream.models || []).length > 0 &&
     html`<p class="model-reasons">
@@ -245,7 +244,6 @@ export const Investigate = ({ held: h }) => h.conflict === "artifacts" && html`<
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
 export function UpNext({ limit = 5, children, filters, query = "", start }) {
-  clock.value;
   const c = config.value,
     q = needSection("upNext").value,
     visible = t => !startHold(t) && matchesRunFilters(t, filters, query),
@@ -262,13 +260,13 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
           <//>`)
         : html`<${Empty}>${query.trim() || hasRunFilters(filters) ? held.length ? "No ready tickets match." : "No tickets match." : "Nothing is ready to start."}<//>`}
     ${all && held.length > 0 && html`<h3 class="held-title">Held back</h3>${held.map((h) => html`<div class="held" key=${h.key}><b class="key">${h.key}</b><span>${h.reason}</span><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []} /><${Investigate} held=${h} /></div>`)}`}
-    ${q && html`<p class="hint">Queue read ${ago(q.at, serverNow())}${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
+    ${q && html`<p class="hint">Queue read <${RelativeTime} at=${q.at} />${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
   <//>`;
 }
 
 // One run. Used on the deck, the runs page, upstream reviews and CI repairs.
 // `selected` is set by the Runs list: true marks the row as the run shown beside it, and either value keeps the click in place.
-export function RunRow({ job, now = serverNow(), showProject = true, selected }) {
+export function RunRow({ job, showProject = true, selected }) {
   const c = config.value,
     project = projectOf(c, job),
     ticket = ticketLink(c, job),
@@ -278,7 +276,7 @@ export function RunRow({ job, now = serverNow(), showProject = true, selected })
     // Every way of opening the run from the row behaves alike: in place from the Runs list, a page change elsewhere.
     open = selected === undefined ? follow : followRun;
   // Short on the row, spelled out on hover.
-  const [timing, timingTitle] = active
+  const timing = (now) => active
     ? [`${duration(job.createdAt, now)} · ${ago(job.lastExecutionAt ?? job.createdAt, now)}`, `Running for ${duration(job.createdAt, now)}; last activity ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
     : waiting
       ? [`for ${duration(job.lastExecutionAt ?? job.createdAt, now)}`, `Waiting for you since ${ago(job.lastExecutionAt ?? job.createdAt, now)}`]
@@ -297,15 +295,15 @@ export function RunRow({ job, now = serverNow(), showProject = true, selected })
     secondaryActions=${(ticket || prs.length > 0 || job.threadId) && html`${ticket && html`<a class="btn btn-sm btn-icon next-run" href=${ticket} target="_blank" rel="noopener noreferrer" aria-label=${`Open ticket ${job.label}`} title=${`Open ticket ${job.label}`}><${Icon} name="tag" /><span class="next-action-label">Open ticket</span></a>`}
       ${prs.map(href => html`<a key=${href} class="btn btn-sm btn-icon next-run" href=${href} target="_blank" rel="noopener noreferrer" aria-label=${prLabel(href)} title=${prLabel(href)}><${Icon} name="pullRequest" /><span class="next-action-label">${prLabel(href)}</span></a>`)}
       ${job.threadId && html`<a class="btn btn-sm btn-icon next-run" href=${threadLink(job)} aria-label=${`Open ${job.label} in T3 Code`} title=${`Open ${job.label} in T3 Code`}><${Icon} name="commentDiscussion" /><span class="next-action-label">Open session</span></a>`}`}>
-    <span class="muted" title=${timingTitle}>${timing}</span>
+    <${RelativeTime} class="muted" text=${(now) => timing(now)[0]} title=${(now) => timing(now)[1]} />
     ${note && html`<span class="tone-attention">${note}</span>`}
   <//>`;
 }
 
 // `limit` shows the first rows and one control, labelled `more`, that calls `onMore`.
-export function RunList({ list, title, count, aside, now = serverNow(), selected, limit = Infinity, more, onMore }) {
+export function RunList({ list, title, count, aside, selected, limit = Infinity, more, onMore }) {
   return html`<${Section} class="list" title=${title} count=${count} aside=${aside}>
-    ${list.slice(0, limit).map((j) => html`<${RunRow} key=${j.id} job=${j} now=${now} selected=${selected === undefined ? undefined : j.id === selected} />`)}
+    ${list.slice(0, limit).map((j) => html`<${RunRow} key=${j.id} job=${j} selected=${selected === undefined ? undefined : j.id === selected} />`)}
     ${list.length > limit && html`<${Button} variant="ghost" size="sm" onClick=${onMore}>${more}<//>`}
   <//>`;
 }

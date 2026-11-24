@@ -5,7 +5,7 @@ import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { confirmation, finishConfirmation } from "../../web/lib/confirmation.js";
 import { App } from "../../web/views/App.js";
-import { openSearch } from "./search.js";
+import { openSearch, tickRenders, checkTickRendersTimesOnly } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -133,16 +133,12 @@ async function windowed(wide) {
   assert(keys().length === 100 && keys().filter((k) => k === "APP-1").length === 1, `All renders a window of 100 rows with APP-1 once: ${keys().length}`);
   assert(more()?.textContent.trim() === "Show 100 more of 430", `the expand control names what remains: ${more()?.textContent}`);
   if (matchMedia("(pointer: coarse)").matches) assert(more().getBoundingClientRect().height >= 44, "the expand control is a 44px touch target");
-  // A clock tick re-renders the page but recomputes none of the list: the merge reads history once per call.
-  let merges = 0;
-  const counted = store.history.value;
-  store.history.value = new Proxy(counted, { get: (target, key, receiver) => (key === "map" && merges++, Reflect.get(target, key, receiver)) });
-  await pause();
-  merges = 0;
-  const timing = () => list().querySelector(".next .muted[title]").textContent;
-  const shownAt = timing();
-  for (let i = 1; i <= 3; i++) { store.clock.value = Date.now() + i * 60_000; await pause(30); }
-  assert(timing() !== shownAt && merges === 0, `a clock tick re-renders the rows without rebuilding the list: ${shownAt} -> ${timing()}, ${merges} merges`);
+  // A clock tick renders only the times, so the list is neither rendered nor rebuilt, and a row's time still moves.
+  await checkTickRendersTimesOnly("Runs");
+  const timing = () => list().querySelector(".next .muted[title]"), shownAt = [timing().textContent, timing().title];
+  await tickRenders(60 * 60_000);
+  assert(timing().textContent !== shownAt[0] && timing().title !== shownAt[1], `a row's time and tooltip follow the clock: ${shownAt} -> ${timing().textContent}, ${timing().title}`);
+  store.clock.value = Date.now();
   // The control adds 100 rows and leaves the list where it was scrolled.
   {
     more().scrollIntoView({ block: "center" }); await pause();

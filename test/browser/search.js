@@ -1,3 +1,23 @@
+import { options } from "../../web/vendor/preact.js";
+import { clock } from "../../web/lib/store.js";
+
+// Moves the clock on by `ms` and returns the names of the components that rendered for it. Preact renders every
+// component a signal change marked in one pass, so once anything has rendered, a page or row that read the clock has too.
+export async function tickRenders(ms = 1000) {
+  const names = new Set(), previous = options.diffed;
+  options.diffed = (vnode) => { if (typeof vnode.type === "function") names.add(vnode.type.name); previous?.(vnode); };
+  try {
+    clock.value += ms;
+    for (let n = 0; n < 100 && !names.size; n++) await new Promise((resolve) => setTimeout(resolve, 10));
+  } finally { options.diffed = previous; }
+  return [...names];
+}
+// A tick renders `RelativeTime` alone; `where` names the page in the failure.
+export async function checkTickRendersTimesOnly(where) {
+  const rendered = await tickRenders();
+  if (!rendered.length || rendered.some((name) => name !== "RelativeTime")) throw new Error(`a clock tick on ${where} renders only time components: ${rendered}`);
+}
+
 // Open the shared list search before driving a page's ordinary filtering checks.
 export async function openSearch() {
   const button = document.querySelector('button[aria-label="Search"]');

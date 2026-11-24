@@ -1,9 +1,9 @@
 // Everything that can start: what the owner queued, the scheduler's Up next list, Epics, and the tickets that came
 // from T3 sessions and inbox reports. The automatic queue and the owner's own stay visibly apart.
 import { html, signal, useState } from "../lib/h.js";
-import { config, statusSection, needSection, sessionTicketCount, live, jobs, clock, serverNow, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
-import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText, ticketStatusLabel, safeLink, ago, until } from "../lib/format.js";
-import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, Text, SortableList } from "../ui/index.js";
+import { config, statusSection, needSection, sessionTicketCount, live, jobs, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
+import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText, ticketStatusLabel, safeLink } from "../lib/format.js";
+import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, Text, SortableList, RelativeTime } from "../ui/index.js";
 import { UpNext, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow, SectionSwitch } from "./Deck.js";
 import { RunFilters } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
@@ -91,7 +91,6 @@ function EpicRow({ epic, show, narrowed }) {
 // A running Epic's overrides are its plan's own and can be changed; one not started uses the page's start choices.
 export const epicById = (id) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epicId(epic) === id); };
 export function EpicDetail({ epic, detail }) {
-  clock.value;
   const running = epic?.state === "active", note = epic && epicNote(epic);
   const { label, tone, progress } = epic ? epicSummary(epic) : {};
   const tracker = safeLink(detail?.url);
@@ -108,7 +107,7 @@ export function EpicDetail({ epic, detail }) {
     <h4>Tickets</h4>
     ${epic?.tickets.length ? html`<div class="epic-tickets"><${PlanRows} plan=${epic} /></div>` : html`<${Empty}>No tickets Factory can read.<//>`}
     ${detail && html`<h4>Discussion</h4>${detail.comments.length ? detail.comments.map((comment) => html`<article key=${comment.id}>
-      <p class="ticket-line"><strong>${comment.author}</strong> · ${ago(comment.createdAt, serverNow())}</p><${Text}>${comment.body}<//>
+      <p class="ticket-line"><strong>${comment.author}</strong> · <${RelativeTime} at=${comment.createdAt} /></p><${Text}>${comment.body}<//>
     </article>`) : html`<${Empty}>No comments yet.<//>`}`}`;
 }
 
@@ -130,8 +129,7 @@ function Queued() {
   const plans = (statusSection("plans").value ?? []).filter((p) => p.state === "active");
   // A held queue keeps its switch on the page even when empty, so the hold can be seen and released.
   if (!plans.length && live.value.queue) return null;
-  clock.value;
-  const { onAt, offAt } = live.value.schedule, now = serverNow();
+  const { onAt, offAt } = live.value.schedule;
   const epics = epicLists().open;
   const move = (from, to) => { const ids = plans.map((p) => p.id); ids.splice(to, 0, ...ids.splice(from, 1)); actions.orderPlans(ids); };
   const item = (p) => p.epic ? html`<${EpicRow} epic=${epics.find((e) => e.id === p.id)} show=${() => true} />`
@@ -139,7 +137,7 @@ function Queued() {
     : html`<div class="queued-run"><div class="chain-row"><${Tag}>Chain<//><${RowBody} title=${html`Chain to <b class="key">${p.target.key}</b>`}><${Meta}>${planProgress(p)}<//><//></div><${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" icon="x" class="next-run" /></div>
       <div class="epic-tickets"><${PlanRows} plan=${p} /></div>`;
   return html`<${Section} class="queued" title="Queued" count=${plans.length} hint=${plans.length > 1 && "The top row gets the next free slot. Drag a handle to reorder, or focus it and press the arrow keys."}
-    aside=${html`<${SectionSwitch} kind="queue" label="Queued runs" on=${offAt ? `Holds ${until(offAt, now)}` : "Queue on"} off=${onAt ? `Starts ${until(onAt, now)}` : "Queue held"} />`}>
+    aside=${html`<${SectionSwitch} kind="queue" label="Queued runs" on=${offAt ? html`Holds <${RelativeTime} at=${offAt} form="in" />` : "Queue on"} off=${onAt ? html`Starts <${RelativeTime} at=${onAt} form="in" />` : "Queue held"} />`}>
     <${SortableList} label="Queued, in the order they start" items=${plans} keyOf=${planName} onMove=${move}
       render=${(p, i, grip) => html`<div class="queued-item">${plans.length > 1 && grip}<div class="queued-body">${item(p)}</div></div>`} />
   <//>`;
@@ -153,7 +151,6 @@ export const queueView = (query) => {
 };
 
 export function Queue() {
-  clock.value;
   const view = queueView(search.value);
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
