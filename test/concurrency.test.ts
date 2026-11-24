@@ -38,6 +38,20 @@ test('capacity counts active, resumed and uncertain runs but releases waiting an
   assert.equal(busyProviders(jobs, [resumed], instances, 30, limits).has('codex'), true);
   assert.equal(busyProviders(jobs, [], instances, 30, limits, new Map([['codex', 1]])).has('codex'), true);
   assert.deepEqual([...busyProviders([...jobs, job('unknown', 'dispatching', 'unknown')], [], instances, 30, limits)].sort(), ['claudeAgent', 'codex']);
+  const finished = [job('done', 'complete'), job('gone', 'dismissed')];
+  const executingThreads = finished.map(j => v2Thread({ id: j.threadId, providerInstanceId: 'codex', modelSelection: { instanceId: 'codex', model: 'fixture' }, status: 'running', activeRunId: 'run' }));
+  for (const snapshot of [[], executingThreads])
+    assert.equal(busyProviders(finished, snapshot, instances, 30, { claude: 1, codex: 1 }).size, 0, 'finished runs hold no slot with a missing or executing thread');
+});
+
+test('capacity looks up threads only for unfinished runs', () => {
+  let lookups = 0;
+  const job = (id: string, state: Job['state']) => new Proxy({ id, threadId: id, state, providerDriver: 'codex' } as Job, {
+    get: (target, key) => (key === 'threadId' && lookups++, Reflect.get(target, key)),
+  });
+  const jobs = [...Array.from({ length: 1000 }, (_, i) => job(`old-${i}`, 'dismissed')), job('a', 'running'), job('b', 'running')];
+  assert.equal(busyProviders(jobs, [v2Thread({ id: 'a' })], new Map(), 30, { claude: 2, codex: 2 }).has('codex'), true);
+  assert.equal(lookups, 2, 'dismissed runs never reach the thread lookup');
 });
 
 test('full label blocks retain waiting resource reservations independently of provider capacity', () => {
