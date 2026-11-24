@@ -107,13 +107,15 @@ export function RunDetail({ id, embedded }) {
   // A read answers for the run it was started for; a slower one for another run is dropped.
   const shown = useRef(id);
   if (shown.current !== id) { shown.current = id; setDetail(null); setError(""); }
+  // The report is read again only when this run changes in a way it can show, or leaves the live list; progress times and other runs do not.
+  const live = jobs.value.find((j) => j.id === id), change = live ? JSON.stringify([live.state, live.reason, live.prUrls, live.thread?.status, live.thread?.pending]) : "";
   useEffect(() => {
     loadRun(id).then((d) => shown.current === id && (d?.job ? (setError(""), setDetail(d)) : setError("Run not found")), (e) => shown.current === id && setError(e.message));
-  }, [id, jobs.value]);
+  }, [id, change]);
   if (error) return html`<${Page} narrow title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> Run`} lead=${error} />`;
   if (!detail || detail.job.id !== id) return html`<${Page} narrow><${Empty}>Loading run.<//><//>`;
   const c = config.value,
-    job = jobs.value.find((j) => j.id === id) ?? detail.job,
+    job = live ?? detail.job,
     project = projectOf(c, job),
     now = serverNow(),
     prs = (job.prUrls || []).map(safeLink).filter(Boolean),

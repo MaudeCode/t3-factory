@@ -708,3 +708,46 @@ test('tracker Markdown becomes elements, with HTML left as text and unsafe link 
     '<p>See <a href=https://example.test/pr/1>the PR</a>, <a href=https://example.test/a>https://example.test/a</a>. Not [this](javascript:alert(1)) or [that](http://example.test).</p>');
   assert.equal(render('<img src=x onerror="alert(1)">\n<script>alert(1)</script>'), '<p><img src=x onerror="alert(1)">\n<script>alert(1)</script></p>');
 });
+
+test('run history loads once, then merges the changes since its cursor on each recent change', async () => {
+  const originalFetch = globalThis.fetch, reads: string[] = [], arrivals: (() => void)[] = [], held = Promise.withResolvers<void>();
+  const at = (day: number) => `2026-01-0${day}T00:00:00.000Z`;
+  const a = { id: 'a', state: 'complete', createdAt: at(1), completedAt: at(3) }, b = { id: 'b', state: 'running', createdAt: at(2) };
+  const settledA = { ...a, state: 'dismissed', dismissedAt: at(4) }, c = { id: 'c', state: 'running', createdAt: at(5) }, d = { id: 'd', state: 'running', createdAt: at(6) };
+  const deltas: (() => Promise<Response> | Response)[] = [
+    () => Response.json({ jobs: [settledA, c], cursor: at(5) }),
+    () => Response.json({ jobs: [], cursor: at(5) }),
+    () => new Response('', { status: 500 }),
+    async () => { await held.promise; return Response.json({ jobs: [d], cursor: at(6) }); },
+  ];
+  globalThis.fetch = async (url: any) => { reads.push(url); arrivals.splice(0).forEach(arrive => arrive()); return url === '/api/history' ? Response.json([b, a]) : deltas.shift()!(); };
+  // Reads run one at a time, so a request arriving proves the read before it finished.
+  const arrived = (n: number) => new Promise<void>(function check(resolve) { if (reads.length >= n) resolve(); else arrivals.push(() => check(resolve)); });
+  const replaced = (before: unknown) => new Promise<void>(resolve => { const stop = store.history.subscribe((value: unknown) => { if (value !== before) { queueMicrotask(() => stop()); resolve(); } }); });
+  const recent = () => store.applyState({ delta: true, status: { recent: [reads.length] } });
+  try {
+    store.history.value = null;
+    await store.loadHistory();
+    assert.deepEqual(store.history.value, [b, a]);
+    let change = replaced(store.history.value);
+    recent();
+    await change;
+    assert.deepEqual(store.history.value, [c, b, settledA], 'a changed row is replaced in place and a new one added');
+    const merged = store.history.value;
+    recent();
+    recent();
+    await arrived(4);
+    assert.equal(store.history.value, merged, 'an empty delta leaves history alone');
+    recent();
+    await arrived(5);
+    assert.equal(store.history.value, merged, 'a failed delta leaves history alone');
+    change = replaced(merged);
+    held.resolve();
+    await change;
+    assert.deepEqual(store.history.value, [d, c, b, settledA]);
+    assert.deepEqual(reads, ['/api/history', `/api/history?after=${encodeURIComponent(at(3))}`, ...Array(3).fill(`/api/history?after=${encodeURIComponent(at(5))}`)], 'one full read, then one delta per recent change from the held cursor');
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.history.value = null;
+  }
+});

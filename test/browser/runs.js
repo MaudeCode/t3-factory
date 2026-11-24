@@ -18,12 +18,12 @@ const state = {
   config: { enabled: false, concurrency: { claude: 1, codex: 1 }, models: [], kanvil: { url: "https://tracker.example", workspaceId: "w" }, projects: [{ kanvilId: "p", key: "APP", name: "Example", enabled: true }] },
   status: { jobs, journal: [] },
 };
-let reads = [], posts = [], historyRows = jobs;
+let reads = [], posts = [], historyRows = jobs, step = 0, readSteps = [];
 window.fetch = async (url, init) => {
   if (url === "/api/history") return Response.json(historyRows);
   const read = /^\/api\/jobs\/([\w-]+)\/report$/.exec(url);
   if (read) {
-    reads.push(read[1]);
+    reads.push(read[1]); readSteps.push(step);
     const found = jobs.find((j) => j.id === read[1]) ?? historyRows.find((j) => j.id === read[1]);
     return found ? Response.json({ job: found, events: [{ id: 1, time: ago(4), kind: "job.created", text: `Started ${found.label}`, data: {} }], report: found.state === "complete" ? { status: "complete", reason: "Merged and verified." } : null }) : Response.json({ message: "Run not found" }, { status: 404 });
   }
@@ -43,6 +43,7 @@ async function show(path = "/runs", rows = jobs) {
   render(html`<${App} />`, root);
   await pause(200);
 }
+const until = async (ok) => { const end = Date.now() + 3000; while (!ok()) { if (Date.now() > end) throw new Error("Fixture did not settle"); await pause(20); } };
 const visible = (el) => !!el && el.getClientRects().length > 0;
 const list = () => root.querySelector(".runs-list"), detail = () => root.querySelector(".runs-detail");
 const rowLink = (key) => [...list().querySelectorAll("a.next-ticket")].find((a) => a.querySelector(".key")?.textContent === key);
@@ -115,6 +116,7 @@ async function run() {
   if (wide) { rowLink("APP-2").click(); await pause(200); assert(detail().textContent.includes("Synthetic ticket 2") && !detail().textContent.includes("Run not found"), "the list still selects a run after an error"); }
   assert(document.documentElement.scrollWidth <= innerWidth, "Runs fits the viewport");
   await windowed(wide);
+  await reportReads();
   return { passed: true, viewport: [innerWidth, innerHeight], beside: wide };
 }
 
@@ -164,5 +166,27 @@ async function windowed(wide) {
   assert(target?.getAttribute("aria-current") === "true" && detail().textContent.includes("Synthetic ticket 1400") && keys().length > 100, `a run beyond the window is listed and marked: ${keys().length}`);
   if (wide) assert(visible(target) && visible(detail()), "the widened row sits beside its run");
 }
-window.runsTests = { show, run, showLong: () => show("/runs?state=all", longHistory) };
+// The open run's report is read again only when that run changes in a way the report can show.
+// Each read records the change it followed, so a read a change should not cause is caught even when it arrives late.
+async function reportReads() {
+  await show("/runs/run-1");
+  await until(() => detail().textContent.includes("Synthetic ticket 1"));
+  readSteps = [];
+  const live = (id, change) => { step++; store.applyState({ delta: true, status: { jobs: store.jobs.value.map((j) => (j.id === id ? { ...j, ...change(j) } : j)) } }); return step; };
+  const activity = () => [...detail().querySelectorAll("dt")].find((dt) => dt.textContent === "Last activity").nextElementSibling.textContent;
+  const before = activity(), quiet = [live("run-2", () => ({ state: "waiting", reason: "Another run", lastExecutionAt: new Date().toISOString() })), live("run-1", () => ({ lastExecutionAt: new Date().toISOString(), lastPersonalActivity: new Date().toISOString() }))];
+  // Rendered before the next change, so these changes are not folded into it.
+  await until(() => activity() !== before);
+  const loud = [];
+  for (const change of [() => ({ reason: "Now reviewing" }), (j) => ({ prUrls: [...j.prUrls, "https://github.com/example/app/pull/8"] }), (j) => ({ thread: { ...j.thread, pending: "approval" } }), () => ({ state: "waiting" })]) {
+    loud.push(live("run-1", change));
+    await until(() => readSteps.includes(step));
+  }
+  step++; store.applyState({ delta: true, status: { jobs: store.jobs.value.filter((j) => j.id !== "run-1") } }); loud.push(step);
+  await until(() => readSteps.includes(step));
+  assert(!quiet.some((s) => readSteps.includes(s)), `another run and the open run's progress times read nothing: ${readSteps} after ${quiet}`);
+  assert(readSteps.join() === loud.join(), `the open run's reason, pull requests, pending request, state and leaving the live list each read its report once: ${readSteps} after ${loud}`);
+}
+
+window.runsTests = { show, run, reportReads, showLong: () => show("/runs?state=all", longHistory) };
 await show();

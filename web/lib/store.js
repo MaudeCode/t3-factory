@@ -195,8 +195,29 @@ export async function catalog() {
 export async function loadSources() {
   sources.value = await api("/api/sources");
 }
-export async function loadHistory() {
-  history.value = await api("/api/history");
+// The first read loads every job; later reads ask for the jobs changed since the newest change already loaded and merge them by ID.
+// Reads run one at a time, so a slower read never overwrites a newer one.
+// ponytail: a change whose time was taken before an earlier-committed newer one (dismissJob awaits git between the two) is missed until the next full load; send an overlapping cursor if that shows up.
+let historyCursor, historyRead = Promise.resolve();
+const changedAt = (j) => Math.max(Date.parse(j.createdAt) || 0, Date.parse(j.completedAt) || 0, Date.parse(j.dismissedAt) || 0);
+export function loadHistory() {
+  const read = historyRead.then(readHistory, readHistory);
+  historyRead = read.catch(() => {});
+  return read;
+}
+async function readHistory() {
+  if (!history.value || !historyCursor) {
+    const rows = await api("/api/history");
+    history.value = rows;
+    const newest = Math.max(0, ...rows.map(changedAt));
+    historyCursor = newest ? new Date(newest).toISOString() : undefined;
+    return;
+  }
+  const { jobs: changed, cursor } = await api(`/api/history?after=${encodeURIComponent(historyCursor)}`);
+  historyCursor = cursor;
+  if (!changed.length) return;
+  const byId = new Map(changed.map((j) => [j.id, j])), rows = history.value.map((j) => { const next = byId.get(j.id); byId.delete(j.id); return next ?? j; });
+  history.value = byId.size ? [...byId.values(), ...rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : rows;
 }
 export const loadRun = (id) => api(`/api/jobs/${id}/report`);
 
