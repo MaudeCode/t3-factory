@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema, type Config } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
-import { Store, type Job } from '../src/store.ts';
+import { Store, assignedBranch, type Job } from '../src/store.ts';
 import { cycle, cancelPlan } from '../src/scheduler.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -288,7 +288,10 @@ for (const scenario of ['both', 'codex-busy', 'claude-waiting', 'claude-handoff'
       for (const command of attempts) {
         const project = c.projects.find(p => p.t3Id === command.projectId)!;
         assert.deepEqual(command.workspaceStrategy, { type: 'worktree', baseRef: project.baseBranch, branch: command.workspaceStrategy.branch, startFromOrigin: true });
-        assert.equal(command.initialMessage.messageId, store.jobs().find(j => j.threadId === command.threadId)!.messageId);
+        const saved = store.jobs().find(j => j.threadId === command.threadId)!;
+        assert.equal(command.initialMessage.messageId, saved.messageId);
+        assert.deepEqual(store.job(saved.id)!.command, command, 'a read by ID returns the command T3 received');
+        assert.equal(assignedBranch(saved), command.workspaceStrategy.branch, 'a list-read job names the branch its launch assigned');
         assert.ok(command.initialMessage.text.includes(`The user selected ${command.modelSelection.model};`));
         if (scenario !== 'discovery') {
           assert.ok(command.initialMessage.text.includes(readFileSync(c.factorySkill, 'utf8').trim()), 'T3 receives the current configured skill');

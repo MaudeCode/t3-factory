@@ -4,6 +4,7 @@ import type { CleanupAction } from './cleanup.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import type { ModelSelection, OverrideLimits, DispatchProvider } from './config.ts';
 import type { Difficulty } from './policy.ts';
 
@@ -28,7 +29,8 @@ export interface Job {
   reconcile?: ReconcileEvidence & { title: string; reason: string };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
-  lastPersonalActivity: string | null; reportPath: string; command?: unknown;
+  // The launch command lives in job_commands: only a read by ID (`Store.job`) returns it. `branch` is the worktree branch it assigned.
+  lastPersonalActivity: string | null; reportPath: string; command?: unknown; branch?: string;
   lastExecutionAt?: string;
   // When reconciliation last saw the job resume from waiting; an awaiting-human report written earlier has been answered.
   resumedAt?: string;
@@ -53,6 +55,19 @@ export interface Job {
   workspaceCleanupError?: string;
   workspaceCleanupBlockedAt?: string;
   workspaceCleanupAttemptedAt?: string;
+}
+// Jobs dispatched before protocol v2 stored a turn-start bootstrap; newer ones store the launch input. The migration in
+// the Store constructor reads the same two shapes, in the same order, to record `branch` on older rows.
+const commandBranch = z.union([
+  z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).transform(c => c.bootstrap.prepareWorktree.branch),
+  z.object({ workspaceStrategy: z.object({ branch: z.string() }) }).transform(c => c.workspaceStrategy.branch),
+]);
+const commandBranchSql = (at: string) => `CASE WHEN json_type(data, '${at}.bootstrap.prepareWorktree.branch') = 'text' THEN json_extract(data, '${at}.bootstrap.prepareWorktree.branch')
+  WHEN json_type(data, '${at}.workspaceStrategy.branch') = 'text' THEN json_extract(data, '${at}.workspaceStrategy.branch') END`;
+export function assignedBranch(job: Pick<Job, 'branch' | 'command'>): string | undefined {
+  if (job.branch) return job.branch;
+  const parsed = commandBranch.safeParse(job.command);
+  return parsed.success ? parsed.data : undefined;
 }
 // The earlier work that holds a ticket back: T3 threads that reference it, Git refs that name it, and whether an open PR mentions it.
 export interface ReconcileEvidence { threads: string[]; refs: string[]; openPR: boolean }
@@ -210,7 +225,26 @@ export class Store {
       CREATE TRIGGER IF NOT EXISTS history_source_insert AFTER INSERT ON job_history BEGIN
         INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
       CREATE INDEX IF NOT EXISTS jobs_recent ON jobs(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');
-      CREATE INDEX IF NOT EXISTS history_recent ON job_history(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');`);
+      CREATE INDEX IF NOT EXISTS history_recent ON job_history(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');
+      CREATE TABLE IF NOT EXISTS job_commands(id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
+    // Older rows carry their command inside the job. Move it beside the job once, recording the branch it assigned.
+    // The web, MCP and scheduler processes can open an old database together; the first to take the write lock migrates,
+    // and the others wait for it, then see it done. No VACUUM: the freed pages are reused.
+    if (this.get('jobCommandsVersion') !== '1') {
+      this.db.exec('PRAGMA busy_timeout=60000; BEGIN IMMEDIATE');
+      try {
+        if (this.get('jobCommandsVersion') !== '1') {
+          for (const table of ['jobs', 'job_history']) this.db.exec(`
+            INSERT OR IGNORE INTO job_commands SELECT id, json_quote(json_extract(data, '$.command')) FROM ${table} WHERE json_type(data, '$.command') IS NOT NULL;
+            UPDATE ${table} SET data = CASE WHEN json_extract(data, '$.branch') IS NULL AND (${commandBranchSql('$.command')}) IS NOT NULL
+              THEN json_set(json_remove(data, '$.command'), '$.branch', ${commandBranchSql('$.command')}) ELSE json_remove(data, '$.command') END
+              WHERE json_type(data, '$.command') IS NOT NULL;`);
+          this.set('jobCommandsVersion', '1');
+        }
+        this.db.exec('COMMIT');
+      } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
+      finally { this.db.exec('PRAGMA busy_timeout=1000'); }
+    }
     this.db.exec('CREATE TABLE IF NOT EXISTS revisions(section TEXT PRIMARY KEY, n INTEGER NOT NULL)');
     for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
       for (const [table, sections] of Object.entries(STATUS_TABLES)) {
@@ -247,16 +281,16 @@ export class Store {
     // task_id is the live claim. Completed and dismissed history retain their ticket IDs in data.
     this.db.exec("UPDATE jobs SET task_id = NULL WHERE task_id IS NOT NULL AND state IN ('complete', 'dismissed')");
   }
-  jobs(): Job[] { return this.statement('SELECT data FROM jobs ORDER BY rowid').all().map(r => JSON.parse(r.data as string)); }
-  // Hot inventory reads need lifecycle metadata, not historical dispatch prompts and commands.
+  // List reads return jobs without their commands, which stay in job_commands; `job(id)` returns one with its command.
+  jobs(): Omit<Job, 'command'>[] { return this.jobSummaries(); }
   jobSummaries(filter?: keyof typeof statusJobs): Omit<Job, 'command'>[] {
     const source = filter ? `jobs WHERE (${statusJobs[filter]}) = 1` : 'jobs';
-    return this.statement(`SELECT json_remove(data, '$.command') AS data FROM ${source} ORDER BY rowid`).all().map(row => JSON.parse(row.data as string));
+    return this.statement(`SELECT data FROM ${source} ORDER BY rowid`).all().map(row => JSON.parse(row.data as string));
   }
   // Jobs that are not complete or dismissed, from the state index. `IN` searches the index; `NOT IN` would scan the table.
-  activeJobs(): Omit<Job, 'command'>[] { return this.statement(`SELECT json_remove(data, '$.command') AS data FROM jobs WHERE state IN (${LIVE_STATES}) ORDER BY rowid`).all().map(row => JSON.parse(row.data as string)); }
+  activeJobs(): Omit<Job, 'command'>[] { return this.statement(`SELECT data FROM jobs WHERE state IN (${LIVE_STATES}) ORDER BY rowid`).all().map(row => JSON.parse(row.data as string)); }
   // The newest completed (not dismissed) jobs, oldest first.
-  finishedJobs(limit = 30): Omit<Job, 'command'>[] { return this.statement("SELECT json_remove(data, '$.command') AS data FROM jobs WHERE state = 'complete' ORDER BY rowid DESC LIMIT ?").all(limit).map(row => JSON.parse(row.data as string)).toReversed(); }
+  finishedJobs(limit = 30): Omit<Job, 'command'>[] { return this.statement("SELECT data FROM jobs WHERE state = 'complete' ORDER BY rowid DESC LIMIT ?").all(limit).map(row => JSON.parse(row.data as string)).toReversed(); }
   statusRevisions(): Record<string, number> {
     return Object.fromEntries(this.statement('SELECT section, n FROM revisions').all().map(row => [row.section, row.n]));
   }
@@ -277,7 +311,7 @@ export class Store {
   }
   recentJobs(limit = 15): Omit<Job, 'command'>[] {
     const at = "coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt'))";
-    return (['jobs', 'job_history'] as const).flatMap(table => this.statement(`SELECT json_remove(data, '$.command') AS data, ${at} AS at FROM ${table} WHERE json_extract(data, '$.state') IN ('complete', 'dismissed') AND ${at} > '' ${table === 'job_history' ? 'AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_history.id)' : ''} ORDER BY ${at} DESC LIMIT ?`).all(limit))
+    return (['jobs', 'job_history'] as const).flatMap(table => this.statement(`SELECT data, ${at} AS at FROM ${table} WHERE json_extract(data, '$.state') IN ('complete', 'dismissed') AND ${at} > '' ${table === 'job_history' ? 'AND NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.id = job_history.id)' : ''} ORDER BY ${at} DESC LIMIT ?`).all(limit))
       .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit).map(row => JSON.parse(row.data as string));
   }
   private lock(key: string) {
@@ -308,18 +342,28 @@ export class Store {
     return locked;
   }
   history(): Omit<Job, 'command'>[] {
-    return this.statement("SELECT json_remove(data, '$.command') AS data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT json_remove(data, '$.command') AS data FROM jobs").all()
+    return this.statement('SELECT data FROM job_history WHERE id NOT IN (SELECT id FROM jobs) UNION ALL SELECT data FROM jobs').all()
       .map(r => JSON.parse(r.data as string)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
   archiveJob(job: Job) {
-    this.statement('INSERT INTO job_history VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(job.id, JSON.stringify({ ...job, historyOnly: true }));
+    const { command, ...row } = job, branch = assignedBranch(job);
+    if (this.statement('INSERT INTO job_history VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(job.id, JSON.stringify({ ...row, ...branch ? { branch } : {}, historyOnly: true })).changes && command !== undefined)
+      this.statement('INSERT OR IGNORE INTO job_commands VALUES(?,?)').run(job.id, JSON.stringify(command));
   }
-  job(id: string): Job | undefined { const row = this.statement('SELECT data FROM jobs WHERE id=? UNION ALL SELECT data FROM job_history WHERE id=? LIMIT 1').get(id, id); return row ? JSON.parse(row.data as string) : undefined; }
+  job(id: string): Job | undefined {
+    const row = this.statement('SELECT data FROM jobs WHERE id=? UNION ALL SELECT data FROM job_history WHERE id=? LIMIT 1').get(id, id);
+    if (!row) return undefined;
+    const job: Job = JSON.parse(row.data as string), command = this.statement('SELECT data FROM job_commands WHERE id=?').get(id);
+    return command ? { ...job, command: JSON.parse(command.data as string) } : job;
+  }
   // Every job write passes through here, so the journal records each state change and delivered PR once.
   save(job: Job) {
     if (job.historyOnly || this.statement('SELECT id FROM job_history WHERE id=?').get(job.id)) throw new Error('Historical runs are read-only');
-    const before = this.job(job.id);
-    if (this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data WHERE jobs.data != excluded.data OR jobs.task_id IS NOT excluded.task_id').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job)).changes && (!before || jobInputs(before) !== jobInputs(job))) this.revision++;
+    const saved = this.statement('SELECT data FROM jobs WHERE id=?').get(job.id), before: Job | undefined = saved && JSON.parse(saved.data as string);
+    // A job from a list read has no command; saving it leaves the stored one alone. The command is written before the job, so a saved job never lacks it.
+    const { command, ...fields } = job, branch = assignedBranch(job), row = branch ? { ...fields, branch } : fields;
+    if (command !== undefined) this.statement('INSERT INTO job_commands VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE job_commands.data != excluded.data').run(job.id, JSON.stringify(command));
+    if (this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data WHERE jobs.data != excluded.data OR jobs.task_id IS NOT excluded.task_id').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(row)).changes && (!before || jobInputs(before) !== jobInputs(row))) this.revision++;
     const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);

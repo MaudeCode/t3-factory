@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { automationHold, taskDifficulty, taskHold } from './policy.ts';
 import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, stableRequestId, type Task, type Epic } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
-import { Store, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision, type ReconcileEvidence } from './store.ts';
+import { Store, assignedBranch, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision, type ReconcileEvidence } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
@@ -468,13 +468,6 @@ export async function cleanupNextWorkspace(c: Config, store: Store, t3: T3, kanv
   return true;
 }
 
-function assignedBranch(job: Job): string | undefined {
-  const command = z.union([
-    z.object({ bootstrap: z.object({ prepareWorktree: z.object({ branch: z.string() }) }) }).transform(c => c.bootstrap.prepareWorktree.branch),
-    z.object({ workspaceStrategy: z.object({ branch: z.string() }) }).transform(c => c.workspaceStrategy.branch),
-  ]).safeParse(job.command);
-  return command.success ? command.data : undefined;
-}
 export async function verifyCleanupHead(c: Config, store: Store, kanvil: Kanvil, job: Job, threads: Thread[], branch: string, path: string): Promise<string> {
   const project = projectFor(c, job);
   let head: string;
@@ -497,9 +490,10 @@ export async function cleanupCompletedWorkspace(c: Config, store: Store, t3: T3,
   const mutate = async (work: () => Promise<unknown>) => { mutationUncertain = true; await work(); mutationUncertain = false; };
   const identity = (j: Job) => JSON.stringify([j.threadId, j.projectId, j.taskId, j.messageId, j.command, j.reportPath, j.state, j.createdAt]);
   job.workspaceCleanupAttemptedAt = new Date().toISOString(); store.save(job);
+  // Ownership compares the launch command, which only a read by ID returns.
+  const ownership = identity(store.job(job.id) ?? job);
   const maintenance = (patch: Record<string, unknown>) => store.set('cleanupMaintenance', JSON.stringify({ ...JSON.parse(store.get('cleanupMaintenance') ?? '{}'), lastAttempt: job.workspaceCleanupAttemptedAt, jobId: job.id, error: undefined, ...patch }));
   maintenance({ state: 'inspecting' });
-  const ownership = identity(job);
   const checkOwner = () => {
     const current = store.job(job.id);
     if (!current || identity(current) !== ownership) throw new Error('Factory ownership changed before command stop');
@@ -758,7 +752,6 @@ async function historicalArtifacts(project: Project, history: Job[], threads: Th
   const branches = new Map<string, string>(), inactiveThreads = new Set<string>();
   for (const job of history) {
     const thread = threads.find(t => t.id === job.threadId);
-    // Jobs dispatched before protocol v2 stored a turn-start bootstrap; newer ones store the launch input.
     const branch = expectedBranch ?? job.workspaceCleanup?.branch ?? job.dismissedBranch ?? assignedBranch(job) ?? thread?.branch;
     if (!branch) continue;
     if (job.state === 'dismissed') {

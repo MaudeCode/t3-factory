@@ -86,9 +86,16 @@ for (const scenario of ['dirty', 'ignored', 'unmerged', 'orphan', 'shared', 'mis
   } finally { f.close(); }
 });
 
-for (const scenario of ['active', 'queued', 'unknown', 'process', 'primary', 'symlink', 'unassigned-leftover', 'changed-content', 'changed-head', 'changed-binding', 'new-subagent'] as const) test(`force refuses unsafe or stale review: ${scenario}`, async () => {
+for (const scenario of ['active', 'queued', 'unknown', 'process', 'primary', 'symlink', 'unassigned-leftover', 'changed-content', 'changed-head', 'changed-binding', 'new-subagent', 'changed-command', 'changed-command-legacy-row'] as const) test(`force refuses unsafe or stale review: ${scenario}`, async () => {
   const f = fixture(); try {
+    if (scenario.startsWith('changed-command')) f.store.save(f.job());
+    // A job the previous schema wrote, with its command inside the row; reopening migrates it.
+    if (scenario.endsWith('legacy-row')) {
+      f.store.db.prepare("UPDATE jobs SET data=? WHERE id='job'").run(JSON.stringify(f.job()));
+      f.store.db.exec("DROP TABLE job_commands; DELETE FROM metadata WHERE key = 'jobCommandsVersion'"); f.restart();
+    }
     const owners = f.owners(), r = await f.review(); assert.equal(r.forceAllowed, true);
+    if (scenario.startsWith('changed-command')) { const j = f.store.job('job')!; j.command = { workspaceStrategy: { branch: 'feat/FIX-1' }, commandId: 'another-launch' }; f.store.save(j); }
     if (scenario === 'active') { owners[0].activeRunId = 'new-run'; owners[0].status = 'running'; }
     if (scenario === 'queued') f.queued();
     if (scenario === 'unknown') f.unknown();
