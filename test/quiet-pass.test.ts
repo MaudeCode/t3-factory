@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store } from '../src/store.ts';
+import { Store, type Job, type Plan, type PlanTicket } from '../src/store.ts';
 import { serviceFixture } from './dispatch-fixture.ts';
 import { fixtureSocket } from './rpc-fixture.ts';
 import { v2Shell, v2Thread } from './v2-fixture.ts';
@@ -105,6 +105,47 @@ for (const [name, steps, bumps] of [
   const before = store.revision;
   await steps(store);
   assert.equal(store.revision - before, bumps);
+});
+
+// Plan notes and a running job's progress timestamps are display only: the row keeps them, the store revision does not move.
+const planTicket = (key: string, note?: string): PlanTicket => ({ id: key, key, title: key, projectId: 'FIX', status: 'todo', priority: 'medium', createdAt: '2026-01-01T00:00:00.000Z', runnable: true, blockedBy: [], done: false, ...note ? { note } : {} });
+const activePlan = (note: string, changes: Partial<Plan> = {}): Plan => ({ id: 'plan', createdAt: '2026-01-01T00:00:00.000Z', target: planTicket('FIX-2', note), tickets: [planTicket('FIX-1', note)], model: 'auto', overrideLimits: false, state: 'active', ...changes });
+const runningJob = (at: string, changes: Partial<Job> = {}): Job => ({ id: 'job', kind: 'ticket', projectId: 'FIX', taskId: 'running', ticketKey: 'FIX-9', threadId: 'thread-running', messageId: 'm', createdAt: '2026-01-01T00:00:00.000Z', state: 'running', reason: 'Claude is executing', lastPersonalActivity: null, reportPath: '/dev/null', prUrls: [], completedAt: null, lastExecutionAt: at, thread: { title: 'Run', status: 'running', branch: 'b', worktreePath: '/w', updatedAt: at, pending: null, background: [] }, ...changes });
+for (const [name, write, bumps] of [
+  ['a plan whose notes alone change', activePlan('quota-reserve'), 0],
+  ['a plan whose state changes', activePlan('personal-provider-running', { state: 'cancelled' }), 1],
+  ['a plan whose ticket list changes', activePlan('personal-provider-running', { tickets: [] }), 1],
+  ['a plan whose target changes', activePlan('personal-provider-running', { target: { ...planTicket('FIX-2'), done: true } }), 1],
+  ['a running job whose progress timestamps alone change', runningJob('2026-01-01T00:01:00.000Z'), 0],
+  ['a running job whose state changes', runningJob('2026-01-01T00:00:00.000Z', { state: 'waiting' }), 1],
+] satisfies [string, Plan | Job, number][]) test(`saving ${name} moves the store revision by ${bumps}`, t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-saves-')), store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  store.savePlan(activePlan('personal-provider-running')); store.save(runningJob('2026-01-01T00:00:00.000Z'));
+  const before = store.revision;
+  if ('tickets' in write) store.savePlan(write); else store.save(write);
+  assert.equal(store.revision - before, bumps);
+  assert.deepEqual('tickets' in write ? store.plan(write.id) : store.job(write.id), write, 'the row holds what was saved');
+});
+
+test('a plan note flapping between hold reasons and a running job advancing its progress timestamps leave the held decision', async t => {
+  const f = quietLane(t);
+  f.store.savePlan(activePlan('personal-provider-running', { tickets: [], target: { ...planTicket('FIX-8', 'personal-provider-running'), runnable: false } }));
+  f.store.save(runningJob(now(), { taskId: 'elsewhere', ticketKey: 'FIX-8' }));
+  const first = await f.pass();
+  await f.pass();
+  const reads = f.reads();
+  verbose(t);
+  const lines = logLines(t) as { event: string; skipped?: true; miss?: string[] }[];
+  for (const note of ['quota-reserve', 'personal-provider-running', 'quota-reserve']) {
+    const plan = f.store.plan('plan')!;
+    f.store.savePlan({ ...plan, target: { ...plan.target!, note } });
+    const at = now();
+    f.store.save({ ...f.store.job('job')!, lastExecutionAt: at, thread: { ...f.store.job('job')!.thread!, updatedAt: at } });
+    assert.deepEqual(await f.pass(), first);
+  }
+  assert.equal(f.reads(), reads, 'no cycle: no inventory, Kanvil, T3 shell, provider or thread-detail read');
+  assert.deepEqual(lines.filter(line => line.event === 'pass').map(line => [line.skipped, line.miss]), [[true, undefined], [true, undefined], [true, undefined]]);
 });
 
 test('background work that takes and releases a ticket lock nobody checked leaves the held decision', async t => {

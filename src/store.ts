@@ -116,6 +116,10 @@ type CheckDecision = Decision & { origin?: DecisionOrigin & { sequence: number; 
 const decisionKeys = ['lastDecision', 'upstreamDecision', 'chainDecision'] as const;
 // Metadata that automatic admission reads, beside jobs and plans: the prepared Up next list, plan order, project rotation, discovery cooldowns and upstream/repair source state.
 const ADMISSION_KEYS = /^(upNext|planOrder|lastProject)$|^(discoveryAfter|discoveryLast|repairWatch|repairExpect|upstreamReviewed|upstreamLatest|upstreamCandidate|upstreamCheckedAt|upstreamCheckError):/;
+// The parts of a job and a plan admission reads. A running job's progress timestamps and a plan's hold notes are display only:
+// rows still persist them, but they leave the revision alone. Time policies that read them run on the quiet-pass deadline.
+const jobInputs = (job: Job) => JSON.stringify({ ...job, lastExecutionAt: undefined, thread: job.thread && { ...job.thread, updatedAt: undefined } });
+const planInputs = (plan: Plan) => JSON.stringify({ ...plan, target: plan.target && { ...plan.target, note: undefined }, tickets: plan.tickets.map(ticket => ({ ...ticket, note: undefined })) });
 const newestDecision = (a: CheckDecision, b: CheckDecision) => (b.origin?.sequence ?? 0) - (a.origin?.sequence ?? 0) || b.at.localeCompare(a.at);
 function selectDecision(checks: CheckDecision[]): CheckDecision | undefined {
   return checks.filter(check => check.reason === 'error').sort(newestDecision)[0]
@@ -219,7 +223,7 @@ export class Store {
   save(job: Job) {
     if (job.historyOnly || this.statement('SELECT id FROM job_history WHERE id=?').get(job.id)) throw new Error('Historical runs are read-only');
     const before = this.job(job.id);
-    if (this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data WHERE jobs.data != excluded.data OR jobs.task_id IS NOT excluded.task_id').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job)).changes) this.revision++;
+    if (this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data WHERE jobs.data != excluded.data OR jobs.task_id IS NOT excluded.task_id').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(job)).changes && (!before || jobInputs(before) !== jobInputs(job))) this.revision++;
     const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
     else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
@@ -244,7 +248,7 @@ export class Store {
   savePlan(plan: Plan) {
     const before = this.plan(plan.id);
     if (before && before.state !== 'active' && plan.state === 'active') return;
-    if (this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE plans.data != excluded.data').run(plan.id, JSON.stringify(plan)).changes) this.revision++;
+    if (this.statement('INSERT INTO plans VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE plans.data != excluded.data').run(plan.id, JSON.stringify(plan)).changes && (!before || planInputs(before) !== planInputs(plan))) this.revision++;
     const detail = { planId: plan.id, ticketKey: plan.target?.key, epicId: plan.epic?.id, tickets: plan.tickets.map(t => t.key) };
     const name = plan.queued ? `Run ${plan.target!.key}` : plan.epic ? `Epic ${plan.epic.title}` : `Chain to ${plan.target!.key}`, count = `${plan.tickets.length} ticket${plan.tickets.length === 1 ? '' : 's'}`;
     if (!before) this.record('plan.created', plan.queued ? `${name} queued` : `${name} started with ${count}${plan.epic ? '' : ' ahead of it'}`, detail);
