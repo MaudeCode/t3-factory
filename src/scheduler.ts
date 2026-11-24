@@ -1749,7 +1749,8 @@ function taskReader(c: Config, kanvil: Kanvil, { cancelledFinished = false, cach
   const tasks = new Map<string, Promise<Task>>(), columns = new Map<string, Promise<string[]>>(), projects = new Set<string>();
   const relationReads = new Map<string, Promise<z.infer<typeof relationsSchema>>>();
   const task = (id: string) => cachedRead(tasks, id, () => (cached ? kanvil.task(id, undefined, true).then(task => kanvil.eligibleTask(task)) : kanvil.task(id)).then(task => { projects.add(task.projectId); return task; }));
-  const relations = (id: string) => cachedRead(relationReads, id, () => (cached ? kanvil.relations(id, false) : kanvil.relations(id)).then(r => relationsSchema.parse(r)));
+  // The fresh path hands over the ticket it already read, so the relations read does not request it again.
+  const relations = (id: string) => cachedRead(relationReads, id, () => (cached ? kanvil.relations(id, false) : task(id).then(known => kanvil.relations(id, true, true, known))).then(r => relationsSchema.parse(r)));
   const done = async (t: Task) => {
     if (cancelledFinished && t.status === 'cancelled') return true;
     const p = c.projects.find(p => p.kanvilId === t.projectId);
@@ -1877,27 +1878,57 @@ async function startEpic(c: Config, store: Store, t3: T3, kanvil: Kanvil, instan
   const { plan, dispatches, started } = await beginPlan(c, store, t3, kanvil, instances, threads, options, skip, { epic: { id: epic.id, title: epic.title, restrictedCount }, tickets }, currentConfig, decide);
   return decision('plan-started', { epic: epic.id, planId: plan.id, plan: store.plan(plan.id), dispatches, message: `Epic ${epic.title} started: ${started} of ${plural(tickets.length, 'ticket')} running now, the rest as they unblock.` });
 }
-// Members may have joined or left since the last pass. Returns the tickets this read refreshed, or nothing when it failed.
-async function refreshEpicPlan(c: Config, store: Store, kanvil: Kanvil, plan: Plan) {
-  const epic = plan.epic!, withoutError = (ticket: PlanTicket) => ticket.note === epic.error ? { ...ticket, note: undefined } : ticket;
-  try {
-    const { tickets, restrictedCount, memberIds } = await backgroundRead(() => epicTree(c, kanvil, epic.id));
-    const fresh = new Map(tickets.map(ticket => [ticket.id, ticket])), listed = new Set(plan.tickets.map(ticket => ticket.id));
-    const ran = new Set(store.jobSummaries().filter(job => job.state !== 'dismissed' && (job.state !== 'complete' || job.createdAt >= plan.createdAt)).map(job => job.taskId));
-    plan.tickets = [
-      ...plan.tickets.flatMap(ticket => {
-        const next = fresh.get(ticket.id);
-        return next ? [withoutError({ ...next, note: ticket.note })] : memberIds.has(ticket.id) || ran.has(ticket.id) ? [withoutError(ticket)] : [];
-      }),
-      ...tickets.filter(ticket => !listed.has(ticket.id)),
-    ];
-    epic.restrictedCount = restrictedCount; delete epic.error;
-    return new Set(fresh.keys());
-  } catch (error) {
+// One reading of a plan's tickets: its Epic's members and what they wait for, then every other ticket it lists.
+// While the feed is synchronized it reads the live projection; final dispatch validation re-reads fresh before any launch.
+type PlanReading = { epic?: Awaited<ReturnType<typeof epicTree>>; epicError?: string; tickets: Map<string, Pick<PlanTicket, 'status' | 'difficulty' | 'hold' | 'done'> | { note: string }> };
+async function readPlan(c: Config, kanvil: Kanvil, plan: Plan, cached: boolean): Promise<PlanReading> {
+  const reading: PlanReading = { tickets: new Map() };
+  if (plan.epic) try { reading.epic = await backgroundRead(() => epicTree(c, kanvil, plan.epic!.id, cached)); } catch (error) {
     if (readContext()?.controller.signal.aborted) throw error;
-    epic.error = safeError(error);
-    log('epic-read-failed', { planId: plan.id, message: epic.error });
+    reading.epicError = safeError(error);
+    log('epic-read-failed', { planId: plan.id, message: reading.epicError });
   }
+  const refreshed = new Set(reading.epic?.tickets.map(ticket => ticket.id)), reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic, cached }), limit = readLimiter();
+  await readAll(planTickets(plan).filter(t => !refreshed.has(t.id)).map(t => limit(async () => {
+    try { const { status, difficulty, hold, done } = await backgroundRead(async () => reader.node(await reader.task(t.id))); reading.tickets.set(t.id, { status, difficulty, hold, done }); }
+    catch (error) { reading.tickets.set(t.id, { note: safeError(error) }); }
+  })));
+  return reading;
+}
+// Both provider lanes advance the same plans. While the feed is synchronized they share one reading per plan until a
+// Kanvil change or reconnect, so a pass woken by T3 or the Store reads nothing. A failed reading is not kept.
+const planReadings = new WeakMap<Kanvil, Map<string, { key: string; pending: Promise<PlanReading> }>>();
+function sharedPlanReading(c: Config, kanvil: Kanvil, plan: Plan) {
+  if (!kanvil.synchronized) return readPlan(c, kanvil, plan, false);
+  const readings = planReadings.get(kanvil) ?? new Map<string, { key: string; pending: Promise<PlanReading> }>(), key = kanvil.readingKey;
+  planReadings.set(kanvil, readings);
+  let entry = readings.get(plan.id);
+  if (entry?.key !== key) {
+    const pending = new ReadContext().run(() => readPlan(c, kanvil, plan, true));
+    const current = entry = { key, pending };
+    readings.set(plan.id, current);
+    const drop = () => { if (readings.get(plan.id) === current) readings.delete(plan.id); };
+    void pending.then(reading => { if (reading.epicError || [...reading.tickets.values()].some(ticket => 'note' in ticket)) drop(); }, drop);
+  }
+  const pending = entry.pending;
+  return readPhase('plan.read', signal => waitFor(pending, signal));
+}
+// Members may have joined or left since the last pass. Returns the tickets the reading refreshed, or nothing when it failed.
+function applyEpicReading(store: Store, plan: Plan, reading: PlanReading) {
+  const epic = plan.epic!, withoutError = (ticket: PlanTicket) => ticket.note === epic.error ? { ...ticket, note: undefined } : ticket;
+  if (!reading.epic) { epic.error = reading.epicError; return; }
+  const { tickets, restrictedCount, memberIds } = reading.epic;
+  const fresh = new Map(tickets.map(ticket => [ticket.id, ticket])), listed = new Set(plan.tickets.map(ticket => ticket.id));
+  const ran = new Set(store.jobSummaries().filter(job => job.state !== 'dismissed' && (job.state !== 'complete' || job.createdAt >= plan.createdAt)).map(job => job.taskId));
+  plan.tickets = [
+    ...plan.tickets.flatMap(ticket => {
+      const next = fresh.get(ticket.id);
+      return next ? [withoutError({ ...structuredClone(next), note: ticket.note })] : memberIds.has(ticket.id) || ran.has(ticket.id) ? [withoutError(ticket)] : [];
+    }),
+    ...tickets.filter(ticket => !listed.has(ticket.id)).map(ticket => structuredClone(ticket)),
+  ];
+  epic.restrictedCount = restrictedCount; delete epic.error;
+  return new Set(fresh.keys());
 }
 // Runs with the Up next inventory rather than on every status write. A failed read keeps the last list.
 async function refreshEpics(c: Config, store: Store, kanvil: Kanvil) {
@@ -1932,24 +1963,19 @@ function epicRows(c: Config, store: Store) {
 
 // Advance every active chain: refresh ticket states, finish chains whose tickets are all done, start what can start within the run limits.
 export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, instances: Map<string, string>, threads: Thread[], only?: string, providerDriver?: string, currentConfig?: () => Config, decide = store.decisionRecorder({ workKind: 'chains', providerDriver })): Promise<Decision[]> {
-  const results: Decision[] = [];
-  for (const original of store.plans('active').filter(p => !only || p.id === only)) {
+  const results: Decision[] = [], active = store.plans('active');
+  if (!only) for (const id of planReadings.get(kanvil)?.keys() ?? []) if (!active.some(p => p.id === id)) planReadings.get(kanvil)!.delete(id);
+  for (const original of active.filter(p => !only || p.id === only)) {
     await backgroundCheckpoint();
     const plan = store.plan(original.id)!;
     if (plan.state !== 'active') continue;
     // The owner can change the plan's overrides while this pass waits on reads and launches. Each launch and each
     // save takes them from the stored plan first, so the pass never uses or writes back the ones it started with.
     const stored = () => { const now = store.plan(plan.id); if (now) plan.overrideLimits = now.overrideLimits; return now; };
-    const refreshed = plan.epic ? await refreshEpicPlan(c, store, kanvil, plan) : undefined;
+    const reading = await sharedPlanReading(c, kanvil, plan);
+    const refreshed = plan.epic ? applyEpicReading(store, plan, reading) : undefined;
     const all = planTickets(plan);
-    const limit = readLimiter();
-    await readAll(all.filter(t => !refreshed?.has(t.id)).map(t => limit(async () => {
-      try {
-        const result = await backgroundRead(async () => { const reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic }), { status, difficulty, hold, done } = await reader.node(await reader.task(t.id)); return { status, difficulty, hold, done }; });
-        Object.assign(t, result);
-      }
-      catch (error) { t.note = safeError(error); }
-    })));
+    for (const t of all) if (!refreshed?.has(t.id) && reading.tickets.has(t.id)) Object.assign(t, reading.tickets.get(t.id));
     if (stored()?.state !== 'active') continue;
     // An Epic also waits for a good read of its members and for any tickets hidden from the factory.
     if (all.every(t => t.done) && !plan.epic?.error && !plan.epic?.restrictedCount) { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); continue; }

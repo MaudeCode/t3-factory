@@ -558,6 +558,10 @@ export class Kanvil {
   get realtime() { return this.watching; }
   /** True while the durable feed is connected, so every ticket change bumps revision. */
   get synchronized() { return this.watching && this.connected; }
+  // A version the projection already holds skips revision, but can still have moved a ticket between Epics.
+  private heldChanges = 0;
+  /** Moves with every ticket event and every reconnect: a reading built from the projection holds until it moves. */
+  get readingKey() { return `${this.connectionEpoch}:${this.revision}:${this.heldChanges}`; }
   private connected = false;
   private subscription?: Promise<void>;
   private streamSignal?: AbortSignal;
@@ -1012,7 +1016,7 @@ export class Kanvil {
               if (!/^(comment|evidence)\./.test(change.type)) {
                 // A version the projection already holds can still have moved a ticket between Epics.
                 if (change.ticketId) this.epicReads.clear();
-                if (this.applyChange(change) !== false) this.revision++;
+                if (this.applyChange(change) !== false) this.revision++; else this.heldChanges++;
                 onChange(change);
               } // Invalidation and notification precede cursor advancement.
             }

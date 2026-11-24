@@ -1,4 +1,4 @@
-import { mockTracker } from './tracker-fixture.ts';
+import { mockTracker, ticket, json, until, fixture } from './tracker-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -541,6 +541,115 @@ for (const joined of [false, true]) test(`whatever the setting, a running Epic k
   await automaticPass(f);
   assert.deepEqual(titles(f), ['FIX-2'], 'other tickets still start');
   assert.match(heldReason(f), /Runs with its Epic/);
+});
+
+// Plan readings through a real Kanvil client over a fetch that records each request. Queued runs are held, so a pass
+// reads and saves the plan but launches nothing, and every request it makes is a plan reading.
+const trackerPlan = async (t: test.TestContext, synchronized: boolean) => {
+  const d = dispatchFixture(t);
+  d.c.projects[0] = { ...d.c.projects[0], kanvilId: 'project', key: 'APP' };
+  d.c.queue.enabled = false;
+  const state = { members: ['a', 'b', 'open'], blocks: [] as [string, string][], gate: undefined as Promise<void> | undefined, held: 0 };
+  const tickets = new Map<string, Record<string, any>>(['a', 'b', 'open', 'dep', 'late'].map((id, n) => [id, ticket({ id, key: `APP-${n + 1}`, number: n + 1, status: ['a', 'b'].includes(id) ? 'done' : 'todo' })]));
+  const events: ReadableStreamDefaultController<Uint8Array>[] = [];
+  let notifications = 0, cursor = 5;
+  const f = fixture(t, async url => {
+    const path = url.pathname.replace('/api/v1', '');
+    if (path === '/checkpoint') return json({ cursor: '5' });
+    if (path === '/events') return new Response(new ReadableStream<Uint8Array>({ start(c) { events.push(c); } }), { headers: { 'content-type': 'text/event-stream' } });
+    if (path === '/workspaces/workspace/epics/epic/tickets') {
+      if (state.gate) { state.held++; await state.gate; }
+      return json({ items: state.members.map(id => tickets.get(id)), total: state.members.length, restrictedCount: 0 });
+    }
+    if (path === '/tickets/resolve') return json({ ticket: tickets.get(url.searchParams.get('ticketId')!) });
+    if (path === '/projects/project/tickets' && url.searchParams.has('parentId')) return json({ items: [], total: 0 });
+    const [, id, relations] = path.match(/^\/projects\/project\/tickets\/([^/]+)(\/relations)?$/) ?? [];
+    if (relations) return json(state.blocks.filter(edge => edge.includes(id)).map(([sourceId, targetId]) => ({ sourceId, targetId, type: 'blocks' })));
+    if (id) return json({ ticket: tickets.get(id), readiness: { ready: true, reasons: [] } });
+    throw new Error(path);
+  });
+  const send = (event: string, data: Record<string, unknown>) => { const id = String(++cursor); events.at(-1)!.enqueue(new TextEncoder().encode(`event: ${event}\nid: ${id}\ndata: ${JSON.stringify({ id, ...data })}\n\n`)); };
+  if (synchronized) {
+    const abort = new AbortController(), stream = f.client.subscribe(() => notifications++, abort.signal);
+    t.after(async () => { abort.abort(); await stream; });
+    await until(() => events.length === 1); events[0].enqueue(new TextEncoder().encode('event: checkpoint\nid: 5\ndata: {"cursor":"5"}\n\n')); await until(() => notifications === 1);
+    await f.client.ensureProjectStream('project'); // Connected long before any pass, as in service.
+  }
+  // A Kanvil change: the tracker's ticket moves to a new version and the feed reports it.
+  const change = async (id: string, fields: Record<string, unknown>) => {
+    const next = { ...tickets.get(id)!, ...fields, version: tickets.get(id)!.version + 1 };
+    tickets.set(id, next);
+    if (!synchronized) return;
+    const seen = notifications; send('change', { projectId: 'project', ticketId: id, type: 'ticket.updated', data: { version: next.version } }); await until(() => notifications > seen);
+  };
+  const node = (id: string) => ({ id, key: tickets.get(id)!.key, title: 'Fixture', projectId: 'project', status: 'todo', priority: 'none', createdAt: '2026-01-01', difficulty: 'high' as const, runnable: true, blockedBy: [], done: false });
+  d.store.savePlan({ id: 'plan', createdAt: new Date().toISOString(), epic: { id: 'epic', title: 'Launch', restrictedCount: 0 }, tickets: ['a', 'b', 'open'].map(node), model: 'auto', overrideLimits: [], state: 'active' });
+  const instances = new Map([['codex', 'codex'], ['claudeAgent', 'claudeAgent']]);
+  // Both provider lanes, as one chains wake runs them, and the requests they made.
+  const lanes = async () => {
+    const before = f.calls.length;
+    await Promise.all(['codex', 'claudeAgent'].map(driver => runPlans(d.c, d.store, d.t3, f.client, instances, [], undefined, driver)));
+    return f.calls.slice(before);
+  };
+  const stored = () => d.store.plan('plan')!, done = () => Object.fromEntries(stored().tickets.map(ticket => [ticket.id, ticket.done]));
+  return { d, f, state, tickets, change, lanes, stored, done, send, notifications: () => notifications };
+};
+
+test('a synchronized chains pass reads each plan once per Kanvil change, shared by both lanes, and nothing after a T3 change', async t => {
+  const p = await trackerPlan(t, true);
+  const once = (requests: string[]) => assert.deepEqual(requests.filter((path, n) => requests.indexOf(path) !== n), [], 'two lanes make the requests of one reading');
+  once(await p.lanes());
+  assert.deepEqual(p.done(), { a: true, b: true, open: false });
+  assert.deepEqual(await p.lanes(), [], 'nothing in Kanvil changed, so a pass woken by T3 makes no request');
+  p.tickets.set('dep', { ...p.tickets.get('dep')! }); p.state.blocks.push(['dep', 'open']); await p.change('open', {});
+  once(await p.lanes());
+  assert.deepEqual(p.stored().tickets.find(ticket => ticket.id === 'open')!.blockedBy, ['dep'], 'a new blocker joins on the next pass');
+  assert.equal(p.stored().tickets.find(ticket => ticket.id === 'dep')!.outside, true);
+  // The client reads the joining ticket first, so the feed reports a version it already holds and revision stays.
+  p.state.members.push('late'); p.tickets.set('late', { ...p.tickets.get('late')!, epicId: 'epic', version: 2 });
+  await p.f.client.task('late', 'project');
+  const revision = p.f.client.revision, seen = p.notifications();
+  p.send('change', { projectId: 'project', ticketId: 'late', type: 'ticket.updated', data: { version: 2 } });
+  await until(() => p.notifications() > seen);
+  assert.equal(p.f.client.revision, revision);
+  once(await p.lanes());
+  assert.ok(p.stored().tickets.some(ticket => ticket.id === 'late'), 'a ticket that joins the Epic is in the plan by the next pass');
+  await p.change('a', { status: 'todo' });
+  once(await p.lanes());
+  assert.equal(p.done().a, false, 'a reopened ticket is unfinished again');
+  assert.deepEqual(await p.lanes(), []);
+  for (const id of ['a', 'open', 'dep', 'late']) await p.change(id, { status: 'done' });
+  await p.lanes();
+  assert.equal(p.stored().state, 'done', 'the plan finishes once every ticket is done');
+});
+
+test('without a synchronized feed every pass reads its plan fresh, a ticket once, and the plan still finishes', async t => {
+  const p = await trackerPlan(t, false);
+  for (let pass = 0; pass < 2; pass++) {
+    const requests = await p.lanes();
+    assert.equal(requests.filter(path => path === '/api/v1/projects/project/tickets/open').length, 2, 'each lane reads the open ticket once, its relations included');
+    assert.equal(requests.filter(path => path === '/api/v1/projects/project/tickets/open/relations').length, 2);
+  }
+  await p.change('open', { status: 'done' });
+  await p.lanes();
+  assert.equal(p.stored().state, 'done');
+});
+
+test('a plan re-ordered, given new overrides or cancelled during a shared reading is not written back with its old state', async t => {
+  const p = await trackerPlan(t, true);
+  p.d.store.savePlan({ ...p.stored(), id: 'other', tickets: [] });
+  const hold = async (during: () => void) => {
+    const gate = deferred(); p.state.gate = gate.promise; p.state.held = 0;
+    await p.change('open', {});
+    const pass = p.lanes();
+    await until(() => p.state.held > 0);
+    during(); p.state.gate = undefined; gate.resolve(); await pass;
+  };
+  await hold(() => { setPlanOverrides(p.d.store, 'plan', ['labels']); orderPlans(p.d.store, ['other', 'plan']); });
+  assert.deepEqual(p.stored().overrideLimits, ['labels']);
+  assert.deepEqual(JSON.parse(p.d.store.get('planOrder')!), ['other', 'plan']);
+  await hold(() => cancelPlan(p.d.store, 'plan'));
+  assert.equal(p.stored().state, 'cancelled');
 });
 
 // Owns the durable manual-run contract; chains above own dependency ordering and override propagation.
