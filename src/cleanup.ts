@@ -38,8 +38,9 @@ const onlyLeftovers = (detail: { terminals: { status: string; hasRunningSubproce
   !detail.checks.some(check => check.state !== 'pass' && !['Terminals', 'Process working directories'].includes(check.name));
 const digest = (data: unknown) => createHash('sha256').update(JSON.stringify(data)).digest('hex');
 const jobPaths = (job: Job) => [job.workspaceCleanup?.path, job.dismissedWorktreePath, job.thread?.worktreePath].filter((p): p is string => !!p);
-const jobIdentity = (j: Job) => [j.id, j.projectId, j.threadId, j.state, j.createdAt, j.completedAt, j.dismissedAt, j.resumedAt, j.command, j.workspaceCleanup, j.workspaceCleanedAt, j.prUrls, j.reportPath,
-  existsSync(j.reportPath) ? digest(readFileSync(j.reportPath, 'utf8')) : null];
+// Ownership compares the launch command, which only a read by ID returns.
+const jobIdentity = (store: Store, id: string) => { const j = store.job(id); return j && [j.id, j.projectId, j.threadId, j.state, j.createdAt, j.completedAt, j.dismissedAt, j.resumedAt, j.command, j.workspaceCleanup, j.workspaceCleanedAt, j.prUrls, j.reportPath,
+  existsSync(j.reportPath) ? digest(readFileSync(j.reportPath, 'utf8')) : null]; };
 const publicJob = (j: Omit<Job, 'command'>) => ({ id: j.id, taskId: j.taskId, ticketKey: j.ticketKey, projectId: j.projectId, threadId: j.threadId, state: j.state,
   title: j.thread?.title, completedAt: j.completedAt, resumedAt: j.resumedAt, prUrls: j.prUrls, workspaceCleanedAt: j.workspaceCleanedAt,
   stage: j.workspaceCleanedAt ? 'complete' : j.workspaceCleanup ? 'detached / removal pending' : 'verification / detach pending',
@@ -163,7 +164,7 @@ export async function inspectCleanup(c: Config, store: Store, t3: T3, kanvil: Ka
   });
   signal.throwIfAborted();
   const hard = checks.filter(c => !c.override && c.state !== 'pass'), overridden = checks.filter(c => c.override && c.state !== 'pass').map(c => `${c.name}: ${c.detail}`);
-  const fingerprint = digest([project, physical?.fingerprint, owners.map(threadIdentity), projections, jobs.map(jobIdentity), checks.map(c => [c.name, c.state, c.override, c.detail])]);
+  const fingerprint = digest([project, physical?.fingerprint, owners.map(threadIdentity), projections, jobs.map(j => jobIdentity(store, j.id)), checks.map(c => [c.name, c.state, c.override, c.detail])]);
   const actions = store.cleanupActions().filter(a => a.targets.some(t => t.projectId === input.projectId && canonicalPath(t.path) === path));
   return { projectId: input.projectId, repository: project.repoPath, path, checkedAt, workspace: physical && { ...physical, status: undefined },
     checks, ownership: !shellKnown ? 'unknown' : jobs.length > 1 || owners.length > 1 ? 'shared' : jobs.length ? 'factory' : owners.length ? 't3-only' : 'orphan',
@@ -464,7 +465,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
           await recent(fresh.bindings);
           if (!forced && blocked(fresh)) throw new Error(fresh.checks.filter(check => check.state !== 'pass').map(check => check.detail).join('; '));
           for (const job of store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id))) { job.workspaceCleanup = { path: fresh.path, branch: fresh.workspace!.branch, head: fresh.workspace!.head }; store.save(job); }
-          const ownedIdentity = digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity));
+          const owned = () => digest(fresh.jobs.map(j => jobIdentity(store, j.id))), ownedIdentity = owned();
           // Detach only the reviewed idle bindings, using T3's expected-path contract. No Stop is authorized here.
           for (const binding of fresh.bindings.filter(t => t.worktreePath)) {
             mutated = true;
@@ -480,7 +481,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
           if (identityOf(afterDetach.workspace) !== identityOf(fresh.workspace) || afterDetach.bindings.length || blocked(afterDetach)) throw new Error('Worktree or live state changed while detaching; removal refused');
           // Detached owners still need fresh bounded reads; their shell status alone cannot prove an empty queue.
           await verifyDetachedOwners(t3, fresh.bindings);
-          if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed');
+          if (owned() !== ownedIdentity) throw new Error('Factory ownership changed');
           const assigned = fresh.jobs.length > 0;
           const final = await inspectWorkspace(project.repoPath, target.path, false, boundary.signal, assigned);
           if (identityOf(final) !== identityOf(fresh.workspace)) throw new Error('Worktree changed before removal');
@@ -489,7 +490,7 @@ export async function manageCleanup(c: Config, store: Store, t3: T3, kanvil: Kan
             if (identityOf(evidence.workspace) !== identityOf(fresh.workspace) || evidence.bindings.length || blocked(evidence)) throw new Error('Final live or filesystem evidence changed; removal refused');
             await verifyDetachedOwners(t3, fresh.bindings);
             await recent([]);
-            if (digest(store.jobs().filter(j => fresh.jobs.some(o => o.id === j.id)).map(jobIdentity)) !== ownedIdentity) throw new Error('Factory ownership changed before removal');
+            if (owned() !== ownedIdentity) throw new Error('Factory ownership changed before removal');
           }, () => { mutated = true; }, assigned);
           action.outcomes.push({ path: target.path, state: 'confirmed', message: result.outcome, physicalRemoval: result.physicalRemoval,
             freeSpaceChange: beforeFree === null ? null : await freeBytes(project.repoPath).then(n => n === null ? null : n - beforeFree) });

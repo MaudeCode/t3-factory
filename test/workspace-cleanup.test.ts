@@ -5,15 +5,16 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { reconcile, cleanupNextWorkspace, busyProviders } from '../src/scheduler.ts';
 import { Store, type Job } from '../src/store.ts';
 import type { Config } from '../src/config.ts';
 import { T3, type Kanvil } from '../src/clients.ts';
 import { publicStopCommand, v2Projection, v2Thread } from './v2-fixture.ts';
 
-const commandScenarios = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-cancelled', 'command-no-pr-cancelled', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
+const commandScenarios = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-settled-resumed', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-missing-report', 'command-invalid-report', 'command-awaiting-report', 'command-not-done', 'command-cancelled', 'command-no-pr-cancelled', 'command-unmerged', 'command-race-run', 'command-race-request', 'command-race-queued', 'command-race-message', 'command-race-worker', 'command-race-child', 'command-race-shared', 'command-race-owner', 'command-race-command', 'command-race-command-legacy-row', 'command-legacy-row', 'command-race-binding', 'command-race-dirty', 'command-race-report', 'command-bounded-unavailable', 'command-bounded-request', 'command-bounded-message', 'command-bounded-worker', 'command-bounded-child', 'command-mixed-monitor'] as const;
 
-for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'ignored-only', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', 'orphan-process', 'half-deleted', 'leftover-directory', ...commandScenarios] as const) {
+for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['clean', 'ignored-only', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'dirty', 'extra-commit', 'active', 'waiting', 'shared', 'resumed', 'unmerged', 'not-done', 'primary', 'process', 'dry-run', 'retry', 'retry-unusual-error', 'retry-detach', 'resumed-after-detach', 'dirty-after-detach', 'branch-change-after-detach', 'path-change-after-detach', 'race-before-remove', 'discovery', 'pushed-under-other-name', 'pushed-under-other-name-extra-commit', 'pushed-under-other-name-dirty', 'pushed-under-other-name-unmerged', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'busy-terminal', 'starting-terminal', 'other-thread-terminal', 'terminal-snapshot-failure', 'idle-subagent', 'active-subagent', 'waiting-subagent', 'resumed-subagent', 'foreign-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'no-pr-extra-commit', 'no-pr-dirty', 'orphaned-run', 'orphaned-run-subagent', 'orphan-process', 'half-deleted', 'leftover-directory', 'legacy-row', ...commandScenarios] as const) {
   test(`completed workspace cleanup: ${mode}: ${scenario}`, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-cleanup-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -48,6 +49,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'command-race-worker') thread.pendingBackgroundTasks.push({ taskId: 'worker', kind: 'future_kind' });
       if (scenario === 'command-race-child') threads.push(v2Thread({ id: 'child', lineage: { parentThreadId: thread.id, relationshipToParent: 'subagent' }, activeRunId: 'child-run' }));
       if (scenario === 'command-race-shared') threads.push(v2Thread({ ...thread, id: 'foreign' }));
+      if (scenario.startsWith('command-race-command')) { const changed = store.job(job.id)!; changed.command = { ...changed.command as object, commandId: randomUUID() }; store.save(changed); }
       if (scenario === 'command-race-owner') { const changed = store.job(job.id)!; changed.threadId = 'foreign'; store.save(changed); }
       if (scenario === 'command-race-binding') thread.worktreePath = repo;
       if (scenario === 'command-race-dirty') writeFileSync(join(tree, 'new-work'), 'keep');
@@ -129,6 +131,12 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         }
       }
       store.save(job);
+      // A job the previous schema wrote: its command inside the row and no recorded branch. Reopening migrates it.
+      if (scenario.endsWith('legacy-row')) {
+        store.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(JSON.stringify(job), job.id);
+        store.db.exec("DROP TABLE job_commands; DELETE FROM metadata WHERE key = 'jobCommandsVersion'");
+        store.close(); store = new Store(join(dir, 'state'));
+      }
       if (scenario === 'command-lifecycle') {
         // Incident shape: a turn yields to a background validation command, its notification resumes the turn, delivery finishes.
         const state = () => [store.job(job.id)!.state, store.job(job.id)!.reason];
@@ -148,7 +156,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         assert.equal(store.events().some(e => e.text === 'FIX-1 needs you'), false, 'no intermediate wait asks the user');
       }
       if (isCommand) {
-        const eligible = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-no-pr-cancelled'].includes(scenario);
+        const eligible = ['command', 'command-lifecycle', 'command-todos', 'command-dismissed', 'command-settled-running', 'command-pending', 'command-error', 'command-rejected', 'command-process', 'command-no-pr-cancelled', 'command-legacy-row'].includes(scenario);
         // Settled jobs first retain dismissal semantics, then maintenance verifies their report.
         await runReconcile(); await runReconcile();
         const stops = () => commands.filter(c => c.type === 'run.interrupt');
@@ -169,6 +177,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
             assert.equal(existsSync(tree), scenario === 'command-process', 'process CWD still holds cleanup after T3 settlement');
           }
         } else assert.ok(store.job(job.id)!.workspaceCleanupError, 'retain a cleanup hold diagnostic');
+        if (scenario.startsWith('command-race-command')) assert.equal(store.job(job.id)!.workspaceCleanupError, 'Factory ownership changed before command stop');
         if (scenario === 'command-cancelled') assert.equal(store.job(job.id)!.workspaceCleanupError, 'Ticket not yet verified Done in Kanvil', 'a delivered ticket still needs a done status');
         return;
       }
@@ -183,7 +192,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'retry' || scenario === 'retry-unusual-error') { assert.equal(existsSync(tree), true); if (scenario === 'retry') assert.equal(store.jobs()[0].workspaceCleanupError, 'GitCommandError: temporary removal failure'); await skipsUntilRetry(); await runReconcile(); }
       if (scenario === 'new-completion' || scenario === 'settled-report' || scenario === 'retry-detach' || scenario === 'monitor' || scenario.includes('terminal') || scenario.endsWith('subagent')) await runReconcile();
       if (scenario === 'monitor-subagent') await runReconcile();
-      const removed = ['clean', 'ignored-only', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'orphan-process', 'half-deleted', 'leftover-directory'].includes(scenario);
+      const removed = ['clean', 'legacy-row', 'ignored-only', 'settled-report', 'renamed', 'renamed-stale-metadata', 'new-completion', 'settled', 'monitor', 'retry', 'retry-unusual-error', 'retry-detach', 'discovery', 'pushed-under-other-name', 'missing-unregistered-worktree', 'missing-registered-worktree', 'idle-terminal', 'idle-subagent', 'grandchild-subagent', 'monitor-subagent', 'no-pr', 'no-pr-not-done', 'orphan-process', 'half-deleted', 'leftover-directory'].includes(scenario);
       if (removed) assert.deepEqual([store.jobs()[0].workspaceCleanupError, store.jobs()[0].workspaceCleanupBlockedAt], [undefined, undefined], 'cleanup completes without a recorded error');
       else if (store.jobs()[0].workspaceCleanupError) await skipsUntilRetry();
       if (scenario === 'idle-terminal') assert.deepEqual(closes, [{ threadId: 'thread', terminalId: 'setup-install-dependencies' }], 'close only the thread\'s idle live terminal, once');
