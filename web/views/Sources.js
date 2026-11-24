@@ -1,6 +1,6 @@
 // Where new tickets come from: inbox triage, discovery, upstream releases and T3 sessions. One view each, in the address.
 import { html } from "../lib/h.js";
-import { config, statusSection, jobs, clock, serverNow } from "../lib/store.js";
+import { config, statusSection, sessionTicketCount, jobs, clock, serverNow } from "../lib/store.js";
 import { search, navigate, follow } from "../lib/router.js";
 import { ago, until, byNewest, stateLabel, toneOf } from "../lib/format.js";
 import { Segmented, Tag, Icon, Empty, Page, Section, RowBody } from "../ui/index.js";
@@ -37,7 +37,7 @@ function Discovery({ lead }) {
 
 // T3 sessions report tickets on their own; the list itself is a view of the Queue.
 function Sessions({ lead }) {
-  const s = statusSection("sessionTickets").value, now = serverNow(), n = s?.rows?.length ?? 0;
+  const s = statusSection("sessionTickets").value, now = serverNow(), n = sessionTicketCount();
   return html`<${Page} title="Sources" hint="Tickets that T3 sessions reported creating, confirmed against the tracker. Nothing here starts on its own.">
     ${lead}
     <${Section} class="list">
@@ -59,7 +59,7 @@ export function Sources() {
   const owed = (statusSection("triageReports").value || []).filter((event) => event.data.stage === "owner").length;
   const due = (statusSection("upstreams").value || []).filter((r) => r.pending).length;
   const tabs = html`<${Segmented} label="Source" value=${view} onChange=${(v) => navigate(PATHS[v])}
-    options=${[...(inboxes ? [["triage", "Inbox triage", owed]] : []), ["discovery", "Discovery"], ["upstream", "Upstream releases", due], ["sessions", "T3 sessions", statusSection("sessionTickets").value?.rows?.length ?? 0]]} />`;
+    options=${[...(inboxes ? [["triage", "Inbox triage", owed]] : []), ["discovery", "Discovery"], ["upstream", "Upstream releases", due], ["sessions", "T3 sessions", sessionTicketCount()]]} />`;
   return view === "triage" ? html`<${Triage} lead=${tabs} />`
     : view === "upstream" ? html`<${Upstream} lead=${tabs} />`
     : view === "sessions" ? html`<${Sessions} lead=${tabs} />`

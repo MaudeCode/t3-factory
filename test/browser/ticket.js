@@ -10,6 +10,7 @@ import { finishConfirmation } from "../../web/lib/confirmation.js";
 const root = document.querySelector("#root");
 const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const until = async (ok, message) => { for (let n = 0; n < 100 && !ok(); n++) await pause(20); assert(ok(), message); };
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 // The tracker's text is untrusted: this description would run script if it were ever parsed as markup.
 const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.\n\n## Outcome\n\nSet `mode` to **on**, see [the guide](https://docs.example/guide) or [this](javascript:window.__ticketXss=true).\n\n```\n' + "x".repeat(400) + '\n```\n\n| Ticket | Note |\n| --- | --- |\n| APP-90 | ' + "long cell text ".repeat(20) + '|';
@@ -28,9 +29,15 @@ const state = {
     triageReports: [{ id: 3, time: ago(50), kind: "triage", text: "IN-1 triaged: duplicate, duplicate of APP-2", data: { ticket: "IN-1", ticketId: "id-IN-1", inboxId: "pin", projectId: "p", project: "Example", stage: "owner", outcome: "triaged", verdict: "duplicate", duplicateOf: "APP-2" } }],
   },
 };
-let reads = [], dispatches = [], decided = [], failing = new Set(), hang = false;
+let reads = [], dispatches = [], decided = [], failing = new Set(), hang = false, sectionRead = null, sectionReads = [];
 window.fetch = async (url, init) => {
   if (url === "/api/history") return Response.json([]);
+  const fields = /^\/api\/state\?fields=(.*)$/.exec(url);
+  if (fields) {
+    sectionReads.push(fields[1]);
+    await sectionRead;
+    return Response.json({ status: Object.fromEntries(fields[1].split(",").map((name) => [name, state.status[name] ?? null])) });
+  }
   if (url.startsWith("/api/triage/reports/")) { decided.push(url); return Response.json({ state: "written" }); }
   if (/^\/api\/jobs\/[\w-]+\/report$/.test(url)) return Response.json({ job: state.status.jobs[0], events: [], report: null });
   if (url === "/api/dispatch") {
@@ -49,11 +56,11 @@ window.fetch = async (url, init) => {
   }
   return Response.json(state);
 };
-async function show(path = "/queue") {
+async function show(path = "/queue", status = state.status) {
   render(null, root);
   reads = []; dispatches = []; failing = new Set(); hang = false;
   store.operations.value = [];
-  store.applyState(state, true);
+  store.applyState({ ...state, status }, true);
   store.auth.value = { mode: "oidc", loginUrl: "/auth/login" };
   store.authenticated.value = true;
   navigate(path, true);
@@ -68,6 +75,16 @@ const tab = (name) => [...panel().querySelectorAll('[aria-label="Ticket view"] [
 const factory = async () => { tab("Factory").click(); await pause(200); };
 
 async function run() {
+  // Now holds no Up next section: the panel asks for it, and shows the position once it arrives.
+  let arrive;
+  sectionRead = new Promise((resolve) => { arrive = resolve; });
+  const { upNext, ...withoutQueue } = state.status;
+  await show("/?ticket=APP-2", withoutQueue);
+  await until(() => sectionReads.length && panel()?.textContent.includes("Synthetic ticket APP-2"), "the panel asks for Up next");
+  assert(sectionReads.join() === "upNext" && !panel().textContent.includes("Up next:") && !panel().querySelector(".icon-alert") && !button("Retry"), "while Up next is on its way the panel shows the ticket without an error");
+  arrive();
+  await until(() => panel().textContent.includes("Up next: 2 of 3"), "the panel shows the Up next position once the section arrives");
+  sectionRead = null;
   await show();
   const path = location.pathname;
   // A modified click keeps the link's own tracker tab; the fixture stops the tab from opening.

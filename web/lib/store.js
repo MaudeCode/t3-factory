@@ -31,6 +31,32 @@ function writeStatus(next, delta = false) {
     for (const [key, value] of Object.entries(next)) statusSection(key).value = value;
   });
 }
+// Epics, Up next and session-ticket rows come only to a page that asks: a view reads one through `needSection`.
+// The first ask reads the section once, then reopens the stream with it; the set only grows while the page is open.
+const held = new Set();
+let wanted = null, widen = () => {};
+export function needSection(key) {
+  if (!held.has(key)) {
+    held.add(key);
+    if (!wanted) { wanted = []; queueMicrotask(readWanted); }
+    wanted.push(key);
+  }
+  return statusSection(key);
+}
+async function readWanted() {
+  const keys = wanted;
+  wanted = null;
+  try {
+    const { status = {} } = await api(`/api/state?fields=${keys}`);
+    writeStatus(Object.fromEntries(keys.filter((key) => Object.hasOwn(status, key)).map((key) => [key, status[key]])), true);
+  } catch { /* the widened stream or the next read brings it */ }
+  widen();
+}
+// Without its rows the stream still sends the session-ticket count and collection error.
+export const sessionTicketCount = () => {
+  const s = statusSection("sessionTickets").value;
+  return s?.rows?.length ?? s?.total ?? 0;
+};
 const snapshot = computed(() => Object.fromEntries(sectionKeys.value.map(key => [key, statusSection(key).value])));
 export const status = {
   get value() { return snapshot.value; },
@@ -150,9 +176,11 @@ function diff(a, b) {
 }
 export async function load(reset = false, { quiet = false, signal } = {}) {
   try {
-    const data = await api("/api/state", { signal });
+    const asked = [...held], data = await api(`/api/state?with=${asked}`, { signal });
     if (signal?.aborted) return;
-    applyState(data, reset);
+    // A section asked for while this read was out is missing from it: merge the rest, so that section stays.
+    const late = [...held].filter((key) => !asked.includes(key));
+    applyState(late.length ? { ...data, delta: true, status: Object.fromEntries(Object.entries(data.status ?? {}).filter(([key]) => !late.includes(key))) } : data, reset);
     return data;
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -576,7 +604,7 @@ export function subscribe() {
   };
   const open = () => {
     if (source || typeof EventSource === "undefined" || Date.now() < nextStream) return;
-    const current = source = new EventSource("/api/events");
+    const current = source = new EventSource(`/api/events?with=${[...held]}`);
     current.addEventListener("state", (e) => {
       if (stopped || source !== current || !authenticated.value) return;
       const data = JSON.parse(e.data);
@@ -625,12 +653,14 @@ export function subscribe() {
     close();
     tick();
   };
+  widen = () => { if (source && !stopped) { close(); open(); } };
   const timer = setInterval(tick, 1000);
   document.addEventListener("visibilitychange", resume);
   window.addEventListener("online", resume);
   window.addEventListener("offline", disconnect);
   return () => {
     stopped = true;
+    widen = () => {};
     clearInterval(timer);
     close();
     pending?.abort();

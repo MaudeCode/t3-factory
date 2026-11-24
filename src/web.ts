@@ -161,6 +161,30 @@ function saveJSON(path: string, data: unknown) {
   writeFileSync(`${path}.tmp`, JSON.stringify(data), { mode: 0o600 });
   renameSync(`${path}.tmp`, path);
 }
+// Status sections a page gets only once it asks: in `with=` on the stream and the state read, or alone in `fields=`.
+const ON_DEMAND = ["epics", "upNext", "sessionTickets"];
+const sectionSet = (value: string | null) => {
+  const names = value ? value.split(",") : [];
+  return names.every(name => ON_DEMAND.includes(name)) ? new Set(names) : undefined;
+};
+// Session tickets without their rows: enough for the shell's problem list and the Sources count.
+const light = (section: unknown) => {
+  const s = section as { at?: unknown; error?: unknown; rows?: unknown[] } | null | undefined;
+  return s ? { at: s.at ?? null, error: s.error ?? null, total: s.rows?.length ?? 0 } : null;
+};
+// A status, or a delta of one, as a page holding `held` sees it.
+function narrow(status: Record<string, unknown>, held: Set<string>) {
+  const part = { ...status };
+  for (const name of ON_DEMAND) {
+    if (held.has(name) || !Object.hasOwn(part, name)) continue;
+    if (name === "sessionTickets") part[name] = light(part[name]);
+    else delete part[name];
+  }
+  return part;
+}
+function shown<T extends { status?: object }>(state: T, held: Set<string>) {
+  return state.status ? { ...state, status: narrow(state.status as Record<string, unknown>, held) } : state;
+}
 export function createFactoryWeb(options: {
   config: WebConfig;
   secret: string;
@@ -216,7 +240,8 @@ export function createFactoryWeb(options: {
       });
   }
   // Subscribers share a baseline, including joiners; the next publish brings all clients forward.
-  const streams = new Set<(data?: string) => void>();
+  // Each stream holds the on-demand sections its page asked for; the rest of the status goes to every page.
+  const streams = new Map<(data?: string) => void, Set<string>>();
   let previous: ReturnType<typeof options.readState> | undefined;
   let pushTimer: NodeJS.Timeout | undefined, stopWatching: (() => void) | undefined;
   const readState = () => { try { return options.readState(); } catch { return undefined; } };
@@ -225,7 +250,7 @@ export function createFactoryWeb(options: {
     const before = previous;
     previous = state;
     if (!before) {
-      for (const push of streams) push(JSON.stringify(state));
+      for (const [push, held] of streams) push(JSON.stringify(shown(state, held)));
       return;
     }
     const old = (before.status ?? {}) as Record<string, unknown>, next = (state.status ?? {}) as Record<string, unknown>;
@@ -234,8 +259,17 @@ export function createFactoryWeb(options: {
     const config = changed(before.config, state.config) ? state.config : undefined;
     const version = before.version !== state.version ? state.version : undefined;
     if (!Object.keys(status).length && !config && version === undefined) return;
-    const data = JSON.stringify({ delta: true, status, config, version, now: state.now });
-    for (const push of streams) push(data);
+    // One frame per set of held sections, shared by every stream that holds that set.
+    const frames = new Map<string, string | undefined>();
+    for (const [push, held] of streams) {
+      const key = [...held].sort().join();
+      if (!frames.has(key)) {
+        const part = narrow(status, held);
+        if (!held.has("sessionTickets") && Object.hasOwn(part, "sessionTickets") && !changed(light(old.sessionTickets), part.sessionTickets)) delete part.sessionTickets;
+        frames.set(key, Object.keys(part).length || config || version !== undefined ? JSON.stringify({ delta: true, status: part, config, version, now: state.now }) : undefined);
+      }
+      push(frames.get(key));
+    }
   };
   const notify = () => {
     if (pushTimer) return;
@@ -301,7 +335,7 @@ export function createFactoryWeb(options: {
     const host = req.headers.host ?? "";
     if (!allowedOrigins.some((value) => new URL(value).host === host))
       return json(res, 403, { message: "Host is not allowed" });
-    const path = new URL(req.url ?? "/", localOrigin).pathname;
+    const address = new URL(req.url ?? "/", localOrigin), path = address.pathname;
     const admin =
       !options.oidc &&
       equal(req.headers.authorization ?? "", `Bearer ${secret}`);
@@ -407,15 +441,22 @@ export function createFactoryWeb(options: {
           options.oidc?.logout(req, res);
           return json(res, 200, { ok: true });
         }
-        if (path === "/api/state" && req.method === "GET")
-          return json(res, 200, options.readState());
+        const query = address.searchParams;
+        if (path === "/api/state" && req.method === "GET") {
+          const state = options.readState(), fields = query.has("fields") && sectionSet(query.get("fields")), held = query.has("with") && sectionSet(query.get("with"));
+          if (fields === undefined || held === undefined) return json(res, 400, { message: `Sections are ${ON_DEMAND.join(", ")}` });
+          if (fields) return json(res, 200, { status: Object.fromEntries([...fields].map(name => [name, (state.status as Record<string, unknown> | undefined)?.[name] ?? null])), now: state.now });
+          return json(res, 200, held ? shown(state, held) : state);
+        }
         if (path === "/api/events" && req.method === "GET") {
+          const held = sectionSet(query.get("with"));
+          if (!held) return json(res, 400, { message: `Sections are ${ON_DEMAND.join(", ")}` });
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
           const push = (data?: string) => { try { if (data) res.write(`event: state\ndata: ${data}\n\n`); } catch { unsubscribe(push); } };
           const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
           const state = previous ?? readState();
-          if (state) { previous = state; push(JSON.stringify(state)); }
-          streams.add(push);
+          if (state) { previous = state; push(JSON.stringify(shown(state, held))); }
+          streams.set(push, held);
           stopWatching ??= options.watch?.(notify);
           req.on("close", () => { unsubscribe(push); clearInterval(heartbeat); });
           return;

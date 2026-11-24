@@ -214,3 +214,52 @@ test("Epic CLI reads directly even while an older scheduler socket is running", 
     assert.equal(reads.length, 2, "the CLI uses the direct record and discussion reads");
   } finally { child.kill(); await new Promise<void>(resolve => tracker.close(() => resolve())); await new Promise<void>(resolve => control.close(() => resolve())); }
 });
+
+// Epics, Up next and session-ticket rows go only to a page that asked for them; the rest of the status always goes.
+test("each stream carries only the heavy sections it asked for, from one shared publish", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "factory-web-sections-")), secret = "d".repeat(64), port = await freePort(), url = `http://127.0.0.1:${port}`;
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  let status: Record<string, unknown> = { jobs: [], epics: [{ id: "e1" }], upNext: { tickets: [{ id: "t1" }], held: [] }, sessionTickets: { at: "a1", error: null, rows: [{ taskId: "s1" }] } };
+  let wake = () => {};
+  const server = createFactoryWeb({ config: webConfigSchema.parse({ publicOrigin: url, host: "127.0.0.1", port }), secret, dataDir: dir,
+    readState: () => ({ config: { enabled: true }, status, now: new Date().toISOString(), version: "v1" }), watch: fn => { wake = fn; return () => {}; } });
+  await new Promise<void>(resolve => server.listen(port, "127.0.0.1", resolve));
+  try {
+    const auth = await pairSession(url, secret);
+    const open = async (query: string) => {
+      const reader = (await fetch(`${url}/api/events${query}`, { headers: auth })).body!.getReader(), decoder = new TextDecoder();
+      let buffered = "";
+      return async () => {
+        while (!buffered.includes("\n\n")) buffered += decoder.decode((await reader.read()).value, { stream: true });
+        const end = buffered.indexOf("\n\n"), { now, ...data } = JSON.parse(buffered.slice(0, end).split("data: ")[1]);
+        buffered = buffered.slice(end + 2);
+        return data;
+      };
+    };
+    const publish = (next: Record<string, unknown>) => { status = { ...status, ...next }; wake(); t.mock.timers.tick(150); };
+    const base = await open(""), all = await open("?with=epics,upNext,sessionTickets"), queue = await open("?with=upNext");
+    const light = (total: number) => ({ at: "a1", error: null, total });
+    assert.deepEqual(await base(), { config: { enabled: true }, status: { jobs: [], sessionTickets: light(1) }, version: "v1" });
+    assert.deepEqual(await all(), { config: { enabled: true }, status, version: "v1" }, "a page that asks for every section gets today's first event");
+    assert.deepEqual((await queue()).status, { jobs: [], upNext: status.upNext, sessionTickets: light(1) });
+
+    publish({ epics: [{ id: "e2" }], upNext: { tickets: [], held: [] }, sessionTickets: { at: "a1", error: null, rows: [{ taskId: "s1" }, { taskId: "s2" }] } });
+    assert.deepEqual(await base(), { delta: true, status: { sessionTickets: light(2) } });
+    assert.deepEqual(await all(), { delta: true, status: { epics: status.epics, upNext: status.upNext, sessionTickets: status.sessionTickets } });
+    assert.deepEqual(await queue(), { delta: true, status: { upNext: status.upNext, sessionTickets: light(2) } });
+
+    // Rows that change without changing the count, and an Epic change, reach only the page that holds them.
+    publish({ epics: [{ id: "e3" }], sessionTickets: { at: "a1", error: null, rows: [{ taskId: "s1" }, { taskId: "s3" }] } });
+    assert.deepEqual(await all(), { delta: true, status: { epics: status.epics, sessionTickets: status.sessionTickets } });
+    publish({ jobs: [{ id: "j1" }] });
+    assert.deepEqual(await base(), { delta: true, status: { jobs: [{ id: "j1" }] } }, "the base page received nothing from the Epic-only publish");
+    assert.deepEqual(await queue(), { delta: true, status: { jobs: [{ id: "j1" }] } });
+
+    const read = (query: string) => fetch(`${url}/api/state${query}`, { headers: auth });
+    assert.deepEqual((await (await read("?fields=upNext")).json()).status, { upNext: status.upNext });
+    assert.equal((await read("?fields=jobs")).status, 400, "only on-demand sections can be named");
+    assert.equal((await fetch(`${url}/api/events?with=bogus`, { headers: auth })).status, 400);
+    assert.deepEqual((await (await read("?with=epics")).json()).status, { jobs: [{ id: "j1" }], epics: status.epics, sessionTickets: light(2) });
+    assert.deepEqual((await (await read("")).json()).status, status, "no fields returns everything as before");
+  } finally { server.closeAllConnections(); server.close(); rmSync(dir, { recursive: true, force: true }); }
+});
