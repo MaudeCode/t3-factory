@@ -282,8 +282,9 @@ export class T3 {
     return { messages: projection.messages, responses };
   }
   /** Every top-level session T3 still exposes, including settled and archived ones; subagent and deleted threads are not sessions. */
-  async sessions() {
-    const shell = z.object({ threads: z.array(sessionSchema), archivedThreads: z.array(sessionSchema).default([]) }).passthrough().parse(this.persistent ? await this.shell() : await this.request('/api/orchestration/shell'));
+  async sessions(): Promise<Session[]> {
+    // A persistent client's shell was validated when it arrived; only the one-shot path reads raw JSON.
+    const shell = this.persistent ? await this.shell() : z.object({ threads: z.array(sessionSchema), archivedThreads: z.array(sessionSchema).default([]) }).passthrough().parse(await this.request('/api/orchestration/shell'));
     return [...shell.threads, ...shell.archivedThreads].filter(t => !t.deletedAt && t.lineage?.relationshipToParent !== 'subagent');
   }
   /** Message and tool-call turn items, oldest first: the recent bounded window without a cursor, else the older page behind `cursor`. */

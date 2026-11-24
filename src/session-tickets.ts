@@ -141,7 +141,7 @@ export function createdTicketId(item: unknown): string | null {
 }
 
 // A Factory start counts once T3 has the thread; a dispatch that was only prepared, or whose outcome is unknown, does not.
-export const launched = (job: Job) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
+export const launched = (job: Pick<Job, 'state' | 'reason'>) => job.state !== 'dispatching' || job.reason === 'T3 accepted dispatch';
 // A ticket the start lists no longer offer: a run launched for it, or it waits as the target of a queued run or a chain.
 // A queued run or chain that is cancelled lists the ticket again.
 export function startedTickets(store: Pick<Store, 'jobSummaries' | 'plans'>) {
@@ -182,11 +182,11 @@ function ticketProject(c: Config, cat: Catalog, task: Pick<z.infer<typeof tracke
 }
 
 // Read one page of a session and record what it reports. Progress is written only with its candidates.
-async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Session) {
+async function scanSession(t3: T3, save: (rec: SessionThread) => void, rec: SessionThread, session: Session) {
   const page = await backgroundRead(() => t3.conversation(session.id, rec.backfill?.cursor));
   if (page.items.some(item => item.type === 'user_message' && item.text && UPSTREAM_REVIEW_REQUEST.test(item.text.trim()))) {
     rec.upstreamReview = true; rec.updatedAt = session.updatedAt; delete rec.backfill;
-    store.saveSessionThread(rec);
+    save(rec);
     return;
   }
   if (rec.upstreamReview === undefined && page.more && !page.cursor) throw new Error('T3 session history has no cursor for origin classification');
@@ -210,7 +210,7 @@ async function scanSession(t3: T3, store: Store, rec: SessionThread, session: Se
     if (page.more && page.cursor && !reachedKnown) rec.backfill = { cursor: page.cursor, updatedAt: session.updatedAt, top };
     else { rec.lastOrdinal = top; rec.updatedAt = session.updatedAt; }
   }
-  store.saveSessionThread(rec);
+  save(rec);
 }
 
 const trackerTask = taskSchema.extend({ workspaceId: z.string().optional() });
@@ -252,7 +252,14 @@ export function refreshTicket(row: SessionTicket, task: Task, project: Pick<Cata
 export async function collectSessionTickets(c: Config, store: Store, t3: T3, kanvil: Kanvil, budget: Budget = {}): Promise<boolean> {
   const limits = { reads: 8, lookups: 10, refreshes: 10, ...budget };
   const now = Date.now(), at = new Date(now).toISOString(), errors: SessionTicketsFailure[] = [];
-  let includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
+  // Each table is read once per batch. Every save goes through these helpers, so later steps see earlier writes.
+  const threads = new Map(store.sessionThreads().map(rec => [rec.id, rec]));
+  const tickets = new Map(store.sessionTickets().map(row => [row.taskId, row]));
+  const saveThread = (rec: SessionThread) => { store.saveSessionThread(rec); threads.set(rec.id, rec); };
+  const saveTicket = (row: SessionTicket) => { tickets.set(row.taskId, store.saveSessionTicket(row)); };
+  // A point read after a wait, for rows another writer may have dismissed or invalidated meanwhile.
+  const reread = (taskId: string) => { const row = store.sessionTicket(taskId)!; tickets.set(taskId, row); return row; };
+  let includeSource = sessionSourceFilter(store.jobSources(), [...threads.values()]);
   let more = false;
   let listed: Set<string> | undefined;
   // Once a tracker step meets an outage, the batch's remaining tracker reads would fail the same way; they wait for the next batch.
@@ -264,26 +271,28 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     listed = new Set(sessions.map(s => s.id));
     for (const session of sessions) {
       await backgroundCheckpoint();
-      const rec: SessionThread = { ...(store.sessionThread(session.id) ?? { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
-      const replay = rec.reportVersion !== REPORT_VERSION;
-      if (!replay && rec.upstreamReview !== undefined && !rec.backfill && rec.updatedAt === session.updatedAt) continue;
-      if (rec.retryAfter && Date.parse(rec.retryAfter) > now) continue;
+      const stored = threads.get(session.id);
+      const replay = stored?.reportVersion !== REPORT_VERSION;
+      if (!replay && stored.upstreamReview !== undefined && !stored.backfill && stored.updatedAt === session.updatedAt) continue;
+      if (stored?.retryAfter && Date.parse(stored.retryAfter) > now) continue;
       if (reads++ >= limits.reads) { more = true; break; }
+      // The scan edits its own copy; the map changes only when the copy is saved.
+      const rec: SessionThread = { ...(stored ? structuredClone(stored) : { id: session.id, pending: [] }), projectId: session.projectId, title: session.title, createdAt: session.createdAt };
       if (replay) {
         // Reuse bounded backfill for old reports; references, provenance and tombstones remain intact.
         delete rec.updatedAt; delete rec.lastOrdinal; delete rec.backfill;
         rec.reportVersion = REPORT_VERSION;
       }
-      try { delete rec.retryAfter; delete rec.error; await scanSession(t3, store, rec, session); }
+      try { delete rec.retryAfter; delete rec.error; await scanSession(t3, saveThread, rec, session); }
       catch (error) {
         // Progress is untouched; the session waits before its next read so an outage cannot loop on the same sessions.
         rec.error = safeError(error); rec.retryAfter = new Date(now + RETRY_MS).toISOString();
-        store.saveSessionThread(rec); errors.push({ step: 'session', subject: session.title, cause: rec.error });
+        saveThread(rec); errors.push({ step: 'session', subject: session.title, cause: rec.error });
       }
-      if (store.sessionThread(session.id)?.backfill) more = true;
+      if (rec.backfill) more = true;
     }
   } catch (error) { errors.push({ step: 'list', cause: safeError(error) }); }
-  includeSource = sessionSourceFilter(store.jobSources(), store.sessionThreads());
+  includeSource = sessionSourceFilter(store.jobSources(), [...threads.values()]);
   let cat: Catalog | undefined;
   let imported: { catalog: Catalog; revision: number; records: Promise<Map<string, Task>> } | undefined;
   const imports = (catalog: Catalog) => {
@@ -305,7 +314,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     }
     return imported.records;
   };
-  const due = store.sessionThreads().filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now)).toSorted(recentFirst);
+  const due = [...threads.values()].filter(rec => includeSource(rec.id) && rec.upstreamReview === false && rec.pending.some(ref => !ref.retryAfter || Date.parse(ref.retryAfter) <= now)).toSorted(recentFirst);
   if (due.length) {
     try { cat = await catalog(c, store, kanvil); } catch (error) { fail({ step: 'catalog', cause: safeError(error) }); }
   }
@@ -324,29 +333,29 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         // Creation evidence: the ticket came into being during this session, no later than the report.
         if (task && created >= Date.parse(rec.createdAt) - CLOCK_SKEW_MS && created <= Date.parse(ref.at) + CLOCK_SKEW_MS) {
           const project = cat!.projects[task.projectId];
-          const row: SessionTicket = store.sessionTicket(task.id) ?? { taskId: task.id, projectId: task.projectId, key: `${project.slug}-${task.number}`, number: task.number, title: task.title, priority: task.priority, status: task.status, labels: [], createdAt: task.createdAt, firstSeenAt: at, refreshedAt: at, sources: [] };
+          const existing = tickets.get(task.id);
+          const row: SessionTicket = existing ?? { taskId: task.id, projectId: task.projectId, key: `${project.slug}-${task.number}`, number: task.number, title: task.title, priority: task.priority, status: task.status, labels: [], createdAt: task.createdAt, firstSeenAt: at, refreshedAt: at, sources: [] };
           const changed = revision !== kanvil.revision;
           refreshTicket(row, task, project, { at, now, changed });
           if (changed) more = true;
           if (!row.sources.some(s => s.threadId === rec.id && s.messageId === ref.messageId)) row.sources.push({ threadId: rec.id, messageId: ref.messageId, projectId: rec.projectId, title: rec.title, at: ref.at });
-          const first = !store.sessionTicket(task.id);
-          store.saveSessionTicket(row);
-          if (first) store.record('session.ticket', `${row.key} was created in session ${rec.title}`, { ticketKey: row.key, taskId: row.taskId, threadId: rec.id });
+          saveTicket(row);
+          if (!existing) store.record('session.ticket', `${row.key} was created in session ${rec.title}`, { ticketKey: row.key, taskId: row.taskId, threadId: rec.id });
         }
         rec.pending.splice(rec.pending.indexOf(ref), 1);
       } catch (error) {
         // An unfinished call is not a failure; it is read again after the usual wait.
-        if (error instanceof ToolCallUnfinished) { ref.retryAfter = new Date(now + RETRY_MS).toISOString(); store.saveSessionThread(rec); continue; }
+        if (error instanceof ToolCallUnfinished) { ref.retryAfter = new Date(now + RETRY_MS).toISOString(); saveThread(rec); continue; }
         ref.attempts++; ref.error = safeError(error); ref.retryAfter = new Date(now + Math.min(ref.attempts, 12) * RETRY_MS).toISOString();
         fail(confirmFailure(ref));
       }
-      store.saveSessionThread(rec);
+      saveThread(rec);
       if (down) break confirm;
     }
   }
   // A failed read keeps the row's last honest reading and waits before trying again, so an outage cannot loop on the same rows.
   const dueAt = (r: SessionTicket) => r.refreshAfter ?? new Date(Date.parse(r.refreshedAt) + REFRESH_MS).toISOString();
-  const retained = () => store.sessionTickets().filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
+  const retained = () => [...tickets.values()].filter(r => !r.dismissedAt && !r.consumed && r.sources.some(s => includeSource(s.threadId, s.title)));
   if (!down && retained().length) {
     try { cat ??= await catalog(c, store, kanvil); }
     catch (error) { fail({ step: 'catalog', cause: safeError(error) }); }
@@ -367,12 +376,12 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
   for (const cached of stale.slice(0, limits.refreshes)) {
     if (down) break;
     await backgroundCheckpoint();
-    let row = store.sessionTicket(cached.taskId)!;
+    let row = reread(cached.taskId);
     if (row.dismissedAt || row.consumed) continue;
     try {
       const revision = kanvil.revision;
       let task = await backgroundRead(() => readTicket(kanvil, cached.taskId, trackedProject(cached.projectId)));
-      row = store.sessionTicket(cached.taskId)!;
+      row = reread(cached.taskId);
       if (row.dismissedAt || row.consumed) continue;
       let project: CatalogProject | undefined;
       if (task) {
@@ -386,21 +395,23 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
         row.missing = true; delete row.refreshError;
         row.refreshAfter = new Date(revision !== kanvil.revision ? 0 : now + RETRY_MS).toISOString();
         if (revision !== kanvil.revision) more = true;
-        store.saveSessionTicket(row);
+        saveTicket(row);
         continue;
       }
-      row = store.sessionTicket(cached.taskId)!;
+      row = reread(cached.taskId);
       if (row.dismissedAt || row.consumed) continue;
       refreshTicket(row, task, project!, { at, now, changed: revision !== kanvil.revision });
       if (revision !== kanvil.revision) more = true;
     } catch (error) { row.refreshError = safeError(error); row.refreshAfter = new Date(now + RETRY_MS).toISOString(); fail({ step: 'refresh', subject: row.key, cause: row.refreshError }); }
-    store.saveSessionTicket(row);
+    saveTicket(row);
   }
   if (!down && stale.length > limits.refreshes) more = true;
-  const jobs = store.jobs();
-  for (const row of store.sessionTickets().filter(r => !r.consumed)) {
-    const job = jobs.find(j => j.taskId === row.taskId && launched(j));
-    if (job) { row.consumed = { jobId: job.id, at }; store.saveSessionTicket(row); }
+  // The first launched job per ticket, in creation order.
+  const starts = new Map<string, string>();
+  for (const job of store.jobSummaries('tickets')) if (job.taskId && launched(job) && !starts.has(job.taskId)) starts.set(job.taskId, job.id);
+  for (const row of [...tickets.values()].filter(r => !r.consumed)) {
+    const jobId = starts.get(row.taskId);
+    if (jobId) { row.consumed = { jobId, at }; saveTicket(row); }
   }
   if (errors.length) recordSessionTicketsFailure(store, errors);
   else {
@@ -408,7 +419,7 @@ export async function collectSessionTickets(c: Config, store: Store, t3: T3, kan
     // A reference whose last lookup failed is still unresolved; the notice stays until a retry succeeds or the read is dropped.
     // A session T3 no longer lists is never read again, so its old read failure is not a current one.
     const lingering = [
-      ...store.sessionThreads().filter(rec => includeSource(rec.id)).flatMap(rec => [...rec.pending.filter(ref => ref.error).map(confirmFailure), ...(rec.error && listed?.has(rec.id) ? [{ step: 'session' as const, subject: rec.title, cause: rec.error }] : [])]),
+      ...[...threads.values()].filter(rec => includeSource(rec.id)).flatMap(rec => [...rec.pending.filter(ref => ref.error).map(confirmFailure), ...(rec.error && listed?.has(rec.id) ? [{ step: 'session' as const, subject: rec.title, cause: rec.error }] : [])]),
       ...retained().filter(row => row.refreshError).map(row => ({ step: 'refresh' as const, subject: row.key, cause: row.refreshError! })),
     ];
     publishFailures(store, lingering, JSON.parse(store.get('sessionTickets:error') || 'null')?.at ?? at);
