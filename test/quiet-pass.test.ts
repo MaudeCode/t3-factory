@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Store, type Job, type Plan, type PlanTicket } from '../src/store.ts';
-import { serviceFixture } from './dispatch-fixture.ts';
+import { Store, type DecisionOrigin, type Job, type Plan, type PlanTicket } from '../src/store.ts';
+import { deferred, serviceFixture } from './dispatch-fixture.ts';
 import { fixtureSocket } from './rpc-fixture.ts';
 import { v2Shell, v2Thread } from './v2-fixture.ts';
 import type { Thread } from '../src/policy.ts';
@@ -389,4 +389,50 @@ test('a skipped pass writes no line, and a dropped held decision names what chan
   writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify({ ...f.c, enabled: false }));
   await lanePass(f);
   assert.deepEqual(lines.map(line => [line.outcome, line.miss]), [['disabled', ['config']]]);
+});
+
+// The web process watches the database through its own connection (Store.watch): a held pass must commit nothing it would see.
+test('a pass that returns its held decision commits nothing and takes no decision sequence', async t => {
+  const f = quietLane(t), observer = new Store(f.c.stateDir);
+  t.after(() => observer.close());
+  const first = await f.pass();
+  const version = observer.dataVersion(), sequence = f.store.get('decisionSequence');
+  assert.deepEqual(await f.pass(), first);
+  assert.equal(observer.dataVersion(), version, 'another connection sees no commit');
+  assert.equal(f.store.get('decisionSequence'), sequence);
+});
+
+test('a pass that runs after a held pass records its result under the next decision sequence', async t => {
+  const f = quietLane(t);
+  await f.pass();
+  const previous = JSON.parse(f.store.get('lastDecision')!).checks.codex.origin.sequence;
+  await f.pass();
+  f.inputs.views++;
+  const result = await f.pass();
+  const check = JSON.parse(f.store.get('lastDecision')!).checks.codex;
+  assert.equal(check.origin.sequence, previous + 1);
+  assert.equal(check.reason, result.reason);
+});
+
+test('two lanes that start A then B select B when B finishes first', async t => {
+  const f = quietLane(t), entered = deferred(), release = deferred();
+  let reads = 0;
+  f.hooks.shell = async () => { if (++reads === 1) { entered.resolve(); await release.promise; } };
+  const a = f.internal.pass({}, 'timer', 0, 'tickets', 'codex');
+  await entered.promise;
+  const b = await f.internal.pass({}, 'timer', 0, 'tickets', 'claudeAgent');
+  release.resolve(); await a;
+  const decision = f.store.currentDecision();
+  assert.equal((decision?.origin as DecisionOrigin).providerDriver, 'claudeAgent');
+  assert.equal(decision?.reason, b.reason);
+});
+
+for (const cause of ['an unreadable configuration', 'a failed tracker connection'] as const) test(`${cause} before the cycle is still recorded as an error decision`, async t => {
+  const f = quietLane(t);
+  if (cause === 'an unreadable configuration') writeFileSync(process.env.T3_FACTORY_CONFIG!, '{');
+  else f.internal.kanvil = Promise.reject(new Error('fixture tracker offline'));
+  await assert.rejects(f.pass());
+  const decision = f.store.currentDecision();
+  assert.equal(decision?.reason, 'error');
+  assert.equal((decision?.origin as DecisionOrigin).providerDriver, 'codex');
 });
