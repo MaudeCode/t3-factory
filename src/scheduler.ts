@@ -904,7 +904,8 @@ function epicHold(c: Config, store: Store, epics?: Epic[]) {
 }
 
 export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, cancelledFinished = false) {
-  const projects = c.projects.filter(p => p.enabled);
+  // A project's switch stops only work the factory picks itself; a named ticket comes from any configured project.
+  const projects = ticketKey ? c.projects : c.projects.filter(p => p.enabled);
   const heldForEpic = ticketKey ? () => '' : epicHold(c, store, c.holdEpicTicketsUntilStarted ? await kanvil.epics().catch(() => undefined) : undefined);
   const all = new Map<string, Task>();
   const listedProjects = ticketKey ? projects.filter(p => ticketKey.startsWith(`${p.key}-`)) : projects;
@@ -927,7 +928,7 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
     if (reason && ticketKey) skipped.push({ key, reason, id: t.id });
     return !reason;
   });
-  if (ticketKey && ![...all.values()].some(t => `${projects.find(p => p.kanvilId === t.projectId)!.key}-${t.number}` === ticketKey)) skipped.push({ key: ticketKey, reason: 'Ticket was not found in the enabled project' });
+  if (ticketKey && ![...all.values()].some(t => `${projects.find(p => p.kanvilId === t.projectId)!.key}-${t.number}` === ticketKey)) skipped.push({ key: ticketKey, reason: 'Ticket was not found in its project' });
   // Caches hold promises so concurrent lookups of one task share a single read.
   const finalStatuses = new Map<string, Promise<string[]>>(c.projects.map(p => [p.kanvilId, Promise.resolve(cancelledFinished ? [...p.doneStatuses, 'cancelled'] : p.doneStatuses)]));
   const fetched = new Map<string, Promise<Task>>();
@@ -1399,8 +1400,8 @@ function discoveryAvailable(project: Project, jobs: Job[], store: Store, skipPro
 
 // A reconcile starts only for a ticket the queue holds back by earlier work, and never beside another open run for it.
 async function pendingReconcile(c: Config, store: Store, kanvil: Kanvil, threads: Thread[], jobs: Pick<Job, 'state' | 'ticketKey'>[], key: string): Promise<PendingReview | { reason: string; message: string }> {
-  const ticketKey = key.trim().toUpperCase(), project = c.projects.find(p => p.enabled && ticketKey.startsWith(`${p.key}-`));
-  if (!/^[A-Z0-9]+-\d+$/.test(ticketKey) || !project) throw new Error('Ticket project is not enabled in the factory settings');
+  const ticketKey = key.trim().toUpperCase(), project = c.projects.find(p => ticketKey.startsWith(`${p.key}-`));
+  if (!/^[A-Z0-9]+-\d+$/.test(ticketKey) || !project) throw new Error('Ticket project is not configured in the factory settings');
   if (jobs.some(job => job.ticketKey === ticketKey && !['complete', 'dismissed'].includes(job.state))) return { reason: 'reconcile-running', message: `${ticketKey} already has an open run.` };
   const held = (await inventory(c, kanvil, threads, store.jobs(), store, ticketKey)).skipped.find(s => s.key === ticketKey);
   if (!held?.conflict) return { reason: 'reconcile-not-needed', message: `${ticketKey} is not held back by earlier work${held ? `: ${held.reason}` : '; start it normally'}.` };
@@ -1436,7 +1437,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
   const skip = skips(options);
   const ticketKey = options.ticket?.trim().toUpperCase();
   if (ticketKey && ((!options.manual && !plan) || !/^[A-Z0-9]+-\d+$/.test(ticketKey))) throw new Error('Enter a ticket key such as APP-123');
-  if (ticketKey && !c.projects.some(p => p.enabled && ticketKey.startsWith(`${p.key}-`))) throw new Error('Ticket project is not enabled in the factory settings');
+  if (ticketKey && !c.projects.some(p => ticketKey.startsWith(`${p.key}-`))) throw new Error('Ticket project is not configured in the factory settings');
   const decision = (reason: string, extra: Record<string, unknown> = {}) => {
     const result = { reason, at: new Date().toISOString(), ...extra };
     recordDecision(result); log('decision', result); return result;
@@ -1447,7 +1448,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     plan?.shell ?? t3.shell(),
     plan?.instanceDrivers ?? t3.providers().then(ps => new Map(ps.map(p => [p.instanceId, p.driver]))),
   ]);
-  for (const p of c.projects.filter(p => p.enabled)) {
+  for (const p of c.projects.filter(p => p.enabled || ticketKey?.startsWith(`${p.key}-`))) {
     const live = shell.projects.find(x => x.id === p.t3Id);
     if (!live || live.workspaceRoot !== p.repoPath) throw new Error(`T3 project mapping mismatch for ${p.name}`);
   }
@@ -1748,7 +1749,7 @@ function taskReader(c: Config, kanvil: Kanvil, { cancelledFinished = false, cach
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, hold: automationHold(t) || undefined, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p?.enabled, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, hold: automationHold(t) || undefined, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
   };
   return { task, relations, done, node, projects, get ids() { return tasks.keys(); } };
 }
@@ -1908,7 +1909,7 @@ async function refreshEpics(c: Config, store: Store, kanvil: Kanvil) {
 function epicRows(c: Config, store: Store) {
   const rows = JSON.parse(store.get('epics') || '[]') as { id: string; title: string; restrictedCount: number; tickets: PlanTicket[] }[], active = activeEpicPlans(store);
   return rows.map(row => {
-    const tickets = row.tickets.map(ticket => ({ ...ticket, runnable: !!c.projects.find(project => project.kanvilId === ticket.projectId)?.enabled }));
+    const tickets = row.tickets.map(ticket => ({ ...ticket, runnable: c.projects.some(project => project.kanvilId === ticket.projectId) }));
     const plan = active.find(plan => plan.epic!.id === row.id);
     return { ...row, tickets, planId: plan?.id ?? null, startBlock: epicStartBlock(c, { title: row.title, archived: false }, tickets, row.restrictedCount, !!plan) };
   });

@@ -168,7 +168,9 @@ function* ticketTiers(candidates: Candidate[]) {
   }
   if (tier.length) yield tier;
 }
-export function selectTicket(candidates: Candidate[], lastProject: string | null, projectOrder: string[]): Candidate | undefined {
+export function selectTicket(candidates: Candidate[], lastProject: string | null, rotation: string[]): Candidate | undefined {
+  // The rotation orders projects; a candidate from a project outside it, such as a named ticket, still counts.
+  const projectOrder = [...new Set([...rotation, ...candidates.map(t => t.projectId)])];
   for (const at of ticketTiers(candidates)) {
     const count = (id: string) => at.filter(t => t.projectId === id).length;
     const start = (projectOrder.indexOf(lastProject ?? '') + 1) % projectOrder.length;

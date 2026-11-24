@@ -473,8 +473,8 @@ window.sessionTests = { phoneHeader, overrides, providerChoice, unavailableProje
 await show();
 
 async function unavailableProjects() {
-  const reason = 'Project disabled in Factory settings';
-  const tickets = [row('disabled', 'APP-1', 'high', { unavailable: reason }), row('missing', 'WEB-9', 'medium', { projectId: 'q', unavailable: 'Project not configured in Factory' }), row('enabled', 'APP-2', 'low')];
+  const reason = 'Project not configured in Factory';
+  const tickets = [row('unconfigured', 'APP-1', 'high', { unavailable: reason }), row('missing', 'WEB-9', 'medium', { projectId: 'q', unavailable: 'Project not configured in Factory' }), row('enabled', 'APP-2', 'low')];
   await show({ sessionTickets: { at, error: null, rows: tickets } });
   for (const ticket of tickets.filter(t => t.unavailable)) {
     const entry = [...root.querySelectorAll('.next')].find(el => el.querySelector('.key').textContent === ticket.key);

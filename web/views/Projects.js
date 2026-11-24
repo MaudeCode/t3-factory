@@ -229,7 +229,7 @@ export function Projects({ lead } = {}) {
             ["Discovery", discovery?.nextAt && Date.parse(discovery.nextAt) > now ? `paused until ${until(discovery.nextAt, now).replace("in ", "")} from now` : discovery?.lastAt ? `last ran ${ago(discovery.lastAt, now)}` : "never run"],
           ]}
         />
-        <${Toggle} path=${["projects", String(i), "enabled"]} label="Included in automatic work" hint=${current.enabled ? "Its ready tickets, discovery, and watched releases are all eligible." : "Nothing starts here until you include it. Open runs still finish."} />
+        <${Toggle} path=${["projects", String(i), "enabled"]} label="Included in automatic work" hint=${current.enabled ? "Its ready tickets, discovery, and watched releases are all eligible." : "The factory picks nothing here by itself. Tickets you start, queue or run in an Epic still start."} />
         <${Segmented} label="Project settings" value=${view} onChange=${setView}
           options=${[["setup", "Setup", pathMismatch ? "!" : undefined], ["scheduling", "Scheduling", ranks + limits || undefined], ["releases", "Releases", current.upstreams?.length || undefined]]} />
         <${View} index=${i} project=${current} />
