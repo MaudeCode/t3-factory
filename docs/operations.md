@@ -148,7 +148,7 @@ Without `--reset-ticket` the tracker is untouched. With it, Factory returns an i
 
 The command runs in the scheduler when it is running. Otherwise the CLI claims the state directory and does the same work, so no restart or database edit is needed. If the scheduler took the request and stopped answering, the CLI reports the outcome as uncertain and does not repeat it; check `t3-factory status` first.
 
-Stopping the service does not stop T3 work. Preserve the ledger, reports, tasks, and worktrees when investigating an uncertain run. T3 remains the place for notifications, human questions, and manual resumption.
+Stopping the service does not stop T3 work. Preserve the ledger, reports, tasks, and worktrees when investigating an uncertain run. T3 remains the place for human questions and manual resumption; Cowtail, when configured, only notifies.
 
 ## Review and merge
 
@@ -168,6 +168,31 @@ t3-factory approval-check OWNER/REPOSITORY PR_NUMBER /absolute/path/to/review-pr
 Only a fresh PR-body `+1` reaction from the verified Codex account, with an unchanged recorded head, satisfies the helper's clean-review evidence check. Old reactions, another actor, or a changed head do not. The skill also handles Codex reviews that contain findings and determines when a correction head needs another review.
 
 The helper supplies review evidence, not the whole merge gate. Follow the supplied skill and use its expected-head guard when merging.
+
+## Phone notifications through Cowtail
+
+Factory can post to a Cowtail instance so the owner's phone hears about the runs that matter:
+
+| Event | Cowtail kind | Urgency |
+| --- | --- | --- |
+| A run needs you | `question` | `today` |
+| A run finished with at least one PR | `done` | `whenever` |
+| An Epic, chain or queued run finished | `done` | `today` |
+
+A run that finished with no PRs, a dismissal, a cancelled plan and a queued run that was only dispatched post nothing. Each item links the run's PRs, carries the ticket key and project ID as context, and uses the dedupe key `t3-factory:<event>:<job or plan ID>:<state>`. The owner can raise or lower urgency in Cowtail with an override on `t3-factory:<kind>`.
+
+To turn them on, register Factory as a Cowtail source and keep the token it prints, which Cowtail shows only once:
+
+```sh
+cowtail sources add t3-factory --name "t3 Factory" --icon /absolute/path/to/icon.png
+```
+
+Then set both halves and re-run the installer so the service reads the new `.env`:
+
+- `cowtail.url` in `config.jsonc`: the Cowtail origin, such as `https://cowtail.example.com`
+- `COWTAIL_TOKEN` in the factory `.env`: the source token
+
+With neither setting, notifications are off. Setting only one fails config validation with a message that names the missing one. Posts are sent in the background with a 10-second timeout and never delay or fail a scheduler write; a failed post is logged as `cowtail-error` with URLs and tokens redacted. Rotate a leaked token with `cowtail sources rotate t3-factory`.
 
 ## macOS services and files
 

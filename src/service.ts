@@ -15,6 +15,7 @@ import { readOperation, savedOperations } from './operations.ts';
 import { recoverOperation, runManualRequest } from './manual-request.ts';
 import { ReadContext, readPhase, waitFor, backgroundRead } from './read-context.ts';
 import { GitHub } from './github-client.ts';
+import { CowtailNotifier, cowtailSettings, type CowtailSettings } from './cowtail.ts';
 import { applySchedule } from './settings.ts';
 import { admitTriage, inboxes, openReports, resolveReport, promotedTickets, triagePass, triageQueue } from './triage.ts';
 
@@ -76,6 +77,7 @@ export class FactoryService {
   private stateDir = '';
   private readonly configPath: string;
   private pollSeconds = 60;
+  private cowtail?: CowtailSettings;
   constructor(configPath: string) { this.configPath = configPath; }
 
   async start() {
@@ -95,6 +97,8 @@ export class FactoryService {
     this.store.onCleanupChange = projectIds => {
       this.scheduleInventory();
     };
+    this.cowtail = cowtailSettings(c);
+    this.store.onEvent = new CowtailNotifier(this.store, () => this.cowtail).notify;
     this.connectT3(c);
     this.control = serveControl(c.stateDir, (command, receivedAt) => this.handle(command, receivedAt));
     this.watcher = watch(dirname(this.configPath), (_, name) => this.onConfigChange(name));
@@ -546,6 +550,7 @@ export class FactoryService {
   private configure(): Config {
     const c = this.settings();
     this.pollSeconds = c.pollSeconds;
+    this.cowtail = cowtailSettings(c);
     if (c.stateDir !== this.stateDir) throw new Error('stateDir changed while running; restart the service for a deliberate state migration');
     if (JSON.stringify(c.t3) !== this.t3Settings) { log('t3-settings-changed'); this.connectT3(c); }
     const projects = c.projects.filter(p => p.kanvilWorkspaceId && p.kanvilWorkspaceId !== c.kanvil.workspaceId).map(p => [p.kanvilId, p.kanvilWorkspaceId]);

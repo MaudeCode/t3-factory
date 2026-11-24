@@ -220,6 +220,8 @@ export class Store {
   // Ticket locks an admission read found held. Only those move the revision when they go away.
   private readonly observedLocks = new Set<string>();
   onCleanupChange?: (projectIds: string[]) => void;
+  // Called after every journal insert; a throwing listener never fails the write.
+  onEvent?: (event: FactoryEvent) => void;
   onClose?: () => void;
   constructor(dir: string) {
     mkdirSync(join(dir, 'reports'), { recursive: true, mode: 0o700 });
@@ -449,7 +451,8 @@ export class Store {
     return ticket;
   }
   record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
-    this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(new Date().toISOString(), kind, jobId, text, JSON.stringify(data));
+    const time = new Date().toISOString(), { lastInsertRowid } = this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(time, kind, jobId, text, JSON.stringify(data));
+    try { this.onEvent?.({ id: Number(lastInsertRowid), time, kind, jobId, text, data }); } catch { /* The journal write stands; a listener reports its own failures. */ }
   }
   events(limit = 100, jobId?: string, kind?: string): FactoryEvent[] {
     const rows = jobId

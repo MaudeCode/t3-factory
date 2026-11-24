@@ -24,6 +24,8 @@
     "url": "https://kanvil.example.com",
     "workspaceId": "YOUR_WORKSPACE_ID"
   },
+  // Optional phone notifications. Set together with COWTAIL_TOKEN in .env, or leave both out.
+  // "cowtail": { "url": "https://cowtail.example.com" },
   "models": [
     {
       "id": "default-model",

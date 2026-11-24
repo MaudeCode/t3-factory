@@ -24,6 +24,7 @@ The scheduler log records a lane's pass only when its wake reason or outcome cha
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |
 | `t3` | Local server origin and private session credential file. |
 | `kanvil` | HTTPS origin and workspace ID. HTTP is allowed only for loopback. The API credential is `KANVIL_API_KEY` in the environment. |
+| `cowtail` | Optional. `{ url }`: the Cowtail HTTPS origin for phone notifications (HTTP only on loopback). The source token is `COWTAIL_TOKEN` in the environment; set both or neither. See [phone notifications](operations.md#phone-notifications-through-cowtail). |
 
 Changes to the JSONC file are read on later cycles. Running jobs retain their original prompts and models. Invalid settings block dispatch. Move state only as a deliberate migration with the services stopped; changing `stateDir` is not a safe way to reset job ownership.
 
