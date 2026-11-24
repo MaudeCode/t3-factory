@@ -6,8 +6,22 @@ import { join } from 'node:path';
 import { commandFor, refuseRunCaller, serveControl, type ControlCommand } from '../src/control.ts';
 import { handleMcp } from '../src/mcp.ts';
 import type { Job } from '../src/store.ts';
+import type { Config } from '../src/config.ts';
+import { dispatchFixture } from './dispatch-fixture.ts';
 
-const call = (stateDir: string, name: string, args: unknown) => handleMcp(stateDir, { id: 1, method: 'tools/call', params: { name, arguments: args } }) as Promise<{ result: { isError?: true; content: { text: string }[] } }>;
+const call = (stateDir: string, name: string, args: unknown, config?: Config) => handleMcp(stateDir, { id: 1, method: 'tools/call', params: { name, arguments: args } }, () => config!) as Promise<{ result: { isError?: true; content: { text: string }[] } }>;
+
+test('factory_status reads its fields from the Store, with each run labelled and without its prompt', async t => {
+  const f = dispatchFixture(t);
+  await f.run();
+  const result = await call(f.c.stateDir, 'factory_status', {}, f.c);
+  assert.equal(result.result.isError, undefined, result.result.content[0].text);
+  const status = JSON.parse(result.result.content[0].text);
+  assert.deepEqual(Object.keys(status), ['enabled', 'concurrency', 'work', 'decision', 'upNext', 'plans', 'jobs', 'recent']);
+  assert.deepEqual(status.concurrency, f.c.concurrency);
+  assert.deepEqual(status.jobs.map((job: Job & { label: string }) => [job.id, job.label]), f.store.jobs().map(job => [job.id, job.ticketKey]));
+  assert.ok(status.jobs.length && status.jobs.every((job: Job) => !('command' in job)));
+});
 
 type Live = { id: string; worktreePath: string | null }[];
 async function scheduler(t: import('node:test').TestContext, jobs: Job[] = [], threads: () => Promise<Live> = async () => []) {

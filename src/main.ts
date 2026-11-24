@@ -6,7 +6,7 @@ import { parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
 import { Store, jobLabel } from './store.ts';
-import { cycle, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, writeStatus } from './scheduler.ts';
+import { cycle, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, readStatus } from './scheduler.ts';
 import { FactoryService } from './service.ts';
 import { callControl, commandFor, dispatchOptions } from './control.ts';
 import { codexApprovalCommand } from './codex-approval.ts';
@@ -55,12 +55,8 @@ if (command === 'web') {
   let inventoryRefresh: Promise<unknown> | undefined, inventoryError: string | undefined;
   const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
     readState: () => {
-      const config = loadConfig(configPath), file = join(config.stateDir, 'status.json');
-      const status = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { jobs: [], streams: [] };
-      const jobs = (status.jobs ?? []).filter((j: any) => j.state !== 'dismissed');
-      status.jobs = [...jobs.filter((j: any) => j.state !== 'complete'), ...jobs.filter((j: any) => j.state === 'complete').slice(-30)].map(compact);
-      status.journal = store.events(80);
-      return { config, status, version, now: new Date().toISOString() };
+      const config = loadConfig(configPath), status = readStatus(config, store);
+      return { config, status: { ...status, jobs: status.jobs.map(compact), journal: store.events(80) }, version, now: new Date().toISOString() };
     },
     cleanupInventory: input => {
       const current = loadConfig(configPath), data = readCleanupCatalog(current, store, input.offset, input.limit, input);
@@ -77,9 +73,10 @@ if (command === 'web') {
       if (!job) return undefined;
       return { job: compact(job), events: store.events(200, id).toReversed(), report: existsSync(job.reportPath) ? JSON.parse(readFileSync(job.reportPath, 'utf8')) : null };
     },
+    // Runs only while a page is subscribed: the scheduler's writes show in the Store's data version, settings in the config file.
     watch: (notify) => {
-      const watchers = [watch(c.stateDir, (_, name) => { if (name === 'status.json') notify(); }), watch(dirname(configPath), (_, name) => { if (name === basename(configPath)) notify(); })];
-      return () => { for (const w of watchers) w.close(); };
+      const stopStore = store.watch(notify), config = watch(dirname(configPath), (_, name) => { if (name === basename(configPath)) notify(); });
+      return () => { stopStore(); config.close(); };
     },
   });
   server.listen(config.port, config.host, () => console.log(`Factory web controls listening on ${config.host}:${config.port}`));
@@ -100,7 +97,6 @@ if (command === 'web') {
       if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; cleanup refused');
       const lazy = { task: async (id: string) => { if (!kanvil) { kanvil = new Kanvil(c.kanvil, c.projects); await kanvil.connect(); } return kanvil.task(id); } } as Kanvil;
       console.log(JSON.stringify(await manageCleanup(c, store, new T3(c.t3), lazy, input, process.argv[3] ?? 'local CLI operator')));
-      if (!['inspect', 'review'].includes(input.type)) writeStatus(c, store);
     }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
   finally { await kanvil?.close().catch(() => {}); store?.close(); }
@@ -113,7 +109,7 @@ if (command === 'web') {
     else {
       const store = new Store(c.stateDir);
       const result = await stopJob(c, store, new T3(c.t3), process.argv[3] ?? '');
-      writeStatus(c, store); store.close();
+      store.close();
       console.log(JSON.stringify(result));
     }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
@@ -131,7 +127,6 @@ if (command === 'web') {
       if (!store.claim()) throw new Error('Scheduler owns this state directory but is not answering; dismissal refused');
       const connect = async () => { if (!kanvil) { kanvil = new Kanvil(c.kanvil, c.projects); await kanvil.connect(); } return kanvil; };
       console.log(JSON.stringify(await dismissDeletedJob(c, store, new T3(c.t3), connect, owner.jobId, owner.resetTicket)));
-      writeStatus(c, store);
     }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
   finally { await kanvil?.close().catch(() => {}); store?.close(); }
@@ -140,7 +135,7 @@ if (command === 'web') {
     const c = loadConfig(configPath);
     const forwarded = await callControl(c.stateDir, { type: 'plan-cancel', planId: process.argv[3] ?? '' });
     if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
-    else { const store = new Store(c.stateDir); console.log(JSON.stringify(cancelPlan(store, process.argv[3] ?? ''))); writeStatus(c, store); store.close(); }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(cancelPlan(store, process.argv[3] ?? ''))); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'plan-order') {
   // Set which active queued runs, chains and Epics get free slots first.
@@ -149,7 +144,7 @@ if (command === 'web') {
     if (owner?.type !== 'plan-order') throw new Error('Usage: t3-factory plan-order PLAN_ID...');
     const forwarded = await callControl(c.stateDir, owner);
     if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
-    else { const store = new Store(c.stateDir); console.log(JSON.stringify(orderPlans(store, owner.planIds))); writeStatus(c, store); store.close(); }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(orderPlans(store, owner.planIds))); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'plan-override') {
   // Change the limits an active chain or Epic overrides; no flag means it respects them all from here on.
@@ -158,14 +153,14 @@ if (command === 'web') {
     if (owner?.type !== 'plan-override') throw new Error('Usage: t3-factory plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers]');
     const forwarded = await callControl(c.stateDir, owner);
     if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
-    else { const store = new Store(c.stateDir); console.log(JSON.stringify(setPlanOverrides(store, owner.planId, owner.overrideLimits))); writeStatus(c, store); store.close(); }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(setPlanOverrides(store, owner.planId, owner.overrideLimits))); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'session-dismiss') {
   try {
     const c = loadConfig(configPath);
     const forwarded = await callControl(c.stateDir, { type: 'session-dismiss', taskId: process.argv[3] ?? '' });
     if (forwarded) { console.log(JSON.stringify(forwarded.data)); process.exitCode = forwarded.code; }
-    else { const store = new Store(c.stateDir); console.log(JSON.stringify(dismissSessionTicket(store, process.argv[3] ?? ''))); writeStatus(c, store); store.close(); }
+    else { const store = new Store(c.stateDir); console.log(JSON.stringify(dismissSessionTicket(store, process.argv[3] ?? ''))); store.close(); }
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'triage-run') {
   // Triage now: one forced pass in the running scheduler, past the pause and the quota reserve.
@@ -194,7 +189,7 @@ if (command === 'web') {
     }
   } catch (e) { console.log(JSON.stringify({ message: safeError(e) })); process.exitCode = 1; }
 } else if (command === 'mcp') {
-  serveMcp(loadConfig(configPath).stateDir);
+  serveMcp(loadConfig(configPath).stateDir, () => loadConfig(configPath));
 } else if (command === 'web-pair') {
   try {
     const { config, secret, oidc } = webSettings();
@@ -252,7 +247,7 @@ if (command === 'web') {
   }
 } else if (command === 'status') {
   const c = loadConfig(configPath), store = new Store(c.stateDir);
-  console.log(JSON.stringify(writeStatus(c, store), null, 2)); store.close();
+  console.log(JSON.stringify(readStatus(c, store), null, 2)); store.close();
 } else if (command === 'run') {
   const service = new FactoryService(configPath);
   const shutdown = () => { service.stop().finally(() => process.exit(0)); };
@@ -288,12 +283,10 @@ if (command === 'web') {
       log('decision', result as Record<string, unknown>);
       if (!['dispatched', 'would-dispatch', 'plan-started'].includes((result as { reason: string }).reason)) process.exitCode = 1;
     }
-    writeStatus(c, store);
   } catch (e) {
     const message = safeError(e); log('error', { message });
     if (store) {
       (decide ?? store.decisionRecorder({ workKind: 'tickets', manual: options.manual }))({ reason: 'error', message, at: new Date().toISOString() });
-      try { writeStatus(loadConfig(configPath), store); } catch { /* Invalid config is already logged. */ }
     }
     process.exitCode = 1;
   } finally { store?.close(); }

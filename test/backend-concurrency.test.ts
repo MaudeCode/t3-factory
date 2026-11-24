@@ -6,13 +6,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { writeStatus, log, refreshQuota } from '../src/scheduler.ts';
+import { readStatus, log, refreshQuota } from '../src/scheduler.ts';
 import { readModelQuota } from '../src/models.ts';
 import { dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts';
 import { cycle } from '../src/scheduler.ts';
 import { ReadContext } from '../src/read-context.ts';
 import type { GitHub } from '../src/github-client.ts';
-import { Store } from '../src/store.ts';
+import { Store, type Job } from '../src/store.ts';
 
 for (const workKind of ['upstream', 'chains', 'tickets'] as const) test(`${workKind} check failure recovers in its own persisted domain`, async t => {
   const f = serviceFixture(t);
@@ -26,10 +26,10 @@ for (const workKind of ['upstream', 'chains', 'tickets'] as const) test(`${workK
   });
   const key = workKind === 'upstream' ? 'upstreamDecision' : workKind === 'chains' ? 'chainDecision' : 'lastDecision';
   await assert.rejects(f.internal.pass({}, 'fixture', 0, workKind, 'codex'), /ECONNREFUSED/);
-  assert.equal(writeStatus(f.c, f.store).decision?.reason, 'error');
+  assert.equal(readStatus(f.c, f.store).decision?.reason, 'error');
   refused = false;
   const recovered = await f.internal.pass({}, 'fixture', 0, workKind, 'codex');
-  assert.notEqual(writeStatus(f.c, f.store).decision?.reason, 'error', 'a successful check must retire its recovered refusal');
+  assert.notEqual(readStatus(f.c, f.store).decision?.reason, 'error', 'a successful check must retire its recovered refusal');
   assert.equal(JSON.parse(f.store.get(key)!).origin.workKind, workKind);
   assert.equal(JSON.parse(f.store.get(key)!).reason, recovered.reason);
   assert.ok(f.store.events().some(event => event.kind === 'decision' && /ECONNREFUSED/.test(event.text)), 'recovery retains historical evidence');
@@ -46,20 +46,20 @@ test('unrelated workers cannot clear a failure or replace a manual outcome', asy
   t.mock.method(f.t3, 'shell', shell);
   for (const [kind, driver] of [['upstream', 'claudeAgent'], ['chains', 'codex'], ['tickets', 'codex']]) {
     await f.internal.pass({}, 'fixture', 0, kind, driver);
-    assert.equal(writeStatus(f.c, f.store).decision?.message, 'fixture upstream offline');
+    assert.equal(readStatus(f.c, f.store).decision?.message, 'fixture upstream offline');
   }
   await f.internal.pass({}, 'fixture', 0, 'upstream', 'codex');
-  assert.equal(writeStatus(f.c, f.store).decision?.ticket, manual.ticket);
-  assert.equal(writeStatus(f.c, f.store).decision?.reason, manual.reason);
+  assert.equal(readStatus(f.c, f.store).decision?.ticket, manual.ticket);
+  assert.equal(readStatus(f.c, f.store).decision?.reason, manual.reason);
 });
 
 test('a fresh manual check recovers a failed manual outcome', async t => {
   const f = serviceFixture(t);
   await assert.rejects(f.internal.pass({ manual: true, model: 'missing' }, 'fixture', 0), /Unknown model/);
-  assert.equal(writeStatus(f.c, f.store).decision?.reason, 'error');
+  assert.equal(readStatus(f.c, f.store).decision?.reason, 'error');
   const recovered = await f.internal.pass({ manual: true, model: 'sol', ticket: 'FIX-1' }, 'fixture', 0);
   assert.equal(recovered.reason, 'dispatched');
-  assert.equal(writeStatus(f.c, f.store).decision?.reason, 'dispatched');
+  assert.equal(readStatus(f.c, f.store).decision?.reason, 'dispatched');
 });
 
 for (const olderFails of [true, false]) test(`stale upstream completion cannot overwrite a newer check: olderFails=${olderFails}`, async t => {
@@ -81,7 +81,7 @@ for (const olderFails of [true, false]) test(`stale upstream completion cannot o
     if (!olderFails) await assert.rejects(newer, /newer refused/);
     else await newer;
   } finally { release.resolve(); await settled; }
-  assert.equal(writeStatus(f.c, f.store).decision?.reason === 'error', !olderFails);
+  assert.equal(readStatus(f.c, f.store).decision?.reason === 'error', !olderFails);
   if (olderFails) assert.ok(f.store.events().some(event => /older refused/.test(event.text)));
 });
 
@@ -93,16 +93,16 @@ for (const legacy of ['transport', 'unknown', 'manual']) test(`legacy ${legacy} 
   f.store.decide(saved);
   f.store.close();
   let restarted = new Store(f.c.stateDir); f.internal.store = restarted;
-  assert.deepEqual(writeStatus(f.c, restarted).decision, saved, 'restart and elapsed time alone prove no recovery');
+  assert.deepEqual(readStatus(f.c, restarted).decision, saved, 'restart and elapsed time alone prove no recovery');
   t.mock.method(f.t3, 'shell', async () => { throw new Error('fixture still offline'); });
   await assert.rejects(f.internal.pass({}, 'fixture', 0, 'upstream', 'codex'), /still offline/);
-  assert.equal(writeStatus(f.c, restarted).decision?.reason, 'error');
+  assert.equal(readStatus(f.c, restarted).decision?.reason, 'error');
   restarted.close(); restarted = new Store(f.c.stateDir); f.internal.store = restarted;
-  assert.equal(writeStatus(f.c, restarted).decision?.reason, 'error', 'scoped failures also survive restart');
+  assert.equal(readStatus(f.c, restarted).decision?.reason, 'error', 'scoped failures also survive restart');
   t.mock.method(f.t3, 'shell', async () => ({ threads: [], projects: [] }));
   const recovered = await f.internal.pass({}, 'fixture', 0, 'upstream', 'codex');
-  assert.equal(writeStatus(f.c, restarted).decision?.reason, legacy === 'transport' ? recovered.reason : saved.reason);
-  if (legacy === 'manual') assert.equal(writeStatus(f.c, restarted).decision?.ticket, 'FIX-99');
+  assert.equal(readStatus(f.c, restarted).decision?.reason, legacy === 'transport' ? recovered.reason : saved.reason);
+  if (legacy === 'manual') assert.equal(readStatus(f.c, restarted).decision?.ticket, 'FIX-99');
   if (legacy === 'transport') assert.ok(restarted.events().some(event => /118ms/.test(event.text)));
 });
 
@@ -163,11 +163,27 @@ test('status keeps recent history bounded and never loads historical prompts', a
   const base = f.store.jobs()[0];
   for (let i = 0; i < 25; i++) f.store.archiveJob({ ...base, id: `history-${i}`, threadId: `thread-${i}`, state: 'complete', completedAt: new Date(Date.UTC(2026, 0, i + 1)).toISOString(), command: { initialMessage: { text: 'x'.repeat(100_000) } } });
   t.mock.method(f.store, 'history', () => { assert.fail('status must not materialize the entire history'); });
-  writeStatus(f.c, f.store);
-  const status = JSON.parse(readFileSync(join(f.c.stateDir, 'status.json'), 'utf8'));
+  const status = readStatus(f.c, f.store);
   assert.equal(status.recent.length, 15);
   assert.equal(status.recent[0].id, 'history-24');
   assert.ok(status.recent.every((job: any) => !('command' in job)));
+});
+
+test('status lists live runs and the last 30 finished ones from the state index, never dismissed runs', t => {
+  const f = dispatchFixture(t), job: Job = { id: '', kind: 'ticket', projectId: 'FIX', taskId: null, ticketKey: 'FIX-1', threadId: '', messageId: 'm', createdAt: new Date().toISOString(), state: 'dismissed', reason: 'Fixture', lastPersonalActivity: null, reportPath: '', prUrls: [], completedAt: null };
+  f.store.db.exec('BEGIN');
+  for (let i = 0; i < 1000; i++) f.store.save({ ...job, id: `dismissed-${i}`, threadId: `d-${i}` });
+  for (let i = 0; i < 40; i++) f.store.save({ ...job, id: `complete-${i}`, threadId: `c-${i}`, state: 'complete' });
+  for (const state of ['dispatching', 'running', 'waiting'] as const) f.store.save({ ...job, id: state, threadId: state, state });
+  f.store.db.exec('COMMIT');
+  const prepared = t.mock.method(f.store.db, 'prepare');
+  const status = readStatus(f.c, f.store);
+  assert.deepEqual(status.jobs.slice(0, 3).map(j => j.id), ['dispatching', 'running', 'waiting']);
+  assert.deepEqual(status.jobs.slice(3).map(j => j.id), Array.from({ length: 30 }, (_, i) => `complete-${i + 10}`), 'the 30 newest finished runs, oldest first');
+  assert.deepEqual(f.store.activeJobs().map(j => j.id), ['dispatching', 'running', 'waiting']);
+  const sql = prepared.mock.calls.map(call => call.arguments[0]).find(sql => sql.includes('WHERE state IN'));
+  const plan = f.store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map(row => row.detail).join('; ');
+  assert.match(plan, /USING INDEX jobs_state/);
 });
 
 for (const lane of ['reconcile', 'inventory', 'automatic', 'upstream', 'workspace-cleanup', 'cleanup-inventory', 'session-tickets', 'quota-refresh']) test(`held ${lane} work cannot block dispatch or unrelated Stop`, async t => {
@@ -293,16 +309,17 @@ for (const projectId of ['OTHER', 'FIX']) test(`final validation scopes event ch
   assert.equal(f.launches.length, projectId === 'FIX' ? 0 : 1);
 });
 
-test('status stage bursts coalesce without losing current operation progress', async t => {
+test('status stage bursts write serviceWork at most once a second without losing current operation progress', async t => {
   const f = serviceFixture(t);
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  let writes = 0;
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const writes: number[] = [];
   const set = f.store.set.bind(f.store);
-  t.mock.method(f.store, 'set', (key: string, value: string) => { if (key === 'serviceWork') writes++; set(key, value); });
-  for (let n = 0; n < 50; n++) f.internal.publishWork();
-  assert.equal(writes, 0);
-  t.mock.timers.tick(100);
-  assert.equal(writes, 1, 'one status publication handles the entire stage burst');
+  t.mock.method(f.store, 'set', (key: string, value: string) => { if (key === 'serviceWork') writes.push(Date.now()); set(key, value); });
+  for (let n = 0; n < 50; n++) { f.internal.publishWork(); t.mock.timers.tick(20); }
+  const last = Date.now();
+  t.mock.timers.tick(1000);
+  assert.ok(writes.every((at, i) => i === 0 || at - writes[i - 1] >= 1000), `writes at ${writes.map(at => at - writes[0]).join(', ')} ms`);
+  assert.ok(writes.at(-1)! >= last, 'the last stage of the burst is persisted');
 });
 
 test('service validates its configured path independently of the CLI environment', async t => {

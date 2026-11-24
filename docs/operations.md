@@ -6,7 +6,7 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 
 | Command | Effect |
 | --- | --- |
-| `status` | Reads the local ledger and writes a current status snapshot. |
+| `status` | Prints the current status, read from the local ledger. |
 | `doctor` | Checks live integrations and reports a possible decision without dispatching. With `triage` configured, it also runs the triage sandbox canary and exits non-zero unless the CLI refuses both probes. |
 | `once --dry-run` | Previews a cycle using the current enabled state and policy. |
 | `pause` / `resume` | Disables or enables new automatic ticket and discovery work. |
@@ -189,7 +189,6 @@ The standard installer uses these paths:
 | `~/Library/Logs/t3-factory*.log` | Scheduler, web and deployer logs |
 | `~/.local/share/t3-factory/deploy` | Deployer checkout and last tried tag |
 | `<stateDir>/state.sqlite` | Job ledger |
-| `<stateDir>/status.json` | Status snapshot |
 | `<stateDir>/reports` | Agent reports |
 | `<stateDir>/web-requests` | Web dispatch request records |
 

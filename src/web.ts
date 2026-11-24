@@ -213,12 +213,19 @@ export function createFactoryWeb(options: {
       });
   }
   // Live updates: every open event stream receives the full state whenever the factory writes it.
-  const streams = new Set<() => void>();
-  let pushTimer: NodeJS.Timeout | undefined;
-  const stopWatching = options.watch?.(() => {
+  // The watch runs only while a stream is open, and one state read serves every stream.
+  const streams = new Set<(data?: string) => void>();
+  let pushTimer: NodeJS.Timeout | undefined, stopWatching: (() => void) | undefined;
+  // A failed read (an invalid config, a busy database) skips this push; the next change tries again.
+  const readState = () => { try { return JSON.stringify(options.readState()); } catch { return undefined; } };
+  const notify = () => {
     clearTimeout(pushTimer);
-    pushTimer = setTimeout(() => { for (const push of streams) push(); }, 150);
-  });
+    pushTimer = setTimeout(() => { const data = streams.size ? readState() : undefined; if (data) for (const push of streams) push(data); }, 150);
+  };
+  const unsubscribe = (push: (data?: string) => void) => {
+    streams.delete(push);
+    if (!streams.size) { stopWatching?.(); stopWatching = undefined; clearTimeout(pushTimer); }
+  };
   const sign = (value: string) =>
     createHmac("sha256", secret).update(value).digest("base64url");
   const authenticated = (req: IncomingMessage) => {
@@ -375,11 +382,12 @@ export function createFactoryWeb(options: {
           return json(res, 200, options.readState());
         if (path === "/api/events" && req.method === "GET") {
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
-          const push = () => { try { res.write(`event: state\ndata: ${JSON.stringify(options.readState())}\n\n`); } catch { streams.delete(push); } };
+          const push = (data?: string) => { try { if (data) res.write(`event: state\ndata: ${data}\n\n`); } catch { unsubscribe(push); } };
           const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
           streams.add(push);
-          req.on("close", () => { streams.delete(push); clearInterval(heartbeat); });
-          return push();
+          stopWatching ??= options.watch?.(notify);
+          req.on("close", () => { unsubscribe(push); clearInterval(heartbeat); });
+          return push(readState());
         }
         if (path === "/api/history" && req.method === "GET")
           return json(res, 200, options.history?.() ?? []);

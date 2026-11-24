@@ -2,27 +2,25 @@
 // control socket, so agents get the same limits and locks as the CLI and web app. Triage decisions (they are recorded as the owner's) and settings are not exposed.
 // `dispatch` takes limit overrides, a model and a provider only from the owner's sessions: it sends this server's working directory,
 // and the scheduler refuses them when that is inside an unfinished run's worktree (`refuseRunCaller`), so runs cannot lift limits for work they queue.
-import { existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { join } from 'node:path';
 import { z } from 'zod';
 import { callControl, dispatchOptions, type ControlCommand } from './control.ts';
-import { dispatchProviderSchema, overridableLimits } from './config.ts';
+import { dispatchProviderSchema, overridableLimits, type Config } from './config.ts';
+import { readStatus } from './scheduler.ts';
+import { Store } from './store.ts';
 
 const id = z.string().regex(/^[\w-]{1,64}$/);
-type Tool = { description: string; input: z.ZodObject; command?: (input: any) => ControlCommand; read?: (stateDir: string) => unknown };
-// Status fields an agent needs to pick a run, plan or report; the rest of status.json feeds the web page.
+type Tool = { description: string; input: z.ZodObject; command?: (input: any) => ControlCommand; read?: (c: Config) => unknown };
+// Status fields an agent needs to pick a run, plan or report; the rest of the status feeds the web page.
 const statusFields = ['enabled', 'concurrency', 'work', 'decision', 'upNext', 'plans', 'jobs', 'recent'] as const;
 
 export const tools: Record<string, Tool> = {
   factory_status: {
     description: 'Factory state: whether dispatch is enabled, concurrency, the current decision, up next, Epic plans, and runs (jobs) and recent runs.',
     input: z.object({}).strict(),
-    read: stateDir => {
-      const file = join(stateDir, 'status.json');
-      if (!existsSync(file)) throw new Error('The factory has not written its status yet');
-      const status = JSON.parse(readFileSync(file, 'utf8'));
-      return Object.fromEntries(statusFields.map(key => [key, status[key]]));
+    read: c => {
+      const store = new Store(c.stateDir);
+      try { return readStatus(c, store, statusFields); } finally { store.close(); }
     },
   },
   get_ticket: {
@@ -77,12 +75,12 @@ export const tools: Record<string, Tool> = {
 
 const text = (value: unknown, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(value) }], ...isError ? { isError } : {} });
 
-async function callTool(stateDir: string, name: string, args: unknown) {
+async function callTool(stateDir: string, name: string, args: unknown, config: () => Config) {
   const tool = Object.hasOwn(tools, name) ? tools[name] : undefined;
   if (!tool) return text({ message: `Unknown tool: ${name}` }, true);
   try {
     const input = tool.input.parse(args ?? {});
-    if (tool.read) return text(tool.read(stateDir));
+    if (tool.read) return text(tool.read(config()));
     const result = await callControl(stateDir, tool.command!(input));
     if (!result) return text({ message: 'The factory scheduler is not running' }, true);
     return text(result.data, result.code !== 0);
@@ -92,22 +90,22 @@ async function callTool(stateDir: string, name: string, args: unknown) {
 }
 
 // One JSON-RPC message in, its response out (undefined for notifications).
-export async function handleMcp(stateDir: string, message: { id?: string | number; method?: string; params?: any }) {
+export async function handleMcp(stateDir: string, message: { id?: string | number; method?: string; params?: any }, config: () => Config) {
   const reply = (result: unknown) => ({ jsonrpc: '2.0', id: message.id, result });
   if (message.id === undefined) return undefined;
   if (message.method === 'initialize') return reply({ protocolVersion: message.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 't3-factory', version: '0.1.0' } });
   if (message.method === 'ping') return reply({});
   if (message.method === 'tools/list') return reply({ tools: Object.entries(tools).map(([name, tool]) => ({ name, description: tool.description, inputSchema: z.toJSONSchema(tool.input, { io: 'input' }) })) });
-  if (message.method === 'tools/call') return reply(await callTool(stateDir, message.params?.name, message.params?.arguments));
+  if (message.method === 'tools/call') return reply(await callTool(stateDir, message.params?.name, message.params?.arguments, config));
   return { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } };
 }
 
-export function serveMcp(stateDir: string) {
+export function serveMcp(stateDir: string, config: () => Config) {
   const lines = createInterface({ input: process.stdin });
   lines.on('line', async line => {
     if (!line.trim()) return;
     let response;
-    try { response = await handleMcp(stateDir, JSON.parse(line)); }
+    try { response = await handleMcp(stateDir, JSON.parse(line), config); }
     catch { response = { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }; }
     if (response) process.stdout.write(JSON.stringify(response) + '\n');
   });

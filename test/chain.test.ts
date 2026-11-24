@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { Store } from '../src/store.ts';
-import { cycle, runPlans, cancelPlan, setPlanOverrides, orderPlans, refreshInventory, writeStatus } from '../src/scheduler.ts';
+import { cycle, runPlans, cancelPlan, setPlanOverrides, orderPlans, refreshInventory, readStatus } from '../src/scheduler.ts';
 import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
@@ -391,7 +391,7 @@ test('a held parent with unfinished children does not block its Epic, and its ch
   const f = epicFixture(t, 'parent', 'a', 'b');
   parentOf(f, 'parent', 'a', 'b');
   await refreshInventory(f.c, f.store, f.t3, f.kanvil);
-  assert.equal(writeStatus(f.c, f.store).epics.find(row => row.id === 'epic')!.startBlock, null, 'the page shows the same answer');
+  assert.equal(readStatus(f.c, f.store).epics.find(row => row.id === 'epic')!.startBlock, null, 'the page shows the same answer');
   const started = await startEpic(f);
   assert.equal(started.reason, 'plan-started', JSON.stringify(started));
   assert.deepEqual(titles(f), ['FIX-2', 'FIX-3'], 'the children start together and the parent does not');
@@ -422,7 +422,7 @@ for (const [name, setup, reason, text] of [
   assert.equal(f.store.plans().length, 0);
   assert.equal(f.launches.length, 0);
   await refreshInventory(f.c, f.store, f.t3, f.kanvil);
-  const row = writeStatus(f.c, f.store).epics.find(row => row.id === 'epic');
+  const row = readStatus(f.c, f.store).epics.find(row => row.id === 'epic');
   if (row) assert.deepEqual([row.startBlock?.reason, row.startBlock?.message], [refused.reason, refused.message], 'the page and the start path share one answer');
 });
 
@@ -430,14 +430,14 @@ test('an Epic with an active plan is refused, a finished ticket in a missing pro
   const f = epicFixture(t, 'a');
   foreign(f, 'other', 'done'); f.epics[0].members.push('other');
   await refreshInventory(f.c, f.store, f.t3, f.kanvil);
-  const open = writeStatus(f.c, f.store).epics[0];
+  const open = readStatus(f.c, f.store).epics[0];
   assert.equal(open.startBlock, null);
   assert.deepEqual(open.tickets.map(ticket => [ticket.key, ticket.runnable, ticket.readiness?.ready, ticket.labels]), [['FIX-1', true, true, ['sf', 'med']]], 'the page filters Epic rows by these labels');
   assert.equal((await startEpic(f)).reason, 'plan-started');
   const refused = await startEpic(f);
   assert.equal(refused.reason, 'epic-already-running');
   assert.equal(f.store.plans().length, 1);
-  const running = writeStatus(f.c, f.store).epics[0];
+  const running = readStatus(f.c, f.store).epics[0];
   assert.deepEqual([running.startBlock?.reason, running.startBlock?.message], [refused.reason, refused.message]);
   assert.equal(running.planId, plan(f).id);
 });

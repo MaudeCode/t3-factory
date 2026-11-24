@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { configSchema } from '../src/config.ts';
 import { Store, type Job } from '../src/store.ts';
 import { Kanvil, T3 } from '../src/clients.ts';
-import { inventory, reconcile, writeStatus } from '../src/scheduler.ts';
+import { inventory, reconcile, readStatus } from '../src/scheduler.ts';
 import { v2Thread } from './v2-fixture.ts';
 import { parse } from 'jsonc-parser';
 
@@ -111,7 +111,7 @@ for (const [settled, launched, pushedElsewhere] of [[false, false, false], [true
       writeFileSync(job.reportPath, JSON.stringify({ jobId: job.id, status: 'complete', reason: 'Merged', prUrls: ['https://github.com/fixture/repo/pull/1'], createdTaskIds: [] }));
       await reconcile(c, store, t3, kanvil, [thread]);
       assert.equal(store.jobs()[0].state, 'dismissed');
-      assert.equal(writeStatus(c, store).jobs.length, 0, 'settled runs disappear from factory status');
+      assert.equal(readStatus(c, store).jobs.length, 0, 'settled runs disappear from factory status');
       assert.equal(store.db.prepare('SELECT task_id FROM jobs WHERE id=?').get(job.id)!.task_id, null);
       task.status = 'todo';
       thread.settledOverride = null;

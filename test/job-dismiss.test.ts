@@ -11,6 +11,7 @@ import { serveControl } from '../src/control.ts';
 import { T3, Kanvil } from '../src/clients.ts';
 import { FactoryService } from '../src/service.ts';
 import { Store, type Job } from '../src/store.ts';
+import { readStatus } from '../src/scheduler.ts';
 
 // One fake T3 and Kanvil over real HTTP, so the scheduler's writer and the offline CLI process hit the same boundaries.
 type Ticket = { status: string; version: number; claimRequired: boolean; claim: null | { id: string; workerId: string; createdAt: string; expiresAt: string } };
@@ -105,8 +106,7 @@ test('job-dismiss without a scheduler claims the state directory and dismisses f
   const offline = await f.cli('offline');
   assert.equal(offline.code, 0, offline.out);
   assert.equal(f.store.job('offline')!.state, 'dismissed');
-  const status = JSON.parse(readFileSync(join(f.c.stateDir, 'status.json'), 'utf8'));
-  assert.equal(status.jobs.some((j: Job) => j.id === 'offline' && j.state !== 'dismissed'), false, 'status no longer shows it active');
+  assert.equal(readStatus(f.c, f.store).jobs.some(j => j.id === 'offline'), false, 'status no longer shows it');
 });
 
 test('job-dismiss refuses readable, ambiguous and unknown evidence without mutation', async t => {
