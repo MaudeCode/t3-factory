@@ -264,21 +264,55 @@ test('overlapping warm readers do not copy the whole shell or mutate another rea
 });
 
 // What changes the admission revision is owned by test/quiet-pass.test.ts, through the service lane that reads it.
-test('the admission revision is unknown without both live views', async t => {
-  const ready = Promise.withResolvers<void>();
-  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
+test('the admission revision is unknown without both live views and differs after a reconnect', async t => {
+  const ready = Promise.withResolvers<void>(), reconnected = { shell: Promise.withResolvers<void>(), providers: Promise.withResolvers<void>() };
+  // Each connection serves different content, so a revision repeated across connections would hide a change.
+  const provider = () => ({ instanceId: 'codex', driver: 'codex', status: f.connections() > 1 ? 'error' : 'ready', installed: true, enabled: true, models: [] });
   const f = fixtureRpc(t, request => {
-    if (request.tag === 'orchestration.subscribeShell') return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'live' })]) }] }];
-    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider] } }] }];
+    if (request.tag === 'orchestration.subscribeShell') return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'live', title: `Connection ${f.connections()}` })]) }] }];
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider()] } }] }];
     return [success(request)];
   }, true);
   assert.equal(f.t3.admissionRevision(), undefined, 'no live view reports no changes');
+  const controller = new AbortController(), stream = f.t3.subscribe((item: any) => {
+    if (item.kind === 'providers.updated') { ready.resolve(); if (f.connections() > 1) reconnected.providers.resolve(); }
+    if (item.kind === 'snapshot' && f.connections() > 1) reconnected.shell.resolve();
+  }, controller.signal);
+  try {
+    await ready.promise;
+    const revision = f.t3.admissionRevision();
+    assert.notEqual(revision, undefined);
+    f.disconnect(false);
+    assert.equal(f.t3.admissionRevision(), undefined, 'a disconnected view cannot vouch for unchanged inputs');
+    // The streams retry after their backoff; a controlled clock elapses it.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    f.disconnect();
+    let done = false; void Promise.all([reconnected.shell.promise, reconnected.providers.promise]).then(() => { done = true; });
+    for (let backoff = 0; !done && backoff < 10; backoff++) { t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve)); }
+    assert.ok(done, 'both streams reconnect');
+    assert.notEqual(f.t3.admissionRevision(), undefined);
+    assert.notEqual(f.t3.admissionRevision(), revision, 'a new connection with different content reports a new revision');
+  } finally { controller.abort(); await stream; }
+});
+
+test('one thread event moves the admission revision without serializing the other threads', async t => {
+  const ready = Promise.withResolvers<void>(); let shellRequest = '';
+  const provider = { instanceId: 'codex', driver: 'codex', status: 'ready', installed: true, enabled: true, models: [] };
+  const f = fixtureRpc(t, request => {
+    if (request.tag === 'orchestration.subscribeShell') { shellRequest = request.id; return [{ _tag: 'Chunk', requestId: request.id, values: [{ kind: 'snapshot', snapshot: v2Shell([v2Thread({ id: 'streaming' }), v2Thread({ id: 'untouched-a' }), v2Thread({ id: 'untouched-b' })]) }] }]; }
+    if (request.tag === 'subscribeServerConfig') return [{ _tag: 'Chunk', requestId: request.id, values: [{ type: 'snapshot', config: { providers: [provider] } }] }];
+    return [success(request)];
+  }, true);
   const controller = new AbortController(), stream = f.t3.subscribe((item: any) => { if (item.kind === 'providers.updated') ready.resolve(); }, controller.signal);
   try {
     await ready.promise;
-    assert.notEqual(f.t3.admissionRevision(), undefined);
-    f.disconnect(false);
-    assert.equal(f.t3.admissionRevision(), undefined, 'a disconnected view cannot vouch for unchanged inputs');
+    const revision = f.t3.admissionRevision();
+    assert.notEqual(revision, undefined);
+    const stringify = t.mock.method(JSON, 'stringify');
+    f.respond(shellRequest, { kind: 'thread.updated', sequence: 43, location: 'active', thread: v2Thread({ id: 'streaming', title: 'Renamed' }) }, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.notEqual(f.t3.admissionRevision(), revision);
+    assert.ok(!stringify.mock.calls.some(call => typeof call.result === 'string' && call.result.includes('untouched-')), 'a one-thread event cannot re-serialize every thread in the shell');
   } finally { controller.abort(); await stream; }
 });
 

@@ -62,8 +62,10 @@ export class T3 {
   private readonly persistent: boolean;
   private readonly readLifetime = new ReadContext();
   private shellEpoch = 0;
-  private viewRevision = 0;
-  private admission?: { revision: number; digest: string };
+  // Admission rows of the live shell, keyed `location:threadId`, and its project list; the counter moves only when one differs.
+  private admissionRows = new Map<string, string>();
+  private admissionProjects = '';
+  private admissionCount = 0;
   private shellView?: { epoch: number; sequence: number; value: z.infer<typeof shellSchema> };
   private providerView?: { epoch: number; value: z.infer<typeof providerPayloadSchema>['providers'] };
   private streams?: Promise<void>;
@@ -87,7 +89,7 @@ export class T3 {
   }
   private authenticateRpc() {
     const stamp = this.readCredential().stamp;
-    if (this.connectionCredentialStamp && this.connectionCredentialStamp !== stamp) { this.credentialGeneration++; this.viewRevision++; this.shellView = undefined; this.providerView = undefined; this.shellRead = undefined; this.shellEpoch++; this.providerSnapshots.clear(); this.orphanVerdicts.clear(); this.rpc.reset(); }
+    if (this.connectionCredentialStamp && this.connectionCredentialStamp !== stamp) { this.credentialGeneration++; this.shellView = undefined; this.providerView = undefined; this.shellRead = undefined; this.shellEpoch++; this.providerSnapshots.clear(); this.orphanVerdicts.clear(); this.rpc.reset(); }
     this.connectionCredentialStamp = stamp;
   }
   private rpcCall(action: RpcAction) { if (this.persistent) this.authenticateRpc(); return this.persistent ? this.rpc.call(action) : this.socketUrl().then(url => callT3Rpc(url, action)); }
@@ -97,15 +99,41 @@ export class T3 {
   invalidateShell() { this.shellEpoch++; }
   /** Changes when a live shell or provider field admission reads changes, not on every streamed event; undefined unless both views are live. */
   admissionRevision() {
-    const shell = this.peekShell();
-    if (!shell || !this.liveProviders) return;
-    if (this.admission?.revision !== this.viewRevision) {
-      const threads = (location: string, list: Thread[]) => list.map(t => [location, ...admissionThread(t)]);
-      const rows = [...threads('active', shell.threads), ...threads('archive', shell.archivedThreads)].sort((a, b) => a[1]! < b[1]! ? -1 : a[1]! > b[1]! ? 1 : 0);
-      const projects = shell.projects.map(p => [p.id, p.title, p.workspaceRoot]).sort();
-      this.admission = { revision: this.viewRevision, digest: createHash('sha256').update(JSON.stringify([rows, projects, this.providerView!.value])).digest('base64url') };
-    }
-    return this.admission.digest;
+    if (!this.liveProviders) return;
+    const view = this.shellView;
+    if (!view || !this.rpc.isLive(view.epoch)) return;
+    this.probeOrphans(view.value.threads);
+    // The epoch keeps a reconnect from repeating an earlier connection's revision.
+    return `${view.epoch}:${this.admissionCount}`;
+  }
+  // Like peekShell, only an active thread carries its orphan verdict.
+  private admissionRow(location: 'active' | 'archive', t: Thread) {
+    return JSON.stringify(admissionThread(location === 'active' && this.orphanVerdicts.get(`${t.id}:${t.updatedAt}`) ? { ...t, orphanedRun: true } : t));
+  }
+  private trackRow(key: string, row: string | undefined) {
+    if (this.admissionRows.get(key) === row) return;
+    if (row === undefined) this.admissionRows.delete(key); else this.admissionRows.set(key, row);
+    this.admissionCount++;
+  }
+  private trackThread(id: string, location?: 'active' | 'archive', thread?: Thread) {
+    this.trackRow(`active:${id}`, location === 'active' ? this.admissionRow('active', thread!) : undefined);
+    this.trackRow(`archive:${id}`, location === 'archive' ? this.admissionRow('archive', thread!) : undefined);
+  }
+  private trackProjects(projects: z.infer<typeof shellSchema>['projects']) {
+    const next = JSON.stringify(projects.map(p => [p.id, p.title, p.workspaceRoot]).sort());
+    if (next !== this.admissionProjects) { this.admissionProjects = next; this.admissionCount++; }
+  }
+  // A snapshot rebuilds every row and counts a change only when its admission content differs.
+  private trackShell(value: z.infer<typeof shellSchema>) {
+    const rows = new Map<string, string>();
+    for (const t of value.threads) rows.set(`active:${t.id}`, this.admissionRow('active', t));
+    for (const t of value.archivedThreads) rows.set(`archive:${t.id}`, this.admissionRow('archive', t));
+    if (rows.size !== this.admissionRows.size || [...rows].some(([key, row]) => this.admissionRows.get(key) !== row)) { this.admissionRows = rows; this.admissionCount++; }
+    this.trackProjects(value.projects);
+  }
+  // An orphan verdict changed: re-derive the live active thread it describes.
+  private trackVerdict(key: string) {
+    for (const t of this.shellView?.value.threads ?? []) if (`${t.id}:${t.updatedAt}` === key) this.trackRow(`active:${t.id}`, this.admissionRow('active', t));
   }
   async request(path: string, body?: unknown): Promise<unknown> {
     return readPhase(path === '/api/orchestration/shell' ? 't3.shell' : path === '/api/auth/websocket-ticket' ? 't3.socket-ticket' : 't3.thread', async signal => {
@@ -192,12 +220,12 @@ export class T3 {
       candidates.add(key);
       if (!this.orphanVerdicts.has(key)) {
         const verdict = await this.orphaned(t);
-        if (verdict !== undefined) { this.orphanVerdicts.set(key, verdict); this.viewRevision++; }
+        if (verdict !== undefined) { this.orphanVerdicts.set(key, verdict); this.trackVerdict(key); }
         else if (!this.persistent) this.shellRead = undefined;
       }
       if (this.orphanVerdicts.get(key)) t.orphanedRun = true;
     }));
-    for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) { this.orphanVerdicts.delete(key); this.viewRevision++; }
+    for (const key of this.orphanVerdicts.keys()) if (!candidates.has(key)) { this.orphanVerdicts.delete(key); this.trackVerdict(key); }
     return immutableProjection(shell);
   }
   private probeOrphans(threads: Thread[]) {
@@ -211,7 +239,7 @@ export class T3 {
         await readAll(candidates.slice(at, at + 6).map(async thread => {
           const verdict = await this.orphaned(thread);
           if (verdict !== undefined && this.shellView?.value.threads.some(current => current.id === thread.id && current.updatedAt === thread.updatedAt)) {
-            this.orphanVerdicts.set(`${thread.id}:${thread.updatedAt}`, verdict); this.viewRevision++; changed ||= verdict;
+            this.orphanVerdicts.set(`${thread.id}:${thread.updatedAt}`, verdict); this.trackVerdict(`${thread.id}:${thread.updatedAt}`); changed ||= verdict;
           }
         }));
       }
@@ -222,7 +250,6 @@ export class T3 {
     if (!this.rpc.isLive(epoch)) return;
     const event = z.object({ kind: z.string() }).passthrough().parse(item);
     if (event.kind === 'synchronized') return;
-    this.viewRevision++;
     if (event.kind === 'snapshot') {
       const value = shellSchema.extend({ snapshotSequence: z.number().int().nonnegative() }).parse(event.snapshot);
       if (event.resolvedRepositoryIdentityRoots !== undefined) {
@@ -236,10 +263,11 @@ export class T3 {
             return project?.workspaceRoot === current.workspaceRoot ? project : current;
           });
           view.value = immutableProjection({ ...view.value, projects });
+          this.trackProjects(projects);
         }
         return;
       }
-      if (!this.shellView || this.shellView.epoch !== epoch || value.snapshotSequence >= this.shellView.sequence) this.shellView = { epoch, sequence: value.snapshotSequence, value: immutableProjection(value) };
+      if (!this.shellView || this.shellView.epoch !== epoch || value.snapshotSequence >= this.shellView.sequence) { this.shellView = { epoch, sequence: value.snapshotSequence, value: immutableProjection(value) }; this.trackShell(value); }
       return;
     }
     const sequence = z.number().int().nonnegative().parse(event.sequence), view = this.shellView;
@@ -250,12 +278,17 @@ export class T3 {
       const thread = threadSchema.parse(event.thread), location = z.enum(['active', 'archive']).parse(event.location);
       next.threads = next.threads.filter(current => current.id !== thread.id); next.archivedThreads = next.archivedThreads.filter(current => current.id !== thread.id);
       (location === 'active' ? next.threads : next.archivedThreads).push(thread);
+      this.trackThread(thread.id, location, thread);
     } else if (event.kind === 'thread.removed') {
       const id = z.string().parse(event.threadId); next.threads = next.threads.filter(thread => thread.id !== id); next.archivedThreads = next.archivedThreads.filter(thread => thread.id !== id);
+      this.trackThread(id);
     } else if (event.kind === 'project.updated') {
       const project = shellSchema.shape.projects.element.parse(event.project); next.projects = [...next.projects.filter(current => current.id !== project.id), project];
+      this.trackProjects(next.projects);
     } else if (event.kind === 'project.removed') {
       const id = z.string().parse(event.projectId); next.projects = next.projects.filter(project => project.id !== id); next.threads = next.threads.filter(thread => thread.projectId !== id); next.archivedThreads = next.archivedThreads.filter(thread => thread.projectId !== id);
+      for (const thread of [...view.value.threads, ...view.value.archivedThreads]) if (thread.projectId === id) this.trackThread(thread.id);
+      this.trackProjects(next.projects);
     } else { this.shellView = undefined; throw new Error('Unsupported T3 shell stream event'); }
     view.sequence = sequence; view.value = immutableProjection(next);
   }
@@ -418,8 +451,7 @@ export class T3 {
           this.observeProviders(providers);
           const changed = JSON.stringify(this.providerView?.value) !== JSON.stringify(providers);
           this.providerView = { epoch, value: providers };
-          if (changed) this.viewRevision++;
-          if (changed) onItem({ kind: 'providers.updated' });
+          if (changed) { this.admissionCount++; onItem({ kind: 'providers.updated' }); }
         }
       }, epoch => { if (this.providerView?.epoch === epoch) this.providerView = undefined; }, signal, onError),
     ]).then(() => {});
@@ -431,7 +463,10 @@ export class T3 {
     const invalidate = !!refreshInstance && this.drivers.get(refreshInstance) === 'claudeAgent';
     const data = providerPayloadSchema.parse(await this.rpcCall({ type: 'provider', ...(refreshInstance ? { refreshInstance, invalidate } : {}) }));
     this.observeProviders(data.providers);
-    if (refreshInstance && view && this.providerView === view && this.rpc.isLive(view.epoch)) { this.providerView = { epoch: view.epoch, value: data.providers }; this.viewRevision++; }
+    if (refreshInstance && view && this.providerView === view && this.rpc.isLive(view.epoch)) {
+      if (JSON.stringify(view.value) !== JSON.stringify(data.providers)) this.admissionCount++;
+      this.providerView = { epoch: view.epoch, value: data.providers };
+    }
     return data.providers;
   }
   private observeProviders(providers: Provider[]) {

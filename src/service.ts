@@ -155,6 +155,7 @@ export class FactoryService {
     }
     if (KINDS_WITHOUT_WORK.has(kind)) return;
     this.t3.invalidateShell();
+    if (kind === 'thread.removed' && item && typeof item === 'object' && 'threadId' in item) this.threadWork.delete(String(item.threadId));
     if (kind === 'thread.updated' && item && typeof item === 'object' && 'thread' in item) {
       const thread = item.thread;
       if (thread && typeof thread === 'object' && 'id' in thread && typeof thread.id === 'string') {

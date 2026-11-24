@@ -29,7 +29,7 @@ function lane<F extends ReturnType<typeof serviceFixture>>(t: TestContext, f: F)
   return { ...f, pass, reads };
 }
 
-// A live T3 client over a fake socket: one shell snapshot of `threads` and the fixture's provider, then `send` streams shell events.
+// A live T3 client over a fake socket: one shell snapshot of `threads` and the fixture's provider, then `send` streams thread updates and `shell` any shell event.
 async function liveLane(t: TestContext, threads: Thread[]) {
   const f = lane(t, serviceFixture(t, { liveT3: true }));
   let shellRequest = '', configRequest = '', sequence = 43;
@@ -47,8 +47,10 @@ async function liveLane(t: TestContext, threads: Thread[]) {
   f.beforeClose.unshift(async () => { controller.abort(); await stream; });
   await ready.promise;
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  return { ...f,
-    send: async (thread: Thread, location = 'active') => { socket.respond(shellRequest, { kind: 'thread.updated', sequence: sequence++, location, thread }, true); await settle(); },
+  const shell = async (event: Record<string, unknown>) => { socket.respond(shellRequest, event.kind === 'snapshot' ? event : { ...event, sequence: sequence++ }, true); await settle(); };
+  return { ...f, shell,
+    send: (thread: Thread, location = 'active') => shell({ kind: 'thread.updated', location, thread }),
+    snapshot: (shellThreads: Thread[]) => shell({ kind: 'snapshot', snapshot: { ...v2Shell(shellThreads), snapshotSequence: sequence++ } }),
     providers: async (providers: unknown[]) => { socket.respond(configRequest, { type: 'providerStatuses', payload: { providers } }, true); await settle(); },
     probed: () => new Promise<void>(resolve => probed.push(resolve)), bounded,
   };
@@ -236,6 +238,57 @@ for (const [change, apply] of Object.entries({
   assert.notEqual(f.t3.admissionRevision(), revision);
   await f.pass();
   assert.ok(f.reads() > reads);
+});
+
+// Every admission input outside the passes above. Each case starts from the same shell and changes one thing.
+const project = { id: 'project-2', title: 'Other project', workspaceRoot: '/tmp/other-repo' };
+for (const [change, apply] of Object.entries({
+  'a pending runtime request': f => f.send(v2Thread({ id: 'idle', pendingRuntimeRequest: { kind: 'user_input', createdAt: now() } })),
+  'a background task': f => f.send(v2Thread({ id: 'idle', pendingBackgroundTasks: [{ taskId: 'task', kind: 'monitor' }] })),
+  'a pull request link': f => f.send(v2Thread({ id: 'idle', pullRequests: [{ url: 'https://github.com/fixture/repo/pull/1', source: 'explicit' }] })),
+  'a branch': f => f.send(v2Thread({ id: 'idle', branch: 'fixture-branch' })),
+  'a worktree': f => f.send(v2Thread({ id: 'idle', worktreePath: '/tmp/fixture-worktree' })),
+  'lineage': f => f.send(v2Thread({ id: 'idle', lineage: { rootThreadId: 'parent', parentThreadId: 'parent', relationshipToParent: 'subagent' } })),
+  'a settled override': f => f.send(v2Thread({ id: 'idle', settledOverride: 'settled' })),
+  'a pin': f => f.send(v2Thread({ id: 'idle', pinnedAt: now() })),
+  'the auto-settle flag': f => f.send(v2Thread({ id: 'idle', autoSettleDisabledAt: now() })),
+  'a title': f => f.send(v2Thread({ id: 'idle', title: 'Renamed' })),
+  'the provider instance': f => f.send(v2Thread({ id: 'idle', providerInstanceId: 'codex' })),
+  'the model': f => f.send(v2Thread({ id: 'idle', modelSelection: { instanceId: 'claudeAgent', model: 'claude-other' } })),
+  'a thread is removed': f => f.shell({ kind: 'thread.removed', threadId: 'idle' }),
+  'a project is added': f => f.shell({ kind: 'project.updated', project }),
+  'a project changes': f => f.shell({ kind: 'project.updated', project: { ...v2Shell().projects[0], title: 'Renamed project' } }),
+  'a project is removed': f => f.shell({ kind: 'project.removed', projectId: 'project-1' }),
+  'a snapshot differs': f => f.snapshot([v2Thread({ id: 'idle', title: 'Renamed' })]),
+} satisfies Record<string, (f: Awaited<ReturnType<typeof liveLane>>) => Promise<unknown>>)) test(`${change} changes the admission revision`, async t => {
+  const f = await liveLane(t, [v2Thread({ id: 'idle' })]), revision = f.t3.admissionRevision();
+  await apply(f);
+  assert.notEqual(f.t3.admissionRevision(), revision);
+});
+
+test('a snapshot with the same admission content leaves the admission revision', async t => {
+  const f = await liveLane(t, [v2Thread({ id: 'idle' })]), revision = f.t3.admissionRevision();
+  await f.snapshot([v2Thread({ id: 'idle', updatedAt: now(), latestUserMessageAt: now(), itemCount: 9 })]);
+  assert.equal(f.t3.admissionRevision(), revision);
+});
+
+test('a thread moving back from the archive changes the admission revision', async t => {
+  const f = await liveLane(t, [v2Thread({ id: 'idle' })]);
+  await f.send(v2Thread({ id: 'idle', archivedAt: now() }), 'archive');
+  const revision = f.t3.admissionRevision();
+  await f.send(v2Thread({ id: 'idle' }));
+  assert.notEqual(f.t3.admissionRevision(), revision);
+});
+
+test('a cleared orphan verdict changes the admission revision', async t => {
+  const f = await liveLane(t, [running('stalled', { updatedAt: '2026-01-01T00:00:00.000Z' })]), probed = f.probed();
+  f.t3.admissionRevision();
+  f.bounded.resolve({ projection: { runs: [{ id: 'run-stalled', status: 'running' }], providerSessions: [{ status: 'stopped' }] } });
+  await probed;
+  const revision = f.t3.admissionRevision();
+  // New activity replaces the probed reading; the verdict for it is unknown until the grace period passes again.
+  await f.send(running('stalled'));
+  assert.notEqual(f.t3.admissionRevision(), revision);
 });
 
 test('a full pass still runs once the recheck interval passes', async t => {
