@@ -70,9 +70,9 @@ async function show(path = "/queue", status = state.status) {
 const panel = () => document.querySelector("dialog.ticket-panel[open]");
 const link = (key) => [...root.querySelectorAll("a.next-ticket")].find((a) => a.querySelector(".key")?.textContent === key);
 const open = async (key) => { link(key).focus(); link(key).click(); await pause(120); };
-const button = (name) => [...panel().querySelectorAll("button, a.btn")].find((b) => b.textContent.trim() === name);
+const button = (name) => [...panel().querySelectorAll("button, a.btn")].find((b) => (b.getAttribute("aria-label") ?? b.textContent.trim()) === name);
 const tab = (name) => [...panel().querySelectorAll('[aria-label="Ticket view"] [role="radio"]')].find((t) => t.textContent === name);
-const factory = async () => { tab("Factory").click(); await pause(200); };
+const factory = async () => { tab("Runs").click(); await pause(200); };
 
 async function run() {
   // Now holds no Up next section: the panel asks for it, and shows the position once it arrives.
@@ -117,13 +117,13 @@ async function run() {
   assert(runView.getBoundingClientRect().right <= panel().getBoundingClientRect().right && panel().scrollWidth <= panel().clientWidth, "the run fits the panel");
   tab("Ticket").click(); await pause();
   assert(button("Open in tracker").getAttribute("href") === "https://tracker.example/projects/p/tickets/id-APP-1", "the tracker stays one link away");
-  button("Done").click(); await pause(150);
+  button("Close").click(); await pause(150);
   assert(!panel() && !location.search.includes("ticket=") && document.activeElement === link("APP-1"), "Done closes the panel, clears its address and returns focus to the row");
   // Run now posts what a row's Run now posts for its own ticket.
   await open("APP-1");
   button("Run now").click(); await pause();
   const fromPanel = dispatches.at(-1);
-  button("Done").click(); await pause(150);
+  button("Close").click(); await pause(150);
   root.querySelector('button[aria-label="Run APP-2 now"]').click(); await pause();
   const fromRow = dispatches.at(-1);
   assert(dispatches.length === 2 && fromPanel.ticket === "APP-1" && JSON.stringify({ ...fromPanel, ticket: "" }) === JSON.stringify({ ...fromRow, ticket: "" }), `the panel starts a run with the row's payload: ${JSON.stringify(fromPanel)} vs ${JSON.stringify(fromRow)}`);
@@ -146,14 +146,14 @@ async function run() {
   // A closed ticket cannot be started.
   await open("APP-3");
   assert(button("Run now").disabled && panel().querySelector(".ticket-line").textContent === "APP-3 is done.", "a finished ticket says why it cannot start");
-  button("Done").click(); await pause(120);
+  button("Close").click(); await pause(120);
   // Another ticket opens on its Ticket tab again; a ticket with no runs says so.
-  await open("APP-1"); await factory(); button("Done").click(); await pause(150);
+  await open("APP-1"); await factory(); button("Close").click(); await pause(150);
   await open("APP-2");
   assert(tab("Ticket").getAttribute("aria-checked") === "true" && panel().querySelector(".ticket-title"), "the next ticket opens on Ticket");
   await factory();
   assert(panel().textContent.includes("No runs yet.") && !panel().querySelector(".run-detail"), "a ticket with no runs says so");
-  button("Done").click(); await pause(150);
+  button("Close").click(); await pause(150);
   // An inbox report is read like a ticket but cannot be run.
   await show("/queue?ticket=IN-1");
   assert(panel().textContent.includes("Synthetic ticket IN-1") && !button("Run now") && button("Open in tracker"), "an inbox report shows without Run now");
@@ -185,19 +185,19 @@ async function run() {
   const gap = (el) => innerWidth - el.getBoundingClientRect().right;
   const corner = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).find((r) => r.media?.mediaText.includes("display-mode: standalone"));
   assert(corner && /orientation: landscape/.test(corner.media.mediaText) && /pointer: coarse/.test(corner.media.mediaText), "the corner clearance applies to a standalone, landscape, touch display only");
-  const rootStyle = document.documentElement.style, before = gap(button("Done")), condition = corner.media.mediaText;
-  assert(before < 40 && panel().querySelector(".dialog-head h2").getBoundingClientRect().right < button("Done").getBoundingClientRect().left, `Done sits at the panel's outer edge, after the key: ${before}`);
+  const rootStyle = document.documentElement.style, before = gap(button("Close")), condition = corner.media.mediaText;
+  assert(before < 40 && panel().querySelector(".dialog-head h2").getBoundingClientRect().right < button("Close").getBoundingClientRect().left, `Close sits at the panel's outer edge, after the key: ${before}`);
   corner.media.mediaText = "all"; await pause();
-  assert(gap(button("Done")) >= 76, `the panel's Done button clears the pill: ${gap(button("Done"))}`);
+  assert(gap(button("Close")) >= 76, `the panel's Close button clears the pill: ${gap(button("Close"))}`);
   // A window narrower than the screen sits beside the system's column, so nothing floats over its corner.
   assert(!rootStyle.getPropertyValue("--corner"), "a window as wide as the screen keeps the clearance");
   const outer = Object.getOwnPropertyDescriptor(window, "outerWidth");
   Object.defineProperty(window, "outerWidth", { value: innerWidth + 84, configurable: true }); measure(); await pause();
-  assert(rootStyle.getPropertyValue("--corner") === "0px" && gap(button("Done")) === before, `a window beside the column drops the clearance: ${gap(button("Done"))}`);
+  assert(rootStyle.getPropertyValue("--corner") === "0px" && gap(button("Close")) === before, `a window beside the column drops the clearance: ${gap(button("Close"))}`);
   if (outer) Object.defineProperty(window, "outerWidth", outer); else delete window.outerWidth;
   measure(); await pause();
-  assert(!rootStyle.getPropertyValue("--corner") && gap(button("Done")) >= 76, "the clearance returns with a full-width window");
-  button("Done").click(); await pause(150);
+  assert(!rootStyle.getPropertyValue("--corner") && gap(button("Close")) >= 76, "the clearance returns with a full-width window");
+  button("Close").click(); await pause(150);
   for (const el of root.querySelectorAll(".page-head > :last-child, .top > :last-child")) if (el.getClientRects().length) assert(gap(el) >= 76, `the page's top-right controls clear the pill: ${gap(el)}`);
   corner.media.mediaText = condition;
   assert(document.documentElement.scrollWidth <= innerWidth, "the clearance adds no sideways scroll");

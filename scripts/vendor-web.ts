@@ -68,7 +68,9 @@ const icons = {
   gitBranch: octicon("git-branch"),
   repo: octicon("repo"),
   cpu: octicon("cpu"),
+  // Octicons draw these for a sidebar on the right; the stylesheet mirrors them for ours on the left.
   sidebar: octicon("sidebar-collapse"),
+  sidebarExpand: octicon("sidebar-expand"),
   kebab: octicon("kebab-horizontal"),
   // Difficulty as one, two or three rising bars.
   bars1: { box: 16, d: "M2 10h3v4H2z" },

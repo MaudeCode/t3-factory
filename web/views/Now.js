@@ -2,7 +2,7 @@
 import { html, useState } from "../lib/h.js";
 import { config, statusSection, jobs, issues, launchOperations, busy } from "../lib/store.js";
 import { follow, ticketClick } from "../lib/router.js";
-import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket } from "../lib/format.js";
+import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket, runTitle, holdNote, safeLink, prLabel } from "../lib/format.js";
 import { Icon, Empty, RelativeTime } from "../ui/index.js";
 import { Machine, Composer, OperationActions, CancelPlan, planProgress, requestName } from "./Deck.js";
 import { decide, reportRow } from "./Triage.js";
@@ -27,10 +27,12 @@ function Run({ job, needs }) {
   const waited = job.lastExecutionAt ?? job.createdAt;
   // A waiting run says what it waits for; an active one, only how long it has run.
   const note = needs && (job.thread?.pending ? PENDING_KINDS[job.thread.pending] ?? `waiting: ${job.thread.pending}` : job.reason);
-  return html`<${Row} ...${runIcon(job)} tone=${needs ? "attention" : "ok"} id=${job.label} title=${job.thread?.title ?? ""} note=${note} href=${`/runs/${job.id}`} onClick=${ticketClick(factoryTicket(config.value, job)) ?? follow}
-    end=${needs && job.threadId
-      ? html`<a class="btn btn-sm" href=${threadLink(job)} aria-label=${`Open ${job.label} in T3 Code`} title=${`Open ${job.label} in T3 Code`}>Open</a>`
-      : html`<${RelativeTime} class="now-time" at=${needs ? waited : job.createdAt} form="for" title=${(now) => needs ? `Waiting for you since ${ago(waited, now)}` : `Running for ${duration(job.createdAt, now)}`} />`} />`;
+  // The run's newest pull request, one tap from the row.
+  const pr = (job.prUrls ?? []).map(safeLink).filter(Boolean).at(-1);
+  return html`<${Row} ...${runIcon(job)} tone=${needs ? "attention" : "ok"} id=${job.label} title=${runTitle(job)} note=${note} href=${`/runs/${job.id}`} onClick=${ticketClick(factoryTicket(config.value, job)) ?? follow}
+    end=${html`${pr && html`<a class="now-pr" href=${pr} target="_blank" rel="noopener noreferrer" title=${prLabel(pr)}>${prLabel(pr).replace(/^PR /, "")}</a>`}${needs && job.threadId
+      ? html`<a class="btn btn-sm btn-icon btn-primary" href=${threadLink(job)} aria-label=${`Open ${job.label} in T3 Code`} title=${`Open ${job.label} in T3 Code`}><${Icon} name="commentDiscussion" /></a>`
+      : html`<${RelativeTime} class="now-time" at=${needs ? waited : job.createdAt} form="for" title=${(now) => needs ? `Waiting for you since ${ago(waited, now)}` : `Running for ${duration(job.createdAt, now)}`} />`}`} />`;
 }
 function Report({ event }) {
   const row = reportRow(event, `open-${event.data.ticketId}`);
@@ -48,9 +50,9 @@ function Request({ op, needs }) {
 }
 function Plan({ plan }) {
   const epic = !!plan.epic, key = plan.target?.key;
-  const title = epic ? `Epic: ${plan.epic.title}` : plan.queued ? `Queued ${key}` : `Chain to ${key}`;
+  const title = epic ? plan.epic.title : plan.target?.title || (plan.queued ? "Queued run" : "Chain");
   const cancel = epic ? `Cancel Epic ${plan.epic.title}?` : plan.queued ? `Cancel the queued run for ${key}?` : `Cancel the chain to ${key}?`;
-  return html`<${Row} icon="checklist" iconLabel=${epic ? "Epic" : plan.queued ? "Queued run" : "Chain"} title=${title} note=${plan.queued ? plan.target?.note ?? "starts when a slot is free" : planProgress(plan)}
+  return html`<${Row} icon="checklist" iconLabel=${epic ? "Epic" : plan.queued ? "Queued run" : "Chain"} id=${key} title=${title} note=${plan.queued ? holdNote(plan.target?.note) ?? "starts when a slot is free" : `${epic ? "Epic" : "Chain"} · ${planProgress(plan)}`}
     href=${epic ? "/queue?view=epics" : "/queue"}
     end=${html`<${CancelPlan} plan=${plan} title=${cancel} label=${epic ? "Cancel Epic" : plan.queued ? "Cancel queued run" : "Cancel chain"} icon="x" class="next-run" />`} />`;
 }
@@ -61,9 +63,10 @@ function Section({ title, tone, items, row, empty }) {
   const [open, setOpen] = useState(false);
   const n = items.length;
   const more = (limit) => n > limit && html`<button type="button" class=${`now-more ${limit === LIMIT ? "wide" : "narrow"}`} aria-expanded=${open} onClick=${() => setOpen(!open)}>${open ? "Show fewer" : `${n - limit} more`}</button>`;
-  return html`<section class=${`now-section ${tone ?? ""}${open ? " open" : ""}`}>
+  // An empty section is its heading alone: the count already says there is nothing in it.
+  return html`<section class=${`now-section ${tone ?? ""}${open ? " open" : ""}${n ? "" : " none"}`}>
     <h2>${title}<small>${n}</small></h2>
-    ${n ? html`<ul>${(open ? items : items.slice(0, LIMIT)).map(row)}</ul>${more(LIMIT)}${more(NARROW)}` : html`<${Empty}>${empty}<//>`}
+    ${n ? html`<ul>${(open ? items : items.slice(0, LIMIT)).map(row)}</ul>${more(LIMIT)}${more(NARROW)}` : html`<span class="now-none">${empty}</span>`}
   </section>`;
 }
 
@@ -78,11 +81,11 @@ export function Now({ initialTicket } = {}) {
   const run = (item) => html`<${Run} key=${item.id} job=${item.job} />`;
   const queued = (item) => item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} />` : html`<${Plan} key=${item.id} plan=${item.plan} />`;
   const sentence = decisionSentence(statusSection("decision").value);
-  const count = (n, label, tone) => html`<span class=${tone && n ? tone : ""}><b>${n}</b>${label}</span>`;
+  const count = (n, label, href, tone) => html`<a href=${href} onClick=${follow} class=${tone && n ? tone : ""}><b>${n}</b>${label}</a>`;
   return html`<div class="now">
     <header class="now-head">
       <h1>Now</h1>
-      <p class="now-counts">${count(s.working.length + s.ci.length, "running")}${count(s.needs.length, s.needs.length === 1 ? "needs you" : "need you", "tone-attention")}${count(s.queue.length, "in your queue")}</p>
+      <p class="now-counts">${count(s.working.length + s.ci.length, "running", "/runs")}${count(s.needs.length, s.needs.length === 1 ? "needs you" : "need you", "/runs?state=waiting", "tone-attention")}${count(s.queue.length, "in your queue", "/queue")}</p>
     </header>
     ${initialTicket !== undefined && html`<${Composer} initialTicket=${initialTicket} />`}
     ${sentence && html`<p class="now-decision">${sentence}</p>`}

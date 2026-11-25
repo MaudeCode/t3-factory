@@ -193,7 +193,7 @@ async function ready({ reportHeight, tagLeft } = {}) {
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   [...document.querySelectorAll('.popover[aria-label="Filters"] [role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute('aria-label') === 'High').click(); await pause();
   assert(keys() === 'EX-40', 'filters narrow the tickets');
-  [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.textContent.trim() === 'Clear all').click(); await pause();
+  [...document.querySelectorAll('.popover[aria-label="Filters"] button')].find((b) => b.getAttribute('aria-label') === 'Clear all filters').click(); await pause();
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
   button('Select tickets').click(); await pause();
   assert(root.querySelectorAll('.next > .check').length === 2, 'only promoted tickets can be selected');

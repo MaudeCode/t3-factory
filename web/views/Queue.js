@@ -1,10 +1,12 @@
 // Everything that can start: what the owner queued, the scheduler's Up next list, Epics, and the tickets that came
 // from T3 sessions and inbox reports. The automatic queue and the owner's own stay visibly apart.
 import { html, signal, useState } from "../lib/h.js";
-import { config, statusSection, needSection, sessionTicketCount, live, jobs, actions, busy, message, startRun, pendingEpic } from "../lib/store.js";
+import { config, statusSection, needSection, sessionTicketCount, live, jobs, actions, busy, message, startRun, pendingEpic, pendingRun } from "../lib/store.js";
 import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText, ticketStatusLabel, safeLink } from "../lib/format.js";
-import { Button, Segmented, Tag, Icon, Empty, Page, Section, RowBody, Meta, Text, SortableList, RelativeTime } from "../ui/index.js";
-import { UpNext, Operations, StartOptions, OverrideChips, startOptions, PlanRows, planProgress, CancelPlan, TicketRow, SectionSwitch } from "./Deck.js";
+import { Button, Segmented, Tag, Mark, Icon, Empty, Facts, Page, Section, RowBody, Meta, Text, SortableList, RelativeTime } from "../ui/index.js";
+import { UpNext, Operations, StartOptions, OverrideChips, startOptions, forceStart, PlanRows, planProgress, CancelPlan, TicketRow, RowActions, SectionSwitch, PanelBar } from "./Deck.js";
+// How far through its tickets an Epic is, for its progress ring.
+const percentDone = (epic) => (epic?.tickets.length ? Math.round((100 * epic.tickets.filter((t) => t.done).length) / epic.tickets.length) : 0);
 import { RunFilters } from "./Runs.js";
 import { SessionTickets } from "./SessionTickets.js";
 import { ReadyReports, readyReportCount } from "./Triage.js";
@@ -47,7 +49,7 @@ function EpicStart({ epic, panel }) {
   const hold = epic.startBlock?.message ?? (pendingEpic(epic.id) ? "A request for this Epic is already pending." : null);
   const run = () => startRun({ epic: epic.id, model: "auto", ...(provider ? { provider } : {}), overrideLimits });
   return panel
-    ? html`<${Button} variant="primary" icon="play" disabled=${!!hold} title=${hold ?? `${overrideText(overrideLimits)} and start this Epic.`} onClick=${run}>Run Epic<//>`
+    ? html`<${Button} variant="primary" icon="play" label=${hold ?? `Run Epic: ${overrideText(overrideLimits).toLowerCase()} and start it`} disabled=${!!hold} onClick=${run} />`
     : html`<${Button} size="sm" icon="play" class="next-run epic-run" label=${hold ?? `Run Epic ${epic.title}`} disabled=${!!hold} onClick=${run} />`;
 }
 // What an Epic's row says about it: one state tag, then how far along it is and, while it runs, what its runs are doing.
@@ -68,7 +70,8 @@ const epicNote = (epic) => {
   const hidden = epic.restrictedCount ?? 0;
   return epic.state ? epic.state === "active" && hidden > 0 && `${hidden} ticket${hidden === 1 ? "" : "s"} in projects Factory cannot read keep this Epic open.` : epic.startBlock?.message;
 };
-function EpicRow({ epic, show, narrowed }) {
+// `extra` adds actions beside a running Epic's Cancel, such as its place in the Queued list.
+function EpicRow({ epic, show, narrowed, extra }) {
   const id = epicId(epic);
   const running = epic.state === "active", started = !!epic.state;
   const note = epicNote(epic);
@@ -79,8 +82,10 @@ function EpicRow({ epic, show, narrowed }) {
     <${TicketRow} ticket=${{ id, title: html`${epic.title}${block && html`<span class="epic-issue" title=${block}><${Icon} name="alert" label=${block} /></span>`}` }} plain meta=${{ project: undefined }}
       toggle=${{ expanded: opens ? open : undefined, disabled: !opens || narrowed, onClick: () => toggleEpic(id), label: `${open ? "Hide" : "Show"} the tickets of ${epic.title}` }}
       link=${{ href: `?epic=${encodeURIComponent(id)}`, onClick: epicClick(id) }}
+      mark=${html`<${Mark} tone=${tone} progress=${percentDone(epic)} label=${`${label}${progress ? `, ${progress}` : ""}`} />`}
       badge=${html`<${Tag} tone=${tone}>${label}<//>`}
-      actions=${!started ? html`<${EpicStart} epic=${epic} />` : running && html`<${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" icon="x" class="next-run" />`}>
+      actions=${!started && html`<${EpicStart} epic=${epic} />`}
+      secondaryActions=${running && html`<${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" icon="x" class="next-run" />${extra}`}>
       ${progress && html`<span class="epic-progress">${progress}</span>`}
       ${running && html`<span class="epic-choice">${epicModel(epic)} · ${overrideText(epic.overrideLimits)}</span>`}
     <//>
@@ -90,22 +95,28 @@ function EpicRow({ epic, show, narrowed }) {
 // One Epic in the side panel: its state, its start or the controls of its run, and its tickets, which open over it.
 // A running Epic's overrides are its plan's own and can be changed; one not started uses the page's start choices.
 export const epicById = (id) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epicId(epic) === id); };
+export const epicByTitle = (title) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epic.title === title); };
 export function EpicDetail({ epic, detail }) {
   const running = epic?.state === "active", note = epic && epicNote(epic);
   const { label, tone, progress } = epic ? epicSummary(epic) : {};
-  const tracker = safeLink(detail?.url);
-  return html`<h3 class="ticket-title">${detail?.title ?? epic.title}</h3>
-    ${detail && html`<${Meta} class="ticket-meta" priority=${detail.priority}><${Tag} title="Epic status">${ticketStatusLabel(detail.status)}<//><${Tag} wrap title=${`Assignee: ${detail.assignee ?? "Unassigned"}`}>${detail.assignee ?? "Unassigned"}<//>${detail.archived && html`<${Tag}>Archived<//>`}<//>
-      ${tracker && html`<div class="ticket-actions"><a class="btn btn-ghost" href=${tracker} target="_blank" rel="noopener noreferrer">Open in tracker</a></div>`}`}
-    ${epic && html`<h4>Factory</h4>
-      <p class="ticket-meta epic-state"><${Tag} tone=${tone}>${label}<//>${progress && html`<span class="muted">${progress}</span>`}</p>
-      ${!epic.state && html`<div class="ticket-actions"><${EpicStart} epic=${epic} panel /><${StartOptions} /></div>`}
-      ${running && html`<div class="ticket-actions"><${OverrideChips} value=${epic.overrideLimits} disabled=${busy.value} onChange=${(limits) => actions.planOverrides(epic.id, limits)} /><${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" /></div>
-        <p class="ticket-line">${epicModel(epic)} · ${overrideText(epic.overrideLimits)}. A change applies to the tickets this Epic starts next.</p>`}
-      ${note && html`<p class="ticket-line tone-attention">${note}</p>`}`}
-    ${detail && html`<h4>Description</h4><${Text}>${detail.description}<//><h4>Acceptance</h4><${Text}>${detail.acceptanceCriteria}<//>`}
+  const tracker = safeLink(detail?.url), done = percentDone(epic);
+  return html`<${PanelBar} tone=${tone} progress=${epic ? done : undefined} label=${label} detail=${progress}>
+      ${tracker && html`<a class="btn btn-icon btn-ghost" href=${tracker} target="_blank" rel="noopener noreferrer" aria-label="Open in tracker" title="Open in tracker"><${Icon} name="issueOpened" /></a>`}
+      ${epic && !epic.state && html`<${StartOptions} /><${EpicStart} epic=${epic} panel />`}
+      ${running && html`<${CancelPlan} plan=${epic} title=${`Cancel Epic ${epic.title}?`} label="Cancel Epic" danger />`}
+    <//>
+    <h3 class="ticket-title">${detail?.title ?? epic.title}</h3>
+    ${detail && html`<${Meta} all class="ticket-meta" priority=${detail.priority}><${Tag} title="Epic status">${ticketStatusLabel(detail.status)}<//><${Tag} wrap title=${`Assignee: ${detail.assignee ?? "Unassigned"}`}>${detail.assignee ?? "Unassigned"}<//>${detail.archived && html`<${Tag}>Archived<//>`}<//>`}
+    ${epic && html`<${Facts} items=${[
+      ["Factory", html`<p class="ticket-meta epic-state"><${Tag} tone=${tone}>${label}<//>${progress && html`<span class="muted">${progress}</span>`}</p>
+        ${note && html`<p class="ticket-line tone-attention">${note}</p>`}`],
+      ["Runs on", running ? epicModel(epic) : null],
+      ["Overrides", running ? html`<${OverrideChips} value=${epic.overrideLimits} disabled=${busy.value} onChange=${(limits) => actions.planOverrides(epic.id, limits)} />
+        <p class="hint">A change applies to the tickets this Epic starts next.</p>` : null],
+    ]} />`}
     <h4>Tickets</h4>
     ${epic?.tickets.length ? html`<div class="epic-tickets"><${PlanRows} plan=${epic} /></div>` : html`<${Empty}>No tickets Factory can read.<//>`}
+    ${detail && html`<h4>Description</h4><${Text}>${detail.description}<//><h4>Acceptance</h4><${Text}>${detail.acceptanceCriteria}<//>`}
     ${detail && html`<h4>Discussion</h4>${detail.comments.length ? detail.comments.map((comment) => html`<article key=${comment.id}>
       <p class="ticket-line"><strong>${comment.author}</strong> · <${RelativeTime} at=${comment.createdAt} /></p><${Text}>${comment.body}<//>
     </article>`) : html`<${Empty}>No comments yet.<//>`}`}`;
@@ -117,8 +128,11 @@ function Epics({ filters, query }) {
   const section = (match) => html`<${EpicRow} key=${match.epic.id} ...${match} />`;
   const done = matchEpics(finished, filters, query);
   // Finished Epics stay out of the way until a search or filter could be looking for one.
+  // Open Epics in three groups, in the order they ask for attention: running, ready to start, and those that cannot start.
+  const groups = Object.entries(Object.groupBy(shown, ({ epic }) => epic.state ? "Running" : epic.startBlock ? "Can't start" : "Ready"));
+  const order = ["Running", "Ready", "Can't start"];
   return html`<${Operations} />
-    ${shown.length ? shown.map(section) : html`<${Empty}>${open.length ? "No Epics match." : "No open Epics."}<//>`}
+    ${shown.length ? groups.sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)).map(([name, list]) => html`<${Section} key=${name} class="epic-group" title=${name} count=${list.length}>${list.map(section)}<//>`) : html`<${Empty}>${open.length ? "No Epics match." : "No open Epics."}<//>`}
     ${done.length > 0 && html`<${Section} collapsible class="epic-finished" title="Finished" count=${done.length} open=${!!query.trim() || hasRunFilters(filters)}>${done.map(section)}<//>`}`;
 }
 
@@ -132,14 +146,21 @@ function Queued() {
   const { onAt, offAt } = live.value.schedule;
   const epics = epicLists().open;
   const move = (from, to) => { const ids = plans.map((p) => p.id); ids.splice(to, 0, ...ids.splice(from, 1)); actions.orderPlans(ids); };
-  const item = (p) => p.epic ? html`<${EpicRow} epic=${epics.find((e) => e.id === p.id)} show=${() => true} />`
-    : p.queued ? html`<div class="queued-run"><${PlanRows} plan=${p} /><${CancelPlan} plan=${p} title=${`Cancel the queued run for ${p.target.key}?`} label="Cancel queued run" icon="x" class="next-run" /></div>`
-    : html`<div class="queued-run"><div class="chain-row"><${Tag}>Chain<//><${RowBody} title=${html`Chain to <b class="key">${p.target.key}</b>`}><${Meta}>${planProgress(p)}<//><//></div><${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" icon="x" class="next-run" /></div>
+  // A queued run waits on a limit or on its model's allowance. Starting it now asks again with every limit overridden and
+  // any model the page's provider choice allows; the scheduler replaces the queued run with that request.
+  const startNow = (p) => forceStart(p.target.key);
+  // Any item but the first can jump the line; a drag or the arrow keys on its handle place it exactly.
+  const top = (p, i) => i > 0 && html`<${Button} variant="ghost" size="sm" icon="arrowUp" class="btn-icon next-run" label=${`Move ${planName(p)} to the top`} onClick=${() => move(i, 0)}><span class="next-action-label">Move to the top</span><//>`;
+  const item = (p, i) => p.epic ? html`<${EpicRow} epic=${epics.find((e) => e.id === p.id)} show=${() => true} extra=${top(p, i)} />`
+    : p.queued ? html`<div class="queued-run"><${PlanRows} plan=${p} /><div class="next-actions"><${Button} size="sm" icon="play" class="next-run" label=${`Start ${p.target.key} now: any model, every limit overridden`} disabled=${busy.value || pendingRun(p.target.key)} onClick=${() => startNow(p)} />
+        <${RowActions} label=${`More actions for ${p.target.key}`}><${CancelPlan} plan=${p} title=${`Cancel the queued run for ${p.target.key}?`} label="Cancel queued run" icon="x" class="next-run" />${top(p, i)}<//></div></div>`
+    : html`<div class="queued-run"><div class="chain-row"><${Mark} label="Chain" /><${RowBody} title=${html`Chain to <b class="key">${p.target.key}</b>`}><${Meta}>${planProgress(p)}<//><//></div>
+        <div class="next-actions"><${RowActions} label=${`More actions for the chain to ${p.target.key}`}><${CancelPlan} plan=${p} title=${`Cancel the chain to ${p.target.key}?`} label="Cancel chain" icon="x" class="next-run" />${top(p, i)}<//></div></div>
       <div class="epic-tickets"><${PlanRows} plan=${p} /></div>`;
   return html`<${Section} class="queued" title="Queued" count=${plans.length} hint=${plans.length > 1 && "The top row gets the next free slot. Drag a handle to reorder, or focus it and press the arrow keys."}
     aside=${html`<${SectionSwitch} kind="queue" label="Queued runs" on=${offAt ? html`Holds <${RelativeTime} at=${offAt} form="in" />` : "Queue on"} off=${onAt ? html`Starts <${RelativeTime} at=${onAt} form="in" />` : "Queue held"} />`}>
     <${SortableList} label="Queued, in the order they start" items=${plans} keyOf=${planName} onMove=${move}
-      render=${(p, i, grip) => html`<div class="queued-item">${plans.length > 1 && grip}<div class="queued-body">${item(p)}</div></div>`} />
+      render=${(p, i, grip) => html`<div class="queued-item">${plans.length > 1 && grip}<div class="queued-body">${item(p, i)}</div></div>`} />
   <//>`;
 }
 
@@ -162,7 +183,7 @@ export function Queue() {
   const rows = [...(up?.tickets ?? []), ...(up?.held ?? []), ...[...epics.open, ...epics.finished].flatMap((epic) => epic.tickets)];
   // Both views have a count, so the title block keeps its shape and the toolbar stays put.
   const count = view === "next" ? (up?.tickets ?? []).filter((t) => matchesRunFilters(t, filters, query)).length : matchEpics(epics.open, filters, query).length;
-  return html`<${Page} class="runs queue" title="Queue" count=${count} actions=${html`<${StartOptions} />`} tools=${html`<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} />`}>
+  return html`<${Page} class="runs queue" title="Queue" count=${count} tools=${html`<${RunFilters} rows=${rows} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} /><${StartOptions} />`}>
     ${tabs}
     ${view === "next"
       ? html`<${Queued} /><${Operations} /><${UpNext} limit=${Infinity} filters=${filters} query=${query} start=${start} />`

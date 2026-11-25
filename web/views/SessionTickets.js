@@ -43,9 +43,9 @@ export function SessionTickets({ lead } = {}) {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from the session list?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} class="queue" title="Queue" count=${s ? rows.length : null} hint=${HINT} actions=${html`<${StartOptions} /><${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} />`} tools=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} class="queue" title="Queue" count=${s ? rows.length : null} hint=${HINT} tools=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions order=${html`<${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} />`} /><${StartOptions} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${lead}
-    ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" onClick=${() => (issuesOpen.value = true)}>See issues<//></p>`}
+    ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" icon="alert" label="See issues" onClick=${() => (issuesOpen.value = true)} /></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN && op.origin !== TRIAGE_ORIGIN)} />
     <${Section} class="list">
       ${selecting && !!rows.length && html`<div class="selection-bar">
@@ -67,7 +67,7 @@ export function SessionTickets({ lead } = {}) {
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss([t])}><${Icon} name="x" /><span class="next-action-label">Remove</span><//>`}>
                 ${op && html`<span class="row-progress" role="status"><i class="spinner"></i>${operationText(op)}</span>`}
                 <span class="session-sources" title="The T3 session that reported creating this ticket">${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
-                <${RelativeTime} class="muted" at=${t.createdAt} compact title=${new Date(t.createdAt).toLocaleString()} />
+                <${RelativeTime} class="muted" at=${t.createdAt} title=${new Date(t.createdAt).toLocaleString()} />
                 ${t.refreshError && html`<span class="tone-attention" title=${`Last read failed: ${t.refreshError}`}>tracker read failed</span>`}
                 ${t.unavailable && html`<b class="tone-attention" title=${t.unavailable}><${Icon} name="circleSlash" label=${t.unavailable} /></b>`}
               <//>`;

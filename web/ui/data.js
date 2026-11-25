@@ -4,7 +4,7 @@ import { html, useEffect, useState } from "../lib/h.js";
 import { clockTime, dayLabel, stateLabel, toneOf, formatBytes, ago, duration, until } from "../lib/format.js";
 import { serverNow } from "../lib/store.js";
 import { Help } from "./controls.js";
-import { ICONS } from "../vendor/icons.js?v=d2b4c3b2cb90";
+import { ICONS } from "../vendor/icons.js?v=de313aad8917";
 
 const pct = (value) => Math.max(0, Math.min(100, Number(value) || 0));
 
@@ -52,6 +52,11 @@ export const Icon = ({ name, label }) => {
 export const Stops = ({ n, tone, label }) =>
   html`<span class=${`stops ${tone ? `stops-${tone}` : ""}`} data-n=${n} role="img" aria-label=${label} title=${label}><i></i><i></i><i></i><i></i></span>`;
 
+// The mark that leads a row: a turning ring while a run works, a solid dot when it needs the owner, a filled disc
+// when it is done, a hollow ring otherwise. With `progress` (0 to 100) it is a ring filled that far, for an Epic.
+export const Mark = ({ tone, progress, label }) =>
+  html`<span class=${`mark ${tone ? `mark-${tone}` : ""}${progress != null ? " mark-progress" : ""}`} style=${progress != null ? `--p:${progress}` : undefined} role="img" aria-label=${label} title=${label}></span>`;
+
 // With `href` the tag is itself the link, opening in a new tab like `Link`.
 export const Tag = ({ tone, state, children, title, href, onClick, wrap = false, class: extra }) => {
   const cls = `tag${wrap ? " tag-wrap" : ""}${extra ? ` ${extra}` : ""} ${(tone ?? toneOf(state)) ? `tag-${tone ?? toneOf(state)}` : ""}`, label = children ?? stateLabel(state);
@@ -62,22 +67,34 @@ export const Empty = ({ children }) => html`<p class="empty">${children}</p>`;
 // Ticket and Epic content share the same inert Markdown renderer and empty state.
 export const Text = ({ children }) => children?.trim() ? html`<div class="ticket-text">${markdown(children)}</div>` : html`<${Empty}>None written.<//>`;
 
-// Facets of a ticket or run on one line. Priority and difficulty carry a one-letter field prefix (P, D) so
-// "low" is never ambiguous; `labels` are the tracker's tags, those in `highlight` (priority labels) are lit.
+// Facets of a ticket or run on one line. Priority carries an arrow and difficulty three bars, so "low" is never
+// ambiguous; `labels` are the tracker's tags, those in `highlight` (priority labels) are lit.
 // `difficulty: false` marks a ticket that still needs classifying.
-export const Meta = ({ project, kind, model, priority, difficulty, automationReady, labels = [], highlight = [], class: extra, children }) => html`<span class=${`meta ${extra ?? ""}`}>
+// A label that repeats the difficulty tag is dropped (`difficultyTitle` says what the difficulty is of when it is not a ticket's), priority labels lead, and past `LABELS` the rest fold into a count.
+const LABELS = 3, SAME_LEVEL = { med: "medium", medium: "med" };
+const PRIORITY_ICONS = { urgent: "alert", high: "arrowUp", low: "arrowDown" };
+// Difficulty as three bars with the first `n` lit: one lit bar still reads as a level, where a lone glyph read as a full stop.
+export const Bars = ({ level }) => html`<span class="bars" data-n=${{ low: 1, med: 2, medium: 2, high: 3 }[level] ?? 2} aria-hidden="true"><i></i><i></i><i></i></span>`;
+// A row leaves out the ordinary priority, medium, so the ones that differ stand out; `all`, for a ticket's own page, shows it.
+export const Meta = ({ project, kind, model, priority, difficulty, difficultyTitle, automationReady, labels: every = [], highlight = [], class: extra, children, all }) => {
+  const listed = every.filter((l) => !(difficulty && (l === difficulty || l === SAME_LEVEL[difficulty]))).sort((a, b) => highlight.includes(b) - highlight.includes(a));
+  const labels = listed.slice(0, LABELS), rest = listed.slice(LABELS);
+  return html`<span class=${`meta ${extra ?? ""}`}>
   ${children}
   ${project && html`<span class="meta-project" title="Project">${project}</span>`}
   ${automationReady === true && html`<${Tag} tone="ok" title="Automation ready"><${Icon} name="zap" label="Automation ready" /><//>`}
   ${model}
   ${kind && html`<${Tag} title="Kind of run">${kind}<//>`}
-  ${priority && priority !== "none" && html`<${Tag} title=${`Priority: ${priority}`}><small>P</small>${priority}<//>`}
-  ${difficulty ? html`<${Tag} title=${`Difficulty: ${difficulty}`}><small>D</small>${difficulty}<//>` : difficulty === false ? html`<${Tag} tone="attention" title="Needs a difficulty label before it can run">no difficulty<//>` : null}
-  ${labels.map((l) => html`<${Tag} key=${l} tone=${highlight.includes(l) ? "on" : "label"} title=${highlight.includes(l) ? "Priority label: moves the ticket up the queue" : "Label"}>${l}<//>`)}
+  ${priority && priority !== "none" && (all || priority !== "medium") && html`<${Tag} class=${`facet${priority === "urgent" ? " tag-attention" : ""}`} title=${`Priority: ${priority}`}>${PRIORITY_ICONS[priority] && html`<${Icon} name=${PRIORITY_ICONS[priority]} />`}${priority}<//>`}
+  ${difficulty ? html`<${Tag} class="facet" title=${difficultyTitle ?? `Difficulty: ${difficulty}`}><${Bars} level=${difficulty} />${difficulty}<//>` : difficulty === false ? html`<${Tag} tone="attention" title="Needs a difficulty label before it can run">no difficulty<//>` : null}
+  ${labels.map((l) => html`<${Tag} key=${l} class="label" tone=${highlight.includes(l) ? "on" : "label"} title=${highlight.includes(l) ? "Priority label: moves the ticket up the queue" : "Label"}>${l}<//>`)}
+  ${rest.length > 0 && html`<${Tag} class="more-labels" title=${`More labels: ${rest.join(", ")}`}>+${rest.length}<//>`}
 </span>`;
+};
 
-// Title line and detail line of a list row; both truncate to one line.
-export const RowBody = ({ title, children }) => html`<span class="row-body"><span>${title}</span>${children && html`<small>${children}</small>`}</span>`;
+// Title line and detail line of a list row; both truncate to one line, so every row is the same height however long
+// its title. `tip` is the whole title, for a pointer; the row itself opens the thing it names.
+export const RowBody = ({ title, children, tip }) => html`<span class="row-body"><span title=${tip}>${title}</span>${children && html`<small>${children}</small>`}</span>`;
 
 // Titled block of a page. `aside` sits on the title line; `hint` explains the block from a question mark beside
 // the title; `count` follows the title. A `collapsible` block is a closed disclosure unless `open` says otherwise.
@@ -111,7 +128,7 @@ export const Table = ({ head, rows, stack = true }) =>
 export const Link = ({ href, children, class: extra, title }) =>
   href ? html`<a class=${extra} href=${href} title=${title} target="_blank" rel="noopener noreferrer">${children}</a>` : null;
 
-// Label and value pairs.
+// Label and value pairs as a property list: the label in a quiet column, the value beside it.
 export const Facts = ({ items }) =>
   html`<dl class="facts">
     ${items.filter(([, v]) => v != null && v !== "").map(([k, v]) => html`<div key=${k}><dt>${k}</dt><dd>${v}</dd></div>`)}

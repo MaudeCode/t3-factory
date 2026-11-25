@@ -44,7 +44,7 @@ function Sessions({ lead }) {
       ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message}</p>`}
       <div class="next">
         <span class="next-ticket"><${RowBody} title=${html`<b>${n} ${n === 1 ? "ticket" : "tickets"} not started</b>`}>${s?.at ? html`<${RelativeTime} class="muted" text=${(now) => `Sessions read ${ago(s.at, now)}`} />` : html`<span class="muted">Sessions have not been read yet</span>`}<//></span>
-        <a class="btn btn-sm" href="/queue?origin=sessions" onClick=${follow}>Open in Queue</a>
+        <a class="btn btn-sm btn-icon" href="/queue?origin=sessions" onClick=${follow} aria-label="Open in Queue" title="Open in Queue"><${Icon} name="arrowRight" /></a>
       </div>
     <//>
   <//>`;

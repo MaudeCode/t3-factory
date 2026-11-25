@@ -104,7 +104,7 @@ async function layout() {
     assert(!rows.some(row => row.querySelector(".rank")), "queue order needs no row numbers");
     assert(!rows.some(row => /Sol|no automatic model/.test(row.textContent)), "queue omits predicted models");
     assert(rows[0].querySelector(".meta-project").textContent === "Example", "project sits beside the ticket");
-    assert(rows[0].querySelector('.tag[title^="Priority"]').textContent === "Phigh" && rows[0].querySelector('.tag[title^="Difficulty"]').textContent === "Dmed", "priority and difficulty tags say which field they are");
+    assert(rows[0].querySelector('.tag[title^="Priority"]').textContent === "high" && rows[0].querySelector('.tag[title^="Priority"] .icon-arrowUp') && rows[0].querySelector('.tag[title^="Difficulty"]').textContent === "med" && rows[0].querySelector('.tag[title^="Difficulty"] .bars[data-n="2"]'), "priority carries an arrow and difficulty its bars, so they say which field they are");
     assert(rows.every(row => {
       const link = row.querySelector(".next-ticket");
       return row.querySelector(".row-body").getBoundingClientRect().left === link.getBoundingClientRect().left + parseFloat(getComputedStyle(link).paddingLeft);
@@ -140,7 +140,8 @@ async function showProjects() {
 }
 const queueKeys = () => [...root.querySelectorAll(".next .key")].map(e => e.textContent).join();
 const heldKeys = () => [...root.querySelectorAll(".held .key")].map(e => e.textContent).join();
-const dialog = () => document.querySelector('.popover[aria-label="Filters"]');
+// A list with a sort keeps its filter panel mounted while closed, so an open panel is the one in the top layer.
+const dialog = () => document.querySelector('.popover[aria-label="Filters"]:popover-open');
 const picker = (group) => dialog().querySelector(`[role="combobox"][aria-label="${group}"]`);
 // The names a dropdown facet offers right now; opens it if needed and leaves it open.
 async function choicesOf(group) {
@@ -148,7 +149,8 @@ async function choicesOf(group) {
   if (button.getAttribute("aria-expanded") !== "true") { button.click(); await pause(); }
   return [...document.getElementById(button.getAttribute("aria-controls")).children].map(li => li.textContent).join();
 }
-const byText = (selector, text, scope = root) => [...scope.querySelectorAll(selector)].find(e => e.textContent.trim() === text);
+// A button is found by its accessible name: every action is an icon button, so only a dialog's submit carries words.
+const byText = (selector, text, scope = root) => [...scope.querySelectorAll(selector)].find(e => (e.getAttribute("aria-label") ?? e.textContent.trim()) === text || e.textContent.trim() === text);
 const filterButton = () => root.querySelector('[aria-label^="Filter runs"]');
 async function openFilters() {
   assert(filterButton(), "Runs exposes a Filter button");
@@ -165,7 +167,7 @@ async function pickFilter(group, name) {
   await pause();
 }
 async function closeFilters() { if (dialog()) { filterButton().click(); await pause(); } assert(!dialog(), "the filter popover closes"); }
-async function clearFilters() { byText("button", "Clear all", dialog()).click(); await pause(); }
+async function clearFilters() { byText("button", "Clear all filters", dialog()).click(); await pause(); }
 async function runProjects() {
   setSessionProvider("auto"); setSessionOverrides(["labels"]);
   const oldFetch = window.fetch, oldUrl = location.href;
@@ -184,6 +186,7 @@ async function runProjects() {
     assert(queueKeys() === "APP-1,WEB-2,APP-3", "all projects preserve scheduler order");
     assert([...root.querySelectorAll(".next .tag-label")].map(e => e.textContent).join() === "bug,web,bug,web", "queue rows show their tracker labels");
     assert(root.querySelector(".held .tag-label"), "held rows show their tracker labels");
+    assert([...root.querySelectorAll(".held-group")].every(group => group.querySelector(".held-reason").textContent && group.querySelector(".held .held-ticket .key").textContent), "held rows sit under their reason and name their ticket");
     await openFilters();
     assert(!dialog().querySelector('[aria-label="Provider"]'), "queue does not filter predicted providers");
     await pickFilter("Project", "Alpha");
@@ -206,7 +209,7 @@ async function runProjects() {
     assert(queueKeys() === "APP-1" && heldKeys() === "APP-4", "categories combine for queue and held tickets");
     assert(picker("Tags").textContent === "bug +1", "the tag picker summarises its picks");
     assert(dialog().querySelectorAll('[aria-pressed="true"]').length === 2, "difficulty and priority buttons show their state");
-    byText("button", "×", dialog()).click(); await pause();
+    byText("button", "Clear tags", dialog()).click(); await pause();
     assert(picker("Tags").textContent === "Any" && dialog().querySelectorAll('[aria-pressed="true"]').length === 2, "the tag clear button empties only tags");
     assert(await choicesOf("Without") === "bug,web", "excluded tags offer the same catalog as tags");
     await pickFilter("Without", "web");
@@ -216,7 +219,7 @@ async function runProjects() {
     assert(queueKeys() === "" && heldKeys() === "", "any excluded tag hides a row");
     await pickFilter("Tags", "web");
     assert(queueKeys() === "" && picker("Tags").textContent === "web", "exclusion wins over an include match");
-    byText("button", "×", dialog()).click(); await pause();
+    byText("button", "Clear tags", dialog()).click(); await pause();
     assert(picker("Tags").textContent === "Any" && picker("Without").textContent === "None" && queueKeys() === "APP-1" && heldKeys() === "APP-4", "the tag clear button empties both tag pickers and nothing else");
     await pickFilter("Tags", "bug"); await pickFilter("Tags", "web");
     byText('[role="radio"]', "ALL", dialog()).click(); await pause();
@@ -410,11 +413,11 @@ async function queueTransitions() {
   await showQueued();
   const queuedSections = () => [...root.querySelectorAll('section h2')].filter(h => h.textContent.startsWith('Queued'));
   assert(queuedSections().length === 1 && queuedSections()[0].querySelector('small').textContent === '2', 'queued runs share one counted section');
-  assert(root.querySelector('.chain-row').textContent.includes('APP-1') && root.querySelector('.chain-row').textContent.includes('Waiting for a free app slot'), 'a queued single run names its ticket and waiting reason');
+  assert(root.querySelector('.chain-row').textContent.includes('APP-1') && root.querySelector('.chain-row').textContent.includes('no free app slot') && root.querySelector('.chain-row .meta-detail').title === 'Waiting for a free app slot', 'a queued single run names its ticket and its waiting reason in a few words');
   assert(queueKeys() === 'APP-3', 'the plans replace the stale queue rows');
   assert(root.querySelectorAll('.chain-row').length === 2, 'each run reuses the shared plan row');
   const cancel = root.querySelector('.queued-run button[aria-label="Cancel queued run"]');
-  assert(cancel && root.querySelectorAll('.queued-run button').length === 2, 'each queued run has its own cancel action');
+  assert(cancel && root.querySelectorAll('.queued-run button[aria-label="Cancel queued run"]').length === 2 && root.querySelectorAll('.queued-run button[aria-label^="Start "]').length === 2, 'each queued run has its own start-now and cancel actions');
   cancel.click(); await pause();
   assert(document.querySelector('dialog[open]')?.textContent.includes('Cancel the queued run for APP-1?'), 'cancellation identifies the saved request');
   const oldFetch = window.fetch, cancelled = [];
@@ -559,11 +562,19 @@ async function epicPanelTest() {
     assert(!ticketPanel.value && panel()?.querySelector(".ticket-title")?.textContent === "Moving", "closing the ticket returns to the Epic, open again");
     closeEpic(); await pause(); await pause();
     assert(!epicPanel.value && !panel() && !new URLSearchParams(location.search).has("epic"), "closing the panel clears it from the address");
+    // Beside the page the panel has no backdrop: a row behind it opens its own Epic, a tap on the page closes it.
+    title("Moving").click(); await pause(); await pause();
+    if (!panel().matches(":modal")) {
+      title("Launch").click(); await pause(); await pause();
+      assert(epicPanel.value === "launch" && panel()?.querySelector(".ticket-title").textContent === "Launch", "a row behind the docked panel opens its own Epic");
+      root.querySelector(".section h2").click(); await pause(); await pause();
+      assert(!epicPanel.value && !panel() && !new URLSearchParams(location.search).has("epic"), "a tap on the page behind the docked panel closes it");
+    } else { closeEpic(); await pause(); await pause(); }
     // An Epic that has not started: Run with the page's own start choices.
     title("Launch").click(); await pause(); await pause();
     assert(panel().querySelector('[aria-label="Start provider"]') && chip("label limits").getAttribute("aria-pressed") === "true", "an Epic not yet started offers the page's start choices");
     assert(fits(), "the start controls stay inside the viewport");
-    byText("button", "Run Epic", panel()).click(); await pause(); await pause();
+    panel().querySelector('button.btn-primary[aria-label^="Run Epic"]').click(); await pause(); await pause();
     assert(JSON.stringify(dispatches) === JSON.stringify([{ epic: "launch", model: "auto", overrideLimits: ["labels"] }]), `Run Epic dispatches the Epic: ${JSON.stringify(dispatches)}`);
     assert(posts.length === 2, "starting an Epic changes no plan");
     closeEpic(); await pause(); await pause();
@@ -632,7 +643,7 @@ async function epics() {
     assert(launch.textContent.includes("outside this Epic"), "a blocker outside the Epic is marked");
     assert(epicSection("Moving").textContent.includes("Automation is off for this ticket"), "a member without readiness says why");
     assert(epicSection("Paused").textContent.includes("waiting on legal"), "a member on hold says why");
-    assert(!launch.textContent.includes("starts when a slot is free"), "an Epic that has not started promises nothing");
+    assert(!launch.textContent.includes("waiting for a slot") && !launch.querySelector(".chain-fix"), "an Epic that has not started promises nothing and offers no start for its tickets");
     assert(Deck.openRun({ id: "e2", key: "APP-2" }) === false, "a target-less plan does not read as a ticket's open run");
     // Start: exact payload, duplicate protection, refusal feedback.
     // A ticket row opens the ticket in the panel; the panel's history entry is undone before the next step.
@@ -669,7 +680,7 @@ async function epics() {
     const paused = () => epicSection("Paused");
     assert(runEpic("Paused").disabled && runEpic("Paused").getAttribute("aria-label").includes(notIncluded) && runEpic("Paused").title.includes(notIncluded), "a blocked Run states the reason");
     assert(paused().querySelector(".epic-note")?.textContent === notIncluded, "the line names the missing project");
-    assert(paused().querySelectorAll(".chain-row")[0].textContent.includes("Its project is not included in the factory"), "the affected row says so");
+    assert(paused().querySelectorAll(".chain-row")[0].textContent.includes("project not included") && paused().querySelector(".chain-row .meta-detail").title.includes("Its project is not included in the factory"), "the affected row says so in a few words, with the scheduler's sentence as its tooltip");
     assert(!paused().querySelectorAll(".chain-row")[1].textContent.includes("not included"), "other rows do not");
     assert(epicSection("Hidden").querySelector(".epic-note")?.textContent === cannotRead && runEpic("Hidden").disabled, "unreadable tickets block too, with their number");
     setSessionOverrides(["idle", "reserve", "labels", "providers"]); await pause();
@@ -688,7 +699,9 @@ async function epics() {
     status.value = { ...status.value, jobs: [] }; await pause();
     assert(moving.querySelector(".epic-choice")?.textContent === "Sol · Override label limits", `the recorded choices show: ${moving.querySelector(".epic-choice")?.textContent}`);
     assert(moving.querySelector(".epic-note")?.textContent.includes("2 tickets"), "hidden tickets keep a running Epic open");
-    assert(moving.textContent.includes("Waiting for a free Codex slot"), "scheduler notes reach the row");
+    assert(moving.textContent.includes("no free Codex slot") && [...moving.querySelectorAll(".meta-detail")].some(e => e.title.includes("Waiting for a free Codex slot")), "scheduler notes reach the row in a few words, whole in the tooltip");
+    // A ticket its running Epic keeps waiting can be started by name with every limit overridden.
+    assert(moving.querySelector('.chain-fix button[aria-label^="Start APP-"]'), "a waiting ticket of a running Epic offers Start now");
     moving.querySelector('button[aria-label="Cancel Epic"]').click(); await pause();
     assert(document.querySelector("dialog[open]")?.textContent.includes("Tickets already running finish on their own."), "cancelling asks through the shared confirmation");
     byText("button", "Cancel Epic", document.querySelector("dialog[open]")).click(); await pause();
@@ -852,8 +865,9 @@ async function investigate() {
     if (url === "/api/tickets/APP-4") return Response.json({ id: "id-APP-4", projectId: "p", key: "APP-4", title: "Leftover branch", status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: [], scopes: [], inbox: false, description: "", acceptanceCriteria: "", automationReady: true, holdReason: null, readiness: [], blockedBy: [], blocks: [], createdAt: new Date().toISOString() });
     return Response.json(state);
   };
-  const buttons = (scope) => [...scope.querySelectorAll('button[aria-label="Investigate in T3"]')];
-  const iconOnly = (b) => b.textContent.trim() === "" && b.querySelector(".icon-search") && b.title === "Investigate in T3";
+  // An icon button wherever the hold is stated, named by its tooltip.
+  const buttons = (scope) => [...scope.querySelectorAll("button.investigate")];
+  const named = (b) => b.textContent.trim() === "" && b.querySelector(".icon-search") && b.getAttribute("aria-label") === "Investigate and fix in T3" && b.title === "Investigate and fix in T3";
   const rowOf = (key) => [...root.querySelectorAll(".held")].find(row => row.querySelector(".key")?.textContent === key);
   try {
     operations.value = [];
@@ -862,18 +876,20 @@ async function investigate() {
     render(html`<${Deck.Operations} /><${Deck.UpNext} limit=${Infinity} /><${TicketPanel} /><${Confirmation} />`, root);
     await pause();
     const [button] = buttons(root);
-    assert(buttons(root).length === 1 && buttons(rowOf("APP-4")).length === 1 && !buttons(rowOf("APP-5")).length, "only the row held by earlier work offers Investigate in T3");
-    assert(iconOnly(button), "Investigate in T3 is an icon-only search button named by its tooltip");
+    assert(buttons(root).length === 1 && buttons(rowOf("APP-4")).length === 1 && !buttons(rowOf("APP-5")).length, "only the row held by earlier work offers Investigate and fix");
+    assert(named(button), "Investigate and fix is an icon-only search button named by its tooltip");
     const b = button.getBoundingClientRect();
     assert(b.left >= 0 && b.right <= innerWidth && b.height >= (matchMedia("(pointer: coarse)").matches ? 44 : 32), `the button fits the viewport with a usable target: ${b.width}x${b.height}`);
     assert(document.documentElement.scrollWidth <= innerWidth, "the held list has no horizontal overflow");
     openTicket("APP-4");
     for (let n = 0; n < 50 && !document.querySelector("dialog.ticket-panel[open] .ticket-line"); n++) await pause();
     const panel = document.querySelector("dialog.ticket-panel[open]");
-    assert(panel && buttons(panel).length === 1 && iconOnly(buttons(panel)[0]) && panel.textContent.includes("Held back: Existing Git branch references this ticket"), "the ticket panel's held line offers the same button");
-    const p = buttons(panel)[0].getBoundingClientRect();
+    // The panel says what holds the ticket and what was found; the same icon button is in its bar, with its other actions.
+    const fix = () => [...panel.querySelectorAll(".panel-bar button.investigate")];
+    assert(panel && fix().length === 1 && buttons(panel).length === 1 && panel.textContent.includes("Held back: Existing Git branch references this ticket") && panel.querySelector(".ticket-callout code")?.textContent === "feat/APP-4-old", "the ticket panel names the hold and the branch found, and offers Investigate and fix");
+    const p = fix()[0].getBoundingClientRect();
     assert(p.left >= 0 && p.right <= innerWidth, "the panel's button fits the viewport");
-    buttons(panel)[0].click(); await pause();
+    fix()[0].click(); await pause();
     const confirm = [...document.querySelectorAll("dialog[open]")].find(d => d.textContent.includes("Investigate APP-4 in T3?"));
     assert(confirm && !posts.length, "starting asks for confirmation before any request");
     byText("button", "Start run", confirm).click();
@@ -882,7 +898,7 @@ async function investigate() {
     assert(posts[0][1].reconcile === true && posts[0][1].ticket === "APP-4" && posts[0][1].model === "auto", `the request is a reconcile start: ${JSON.stringify(posts[0][1])}`);
     for (let n = 0; n < 50 && rowOf("APP-4"); n++) await pause();
     assert(!rowOf("APP-4"), "a pending request replaces the held row");
-    assert(buttons(panel).every(b => b.disabled) && panel.textContent.includes("A request for this ticket is already pending."), "a pending request takes the panel's button away with the reason");
+    assert(!fix().length && panel.textContent.includes("A request for this ticket is already pending."), "a pending request takes the panel's button away with the reason");
     assert(root.querySelector(".operation")?.textContent.includes("Investigate APP-4"), "the request row names the investigation");
     release();
     for (let n = 0; n < 50 && operations.value.some(op => op.state !== "done"); n++) await pause();

@@ -48,8 +48,9 @@ export async function checkPageHead() {
   const search = head?.querySelector('button[aria-label="Search"]');
   assert(title && search, 'the head has a title and a Search button');
   const buttons = [...head.querySelectorAll('button')].filter(el => el.getClientRects().length);
-  // One row is a control plus the segmented group's border: 34px for a mouse, 46px with touch targets.
-  const t = r(title), h = r(head), oneRow = parseFloat(getComputedStyle(head).getPropertyValue('--control')) + 2.5;
+  // One row is a control plus the segmented group's border, 34px for a mouse and 46px with touch targets, inside the sticky head's own padding.
+  const style = getComputedStyle(head), padTop = parseFloat(style.paddingTop), padBottom = parseFloat(style.paddingBottom);
+  const t = r(title), h = r(head), oneRow = parseFloat(style.getPropertyValue('--control')) + 2.5 + padTop + padBottom;
   let page = head.parentElement;
   while (page && !getComputedStyle(page).containerName.split(' ').includes('page')) page = page.parentElement;
   assert(page, 'the head sits in a page container');
@@ -60,10 +61,13 @@ export async function checkPageHead() {
   assert([...words.getClientRects()].every(line => line.left >= block.left - 1 && line.right <= block.right + 1), 'the title reads in full inside its block');
   if (narrow) {
     assert(r(search).top < t.bottom && r(search).bottom > t.top, 'Search shares the title row');
-    assert(tools && strip, 'the head has a tools group and an actions strip');
+    assert(tools, 'the head has a tools group');
+    const visible = el => el.getClientRects().length > 0;
+    for (const button of [...tools.querySelectorAll('button')].filter(visible)) assert(r(button).top < t.bottom && r(button).bottom > t.top, 'tools share the title row');
+    // A page whose only controls are tools has no strip: the head is the title row alone.
+    if (!strip) { assert(h.height <= oneRow, 'a head without a strip is one row'); return done(1); }
     const s = r(strip), toolRow = r(tools);
-    for (const button of tools.querySelectorAll('button')) assert(r(button).top < t.bottom && r(button).bottom > t.top, 'tools share the title row');
-    assert(toolRow.right >= h.right - 1 || s.top < toolRow.bottom, 'tools sit at the right edge of the title row when the strip is below');
+    assert(toolRow.right >= h.right - parseFloat(style.paddingRight) - 1 || s.top < toolRow.bottom, 'tools sit at the right edge of the title row when the strip is below');
     const tops = [...strip.children].map(el => Math.round(r(el).top));
     assert(tops.every(top => top === tops[0]), 'the controls strip never wraps');
     strip.scrollLeft = strip.scrollWidth;
@@ -79,12 +83,15 @@ export async function checkPageHead() {
       strip.scrollLeft = 0; await frame();
     }
     const wrapped = s.top >= toolRow.bottom - 1;
-    assert(wrapped ? Math.abs(h.bottom - s.bottom) <= 1 && s.top - h.top <= 56 : h.height <= oneRow, 'the head is the title row plus at most one strip row');
+    assert(wrapped ? Math.abs(h.bottom - padBottom - s.bottom) <= 1 && s.top - h.top <= 56 + padTop : h.height <= oneRow, 'the head is the title row plus at most one strip row');
   } else {
-    assert(tools && strip, 'the head has a tools group and an actions strip');
+    assert(tools, 'the head has a tools group');
     assert(buttons.every(button => r(button).top >= h.top - 1 && r(button).bottom <= h.bottom + 1) && h.height <= oneRow, 'the title and every control share one row');
   }
-  assert(document.documentElement.scrollWidth <= innerWidth, 'the head fits the viewport');
-  if (matchMedia('(pointer: coarse)').matches) assert(buttons.every(button => r(button).width >= 44 && r(button).height >= 44), 'head controls keep 44px touch targets');
-  return { passed: true, viewport: [innerWidth, innerHeight], narrow, height: Math.round(h.height), rows: narrow && r(strip).top >= r(tools).bottom - 1 ? 2 : 1, coarse: matchMedia('(pointer: coarse)').matches };
+  return done(narrow && strip && r(strip).top >= r(tools).bottom - 1 ? 2 : 1);
+  function done(rows) {
+    assert(document.documentElement.scrollWidth <= innerWidth, 'the head fits the viewport');
+    if (matchMedia('(pointer: coarse)').matches) assert(buttons.every(button => r(button).width >= 44 && r(button).height >= 44), 'head controls keep 44px touch targets');
+    return { passed: true, viewport: [innerWidth, innerHeight], narrow, height: Math.round(h.height), rows, coarse: matchMedia('(pointer: coarse)').matches };
+  }
 }

@@ -1,7 +1,7 @@
 import { html, useEffect } from "../lib/h.js";
 import { config, statusSection, providers, jobs, selectedModel, actions, chooseModel, setModelOption, instanceDriver } from "../lib/store.js";
 import { DIFFICULTIES, difficultyLabel, providerName, providerIcon, streamReason, isOpen } from "../lib/format.js";
-import { Button, Field, Input, Select, Segmented, Toggle, Tag, Icon, SortableList, Page, RowBody } from "../ui/index.js";
+import { Button, Field, Input, Select, Segmented, Toggle, Tag, Meta, Icon, SortableList, Page, RowBody } from "../ui/index.js";
 
 // What the scheduler thinks of each model right now.
 function liveState(m) {
@@ -77,7 +77,7 @@ export function Models({ lead } = {}) {
             <span class="rank">${i + 1}</span>
             <${RowBody} title=${html`<b>${m.name}</b>`}>
               <${Icon} name=${providerIcon(instanceDriver(m.model.instanceId))} label=${providerName(instanceDriver(m.model.instanceId))} /> ${m.model.model || "no model"}
-              <${Tag} title=${`Hardest ticket it may take: ${difficultyLabel(m.maxDifficulty).toLowerCase()}`}><small>D</small>${m.maxDifficulty}<//>
+              <${Meta} difficulty=${m.maxDifficulty} difficultyTitle=${`Hardest ticket it may take: ${difficultyLabel(m.maxDifficulty).toLowerCase()}`} />
               ${live.next ? html`<${Tag} tone="on" title="The next automatic run uses this model">next<//>` : live.tone === "on" ? html`<${Tag} tone="on">working<//>` : null}
             <//>
             <${Icon} name=${m.automatic ? "zap" : "person"} label=${m.automatic ? "Automatic: the scheduler may pick it" : "Manual: only when you choose it"} />

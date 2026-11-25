@@ -113,13 +113,13 @@ async function run() {
   await pause();
   const dialog = document.querySelector("dialog[open]");
   assert(dialog?.textContent.includes("Remove APP-1"), "removal asks first");
-  [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === "Cancel").click();
+  [...dialog.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? b.textContent.trim()) === "Cancel").click();
   await pause();
   assert(keys().includes("APP-1") && !calls.some((c) => c.url.startsWith("/api/session-tickets")), "cancel changes nothing");
   await more('APP-1');
   button("Remove APP-1 from Session tickets").click();
   await pause();
-  [...document.querySelector("dialog[open]").querySelectorAll("button")].find((b) => b.textContent.trim() === "Remove").click();
+  [...document.querySelector("dialog[open]").querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? b.textContent.trim()) === "Remove").click();
   for (let n = 0; n < 50 && keys().includes("APP-1"); n++) await pause();
   assert(calls.some((c) => c.url === "/api/session-tickets/t1/dismiss"), "removal posts the task identity");
   assert(keys().join() === "WEB-9,APP-2,APP-5", "the removed entry leaves the list");
@@ -132,7 +132,7 @@ async function run() {
   assert(popover && !popover.querySelector('[aria-label="Provider"]'), "filters open without a provider facet");
   [...popover.querySelectorAll('[role="group"][aria-label="Priority"] button')].find((b) => b.getAttribute("aria-label") === "Urgent").click(); await pause();
   assert(keys().join() === "WEB-9", "priority filters narrow the list");
-  [...popover.querySelectorAll("button")].find((b) => b.textContent.trim() === "Clear all").click(); await pause();
+  [...popover.querySelectorAll("button")].find((b) => b.getAttribute("aria-label") === "Clear all filters").click(); await pause();
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   assert(keys().join() === "WEB-9,APP-2,APP-5", "clearing restores the list");
   update({ sessionTickets: { ...state.status.sessionTickets, rows: [row("t7", "APP-7", "urgent"), ...state.status.sessionTickets.rows] } }); await pause();
@@ -172,7 +172,7 @@ async function density() {
   const inactiveBackground = getComputedStyle(button('Search')).backgroundColor;
   assert(root.querySelector('h1 small')?.textContent === '4', 'ticket count stays beside the page title');
   assert(!root.querySelector('.section.list > header'), 'the list has no repeated section heading');
-  if ((root.querySelector('.content')?.clientWidth ?? innerWidth) >= 800) assert(height <= 44.5, 'the title and collapsed toolbar share one row when they fit');
+  if ((root.querySelector('.content')?.clientWidth ?? innerWidth) >= 800) assert(height <= 66.5, 'the title and collapsed toolbar share one row, inside the sticky head\'s padding, when they fit');
   const input = await openSearch();
   assert(document.activeElement === input, 'opening search focuses the field');
   assert(Math.abs(head.getBoundingClientRect().height - height) < 1, 'opening search does not expand the toolbar');
@@ -215,11 +215,12 @@ async function startNotices() {
   const titles = [...tray().querySelectorAll(".issue-title")].map((e) => e.textContent);
   assert(titles.join() === "APP-5 waits on other tickets,Couldn't confirm APP-2 started", "notifications name each ticket and outcome");
   assert(tray().textContent.includes("Session ticket starts") && tray().textContent.includes("Not started"), "start problems have their own source heading");
-  const actionsOf = (key) => [...tray().querySelectorAll(".issue")].find((e) => e.textContent.includes(key)).querySelector(".issue-actions").textContent;
+  // Each action is an icon button named by its accessible name.
+  const actionsOf = (key) => [...[...tray().querySelectorAll(".issue")].find((e) => e.textContent.includes(key)).querySelectorAll(".issue-actions button")].map((b) => b.getAttribute("aria-label")).join();
   assert(actionsOf("APP-2").includes("Retry saved request") && actionsOf("APP-5").includes("Choose how to run it"), "notifications offer retry and chain choice");
   const b = tray().getBoundingClientRect();
   assert(b.left >= 0 && b.right <= innerWidth, "the notification list fits the viewport");
-  [...tray().querySelectorAll("button")].find((el) => el.textContent.trim() === "Choose how to run it").click(); await pause();
+  [...tray().querySelectorAll("button")].find((el) => (el.getAttribute("aria-label") ?? el.textContent.trim()) === "Choose how to run it").click(); await pause();
   assert(document.querySelector("dialog[open]")?.textContent.includes("APP-5 waits on") && !tray(), "the chain choice opens from the notification and replaces the list");
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
@@ -258,7 +259,7 @@ async function controls() {
   assert(keys().join() === 'APP-2', 'session filters combine with search');
   search.value = 'absent'; search.dispatchEvent(new Event('input', { bubbles: true })); await pause();
   assert(root.querySelector('.empty')?.textContent.includes('No session tickets match'), 'an unmatched session/search combination says so');
-  [...document.querySelector('.popover[aria-label="Filters"]').querySelectorAll('button')].find(b => b.textContent.trim() === 'Clear all').click(); await pause();
+  [...document.querySelector('.popover[aria-label="Filters"]').querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Clear all filters').click(); await pause();
   assert(keys().join() === 'WEB-9,APP-5,APP-1,APP-2', 'Clear all resets session picks and search while preserving sort');
   root.querySelector('[aria-label^="Filter runs"]').click(); await pause();
   update({ sessionTickets: { ...state.status.sessionTickets, rows: [row('t7', 'APP-7', 'urgent', { createdAt: '2026-03-01T14:00:00Z' }), ...state.status.sessionTickets.rows] } }); await pause();
