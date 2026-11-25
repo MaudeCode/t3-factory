@@ -230,7 +230,7 @@ export class Store {
     const path = join(dir, 'state.sqlite');
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=1000;
+    this.db.exec(`PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, task_id TEXT UNIQUE, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS job_history(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cleanup_actions(id TEXT PRIMARY KEY, data TEXT NOT NULL);
