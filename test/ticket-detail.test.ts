@@ -32,7 +32,7 @@ test('a ticket read returns only the allowlisted fields, with its readable block
     id: 'app-1', projectId: 'p-app', inbox: false, key: 'APP-1', title: 'Title of app-1', status: 'todo', priority: 'high', difficulty: 'med', kind: 'feature', labels: ['feat'], scopes: ['web'],
     description: 'Body', acceptanceCriteria: '- one', automationReady: false, holdReason: 'On hold', readiness: ['Ticket is on hold'],
     blockedBy: [{ key: 'APP-2', title: 'Title of blocker', done: true }], blocks: [{ key: 'APP-3', title: 'Title of dependent', done: false }],
-    epic: 'Epic one', createdAt: '2026-01-01T00:00:00Z', url: 'https://tracker.example/projects/p-app/tickets/app-1',
+    epic: 'Epic one', epicId: 'e1', createdAt: '2026-01-01T00:00:00Z', url: 'https://tracker.example/projects/p-app/tickets/app-1',
   });
 });
 

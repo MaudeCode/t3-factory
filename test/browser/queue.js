@@ -640,6 +640,7 @@ async function epics() {
     // Rows through the shared renderer.
     assert(launch.querySelectorAll(".chain-row").length === 4, "one row per ticket");
     assert(launch.textContent.includes("after APP-1"), "a blocked member names what it waits for");
+    assert(launch.querySelector('.chain-row [role="img"][aria-label="Automation ready"]'), "a member ready for automation carries the readiness symbol");
     assert(launch.textContent.includes("outside this Epic"), "a blocker outside the Epic is marked");
     assert(epicSection("Moving").textContent.includes("Automation is off for this ticket"), "a member without readiness says why");
     assert(epicSection("Paused").textContent.includes("waiting on legal"), "a member on hold says why");

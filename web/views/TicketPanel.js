@@ -10,7 +10,7 @@ import { Button, Dialog, Icon, Tag, Mark, Meta, Facts, Empty, Text, Segmented, R
 import { startHold, runNow, forceStart, startOptions, Investigate, PanelBar } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
 import { decisions, outcomeText, DuplicateLink } from "./Triage.js";
-import { epicById, epicByTitle, EpicDetail } from "./Queue.js";
+import { epicById, EpicDetail } from "./Queue.js";
 
 const CLOSED = ["done", "cancelled"];
 // The tickets this one waits on or blocks: one line each, its state as the row's mark, opening in this panel.
@@ -35,7 +35,7 @@ function Detail({ ticket: t, tab }) {
   const planned = (statusSection("plans").value ?? []).filter((p) => p.state === "active").flatMap((p) => p.target ? [...p.tickets, p.target] : p.tickets)
     .find((x) => x.id === t.id && !x.done);
   const conflict = held?.conflict === "artifacts" ? held : planned && blockedByEarlierWork(planned) ? { reason: planned.note, conflict: "artifacts" } : refused && earlierWork(refused);
-  const memberOf = t.epic ? epicByTitle(t.epic) : undefined;
+  const memberOf = t.epicId ? epicById(t.epicId) : undefined;
   // A ticket its running chain or Epic keeps waiting, with nothing unfinished ahead of it, can be started by name with
   // every limit overridden; the plan stays as it is. Anything else starts through the ordinary checks.
   const force = !!planned && !current && !conflict && t.blockedBy.every((b) => b.done);

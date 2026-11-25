@@ -95,7 +95,6 @@ function EpicRow({ epic, show, narrowed, extra }) {
 // One Epic in the side panel: its state, its start or the controls of its run, and its tickets, which open over it.
 // A running Epic's overrides are its plan's own and can be changed; one not started uses the page's start choices.
 export const epicById = (id) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epicId(epic) === id); };
-export const epicByTitle = (title) => { const { open, finished } = epicLists(); return [...open, ...finished].find((epic) => epic.title === title); };
 export function EpicDetail({ epic, detail }) {
   const running = epic?.state === "active", note = epic && epicNote(epic);
   const { label, tone, progress } = epic ? epicSummary(epic) : {};

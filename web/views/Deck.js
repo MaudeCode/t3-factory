@@ -166,7 +166,7 @@ export function PlanRows({ plan, show = () => true }) {
     // The short reason is the row's; hovering or opening the ticket gives the scheduler's own words.
     const full = [t.note, ...(t.done || job ? [] : reasons(t))].filter(Boolean).join(" · ");
     return html`<a class="chain-row" key=${t.id} href=${ticketLink(config.value, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer" onClick=${ticketClick(ticketKey(t.key))}>
-      <${Mark} tone=${label ? tone : ""} label=${label || "Queued"} /><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${html`<${Meta}><span class="row-key" aria-hidden="true">${t.key}</span>${label && html`<${Tag} tone=${tone}>${label}<//>`}${detail && html`<span class="meta-detail" title=${full || undefined}>${detail}</span>`}<//>`}<//>
+      <${Mark} tone=${label ? tone : ""} label=${label || "Queued"} /><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${html`<${Meta} automationReady=${t.automationReady}><span class="row-key" aria-hidden="true">${t.key}</span>${label && html`<${Tag} tone=${tone}>${label}<//>`}${detail && html`<span class="meta-detail" title=${full || undefined}>${detail}</span>`}<//>`}<//>
     <//>${(blocked || waiting) && html`<span class="chain-fix" key=${`${t.id}-fix`}>${blocked
       ? html`<${Investigate} held=${{ key: t.key, id: t.id, conflict: "artifacts" }} />`
       : html`<${Button} size="sm" icon="play" class="next-run" label=${`Start ${t.key} now: any model, every limit overridden`} disabled=${busy.value || pendingRun(t.key)} onClick=${() => startNow(t)} />`}</span>`}`;
