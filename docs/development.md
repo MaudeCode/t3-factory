@@ -18,6 +18,8 @@ Ordinary shell and provider fallback reads share an unfinished request even afte
 
 `package.json` keeps `private: true` to prevent accidental npm publication. This is a source-installed application.
 
+Opening a Store upgrades the job-source index trigger in a transaction. Saving a job after its kind or thread changes updates the indexed source used by Session tickets. The store test opens a database with the legacy trigger, and the workspace-cleanup fixture verifies that an ownership change during command stop records the specific refusal.
+
 ## Source layout
 
 | File or directory | Responsibility |

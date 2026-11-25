@@ -41,7 +41,14 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       'busy-terminal': [terminal('thread', 'running', true)], 'starting-terminal': [terminal('thread', 'starting', false)],
       'other-thread-terminal': [terminal('another-thread', 'running', false)], 'dry-run': [terminal('thread', 'running', false)],
     } as Record<string, unknown[]>)[scenario] ?? [];
-    const t3 = { stop: T3.prototype.stop, request: async (path: string) => {
+    const t3 = { stop(this: T3, id: string, beforeStop?: (projection: unknown) => Promise<void>) {
+      if (scenario !== 'command-race-owner' || !beforeStop) return T3.prototype.stop.call(this, id, beforeStop);
+      return T3.prototype.stop.call(this, id, async projection => {
+        const changed = store.job(job.id)!;
+        store.save({ ...changed, threadId: 'foreign' });
+        await beforeStop(projection);
+      });
+    }, request: async (path: string) => {
       if (scenario === 'command-bounded-unavailable') throw new Error('Bounded state unavailable');
       if (scenario === 'command-race-run') thread.activeRunId = 'resumed';
       if (scenario === 'command-race-request') thread.pendingRuntimeRequest = { kind: 'dynamic_tool_call', createdAt: thread.updatedAt };
@@ -50,7 +57,6 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
       if (scenario === 'command-race-child') threads.push(v2Thread({ id: 'child', lineage: { parentThreadId: thread.id, relationshipToParent: 'subagent' }, activeRunId: 'child-run' }));
       if (scenario === 'command-race-shared') threads.push(v2Thread({ ...thread, id: 'foreign' }));
       if (scenario.startsWith('command-race-command')) { const changed = store.job(job.id)!; changed.command = { ...changed.command as object, commandId: randomUUID() }; store.save(changed); }
-      if (scenario === 'command-race-owner') { const changed = store.job(job.id)!; changed.threadId = 'foreign'; store.save(changed); }
       if (scenario === 'command-race-binding') thread.worktreePath = repo;
       if (scenario === 'command-race-dirty') writeFileSync(join(tree, 'new-work'), 'keep');
       if (scenario === 'command-race-report') writeFileSync(job.reportPath, '{}');
@@ -162,6 +168,7 @@ for (const mode of ['direct', 'deferred'] as const) for (const scenario of ['cle
         const stops = () => commands.filter(c => c.type === 'run.interrupt');
         assert.equal(stops().length, eligible ? 1 : 0, 'stop only verified, freshly owned command-only work');
         assert.equal(existsSync(tree), true, 'accepted Stop is not process exit confirmation');
+        if (scenario === 'command-race-owner') assert.equal(store.job(job.id)!.workspaceCleanupError, 'Factory ownership changed before command stop');
         store.close(); store = new Store(join(dir, 'state'));
         const saved = store.job(job.id)!; saved.workspaceCleanupBlockedAt = undefined; store.save(saved);
         await runReconcile();
