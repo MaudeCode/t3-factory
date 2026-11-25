@@ -67,7 +67,7 @@ export function SessionTickets({ lead } = {}) {
                   <${Button} size="sm" icon class="next-run" aria-label=${`Remove ${t.key} from Session tickets`} title="Remove from this list. The ticket is unchanged." disabled=${busy.value} onClick=${() => dismiss([t])}><${Icon} name="x" /><span class="next-action-label">Remove</span><//>`}>
                 ${op && html`<span class="row-progress" role="status"><i class="spinner"></i>${operationText(op)}</span>`}
                 <span class="session-sources" title="The T3 session that reported creating this ticket">${t.sources.map((src) => src.title || "a T3 session").join(", ")}</span>
-                <${RelativeTime} class="muted" at=${t.createdAt} title=${new Date(t.createdAt).toLocaleString()} />
+                <${RelativeTime} class="muted" at=${t.createdAt} compact title=${new Date(t.createdAt).toLocaleString()} />
                 ${t.refreshError && html`<span class="tone-attention" title=${`Last read failed: ${t.refreshError}`}>tracker read failed</span>`}
                 ${t.unavailable && html`<b class="tone-attention" title=${t.unavailable}><${Icon} name="circleSlash" label=${t.unavailable} /></b>`}
               <//>`;
