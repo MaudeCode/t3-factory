@@ -157,7 +157,7 @@ async function choose(label, text) {
 async function labelModes() {
   await showLabels();
   assert(chosenMode('app') === 'Running block', 'legacy numeric limits show a Running block selector');
-  assert(mode('app').querySelectorAll('button svg').length === 2 && !mode('app').textContent.trim(), 'both modes use icon-only radio buttons');
+  assert([...mode('app').querySelectorAll('button')].map(b => `${b.querySelectorAll('svg').length} ${b.title}`).join() === '1 Full block,1 Running block', 'each mode is a radio with a glyph and its name as the tooltip');
   assert(root.querySelector('.label-limit').textContent.includes('0 running'), 'running mode excludes waiting jobs');
   await choose('app', 'Full block');
   assert(root.querySelector('.label-limit').textContent.includes('2 open'), 'full mode counts waiting jobs, excluding completed and other-project runs');
@@ -234,7 +234,10 @@ async function epicHold() {
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
 // Both providers report a weekly reset, so the schedule offers each.
-const RESETS = { claudeAgent: '2026-11-22T19:00:00.000Z', codex: '2026-11-25T08:30:00.000Z' };
+// Both resets are days ahead of whenever the fixture loads: a date written here would pass, and a reset that has
+// passed reads "now" however far the clock check moves it.
+const hoursAhead = hours => new Date(Date.now() + hours * 3_600_000).toISOString();
+const RESETS = { claudeAgent: hoursAhead(30), codex: hoursAhead(86) };
 async function showSchedule(schedule = {}, enabled = false) {
   await show();
   saved = { ...structuredClone(initial), enabled, schedule: { onAt: null, offAt: null, offAtReset: null, ...schedule } };

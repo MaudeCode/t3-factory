@@ -42,8 +42,11 @@ window.fetch = async (url, init) => {
 const update = (patch) => { state = { ...state, status: { ...state.status, ...patch } }; applyState(state); };
 const keys = () => [...root.querySelectorAll(".next .key")].map((e) => e.textContent);
 const button = (label) => [...root.querySelectorAll(`[aria-label="${label}"]`)].find(el => el.getClientRects().length);
+// A row folds its secondary actions into a menu by the width of its `page` container, which the app shell's sidebar
+// narrows below the window: the page at 951px is folded. The checks ask the page, never the window.
+const folded = () => [...root.querySelectorAll('.next-more')].some(el => el.getClientRects().length);
 async function more(key) {
-  if (innerWidth <= 900 && !document.querySelector(`.popover[aria-label="More actions for ${key}"]`)) {
+  if (folded() && !document.querySelector(`.popover[aria-label="More actions for ${key}"]`)) {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
     button(`More actions for ${key}`).click(); await pause();
   }
@@ -76,7 +79,7 @@ async function run() {
   assert(root.querySelectorAll(".next")[2].textContent.includes("tracker read failed"), "a failed refresh is not shown as fresh");
   await more('APP-2');
   assert(!button("Run APP-2 now").closest("a") && !button("Remove APP-2 from Session tickets").closest("a"), "actions sit beside the tracker link, not inside it");
-  if (innerWidth <= 900) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause(); }
+  if (folded()) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause(); }
   const many = [...root.querySelectorAll(".next")].find((r) => r.textContent.includes("APP-1"));
   assert(many.querySelectorAll('a[href^="/api/threads/"]').length === 1 && many.querySelector('a[href^="/api/threads/"]').title.includes("2 more"), "several sources collapse into one session action");
   // A tick renders the times and the Open session link with its icon alone; the link's "reported … ago" tooltip still moves.
@@ -347,7 +350,7 @@ async function compactRows() {
   assert(first.querySelector(`[title="${new Date(createdAt).toLocaleString()}"]`), 'creation age retains its absolute date tooltip');
   assert(root.textContent.includes('tracker read failed') && !root.querySelectorAll('.next')[2].textContent.includes('checked '), 'failed reads retain a concise warning');
   const rects = [...first.querySelectorAll('.next-run')].filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
-  assert(rects.length === (innerWidth <= 900 ? 2 : 3), 'mobile exposes visible Start and overflow while desktop keeps all actions');
+  assert(rects.length === (folded() ? 2 : 3), 'a folded row shows Start and its menu while a wide one keeps all actions');
   assert(!matchMedia('(pointer: coarse)').matches || rects.every(r => r.width >= 44 && r.height >= 44), 'touch actions retain 44px targets');
   assert(rects.every(r => Math.abs(r.top - rects[0].top) < 1), 'actions never force a vertical stack');
   assert(document.documentElement.scrollWidth <= innerWidth, 'long sources and stacked actions fit the viewport');
@@ -360,7 +363,7 @@ async function rowHeight() {
   const actions = entry.querySelector('.next-actions').getBoundingClientRect(), ticket = entry.querySelector('.next-ticket').getBoundingClientRect(), rect = entry.getBoundingClientRect();
   assert(height <= Math.max(ticket.height, actions.height) + 1.5, `row height follows its text or buttons without reserved space, got ${height}px`);
   assert(Math.abs(actions.top + actions.height / 2 - rect.top - rect.height / 2) <= 1, 'actions are centered beside the whole row');
-  if (innerWidth <= 900) {
+  if (folded()) {
     const title = entry.querySelector('.row-body > span').getBoundingClientRect();
     assert(title.right < actions.left, 'text and actions have separate columns without overlap');
     await more('APP-2');
@@ -373,8 +376,8 @@ async function rowHeight() {
   return { passed: true, viewport: [innerWidth, innerHeight], rowHeight: height };
 }
 async function overflowEdges() {
-  if (innerWidth > 900) return { passed: true, mobile: false };
   await show({ sessionTickets: { at, error: null, rows: Array.from({ length: 12 }, (_, i) => row(`t${i}`, `APP-${i}`, 'high')) } });
+  if (!folded()) return { passed: true, mobile: false };
   const entry = button('More actions for APP-6');
   scrollBy(0, entry.getBoundingClientRect().bottom - innerHeight + 12);
   await more('APP-6');
@@ -385,6 +388,13 @@ async function overflowEdges() {
   scrollTo(0, 0);
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
+// The page shows the start provider and overrides as one icon button; its panel names each choice.
+async function startOptionsPanel() {
+  const trigger = [...root.querySelectorAll('button')].find(b => b.getAttribute('aria-label')?.startsWith('Start options: '));
+  assert(trigger?.querySelector('svg') && !trigger.textContent.trim() && trigger.title === trigger.getAttribute('aria-label'), 'the start options are one icon button named by the current choices');
+  if (trigger.getAttribute('aria-expanded') !== 'true') { trigger.click(); await pause(); }
+}
+const touchTarget = control => !matchMedia('(pointer: coarse)').matches || (control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44);
 async function overrides() {
   calls = [];
   setSessionOverrides(['idle', 'reserve', 'labels']);
@@ -392,11 +402,12 @@ async function overrides() {
   await show();
   const group = () => root.querySelector('[role="group"][aria-label="Override limits"]');
   const toggle = key => group().querySelector(`[aria-label^="Override ${key}"]`);
-  assert(group()?.querySelectorAll('button').length === 4, 'four override toggles share the page header');
+  await startOptionsPanel();
+  assert(group()?.querySelectorAll('button').length === 4, 'the panel holds four override toggles');
   assert(toggle('provider limits').getAttribute('aria-pressed') === 'false', 'provider limits are respected by default');
   for (const control of group().querySelectorAll('button')) {
-    assert(control.querySelector('svg') && !control.textContent.trim() && control.title === control.getAttribute('aria-label'), 'each icon has an accessible name, tooltip and pressed state');
-    if (innerWidth <= 900) assert(control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44, 'override toggles have touch targets');
+    assert(control.querySelector('svg') && control.textContent.trim() && control.title === control.getAttribute('aria-label') && control.hasAttribute('aria-pressed'), 'each override has a glyph, its name, a tooltip and a pressed state');
+    assert(touchTarget(control), 'override toggles have touch targets');
   }
   toggle('quota reserve').click(); await pause();
   button('Run APP-2 now').click(); await pause();
@@ -432,11 +443,9 @@ async function providerChoice() {
   await show();
   const radios = () => root.querySelectorAll('[role="radiogroup"][aria-label="Start provider"] button');
   const limits = () => [...root.querySelectorAll('[role="group"][aria-label="Override limits"] button')];
-  assert(radios().length === 3, 'Auto, Codex and Claude reuse the icon segmented control');
-  for (const control of radios()) {
-    assert(control.querySelector('svg') && !control.textContent.trim() && control.title === control.getAttribute('aria-label'), 'provider icons have accessible names and tooltips');
-    if (innerWidth <= 900) assert(control.getBoundingClientRect().width >= 44 && control.getBoundingClientRect().height >= 44, 'provider icons have touch targets');
-  }
+  await startOptionsPanel();
+  assert([...radios()].map(control => control.textContent.trim()).join() === 'Auto,Codex,Claude', 'the panel names Auto, Codex and Claude');
+  for (const control of radios()) assert(touchTarget(control), 'provider choices have touch targets');
   radios()[1].click(); await pause();
   assert(limits().every(control => !control.disabled), 'an explicit provider keeps limit overrides editable');
   assert(limits().filter(control => control.getAttribute('aria-pressed') === 'true').length === 1, 'selecting a provider preserves the selected overrides');

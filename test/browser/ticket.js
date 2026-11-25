@@ -177,14 +177,14 @@ async function run() {
   assert(panel().textContent.includes("Synthetic ticket APP-2") && reads.filter((k) => k === "APP-2").length === 2, "Retry repeats the read");
   // Geometry.
   const box = panel().getBoundingClientRect();
-  assert(innerWidth <= 700 ? box.left === 0 && box.width === innerWidth : box.right === innerWidth && box.width <= 560, `the panel is a right drawer, or the whole screen on a phone: ${box.left},${box.width}`);
+  assert(innerWidth <= 700 ? box.left === 0 && box.width === innerWidth : box.right === innerWidth && box.width >= 340 && box.left >= (innerWidth >= 820 ? 280 : innerWidth - 560), `the panel is a right drawer that leaves the list in view, or the whole screen on a phone: ${box.left},${box.width}`);
   assert(box.height === innerHeight && document.documentElement.scrollWidth <= innerWidth && panel().scrollWidth <= panel().clientWidth, "the panel fills the height without sideways scroll");
   if (matchMedia("(pointer: coarse)").matches) for (const b of panel().querySelectorAll("button, a.btn")) assert(b.getBoundingClientRect().height >= 44, `panel controls are touch targets: ${b.textContent.trim()}`);
   // A home-screen app in landscape on a touch screen draws under the live-activity pill in the top right corner.
   // No browser here can be that display, so the rule is switched on to measure what it does.
   const gap = (el) => innerWidth - el.getBoundingClientRect().right;
-  const corner = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).find((r) => r.media?.mediaText.includes("display-mode: standalone"));
-  assert(corner && /orientation: landscape/.test(corner.media.mediaText) && /pointer: coarse/.test(corner.media.mediaText), "the corner clearance applies to a standalone, landscape, touch display only");
+  const corner = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]).find((r) => /display-mode: standalone.*orientation: landscape/.test(r.media?.mediaText));
+  assert(corner && /pointer: coarse/.test(corner.media.mediaText), "the corner clearance applies to a standalone, landscape, touch display only");
   const rootStyle = document.documentElement.style, before = gap(button("Close")), condition = corner.media.mediaText;
   assert(before < 40 && panel().querySelector(".dialog-head h2").getBoundingClientRect().right < button("Close").getBoundingClientRect().left, `Close sits at the panel's outer edge, after the key: ${before}`);
   corner.media.mediaText = "all"; await pause();
@@ -204,4 +204,5 @@ async function run() {
   return { passed: true, viewport: [innerWidth, innerHeight], coarse: matchMedia("(pointer: coarse)").matches };
 }
 window.ticketTests = { show, run, open };
-await show();
+// The fixture opens on Now, which reads no on-demand section: run()'s first step needs a page that has not asked for Up next.
+await show("/");

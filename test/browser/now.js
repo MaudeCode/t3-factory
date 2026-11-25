@@ -132,10 +132,10 @@ async function load() {
   const needs = s["Needs you"], expand = () => [...needs.querySelectorAll(".now-more")].find(visible);
   expand().click(); await pause();
   assert(rows(needs).length === 13 && expand().getAttribute("aria-expanded") === "true", `expanding Needs you shows every item: ${rows(needs).length}`);
-  assert(needs.querySelector('button[aria-label="Triage PIN-2 again"]') && needs.querySelector('button[aria-label="Close PIN-6"]'), "reports hidden behind the limit keep their actions once expanded");
+  assert(needs.querySelector('button[aria-label="Triage PIN-2 again"]') && needs.querySelector('button[aria-label="Make a ticket of PIN-6"]'), "reports hidden behind the limit keep their action once expanded");
   expand().click(); await pause();
   assert(rows(needs).length === limit, "the section collapses again");
-  assert([...root.querySelectorAll(".now-counts span")].map((el) => el.textContent).join() === "16running,13need you,3in your queue", "header counts include rows behind N more");
+  assert([...root.querySelectorAll(".now-counts a")].map((el) => el.textContent).join() === "16running,13need you,3in your queue", "header counts include rows behind N more");
   const grid = root.querySelector(".now-grid"), tops = new Set([...grid.children].map((el) => Math.round(el.getBoundingClientRect().top)));
   assert(tops.size === (width() > 1060 ? 1 : width() > 700 ? 2 : 4), `sections use four, two or one column by content width: ${tops.size} rows at ${width()}px`);
   if (matchMedia("(pointer: coarse)").matches) assert(rows(s.Working).every((r) => r.getBoundingClientRect().height >= 44), "rows are touch targets");
