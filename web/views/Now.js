@@ -53,7 +53,7 @@ function Plan({ plan }) {
   const title = epic ? plan.epic.title : plan.target?.title || (plan.queued ? "Queued run" : "Chain");
   const cancel = epic ? `Cancel Epic ${plan.epic.title}?` : plan.queued ? `Cancel the queued run for ${key}?` : `Cancel the chain to ${key}?`;
   return html`<${Row} icon="checklist" iconLabel=${epic ? "Epic" : plan.queued ? "Queued run" : "Chain"} id=${key} title=${title} note=${plan.queued ? holdNote(plan.target?.note) ?? "starts when a slot is free" : `${epic ? "Epic" : "Chain"} · ${planProgress(plan)}`}
-    href=${epic ? "/queue?view=epics" : "/queue"}
+    href=${epic ? `/queue?view=epics&open=${encodeURIComponent(plan.epic.id)}` : "/queue"}
     end=${html`<${CancelPlan} plan=${plan} title=${cancel} label=${epic ? "Cancel Epic" : plan.queued ? "Cancel queued run" : "Cancel chain"} icon="x" class="next-run" />`} />`;
 }
 
