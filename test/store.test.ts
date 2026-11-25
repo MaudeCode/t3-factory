@@ -31,6 +31,7 @@ function oldDatabase(dir: string) {
   insert.run('bare', null, JSON.stringify(job('bare')));
   archive.run('archived', JSON.stringify({ ...job('archived', legacy), historyOnly: true }));
   store.db.exec("DROP TABLE IF EXISTS job_commands; DELETE FROM metadata WHERE key = 'jobCommandsVersion'");
+  assert.equal(store.db.prepare('PRAGMA journal_mode=DELETE').get()?.journal_mode, 'delete');
   store.close();
 }
 const snapshot = (store: Store) => ({
