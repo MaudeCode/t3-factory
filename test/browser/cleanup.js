@@ -169,8 +169,8 @@ async function liveRefresh() {
     await push();
     assert(document.body.textContent.includes('1 selected') && box(items[6]).checked && !box(items[7]), 'a selected row that comes into use leaves the selection');
     items[7].next = original;
-    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 100);
-    click('Show more'); await until(() => document.querySelectorAll('.cleanup-row').length === 150);
+    click('Show more worktrees'); await until(() => document.querySelectorAll('.cleanup-row').length === 100);
+    click('Show more worktrees'); await until(() => document.querySelectorAll('.cleanup-row').length === 150);
     await push();
     assert(document.querySelectorAll('.cleanup-row').length === 150 && document.body.textContent.includes('1 selected') && !document.querySelector('[role=alert]'), 'rows loaded with Show more stay after a status push');
     click('Refresh cleanup inventory'); await until(() => document.body.textContent.includes('0 selected'));

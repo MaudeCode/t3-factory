@@ -194,12 +194,20 @@ async function duoLayout() {
   }
   store.status.value = priorStatus;
   store.connection.value = priorConnection; await pause();
-  // The running version is a filled tag, apart from its neighbours, in both the sidebar and the top bar.
-  const version = bar.querySelector('.version'), pad = parseFloat(getComputedStyle(version ?? bar).paddingLeft);
-  assert(version?.matches('.tag.tag-label') && version.textContent === 'v0.5.1' && pad >= 6, 'the bar shows the running version as a padded tag');
-  const near = phone ? bar.querySelector('.wordmark') : bar.querySelector('.conn');
-  const [v, n] = [bounds(version), bounds(near)];
-  assert(Math.max(v.left - n.right, v.top - n.bottom) >= 8 && v.right <= bounds(bar).right, 'the version tag keeps clear of its neighbour inside the bar');
+  // The running version is a filled tag in the sidebar, apart from its neighbours; a phone names it in More, not in its top bar.
+  // A phone and the rail have no room for it: both name the version in More.
+  const compact = phone || shell.classList.contains('rail');
+  if (compact) {
+    assert(!bar.querySelector('.version'), "the phone's top bar and the rail leave the version to More");
+    root.querySelector(phone ? '.tabbar button' : '.side-foot button[aria-label="More"]').click(); await pause();
+    assert(document.querySelector('dialog[open] .more-version')?.textContent === 'Version v0.5.1', 'More names the running version');
+    document.querySelector('dialog[open] .dialog-close').click(); await pause();
+  } else {
+    const version = bar.querySelector('.version'), pad = parseFloat(getComputedStyle(version ?? bar).paddingLeft);
+    assert(version?.matches('.tag.tag-label') && version.textContent === 'v0.5.1' && pad >= 6, 'the bar shows the running version as a padded tag');
+    const [v, n] = [bounds(version), bounds(root.querySelector('.side .conn'))];
+    assert(Math.max(v.left - n.right, v.top - n.bottom, n.top - v.bottom) >= 8 && v.right <= bounds(bar).right, 'the version tag keeps clear of its neighbour inside the bar');
+  }
   store.version.value = ''; await pause();
   assert(!bar.querySelector('.version'), 'no version shows no empty tag');
   const foot = bar.querySelector('.side-foot');
@@ -232,20 +240,24 @@ async function duoLayout() {
     // Collapse to icons and back; the choice is stored.
     const toggle = () => root.querySelector('.side-head button');
     const was = shell.classList.contains('rail');
-    assert(was === innerWidth < 900, 'with no stored choice the sidebar starts expanded from 900px and collapsed below');
+    assert(was === innerWidth < 1100, 'with no stored choice the sidebar starts expanded from 1100px and as a rail below, the open Duo included');
     toggle().click(); await pause();
     assert(shell.classList.contains('rail') === !was && toggle().getAttribute('aria-expanded') === String(was), 'the collapse button toggles the icon rail');
     assert(localStorage.getItem('factoryRail') === (was ? 'expanded' : 'collapsed'), 'the sidebar choice is stored');
     assert([...root.querySelectorAll('.side nav a')].every(a => a.textContent.trim()), 'collapsed links keep their names for assistive technology');
     noOverflow();
-    const railTag = bounds(root.querySelector('.side .version')), side = bounds(root.querySelector('.side'));
-    if (!was) assert(railTag.width > 0 && railTag.left >= side.left && railTag.right <= side.right, 'the version tag fits the icon rail');
+    if (!was) {
+      const more = root.querySelector('.side-foot button[aria-label="More"]'), side = root.querySelector('.side');
+      assert(!side.querySelector('.version') && more && bounds(more).left >= bounds(side).left && bounds(more).right <= bounds(side).right, "the rail's foot is one More button that fits it");
+      assert(side.scrollWidth <= side.clientWidth && getComputedStyle(side).scrollbarWidth === 'none', 'the rail never scrolls sideways and shows no scroll bar');
+    }
     toggle().click(); await pause();
     assert(shell.classList.contains('rail') === was, 'the sidebar toggles back');
     localStorage.removeItem('factoryRail');
   }
   assert(root.querySelector('h1').textContent.includes('Log'), 'a secondary destination uses the ordinary page route');
   if (phone) { root.querySelector('.tabbar button').click(); await pause(); [...root.querySelectorAll('.more-list button')][0].click(); await pause(); }
+  else if (shell.classList.contains('rail')) { root.querySelector('.side-foot button[aria-label="More"]').click(); await pause(); [...root.querySelectorAll('.more-list button')][0].click(); await pause(); }
   else root.querySelector('button[aria-label="Appearance"]').click();
   await pause();
   assert(root.querySelector('dialog[open][aria-label="Appearance"]'), 'Appearance is accessible');

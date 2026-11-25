@@ -1,8 +1,8 @@
 import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
 import { authenticated, auth, version, connection, config, statusSection, live, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen } from "../lib/store.js";
-import { route, NAV, TABS, follow } from "../lib/router.js";
+import { route, NAV, TABS, follow, pageScroller } from "../lib/router.js";
 import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover, RelativeTime } from "../ui/index.js";
-import { ago, until, moment } from "../lib/format.js";
+import { ago, until, moment, span } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { display } from "../lib/display.js";
@@ -30,7 +30,7 @@ function ThemePicker({ open, onClose }) {
         const c = t[mode];
         return html`<button key=${t.id} type="button" class="swatch" aria-pressed=${t.id === theme.value.id} onClick=${() => choose({ id: t.id })}>
           <i>${[c.bg, c.surface, c.accent, c.ink].map((color) => html`<span style=${`background:${color}`}></span>`)}</i>
-          <b>${t.label}</b><small>${t.id === "factory" ? "This app's own" : "From T3 Code"}</small>
+          <b>${t.label}</b>
         </button>`;
       })}
     </div>
@@ -126,7 +126,7 @@ function usePullToRefresh(onRefresh) {
 // Sidebar expanded or collapsed to icons. A stored choice wins; without one, wide windows start expanded.
 const RAIL = "factoryRail";
 const storedRail = () => { try { return globalThis.localStorage?.getItem(RAIL) ?? null; } catch { return null; } };
-const rail = signal(storedRail() ? storedRail() === "collapsed" : (globalThis.innerWidth ?? 1200) < 900);
+const rail = signal(storedRail() ? storedRail() === "collapsed" : (globalThis.innerWidth ?? 1200) < 1100);
 const setRail = (collapsed) => {
   rail.value = collapsed;
   try { globalThis.localStorage?.setItem(RAIL, collapsed ? "collapsed" : "expanded"); } catch { /* private window: the choice lasts until reload */ }
@@ -143,7 +143,11 @@ function usePhone() {
   return phone;
 }
 
-// The automation switch, with its state and when the scheduler looks next. `bare` is the switch alone.
+// The automation switch with one word of state and, beside a clock, when the scheduler last looked or looks next,
+// in the compact form ("1m", "in 20s"); the tooltip says it in full. `bare` leaves the time out.
+// One unit only, so the row it shares with the switch and Start never outgrows the sidebar: "36m", "2h", "4d".
+const brief = (seconds) => span(Math.max(0, seconds), true).split(" ")[0];
+const compactIn = (at, now) => `in ${brief((new Date(at) - now) / 1000)}`;
 function Automation({ bare }) {
   const on = live.value.enabled, d = statusSection("decision").value;
   const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
@@ -151,17 +155,20 @@ function Automation({ bare }) {
   const timer = on ? live.value.schedule.offAt : live.value.schedule.onAt, turns = on ? "Turns off" : "Turns on";
   return html`<div class="auto" title=${`${on ? "Automation on" : "Automation paused"}${timer ? `. ${turns} ${moment(timer)}` : ""}`}>
     <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
-    ${!bare && html`<span class="auto-text"><b>${on ? "Automation on" : "Automation paused"}</b>
-      <small><${RelativeTime} text=${(now) => timer ? `${turns} ${until(timer, now)}` : on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`} /></small></span>`}
+    <small class=${`auto-short${on ? "" : " tone-attention"}`} aria-hidden="true">${on ? "On" : "Paused"}</small>
+    ${!bare && html`<span class="auto-time"><${Icon} name="clock" />
+      <${RelativeTime} class="auto-when"
+        text=${(now) => timer ? compactIn(timer, now) : on && next ? (next > now + 1000 ? compactIn(next, now) : "now") : d?.at ? brief((now - Date.parse(d.at)) / 1000) : "never"}
+        title=${(now) => timer ? `${turns} ${until(timer, now)}` : on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`} /></span>`}
   </div>`;
 }
 
 // Start a run from any page: the start bar in a panel under its button.
-function Start() {
+function Start({ beside }) {
   const anchor = useRef(), [open, setOpen] = useState(false);
   return html`<span ref=${anchor} class="start">
     <${Button} variant="primary" icon="play" class="start-btn" aria-label="Start a run" title="Start a run" aria-expanded=${open} onClick=${() => setOpen(!open)}><span>Start a run</span><//>
-    <${Popover} class="start-pop" open=${open} onClose=${() => setOpen(false)} anchor=${anchor} label="Start a run" width=${480}><${Composer} /><//>
+    <${Popover} class="start-pop" beside=${beside} open=${open} onClose=${() => setOpen(false)} anchor=${anchor} label="Start a run" width=${440}><${Composer} /><//>
   </span>`;
 }
 
@@ -178,21 +185,21 @@ function Shell() {
   const leave = () => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout();
   const versionTag = version.value && html`<${Tag} tone="label" class="version" title="Version">${version.value}<//>`;
   const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory: Now"><img src="/icon.svg" width="24" height="24" alt="" /><span>Factory</span></a>`;
-  const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); follow(e); }} aria-current=${current(path) ? "page" : undefined}>
+  const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); if (route.value.path === path && !location.search && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button)) { e.preventDefault(); pageScroller().scrollTo({ top: 0, behavior: "smooth" }); } else follow(e); }} aria-current=${current(path) ? "page" : undefined}>
     <${Icon} name=${icon} /><span>${name}</span>${badge(path)}
   </a>`;
   const tabbed = new Set(TABS.map(([path]) => path));
   const inMore = NAV.flatMap(([, list]) => list).filter(([path]) => !tabbed.has(path));
   return html`<div class=${`shell${phone ? " phone" : rail.value ? " rail" : ""}`}>
     ${phone
-      ? html`<header class="top">${wordmark}${versionTag}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
+      ? html`<header class="top">${wordmark}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
       : html`<aside class="side" aria-label="Sidebar">
-        <div class="side-head">${wordmark}<${Button} variant="ghost" size="sm" icon="sidebar" label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
-        <${Automation} /><${Start} />
+        <div class="side-head">${wordmark}${rail.value && html`<${Updates} />`}<${Button} variant="ghost" size="sm" icon=${rail.value ? "sidebarExpand" : "sidebar"} label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
+        <div class="side-run"><${Automation} /><${Start} beside /></div>
         ${NAV.map(([group, list]) => html`<nav key=${group} aria-label=${group}><h2>${group}</h2>${list.map(link)}</nav>`)}
-        <div class="side-foot"><${Updates} />${versionTag}
+        <div class="side-foot">${rail.value ? html`<${Button} variant="ghost" size="sm" icon="kebab" label="More" onClick=${() => setMore(true)} />` : html`<${Updates} />${versionTag}
           <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
-          <${Button} variant="ghost" size="sm" icon="signOut" label=${signOut} onClick=${leave} /></div>
+          <${Button} variant="ghost" size="sm" icon="signOut" label=${signOut} onClick=${leave} />`}</div>
       </aside>`}
     <div class="content">
       <div ref=${ptr} class="ptr" aria-live="polite"></div>
@@ -204,10 +211,11 @@ function Shell() {
     </nav>`}
   </div>
   <${Dialog} open=${more} onClose=${() => setMore(false)} title="More">
-    <nav class="more-list" aria-label="More pages">${inMore.map(link)}
+    <nav class="more-list" aria-label="More">${phone && inMore.map(link)}
       <button type="button" onClick=${() => { setMore(false); setPicking(true); }}><${Icon} name="paintbrush" /><span>Appearance</span></button>
       <button type="button" onClick=${() => { setMore(false); leave(); }}><${Icon} name="signOut" /><span>${signOut}</span></button>
     </nav>
+    ${version.value && html`<p class="more-version">Version ${version.value}</p>`}
   <//>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />`;
 }
@@ -259,8 +267,8 @@ function SaveBar() {
   }, []);
   return html`<div ref=${ref} class="save-bar" role="region" aria-label="Unsaved changes">
   <span>${changes.value} unsaved ${changes.value === 1 ? "change" : "changes"}</span>
-  <${Button} variant="ghost" disabled=${busy.value} onClick=${actions.revert}>Discard<//>
-  <${Button} variant="primary" disabled=${busy.value} onClick=${actions.save}>Save changes<//>
+  <${Button} variant="ghost" icon="x" label="Discard changes" disabled=${busy.value} onClick=${actions.revert} />
+  <${Button} variant="primary" icon="check" label="Save changes" disabled=${busy.value} onClick=${actions.save} />
 </div>`;
 }
 

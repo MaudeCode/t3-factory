@@ -65,16 +65,18 @@ async function run() {
   assert(root.querySelector('.shell [aria-current="page"]').textContent.trim() === "Now", "the home page is Now in the navigation");
   assert(Object.keys(s).join() === "Needs you,Working,CI,Your queue", "four sections follow the provider limits");
   const strip = main.querySelector(".strip"), grid = main.querySelector(".now-grid");
-  assert(strip.querySelectorAll(".machine").length === 2 && strip.getBoundingClientRect().bottom <= grid.getBoundingClientRect().top + 1, "both providers' limits sit above the sections");
+  // A phone-width column lists what needs the owner first and the limits after it.
+  const stacked = getComputedStyle(grid).gridTemplateColumns.split(" ").length === 1;
+  assert(strip.querySelectorAll(".machine").length === 2 && (stacked ? grid.getBoundingClientRect().bottom <= strip.getBoundingClientRect().top + 1 : strip.getBoundingClientRect().bottom <= grid.getBoundingClientRect().top + 1), "both providers' limits sit above the sections, or under them in one column");
   assert(!/Finished|Activity|Up next|Journal entry|APP-900|APP-9\b/.test(main.textContent), "no finished runs, activity log or automatic queue");
   // Needs you: two waiting runs, the two owner-stage reports. Working: active without a PR. CI: active with one.
   if (width() > 700) {
     assert(keys(s["Needs you"]).join() === "APP-3,APP-4,PIN-2,PIN-6", `Needs you lists waiting runs and owner reports: ${keys(s["Needs you"])}`);
     assert(keys(s.Working).toSorted().join() === "APP-1,APP-5" && keys(s.CI).join() === "APP-2", "active runs split on whether a pull request exists");
-    assert(rows(s["Your queue"]).map((r) => r.querySelector(".now-title").textContent).join() === "Queued APP-700,Chain to APP-701,Epic: Billing v2", "Your queue lists the owner's queued run, chain and running Epic");
+    assert(rows(s["Your queue"]).map((r) => `${r.querySelector(".key")?.textContent ?? "Epic"} ${r.querySelector(".now-title").textContent}`).join() === "APP-700 Queued by the owner,APP-701 Chain target,Epic Billing v2", "Your queue names the owner's queued run, chain and running Epic by key and title");
   }
-  const counts = [...main.querySelectorAll(".now-counts span")].map((el) => el.textContent);
-  assert(counts.join() === "3running,4need you,3in your queue", `header counts match the sections: ${counts}`);
+  const counts = [...main.querySelectorAll(".now-counts a")].map((el) => `${el.textContent} ${el.getAttribute("href")}`);
+  assert(counts.join() === "3running /runs,4need you /runs?state=waiting,3in your queue /queue", `header counts match the sections and link to their lists: ${counts}`);
   assert([...main.querySelectorAll(".now-section h2 small")].map((el) => el.textContent).join() === "4,2,1,3", "each section title carries its full count");
   // A clock tick renders only the times, and a run's time and its tooltip still move.
   await checkTickRendersTimesOnly("Now");

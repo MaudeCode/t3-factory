@@ -46,6 +46,8 @@ export function moved(href) {
   return href;
 }
 const current = () => (globalThis.location?.pathname ?? "/") + (globalThis.location?.search ?? "");
+// What scrolls the page: the document in a browser tab, the pane beside the sidebar in the installed app (see style.css).
+export const pageScroller = () => { const pane = document.querySelector(".shell.phone, .shell > .content"); return pane && getComputedStyle(pane).overflowY === "auto" ? pane : window; };
 // An old address typed, bookmarked or reached by Back is rewritten in place.
 const settle = () => { const here = current(), there = moved(here); if (there !== here) history.replaceState(history.state, "", there); return there; };
 export const route = signal(match(globalThis.location ? settle() : "/"));
@@ -53,7 +55,7 @@ export const route = signal(match(globalThis.location ? settle() : "/"));
 export const search = signal(globalThis.location?.search ?? "");
 
 // A side panel is addressed by a query parameter on any page except the launch link, which owns `ticket`.
-// Opening adds a history entry, so Back closes the panel; the page under it does not move.
+// Opening adds a history entry, so Back steps out of the panel; the page under it does not move.
 const panels = [];
 function panel(name, parse) {
   const mark = `${name}Panel`;
@@ -67,10 +69,19 @@ function panel(name, parse) {
   panels.push((href) => { value.value = read(href); });
   return {
     value,
-    open(key) { history.pushState({ [mark]: true }, "", address(key)); value.value = key; },
+    // Each open is a history entry that records how many of this panel's entries lead to it, so a ticket opened from
+    // inside another is one Back away from the first, and Close leaves the panel in one step however deep it went.
+    // A panel reached by its address (a link, a typed URL) has no page under it; the first open over it gives it one.
+    open(key) {
+      let depth = value.value ? Number(history.state?.[mark]) || 0 : 0;
+      if (value.value && !depth) { const here = address(value.value); history.replaceState(history.state, "", address("")); history.pushState({ [mark]: (depth = 1) }, "", here); }
+      history.pushState({ [mark]: depth + 1 }, "", address(key));
+      value.value = key;
+    },
     close() {
       if (!value.value) return;
-      if (history.state?.[mark]) return history.back();
+      const depth = Number(history.state?.[mark]) || 0;
+      if (depth) return history.go(-depth);
       history.replaceState(null, "", address(""));
       value.value = "";
     },
@@ -93,7 +104,7 @@ export function navigate(href, replace = false, keepScroll = false) {
   route.value = next;
   search.value = location.search;
   for (const sync of panels) sync(target);
-  if (!keepScroll) window.scrollTo(0, 0);
+  if (!keepScroll) pageScroller().scrollTo(0, 0);
 }
 globalThis.addEventListener?.("popstate", () => { const here = settle(); route.value = match(here); search.value = location.search; for (const sync of panels) sync(here); });
 

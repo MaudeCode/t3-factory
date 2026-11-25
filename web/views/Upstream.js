@@ -70,15 +70,15 @@ export function Upstream({ lead } = {}) {
     ${requests.length > 0 && html`<${Section}><${Operations} list=${requests} /><//>`}
     <div>
       <div>
-        <${Section} title="Watched releases" aside=${html`<a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Upstream settings" title="Upstream settings"><${Icon} name="gear" /></a>`}>
+        <${Section} title="Watched releases" aside=${html`<a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Upstream settings" title="Upstream settings"><${Icon} name="gear" /></a><${Button} size="sm" icon="plus" label="Watch a repository" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })} />`}>
           ${watched.length
             ? watched.map(
                 ({ entry: u, live: r, ...w }) => html`<div class="release" key=${u.repo}>
                   <span><${RowBody} title=${html`<b>${u.name}</b>`}><${Link} href=${repoLink(u.repo)}>${u.repo}<//>${u.prereleases ? ", pre-releases" : ""}, ${w.projectName}${w.enabled ? "" : " (off)"}<//></span>
                   <span class="release-state row-actions">
+                    ${r?.reviewing ? html`<${Tag} tone="on">reviewing<//>` : r?.pending ? html`<${Tag} tone="attention">review due<//>` : r?.latest ? html`<${Tag} tone="ok">up to date<//>` : html`<${Tag}>new<//>`}
                     ${r?.pending && html`<${Button} size="sm" icon="play" label=${`Review ${u.name} now`} disabled=${pendingReview(u.repo)} onClick=${() => startRun({ upstream: u.repo, model: "auto", overrideLimits: true })} />`}
                     <${Button} size="sm" icon="gear" label=${`Edit ${u.name} watch`} onClick=${() => setEdit({ ...w, entry: u })} />
-                    ${r?.reviewing ? html`<${Tag} tone="on">reviewing<//>` : r?.pending ? html`<${Tag} tone="attention">review due<//>` : r?.latest ? html`<${Tag} tone="ok">up to date<//>` : html`<${Tag}>new<//>`}
                   </span>
                   <span class="release-versions">
                     <span><small>reviewed</small><${Link} href=${releaseLink(u.repo, r?.reviewed ?? u.firstBase)} class="mono">${r?.reviewed ?? u.firstBase}<//></span>
@@ -89,7 +89,7 @@ export function Upstream({ lead } = {}) {
                 </div>`,
               )
             : html`<${Empty}>No watched repositories yet.<//>`}
-          <${Button} size="sm" style="margin-top:8px" onClick=${() => setEdit({ project: Math.max(0, c.projects.findIndex((p) => p.enabled)), index: -1 })}>Watch a repository<//>
+
         <//>
         <${RunGroup} title="Reviews" list=${reviews} empty="No reviews yet." />
       </div>

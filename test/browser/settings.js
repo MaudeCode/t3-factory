@@ -86,7 +86,7 @@ async function run() {
   await type(main().querySelector('.detail input[type="text"]'), "Renamed model");
   tab("Limits").click(); await pause(150);
   assert(here() === "/settings/limits" && main().textContent.includes("Runs at once") && root.querySelector(".save-bar").textContent.includes("5 unsaved changes"), "Limits is the capacity page, with the edits still pending");
-  [...root.querySelectorAll(".save-bar button")].find((b) => b.textContent.trim() === "Save changes").click(); await pause(200);
+  root.querySelector('.save-bar button[aria-label="Save changes"]').click(); await pause(200);
   const w = writes.at(-1)?.config;
   assert(writes.length === 1 && w.triage.promptFile === "/prompts/triage-2.md" && w.discovery.promptFile === "/prompts/discovery-2.md" && w.upstream.promptFile === "/prompts/review-2.md" && w.projects[0].inbox.maxPromotionsPerDay === 20 && w.models[0].name === "Renamed model", "one save carries the edits from every tab");
   assert(!root.querySelector(".save-bar"), "saving clears the unsaved bar");
@@ -94,7 +94,7 @@ async function run() {
   tab("Projects").click(); await pause(150);
   assert(!main().textContent.includes("leave a project alone") && [...main().querySelectorAll("section.section h2")].every((h) => !h.textContent.startsWith("Discovery")), "discovery's settings left the Projects tab");
   const name = [...main().querySelectorAll('.detail input[type="text"]')][0];
-  if (name) { await type(name, "Changed"); [...root.querySelectorAll(".save-bar button")].find((b) => b.textContent.trim() === "Discard").click(); await pause(150); assert(c().projects[0].name === "Example" && !root.querySelector(".save-bar"), "Discard reverts the edit"); }
+  if (name) { await type(name, "Changed"); root.querySelector('.save-bar button[aria-label="Discard changes"]').click(); await pause(150); assert(c().projects[0].name === "Example" && !root.querySelector(".save-bar"), "Discard reverts the edit"); }
   // Log and Storage keep their addresses under their new names.
   navigate("/activity"); await pause(150);
   assert(main().querySelector("h1").textContent.includes("Log"), "Activity is the Log");

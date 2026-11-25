@@ -3,12 +3,13 @@
 import { signal, effect } from "./h.js";
 import { T3_THEMES } from "./themes.js";
 
-// Ink: a muted plum-blue. Colour is kept for state, so the accent stays close to the ink.
+// The default: neutral near-black greys, hairline borders and one indigo accent, after Linear's interface.
+// Orange, green and red are kept for state.
 const FACTORY = {
   id: "factory",
   label: "Factory",
-  dark: { bg: "#14141d", surface: "#1b1b28", "surface-2": "#272738", ink: "#ecedf6", muted: "#9193ab", line: "#2b2b3e", accent: "#c4cae9", "accent-ink": "#14141d", "accent-text": "#b9c0e6", attention: "#dcae8e", danger: "#f0a0a8", ok: "#a2ccba" },
-  light: { bg: "#f3f4f9", surface: "#ffffff", "surface-2": "#e5e7f1", ink: "#1c1d2b", muted: "#63667e", line: "#d9dbe8", accent: "#3f4570", "accent-ink": "#ffffff", "accent-text": "#4a5296", attention: "#9a5b2e", danger: "#b3394a", ok: "#3d7a57" },
+  dark: { bg: "#08090a", surface: "#101113", "surface-2": "#1c1d21", ink: "#f7f8f8", muted: "#8a8f98", line: "#23252a", accent: "#5e6ad2", "accent-ink": "#ffffff", "accent-text": "#8b93ff", attention: "#f2994a", danger: "#eb5757", ok: "#4cb782" },
+  light: { bg: "#fbfbfb", surface: "#ffffff", "surface-2": "#f0f0f2", ink: "#1b1c1f", muted: "#6b6f76", line: "#e6e6e9", accent: "#5e6ad2", "accent-ink": "#ffffff", "accent-text": "#4f58c4", attention: "#c2600c", danger: "#c9372c", ok: "#1f9d55" },
 };
 // T3 has no success role; one per appearance keeps Done and Live readable on its palettes.
 const OK = { dark: "#9ee2b8", light: "#15803d" };

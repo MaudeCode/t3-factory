@@ -77,6 +77,21 @@ export function Stepper({ path, value, onChange, min = 0, max = 99, labels = {},
   </div>`;
 }
 
+// A strip of choices wider than its place scrolls sideways; the chosen one is brought into view when it changes, so a
+// page opened by its address, or a limit past the quick picks, never hides the current choice off the edge.
+// It also runs when the strip's own width changes, as when counts arrive after the first paint, and never otherwise:
+// a strip the owner has scrolled by hand stays where they left it.
+function useChosenInView(value) {
+  const strip = useRef(), last = useRef({});
+  useEffect(() => {
+    const el = strip.current, chosen = el?.querySelector('[aria-checked="true"]');
+    if (!el || (last.current.value === value && last.current.width === el.scrollWidth)) return;
+    last.current = { value, width: el.scrollWidth };
+    if (chosen && el.scrollWidth > el.clientWidth) el.scrollTo({ left: chosen.offsetLeft - (el.clientWidth - chosen.offsetWidth) / 2 });
+  });
+  return strip;
+}
+
 // Limit picker: Off, quick picks (1 to `max`, or the given `picks`), and a slot that opens a box for any other limit.
 // `unit` words each slot ("at once", "per day"); `offLabel` names 0; `unlimited`, when given, names a last ∞ choice stored as null.
 export function Slots({ path, running = 0, max = 6, picks, label, busyLabel = 'running now', unit = "at once", offLabel = "Off", unlimited }) {
@@ -84,6 +99,7 @@ export function Slots({ path, running = 0, max = 6, picks, label, busyLabel = 'r
   const limit = none ? Infinity : value ?? 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const strip = useChosenInView(value);
   const quick = picks ?? Array.from({ length: max }, (_, i) => i + 1), top = quick.at(-1);
   const custom = !none && limit !== 0 && !quick.includes(limit);
   const slot = (n, text = n) => html`<button key=${n} type="button" role="radio" aria-checked=${limit === n} class=${cls("slot", n <= limit && "open", n <= running && "busy")}
@@ -99,7 +115,7 @@ export function Slots({ path, running = 0, max = 6, picks, label, busyLabel = 'r
     if (e.key === "Enter") { if (el.value !== "" && el.validity.valid) commit(el); else el.reportValidity(); }
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); el.dataset.cancel = "1"; setEditing(false); }
   };
-  return html`<div class="slots" role="radiogroup" aria-label=${label}>
+  return html`<div ref=${strip} class="slots" role="radiogroup" aria-label=${label}>
     <button type="button" role="radio" aria-checked=${limit === 0} class="slot-off" onClick=${() => set(path, 0)}>${offLabel}</button>
     ${quick.map((n) => slot(n))}
     ${editing
@@ -169,8 +185,8 @@ export function Budget({ label, remaining, reserved, note, reservePath, floorPat
 
 // Custom dropdown. `options` is a list of [value, name]; `onChange` receives the value.
 // `multiple` makes it a multi-pick: `value` is an array, the menu stays open while picking, and the
-// trigger reads the placeholder (or label) until something is picked, then "A" or "A +2".
-export function Select({ path, value, options, onChange, label, size, multiple, placeholder, disabled, class: extra }) {
+// trigger reads the placeholder (or label) until something is picked, then "A" or "A +2", or what `summary` makes of the picked names.
+export function Select({ path, value, options, onChange, label, size, multiple, placeholder, disabled, summary, class: extra }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const ref = useRef(), menu = useRef(), button = useRef();
@@ -180,7 +196,7 @@ export function Select({ path, value, options, onChange, label, size, multiple, 
   const selected = (v) => (multiple ? picked.includes(v) : v === current);
   const index = multiple ? options.findIndex(([v]) => picked.includes(v)) : options.findIndex(([v]) => v === current);
   const names = options.filter(([v]) => picked.includes(v)).map(([, name]) => name);
-  const text = multiple ? (names.length ? `${names[0]}${names.length > 1 ? ` +${names.length - 1}` : ""}` : "") : options[index]?.[1] ?? current ?? "";
+  const text = multiple ? (names.length ? summary?.(names) ?? `${names[0]}${names.length > 1 ? ` +${names.length - 1}` : ""}` : "") : options[index]?.[1] ?? current ?? "";
   const show = () => { setActive(Math.max(0, index)); setOpen(true); };
   const choose = (v) => {
     const change = onChange ?? ((x) => set(path, x));
@@ -293,10 +309,12 @@ export const Check = ({ path, label, checked, onChange, hint, ...props }) =>
     ${label && html`<span>${label}</span>`}<${Help} text=${hint} />
   </label>`;
 
-// Exclusive filter chips. `options` is a list of [value, name, count?].
-export const Segmented = ({ path, options, value, onChange, label, icons, disabled }) => {
+// Exclusive filter chips. `options` is a list of [value, name, count?]. `icons` maps each value to a glyph that stands
+// for its name; `named` shows the name beside the glyph where there is room for it.
+export const Segmented = ({ path, options, value, onChange, label, icons, named, disabled }) => {
   const [current, change] = bind(path, value, onChange);
   const index = Math.max(0, options.findIndex(([v]) => v === current));
+  const strip = useChosenInView(current);
   const keydown = (e) => {
     if (disabled) return;
     let next;
@@ -309,12 +327,12 @@ export const Segmented = ({ path, options, value, onChange, label, icons, disabl
     change(options[next][0]);
     e.currentTarget.querySelectorAll('button')[next].focus();
   };
-  return html`<div class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label} onKeyDown=${keydown}>
+  return html`<div ref=${strip} class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label} onKeyDown=${keydown}>
     ${options.map(
       ([v, name, count], i) =>
-        html`<button key=${v} type="button" role="radio" disabled=${disabled} aria-checked=${v === current} tabindex=${i === index ? 0 : -1} class=${icons && cls('slot', v === current && 'open busy')}
+        html`<button key=${v} type="button" role="radio" disabled=${disabled} aria-checked=${v === current} tabindex=${i === index ? 0 : -1} class=${icons && cls('slot', v === current && 'chosen')}
           aria-label=${icons ? name : undefined} title=${icons ? name : undefined} onClick=${() => change(v)}>
-          ${icons ? html`<${Icon} name=${icons[v]} />` : name}${count != null && html`<small>${count}</small>`}
+          ${icons ? html`<${Icon} name=${icons[v]} />${named && html`<span>${name}</span>`}` : name}${count != null && html`<small>${count}</small>`}
         </button>`,
     )}
   </div>`;

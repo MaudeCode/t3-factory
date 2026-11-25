@@ -30,7 +30,7 @@ function geometry() {
     `notification stays within viewport gutters: ${JSON.stringify(box.toJSON())}`);
   assert(document.documentElement.scrollWidth <= innerWidth, "no document horizontal overflow");
   const button = toast().querySelector("button");
-  assert(button?.textContent.includes("Dismiss"), "explicit labelled dismiss button");
+  assert(button?.getAttribute("aria-label") === "Dismiss" && button.title === "Dismiss" && button.querySelector(".icon-x"), "an icon dismiss button named Dismiss");
   const b = button.getBoundingClientRect();
   assert(b.width >= 44 && b.height >= 44 && b.top >= box.top && b.bottom <= box.bottom, "dismiss target stays inside notification");
   assert(button.contains(document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2)), "dismiss button receives pointer input");

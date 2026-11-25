@@ -103,7 +103,7 @@ async function run() {
   await checkTimesFollowClock("Sources' Upstream releases view", () => main().querySelector(".release-versions").textContent);
   main().querySelector('input[role="switch"][aria-label="Upstream reviews"]').click(); await pause(150);
   assert(posts.some((p) => p.url === "/api/upstream/enabled" && p.body.enabled === false), "the reviews switch posts upstream.enabled = false");
-  [...main().querySelectorAll("button")].find((b) => b.textContent.trim() === "Watch a repository").click(); await pause();
+  main().querySelector('button[aria-label="Watch a repository"]').click(); await pause();
   assert(document.querySelector('dialog[open][aria-label="Watch a repository"]'), "Watch a repository opens its dialog");
   document.querySelector("dialog[open]").close(); await pause();
   button("Edit Library watch").click(); await pause();

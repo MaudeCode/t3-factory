@@ -28,6 +28,8 @@ export interface Job {
   // A reconcile settles the earlier work that holds its ticket back; it records what the scheduler found at the start.
   reconcile?: ReconcileEvidence & { title: string; reason: string };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
+  // The ticket's title when the run started, so a run list can say what each run is for.
+  title?: string;
   state: 'dispatching' | 'running' | 'waiting' | 'complete' | 'dismissed'; reason: string;
   // The launch command lives in job_commands: only a read by ID (`Store.job`) returns it. `branch` is the worktree branch it assigned.
   lastPersonalActivity: string | null; reportPath: string; command?: unknown; branch?: string;

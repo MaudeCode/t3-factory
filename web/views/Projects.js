@@ -88,7 +88,7 @@ function LabelLimits({ index, project }) {
       const n = jobs.value.filter((j) => j.projectId === project.kanvilId && (mode === 'full' ? isOpen(j) : isActive(j)) && j.labels?.includes(label)).length;
       return html`<div class="label-limit" key=${label}>
         <span><${Tag}>${label}<//> <small class="muted">${n} ${mode === 'full' ? 'open' : 'running'}</small></span>
-        <${Segmented} label=${`${label} block mode`} value=${mode} options=${[['full', 'Full block'], ['running', 'Running block']]} icons=${{ full: 'lock', running: 'play' }}
+        <${Segmented} label=${`${label} block mode`} value=${mode} named options=${[['full', 'Full block'], ['running', 'Running block']]} icons=${{ full: 'lock', running: 'play' }}
           onChange=${(mode) => set([...path, label], { limit: legacy ? setting : setting.limit, mode })} />
         <div class="label-limit-runs">
           <${Slots} label=${`${label} runs at once`} path=${legacy ? [...path, label] : [...path, label, 'limit']} running=${n} busyLabel=${mode === 'full' ? 'reserved by an open run' : undefined} />

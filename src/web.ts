@@ -218,6 +218,17 @@ export function createFactoryWeb(options: {
     options.assetDir ?? fileURLToPath(new URL("../web/", import.meta.url));
   // Static files by name, refreshed when their mtime or size changes on disk.
   const staticFiles = new Map<string, { mtime: number; size: number; body: Buffer; etag: string }>();
+  const staticFile = (file: string) => {
+    const stat = statSync(join(assets, file), { throwIfNoEntry: false });
+    if (!stat?.isFile()) return undefined;
+    let cached = staticFiles.get(file);
+    if (cached?.mtime !== stat.mtimeMs || cached.size !== stat.size) {
+      const body = readFileSync(join(assets, file));
+      cached = { mtime: stat.mtimeMs, size: stat.size, body, etag: `"${createHash("sha256").update(body).digest("base64url")}"` };
+      staticFiles.set(file, cached);
+    }
+    return cached;
+  };
   const pairs = new Map<string, number>(),
     attempts = new Map<string, { count: number; until: number }>();
   const operations = join(dataDir, "web-requests");
@@ -651,13 +662,14 @@ export function createFactoryWeb(options: {
       // Extensionless paths are app routes and load the page shell.
       const file = path === "/" || !extname(path) ? "index.html" : path.slice(1);
       const type = staticTypes[extname(file)];
-      const stat = type && /^[\w-]+(\/[\w-]+)*\.\w+$/.test(file) ? statSync(join(assets, file), { throwIfNoEntry: false }) : undefined;
-      if (!stat?.isFile()) return json(res, 404, { message: "Not found" });
-      let cached = staticFiles.get(file);
-      if (cached?.mtime !== stat.mtimeMs || cached.size !== stat.size) {
-        const body = readFileSync(join(assets, file));
-        cached = { mtime: stat.mtimeMs, size: stat.size, body, etag: `"${createHash("sha256").update(body).digest("base64url")}"` };
-        staticFiles.set(file, cached);
+      let cached = type && /^[\w-]+(\/[\w-]+)*\.\w+$/.test(file) ? staticFile(file) : undefined;
+      if (!cached) return json(res, 404, { message: "Not found" });
+      // The page names its stylesheet by content, so a browser that kept an old stylesheet cannot pair it with newer
+      // scripts: a changed stylesheet is a new address. iOS home-screen apps were seen doing exactly that.
+      const sheet = file === "index.html" ? staticFile("style.css") : undefined;
+      if (sheet) {
+        const body = Buffer.from(cached.body.toString().replace('href="/style.css"', `href="/style.css?v=${sheet.etag.slice(1, 13)}"`));
+        cached = { ...cached, body, etag: `"${createHash("sha256").update(body).digest("base64url")}"` };
       }
       // If-None-Match compares weakly (RFC 9110), so a proxy that weakens the tag still gets a 304.
       const fresh = (req.headers["if-none-match"] ?? "").split(",").some((tag) => tag.trim().replace(/^W\//, "") === cached.etag);

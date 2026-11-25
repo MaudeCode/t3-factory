@@ -71,10 +71,11 @@ async function run() {
     assert(location.pathname === "/runs/run-3" && Math.abs(scrollY - scrolled) < 2, `selecting a run keeps the list where it was scrolled: ${scrolled} -> ${scrollY}`);
     assert(rowLink("APP-3").getAttribute("aria-current") === "true" && [...list().querySelectorAll('[aria-current="true"]')].length === 1 && detail().textContent.includes("Synthetic ticket 3"), "the selected row is marked and its run is shown");
     assert(root.querySelector('[aria-label="Start order"] [aria-checked="true"]').getAttribute("aria-label") === "Oldest first", "selecting a run keeps the list's order and filters");
-    // The row's arrow opens the run the same way: in place, with the list where it was.
-    const arrow = list().querySelector('a[aria-label="Open run APP-5"]'), before = scrollY;
-    arrow.click(); await pause(200);
-    assert(location.pathname === "/runs/run-5" && Math.abs(scrollY - before) < 2 && rowLink("APP-5").getAttribute("aria-current") === "true", `the row's arrow keeps the list where it was scrolled: ${before} -> ${scrollY}`);
+    // Another row opens the same way: in place, with the list where it was. The row is the only way in; it has no arrow.
+    const before = scrollY;
+    assert(!list().querySelector('a[aria-label^="Open run"]'), "a row offers no second link to its own run");
+    rowLink("APP-5").click(); await pause(200);
+    assert(location.pathname === "/runs/run-5" && Math.abs(scrollY - before) < 2 && rowLink("APP-5").getAttribute("aria-current") === "true", `a second row keeps the list where it was scrolled: ${before} -> ${scrollY}`);
     history.back(); await pause(200);
     assert(location.pathname === "/runs/run-3" && rowLink("APP-3").getAttribute("aria-current") === "true" && detail().textContent.includes("Synthetic ticket 3"), "Back returns to the previously selected run");
   } else {
@@ -90,18 +91,19 @@ async function run() {
   await show("/runs/run-1");
   const d = detail();
   assert(visible(d) && d.textContent.includes("APP-1") && d.textContent.includes("Synthetic ticket 1") && (!wide || rowLink("APP-1").getAttribute("aria-current") === "true"), "a run address shows that run, selected in the list when the list is beside it");
-  const actions = [...d.querySelectorAll(".run-actions a, .run-actions button")].map((el) => el.textContent.trim());
-  assert(actions.join() === "Open in T3 Code,PR #7,Ticket,Cleanup review,Example", `one action row: ${actions}`);
+  const actions = [...d.querySelectorAll(".run-actions a, .run-actions button")].map((el) => el.getAttribute("aria-label") ?? el.textContent.trim());
+  assert(actions.join() === "Open in T3 Code,#7,Ticket,Cleanup review" && d.querySelector('.run-actions a[title="PR #7"]'), `one row of icon actions, a pull request by its number: ${actions}`);
+  assert([...d.querySelectorAll(".facts a")].some((a) => a.textContent === "Example"), "the run's project links from its facts");
   assert(d.querySelector(".run-actions a").getAttribute("href") === "/api/threads/th1/open", "Open in T3 Code opens the run's thread");
   const track = d.querySelector(".run-track");
   assert(track.querySelector(".now").textContent === "Working" && track.querySelector('[aria-current="step"]').textContent === "Working" && [...track.children].map((li) => li.textContent).join() === "Queued,Working,Needs you,Done", "the track names the four stops and marks the current one in text");
   for (const part of ["Model", "Started", "Last activity", "Difficulty", "Branch", "feat/APP-1-factory-x", "Timeline", "Started APP-1"]) assert(d.textContent.includes(part), `the detail shows ${part}`);
   // Ticket opens the ticket panel instead of the tracker.
-  [...d.querySelectorAll(".run-actions button")].find((b) => b.textContent.trim() === "Ticket").click(); await pause(200);
+  d.querySelector('.run-actions button[aria-label="Ticket"]').click(); await pause(200);
   assert(document.querySelector("dialog.ticket-panel[open]") && location.pathname === "/runs/run-1", "Ticket opens the ticket panel on the run");
-  document.querySelector("dialog.ticket-panel[open] .dialog-head button").click(); await pause(200);
+  document.querySelector("dialog.ticket-panel[open] .dialog-close").click(); await pause(200);
   // Stop asks first.
-  [...detail().querySelectorAll("button")].find((b) => b.textContent.trim() === "Stop run").click(); await pause();
+  detail().querySelector('button[aria-label="Stop run"]').click(); await pause();
   assert(confirmation.value?.title === "Stop APP-1?" && !posts.length, "Stop run asks before it posts");
   finishConfirmation(false); await pause();
   // A run that needs the owner says so; a finished one shows its report.

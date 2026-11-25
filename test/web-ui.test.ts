@@ -689,6 +689,55 @@ test('launch feedback excludes cleanup operations without dropping their recover
   } finally { store.operations.value = []; }
 });
 
+test('a start refused by earlier work is recognised, with what was found, for the ticket it named', async () => {
+  const { earlierWork, evidenceLines, blockedByEarlierWork } = await import('../web/lib/format.js');
+  const skipped = [{ key: 'APP-7', reason: 'Existing Git branch references this ticket', conflict: 'artifacts', evidence: { threads: ['t1'], refs: ['refs/heads/fix/APP-7-old', 'refs/remotes/origin/fix/APP-7-old'], openPR: true } }];
+  const op = (input: object, extra: object[] = skipped) => ({ input, result: { data: { skipped: extra } } });
+  assert.equal(earlierWork(op({ ticket: 'app-7' }))?.key, 'APP-7');
+  assert.equal(earlierWork(op({ ticket: 'APP-8' })), undefined, 'another ticket\'s hold is not this one\'s');
+  assert.equal(earlierWork(op({ ticket: 'APP-7', reconcile: true })), undefined, 'a refused investigation offers no second one');
+  assert.equal(earlierWork(op({ ticket: 'APP-7' }, [{ key: 'APP-7', reason: 'Runs with its Epic' }])), undefined);
+  assert.deepEqual(evidenceLines(skipped[0].evidence), [['Branch', 'fix/APP-7-old'], ['Pull request', 'open'], ['T3 threads', '1']], 'a branch and its remote copy are one line');
+  assert.equal(blockedByEarlierWork({ note: 'Existing open PR references this ticket' }), true);
+  assert.equal(blockedByEarlierWork({ note: 'Existing open PR references this ticket', done: true }), false);
+  assert.equal(blockedByEarlierWork({ note: 'Waiting for a free Claude slot' }), false);
+});
+
+test('a row says why a ticket waits in a few words: a code as its words, a known sentence as its short form, any other as its first sentence', async () => {
+  const { holdNote } = await import('../web/lib/format.js');
+  assert.deepEqual([holdNote('quota-reserve'), holdNote('Waiting for a free Codex slot'), holdNote('The selected model has no allowance left. Choose another model or wait for its quota to reset.'), holdNote('Something new happened. More detail follows.'), holdNote(undefined)],
+    ['quota reserve', 'no free Codex slot', 'no allowance left', 'Something new happened', undefined]);
+});
+
+test('closing a panel leaves it in one step, however many tickets were opened from inside it', async () => {
+  const router = await import('../web/lib/router.js');
+  const g = globalThis as any, saved = { history: g.history, location: g.location };
+  const stack: { state: any; url: string }[] = [{ state: null, url: '/queue' }], went: number[] = [];
+  let at = 0;
+  g.location = { get href() { return `http://factory.test${stack[at].url}`; }, get pathname() { return stack[at].url.split('?')[0]; }, get search() { return stack[at].url.includes('?') ? `?${stack[at].url.split('?')[1]}` : ''; } };
+  g.history = { get state() { return stack[at].state; }, pushState(state: any, _: string, url: string) { stack.splice(++at, Infinity, { state, url }); }, replaceState(state: any, _: string, url: string) { stack[at] = { state, url }; }, go(n: number) { went.push(n); at += n; }, back() { this.go(-1); } };
+  try {
+    router.openTicket('APP-1'); router.openTicket('APP-2'); router.openTicket('APP-3');
+    assert.deepEqual(stack.map(entry => entry.url), ['/queue', '/queue?ticket=APP-1', '/queue?ticket=APP-2', '/queue?ticket=APP-3'], 'each linked ticket is its own history entry, so Back steps through them');
+    router.closeTicket();
+    assert.deepEqual([went, stack[at].url], [[-3], '/queue'], 'Close returns to the page the first ticket was opened from');
+    // A ticket reached by its address has no page under it until a second opens over it.
+    stack.splice(0, Infinity, { state: null, url: '/queue?view=epics&ticket=APP-1' }); at = 0; went.length = 0; router.ticketPanel.value = 'APP-1';
+    router.openTicket('APP-2');
+    assert.deepEqual(stack.map(entry => entry.url), ['/queue?view=epics', '/queue?view=epics&ticket=APP-1', '/queue?view=epics&ticket=APP-2']);
+    router.closeTicket();
+    assert.deepEqual([went, stack[at].url], [[-2], '/queue?view=epics'], 'Close leaves a panel that began at a linked ticket in one step too');
+  } finally { router.ticketPanel.value = ''; g.history = saved.history; g.location = saved.location; }
+});
+
+test('a run archived while it waited is not counted or listed as needing the owner', async () => {
+  const { runsList } = await import('../web/lib/format.js');
+  const job = (id: string, extra: object) => ({ id, state: 'waiting', createdAt: '2026-01-01T00:00:00Z', ...extra });
+  const archived = [job('old', { historyOnly: true })], live = [job('open', {})];
+  const { counts, list } = runsList(archived, live, { state: 'waiting' });
+  assert.deepEqual([counts.waiting, counts.open, counts.all, list.map((j: { id: string }) => j.id).join()], [1, 1, 2, 'open']);
+});
+
 test('tracker Markdown becomes elements, with HTML left as text and unsafe link targets left unlinked', async () => {
   const { markdown } = await import('../web/lib/markdown.js');
   // A vnode tree as tags around its text, so structure and escaping read in one string.
@@ -702,11 +751,18 @@ test('tracker Markdown becomes elements, with HTML left as text and unsafe link 
     '<ul><li>one<ul><li>nested</li></ul></li><li><input checked></input>done</li></ul><ol><li>two</li><li>three</li></ol>');
   assert.equal(render('```ts\nconst a = "<b>";\n# not a heading\n```\n> quoted\n\n---\n| Key | State |\n| --- | --- |\n| A-1 | *open* |'),
     '<pre><code>const a = "<b>";\n# not a heading</code></pre><blockquote><p>quoted</p></blockquote><hr></hr>'
-    + '<table><thead><tr><th>Key</th><th>State</th></tr></thead><tbody><tr><td>A-1</td><td><em>open</em></td></tr></tbody></table>');
+    + '<div><table><thead><tr><th>Key</th><th>State</th></tr></thead><tbody><tr><td>A-1</td><td><em>open</em></td></tr></tbody></table></div>');
   assert.equal(render('````md\n```ts\nlet a;\n```\n````\nafter'), '<pre><code>```ts\nlet a;\n```</code></pre><p>after</p>');
   assert.equal(render('See [the PR](https://example.test/pr/1), https://example.test/a. Not [this](javascript:alert(1)) or [that](http://example.test).'),
     '<p>See <a href=https://example.test/pr/1>the PR</a>, <a href=https://example.test/a>https://example.test/a</a>. Not [this](javascript:alert(1)) or [that](http://example.test).</p>');
   assert.equal(render('<img src=x onerror="alert(1)">\n<script>alert(1)</script>'), '<p><img src=x onerror="alert(1)">\n<script>alert(1)</script></p>');
+  // A details block is the one piece of HTML read: its summary and body are built as text, and other tags inside stay characters.
+  assert.equal(render('Before\n<details>\n<summary>Background, **kept**</summary>\n\n## Problem\n<b>raw</b>\n</details>\nAfter'),
+    '<p>Before</p><details><summary>Background, <strong>kept</strong></summary><h5>Problem</h5><p><b>raw</b></p></details><p>After</p>');
+  assert.equal(render('<details>\nno summary, never closed'), '<details><summary>Details</summary><p>no summary, never closed</p></details>');
+  // Nesting has a floor: tracker text thousands of levels deep still renders, the rest of it as one paragraph.
+  assert.match(render('<details>\n'.repeat(5000) + 'the end'), /<details>\nthe end<\/p>/);
+  assert.match(render('> '.repeat(5000) + 'quoted'), /quoted/);
 });
 
 test('run history loads once, then merges the changes since its cursor on each recent change', async () => {

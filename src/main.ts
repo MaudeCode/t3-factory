@@ -5,7 +5,7 @@ import { join, dirname, basename } from 'node:path';
 import { parse } from 'jsonc-parser';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, defaultConfigPath } from './config.ts';
-import { Store, jobLabel } from './store.ts';
+import { Store, jobLabel, planTickets } from './store.ts';
 import { cycle, log, safeError, stopJob, dismissDeletedJob, cancelPlan, setPlanOverrides, orderPlans, readStatus, readCachedStatus } from './scheduler.ts';
 import { FactoryService } from './service.ts';
 import { callControl, commandFor, dispatchOptions } from './control.ts';
@@ -46,7 +46,18 @@ const sections: Record<string, string> = { upstream: 'No upstream reviews are co
 if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir), version = runtimeVersion(join(import.meta.dirname, '..'));
-  const compact = (j: any) => ({ id: j.id, historyOnly: j.historyOnly, taskId: j.taskId, projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, repair: j.repair, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
+  // A run stores its ticket's title from dispatch on. Earlier runs borrow one from the plans and session tickets that named
+  // their ticket. ponytail: re-read at most every 30 s; drop the lookup once runs without a stored title have aged out.
+  let titles = new Map<string, string>(), titlesAt = 0;
+  const knownTitle = (taskId: string | null) => {
+    if (!taskId) return undefined;
+    if (Date.now() - titlesAt > 30_000) {
+      titles = new Map([...store.sessionTickets().map(t => [t.taskId, t.title] as const), ...store.plans().flatMap(p => planTickets(p).map(t => [t.id, t.title] as const))]);
+      titlesAt = Date.now();
+    }
+    return titles.get(taskId);
+  };
+  const compact = (j: any) => ({ id: j.id, historyOnly: j.historyOnly, taskId: j.taskId, title: j.title || j.reconcile?.title || knownTitle(j.taskId), projectId: j.projectId, ticketKey: j.ticketKey, kind: j.kind, upstream: j.upstream, repair: j.repair, label: jobLabel(j), state: j.state, reason: j.reason, createdAt: j.createdAt, completedAt: j.completedAt, dismissedAt: j.dismissedAt, threadId: j.threadId, thread: j.thread, workspaceCleanup: j.workspaceCleanup, workspaceCleanedAt: j.workspaceCleanedAt, workspaceCleanupError: j.workspaceCleanupError, workspaceCleanupBlockedAt: j.workspaceCleanupBlockedAt, prUrls: j.prUrls, modelSelection: j.modelSelection, modelReason: j.modelReason, providerDriver: j.providerDriver, difficulty: j.difficulty, labels: j.labels, priority: j.priority, lastExecutionAt: j.lastExecutionAt, lastPersonalActivity: j.lastPersonalActivity });
   // Dispatches and stops go straight to the running scheduler; without one, the CLI does the work.
   const viaService = async (args: string[], input?: unknown) => {
     const command = args[0] === 'cleanup' ? { type: 'cleanup' as const, input: cleanupRequestSchema.parse(input), operator: args[1] } : commandFor(args);

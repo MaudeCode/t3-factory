@@ -87,6 +87,7 @@ export const STREAM_REASONS = {
   "waiting-for-idle": "waiting for idle time",
   "quota-exhausted": "allowance exhausted",
   "quota-budget": "waiting for budget",
+  "quota-reserve": "held by the quota reserve",
   "no-eligible-model": "no automatic model available",
   "difficulty-limit": "no tickets within difficulty limits",
   "label-limit": "label limits are full",
@@ -96,6 +97,34 @@ export const STREAM_REASONS = {
   "would-dispatch": "ready to start",
 };
 export const streamReason = (reason) => STREAM_REASONS[reason] ?? (reason ? reason.replaceAll("-", " ") : "watching the queue");
+// Why a ticket is not starting, in a few words for a row. The scheduler writes a reason code or a full sentence; the
+// sentences it is known to write each have a short form, and any other is cut to its first sentence. The row keeps the
+// full text as its tooltip, and the ticket's own panel prints it.
+const SHORT_HOLDS = [
+  [/^The selected model has no allowance left/, "no allowance left"],
+  [/^Waiting for a free (.+) slot$/, (m) => `no free ${m[1]} slot`],
+  [/^Existing Git branch references this ticket$/, "existing branch"],
+  [/^Existing open PR references this ticket$/, "existing pull request"],
+  [/^Existing T3 thread or branch references this ticket$/, "existing T3 thread"],
+  [/^Ticket or ancestor has an unfinished blocker or relation cycle$/, "waits on a blocker"],
+  [/^Umbrella has unfinished children/, "has unfinished children"],
+  [/^Its project is not included in the factory$/, "project not included"],
+  [/^Ticket needs a native difficulty before dispatch$/, "needs a difficulty"],
+  [/^No automatic model accepts this difficulty$/, "no model for this difficulty"],
+  [/^The chosen model is no longer configured$/, "model no longer configured"],
+  [/^Queued runs are held$/, "queue held"],
+  [/^Previous work could not be verified/, "earlier work unverified"],
+  [/^Every eligible ticket is waiting for a free label slot$/, "no free label slot"],
+];
+const SHORT_CODES = { "quota-reserve": "quota reserve", "quota-exhausted": "no allowance left", "quota-budget": "over budget", "waiting-for-idle": "waiting for idle" };
+export const holdNote = (note) => {
+  if (!note) return note;
+  if (/^[a-z]+(-[a-z]+)+$/.test(note)) return SHORT_CODES[note] ?? streamReason(note);
+  for (const [pattern, short] of SHORT_HOLDS) { const m = pattern.exec(note); if (m) return typeof short === "string" ? short : short(m); }
+  return note.split(/(?<=[.;])\s/)[0].replace(/[.;]$/, "");
+};
+// What a run is for: its ticket's title. T3 names a Factory thread after the key, which every row already shows.
+export const runTitle = (job) => job.title || (job.thread?.title && job.thread.title !== `Factory: ${job.label}` ? job.thread.title : "");
 
 // What a dispatch decision started; the scheduler's journal and the web app say it the same way.
 export const startedWork = (d) => d.ticket ?? (d.upstream ? `a review of ${d.upstream.name} ${d.upstream.candidate}` : d.repair ? `a repair of ${d.repair.workflow} run ${d.repair.runId}` : `discovery for ${d.project}`);
@@ -136,6 +165,18 @@ export function operationText(op) {
   if (op.state === "running") return p?.phase === "queued" ? "Queued at scheduler" : p?.phase === "checking" ? `Checking · ${p.stage}` : p?.phase === "launching" ? "Starting T3 run" : "Waiting for scheduler progress";
   return d?.reason === "dispatched" ? `Started ${d.ticket || "ticket"} with ${d.model}.` : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
 }
+// The hold on a named start that earlier work refused (a thread, branch or pull request already names the ticket), with
+// what the scheduler found. A reconcile run settles it; see `Investigate` in web/views/Deck.js.
+export const earlierWork = (op) => op.input?.reconcile || !op.input?.ticket ? undefined
+  : (op.result?.data?.skipped ?? []).find((s) => s.conflict === "artifacts" && s.key?.toUpperCase() === op.input.ticket.toUpperCase());
+// The scheduler's three notes for that hold (`inventory` in src/scheduler.ts), which is all a plan's ticket keeps of it.
+// ponytail: matched by wording; have the plan ticket carry `conflict` like a held row if these sentences ever change.
+export const EARLIER_WORK = /^Existing (T3 thread or branch|Git branch|open PR) references this ticket$/;
+export const blockedByEarlierWork = (planTicket) => !planTicket.done && EARLIER_WORK.test(planTicket.note ?? "");
+// What earlier work was found, one line each.
+export const evidenceLines = (e) => [
+  ...new Set((e?.refs ?? []).map((ref) => ref.replace(/^refs\/(heads|remotes\/[^/]+)\//, ""))).values()].map((name) => ["Branch", name]).concat(
+  e?.openPR ? [["Pull request", "open"]] : [], e?.threads?.length ? [["T3 threads", String(e.threads.length)]] : []);
 export const overrideText = (value) => {
   const names = OVERRIDES.filter(([v]) => value === true || (Array.isArray(value) && value.includes(v))).map(([, name]) => name.toLowerCase());
   return names.length === OVERRIDES.length ? "Override limits" : names.length ? `Override ${names.join(", ")}` : "Respect limits";
@@ -182,7 +223,8 @@ export function nowSections({ jobs = [], plans = [], operations = [], reports = 
   };
 }
 
-export const PENDING_KINDS = { approval: "waiting for an approval", question: "asked a question", input: "waiting for input" };
+// T3 names a pending request in its own words; `user_input` and `user-input` are the forms a live run sends.
+export const PENDING_KINDS = { approval: "waiting for an approval", question: "asked a question", input: "waiting for input", user_input: "waiting for your reply", "user-input": "waiting for your reply" };
 
 export function safeLink(url) {
   try {
@@ -225,9 +267,11 @@ export function runsList(history, jobs, { state = "open", filters = {}, query = 
   for (const j of jobs) byId.set(j.id, j);
   const all = [...byId.values()];
   const counts = { open: 0, all: all.length, ...Object.fromEntries(STATES.map((s) => [s, 0])) };
-  for (const j of all) { counts[j.state] = (counts[j.state] ?? 0) + 1; if (isOpen(j)) counts.open++; }
+  // A run archived while it waited no longer needs the owner: it counts as waiting only while it is open, as on Now.
+  const inState = (j, s) => j.state === s && (s !== "waiting" || isOpen(j));
+  for (const j of all) { if (inState(j, j.state)) counts[j.state] = (counts[j.state] ?? 0) + 1; if (isOpen(j)) counts.open++; }
   const list = all.filter((j) =>
-    (state === "all" || (state === "open" ? isOpen(j) : j.state === state)) &&
+    (state === "all" || (state === "open" ? isOpen(j) : inState(j, state))) &&
     matchesRunFilters(j, filters, query) &&
     (!filters.providers?.length || filters.providers.includes(providerOf(j))),
   ).sort((a, b) => (state === "open" ? (b.state === "waiting") - (a.state === "waiting") : 0) || (order === "oldest" ? byNewest(b, a) : byNewest(a, b)));

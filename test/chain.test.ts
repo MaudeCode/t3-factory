@@ -185,6 +185,21 @@ test('a chain without the provider override waits for capacity at every launch',
   assert.equal(f.launches.length, 1, 'a later launch still waits');
 });
 
+test('a ticket its chain keeps waiting starts when the owner starts it by name with every limit overridden, and the chain goes on', async t => {
+  const f = dispatchFixture(t);
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  const planId = await startChain(f, { overrideLimits: ['idle', 'reserve', 'labels'] });
+  assert.equal(f.launches.length, 0, 'the chain waits for a slot');
+  const forced = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-2', model: 'auto', overrideLimits: true }, { t3: f.t3, kanvil: f.kanvil });
+  assert.equal(forced.reason, 'dispatched', JSON.stringify(forced));
+  assert.equal(f.launches.length, 1, 'the named start passes the limit its chain respects');
+  assert.equal(f.store.plan(planId)!.state, 'active', 'the chain keeps its place');
+  finishBlocker(f);
+  setConfig(f, () => { f.c.concurrency.codex = 1; });
+  await advance(f);
+  assert.equal(f.launches.length, 2, 'the chain goes on to its target once the forced run is done');
+});
+
 for (const [name, overrideLimits, launches] of [['with', ['labels'], 2], ['without', ['idle'], 1]] as const) test(`a chain ${name} the label override ${name === 'with' ? 'passes a full label' : 'waits for the label'} on a later launch`, async t => {
   const f = dispatchFixture(t);
   const planId = await startChain(f, { overrideLimits: [...overrideLimits] });

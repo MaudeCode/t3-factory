@@ -31,13 +31,14 @@ export async function ticketDetail(c: Pick<Config, 'projects' | 'kanvil'>, kanvi
     Promise.all(edges.filter(r => r.sourceTaskId === task.id).map(r => related(r.targetTaskId))),
     task.epicId ? kanvil.epics().catch(() => []) : [],
   ]);
+  const epic = epics.find(e => e.id === task.epicId);
   return {
     id: task.id, projectId: task.projectId, inbox, key: task.key ?? match[0], title: task.title, status: task.status, priority: task.priority,
     difficulty: task.difficulty ?? null, kind: task.kind ?? null, labels: (task.labels ?? []).map(l => l.name), scopes: task.scopes ?? [],
     description: task.description ?? '', acceptanceCriteria: typeof task.acceptanceCriteria === 'string' ? task.acceptanceCriteria : '',
     automationReady: task.automationReady ?? false, holdReason: task.holdReason ?? null, readiness: (task.readiness?.reasons ?? []).map(r => r.message),
     blockedBy: blockedBy.filter(t => t !== null), blocks: blocks.filter(t => t !== null),
-    epic: epics.find(e => e.id === task.epicId)?.title ?? null, createdAt: task.createdAt,
+    epic: epic?.title ?? null, epicId: epic?.id ?? null, createdAt: task.createdAt,
     url: `${c.kanvil.url.replace(/\/$/, '')}/projects/${encodeURIComponent(task.projectId)}/tickets/${encodeURIComponent(task.id)}`,
   };
 }

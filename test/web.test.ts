@@ -447,6 +447,20 @@ test("static files carry a content ETag and answer a matching If-None-Match with
     assert.equal((await get("/app.js", { Host: "attacker.example" })).status, 403, "a rejected host still cannot read static files");
   }));
 
+test("the page names its stylesheet by content, so a changed stylesheet is a new address and a new page", () =>
+  staticFixture(async (get, assets) => {
+    const page = join(assets, "index.html"), sheet = join(assets, "style.css"), at = new Date("2026-01-01T00:00:00Z");
+    writeFileSync(page, '<link rel="stylesheet" href="/style.css" />');
+    writeFileSync(sheet, "a{}"); utimesSync(sheet, at, at);
+    const first = await get("/queue"), link = /href="(\/style\.css\?v=[\w-]+)"/.exec(first.body.toString())?.[1];
+    assert.ok(link, `the page links a versioned stylesheet: ${first.body}`);
+    assert.equal((await get(link)).body.toString(), "a{}", "the versioned address serves the stylesheet");
+    writeFileSync(sheet, "b{}"); utimesSync(sheet, new Date(at.getTime() + 60_000), new Date(at.getTime() + 60_000));
+    const second = await get("/queue", { "If-None-Match": first.headers.etag });
+    assert.equal(second.status, 200, "a page whose stylesheet changed is not answered with 304");
+    assert.notEqual(/href="([^"]+)"/.exec(second.body.toString())?.[1], link);
+  }));
+
 test("an unchanged static file is served from memory and a changed one is read again with a new ETag", () =>
   staticFixture(async (get, assets) => {
     const app = join(assets, "app.js"), first = await get("/app.js"), { mtime } = statSync(app);
