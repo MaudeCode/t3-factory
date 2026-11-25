@@ -244,13 +244,34 @@ export class Store {
       CREATE TABLE IF NOT EXISTS job_sources(id TEXT PRIMARY KEY, kind TEXT, thread_id TEXT);
       CREATE TRIGGER IF NOT EXISTS jobs_source_insert AFTER INSERT ON jobs BEGIN
         INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
-      CREATE TRIGGER IF NOT EXISTS jobs_source_update AFTER UPDATE ON jobs WHEN json_extract(new.data, '$.kind') IS NOT json_extract(old.data, '$.kind') OR json_extract(new.data, '$.threadId') IS NOT json_extract(old.data, '$.threadId') BEGIN
-        INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
       CREATE TRIGGER IF NOT EXISTS history_source_insert AFTER INSERT ON job_history BEGIN
         INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
       CREATE INDEX IF NOT EXISTS jobs_recent ON jobs(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');
       CREATE INDEX IF NOT EXISTS history_recent ON job_history(coalesce(json_extract(data, '$.completedAt'), json_extract(data, '$.dismissedAt'), json_extract(data, '$.createdAt')) DESC) WHERE json_extract(data, '$.state') IN ('complete', 'dismissed');
       CREATE TABLE IF NOT EXISTS job_commands(id TEXT PRIMARY KEY, data TEXT NOT NULL);`);
+    if (this.get('jobSourcesVersion') !== '2') {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const version = this.get('jobSourcesVersion');
+        if (version !== '2') {
+          if (version !== '1') this.db.exec(`
+            INSERT OR IGNORE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM job_history;
+            INSERT OR REPLACE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM jobs;`);
+          // The outer jobs upsert can override INSERT OR REPLACE in a trigger.
+          this.db.exec(`
+            DROP TRIGGER IF EXISTS jobs_source_update;
+            CREATE TRIGGER jobs_source_update AFTER UPDATE ON jobs
+            WHEN json_extract(new.data, '$.kind') IS NOT json_extract(old.data, '$.kind')
+              OR json_extract(new.data, '$.threadId') IS NOT json_extract(old.data, '$.threadId')
+            BEGIN
+              INSERT INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId'))
+              ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, thread_id = excluded.thread_id;
+            END;`);
+          this.set('jobSourcesVersion', '2');
+        }
+        this.db.exec('COMMIT');
+      } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
+    }
     // Older rows carry their command inside the job. Move it beside the job once, recording the branch it assigned.
     // The web, MCP and scheduler processes can open an old database together; the first to take the write lock migrates,
     // and the others wait for it, then see it done. No VACUUM: the freed pages are reused.
@@ -288,12 +309,6 @@ export class Store {
       CREATE INDEX IF NOT EXISTS jobs_instance ON jobs(${jobInstance}, ${jobCreated});
       CREATE INDEX IF NOT EXISTS jobs_changed ON jobs(${jobChanged});
       CREATE INDEX IF NOT EXISTS history_changed ON job_history(${jobChanged});`);
-    if (this.get('jobSourcesVersion') !== '1') {
-      this.db.exec(`      INSERT OR IGNORE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM job_history;
-      INSERT OR REPLACE INTO job_sources SELECT id, json_extract(data, '$.kind'), json_extract(data, '$.threadId') FROM jobs;
-`);
-      this.set('jobSourcesVersion', '1');
-    }
     // Live-job reads search this index instead of parsing every row. SQLite cannot add a STORED column to an existing
     // table without rebuilding it; the index holds the extracted value either way.
     // The web, MCP and scheduler processes can open an old database together; the first to take the write lock adds the column.

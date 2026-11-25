@@ -102,3 +102,30 @@ test('two stores opening an old database at once leave one migrated result', asy
   assert.deepEqual(reader.job('new')?.command, launch);
   assert.equal(reader.get('jobCommandsVersion'), '1');
 });
+
+test('reopening a legacy job source trigger lets save update the indexed source', t => {
+  const dir = fixture(t);
+  const old = new Store(dir);
+  try {
+    old.save(job('live'));
+    old.db.exec(`
+      UPDATE metadata SET value = '1' WHERE key = 'jobSourcesVersion';
+      DROP TRIGGER jobs_source_update;
+      CREATE TRIGGER jobs_source_update AFTER UPDATE ON jobs
+      WHEN json_extract(new.data, '$.kind') IS NOT json_extract(old.data, '$.kind')
+        OR json_extract(new.data, '$.threadId') IS NOT json_extract(old.data, '$.threadId')
+      BEGIN
+        INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId'));
+      END;
+    `);
+  } finally {
+    old.close();
+  }
+
+  const reopened = new Store(dir);
+  t.after(() => reopened.close());
+  assert.doesNotThrow(() => reopened.save({ ...job('live'), threadId: 'replacement' }));
+  assert.deepEqual(reopened.jobSources().map(source => ({ ...source })), [{ kind: 'ticket', threadId: 'replacement' }]);
+  reopened.save({ ...job('live'), threadId: 'replacement', kind: 'discovery' });
+  assert.deepEqual(reopened.jobSources().map(source => ({ ...source })), [{ kind: 'discovery', threadId: 'replacement' }]);
+});
