@@ -142,5 +142,31 @@ async function load() {
   noOverflow();
   return { passed: true, viewport: [innerWidth, innerHeight], content: width(), coarse: matchMedia("(pointer: coarse)").matches };
 }
-window.nowTests = { show, run, load, heavy, light };
+// Two running Epics in Your queue, for the link check below and for screenshots.
+async function showEpics() {
+  await show();
+  state = { ...state, status: { ...state.status, plans: [...state.status.plans, { id: "e2", state: "active", epic: { id: "ep2", title: "Search" }, tickets: [{ id: "x8", key: "APP-707", done: false, blockedBy: [] }] }] } };
+  store.applyState(state); await pause();
+}
+// A running Epic's row opens the Queue's Epics view with that Epic's tickets showing, and no other Epic's.
+async function epicLink() {
+  await showEpics();
+  const title = (epic) => epic.querySelector(".row-body > span").textContent;
+  const open = () => [...root.querySelectorAll(".epic")].filter((epic) => epic.querySelector(".epic-tickets")).map(title).join();
+  const until = async (ok) => { for (let n = 0; n < 100 && !ok(); n++) await pause(); };
+  const follow = async (name) => {
+    const more = [...sections()["Your queue"].querySelectorAll('.now-more[aria-expanded="false"]')].find(visible);
+    if (more) { more.click(); await pause(); }
+    rows(sections()["Your queue"]).find((r) => r.querySelector(".now-title").textContent === name).querySelector("a.now-main").click();
+  };
+  await follow("Search"); await until(() => open() === "Search");
+  assert(location.pathname + location.search === "/queue?view=epics" && open() === "Search", `the Epic's row lands on Epics with that Epic open: ${location.pathname}${location.search} [${open()}]`);
+  history.back(); await until(() => location.pathname === "/" && sections()["Your queue"]);
+  await follow("Billing v2"); await until(() => open() === "Billing v2");
+  assert(open() === "Billing v2", `the Epic chosen next is the only one open: [${open()}]`);
+  [...root.querySelectorAll(".epic")].find((epic) => title(epic) === "Billing v2").querySelector("button.next-toggle").click(); await until(() => open() === "");
+  assert(open() === "", "its toggle still closes it");
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.nowTests = { show, run, load, epicLink, showEpics, heavy, light };
 await show();

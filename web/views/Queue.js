@@ -1,6 +1,6 @@
 // Everything that can start: what the owner queued, the scheduler's Up next list, Epics, and the tickets that came
 // from T3 sessions and inbox reports. The automatic queue and the owner's own stay visibly apart.
-import { html, signal, useState } from "../lib/h.js";
+import { html, signal, useState, useLayoutEffect } from "../lib/h.js";
 import { config, statusSection, needSection, sessionTicketCount, live, jobs, actions, busy, message, startRun, pendingEpic, pendingRun } from "../lib/store.js";
 import { providerName, isOpen, matchesRunFilters, hasRunFilters, overrideText, ticketStatusLabel, safeLink } from "../lib/format.js";
 import { Button, Segmented, Tag, Mark, Icon, Empty, Facts, Page, Section, RowBody, Meta, Text, SortableList, RelativeTime } from "../ui/index.js";
@@ -172,6 +172,16 @@ export const queueView = (query) => {
 
 export function Queue() {
   const view = queueView(search.value);
+  // A link that names one Epic (`&open=ID`, as Now's rows do) shows that Epic's tickets and closes the others;
+  // the name then leaves the address, so the Epic's toggle and a reload behave as on any other visit. It happens
+  // before the page is drawn, so the list never shows closed first.
+  useLayoutEffect(() => {
+    const q = new URLSearchParams(search.value), id = q.get("open");
+    if (!id) return;
+    openEpics.value = new Set([id]);
+    q.delete("open");
+    navigate(`/queue?${q}`, true, true);
+  }, [search.value]);
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const start = startOptions(), epics = epicLists(), up = needSection("upNext").value;
