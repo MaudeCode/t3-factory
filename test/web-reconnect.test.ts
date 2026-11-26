@@ -45,6 +45,7 @@ test('deployment recovery retries quietly and resumes live state without losing 
   await h.advance();
   assert.equal(store.notice.value, null, 'deployment HTTP 502 must not become a persistent notification');
   assert.equal(store.connection.value, 'retrying');
+  assert.equal(store.unavailable.value, true, 'failed fallback read identifies a private server outage');
   for (let n = 0; n < 40; n++) { h.streams.at(-1)?.fail(); await h.advance(); }
   assert.ok(reads < 30, 'repeated outages back off instead of retrying every tick');
   assert.ok(h.streams.length < 10, 'stream recreation also backs off');
@@ -54,6 +55,7 @@ test('deployment recovery retries quietly and resumes live state without losing 
   await h.advance();
   h.streams.at(-1)!.state();
   assert.equal(store.connection.value, 'live');
+  assert.equal(store.unavailable.value, false);
   assert.equal(store.config.value.enabled, true, 'unsaved edits survive reconnect');
   assert.match(store.notice.value.text, /Save rejected/, 'recovery preserves an unrelated action error');
   assert.equal(h.streams.filter(s => !s.closed).length, 1);
@@ -138,6 +140,54 @@ test('browser offline closes a stale live stream immediately and online resumes 
   h.streams[1].state();
   assert.equal(store.connection.value, 'live');
   assert.equal(store.notice.value, null);
+});
+
+test('a silent private route recovers even when the browser stays online', async t => {
+  const h = setup(t);
+  let reachable = false;
+  t.mock.method(globalThis, 'fetch', async () => {
+    if (!reachable) throw new TypeError('Unreachable');
+    return Response.json(state());
+  });
+  await h.advance();
+  h.streams[0].state();
+  await h.advance(40000);
+  h.streams[0].dispatchEvent(new Event('heartbeat'));
+  await h.advance(40000);
+  assert.equal(h.streams.length, 1, 'a healthy idle stream stays open');
+  await h.advance(21000);
+  assert.equal(h.streams[0].closed, true);
+  assert.equal(store.unavailable.value, true);
+  reachable = true;
+  store.retryConnection();
+  await h.advance(0);
+  assert.equal(store.unavailable.value, false, 'a successful state read restores the page');
+});
+
+test('unreachable startup retries auth discovery before showing sign-in', async t => {
+  const h = setup(t);
+  store.authenticated.value = null;
+  const seen: string[] = [];
+  let reachable = false;
+  t.mock.method(globalThis, 'fetch', async (path: string) => {
+    seen.push(path);
+    if (!reachable) throw new TypeError('No route');
+    return path === '/api/auth' ? Response.json({ mode: 'oidc', loginUrl: '/auth/login' }) :
+      Response.json({ message: 'Sign in' }, { status: 401 });
+  });
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: new URL('https://factory.example/') });
+  t.after(() => previous ? Object.defineProperty(globalThis, 'location', previous) : Reflect.deleteProperty(globalThis, 'location'));
+  await store.initialize();
+  assert.equal(store.authenticated.value, null);
+  assert.equal(store.unavailable.value, true);
+  reachable = true;
+  h.window.dispatchEvent(new Event('online'));
+  await h.advance(0);
+  assert.deepEqual(seen, ['/api/auth', '/api/auth', '/api/state?with=']);
+  assert.equal(store.unavailable.value, false);
+  assert.equal(store.authenticated.value, false);
+  assert.equal(store.auth.value.mode, 'oidc');
 });
 
 test('a view that needs an on-demand section reads it once and widens the stream, and reconnects keep it', async t => {

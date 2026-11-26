@@ -472,7 +472,7 @@ export function createFactoryWeb(options: {
           if (!held) return json(res, 400, { message: `Sections are ${ON_DEMAND.join(", ")}` });
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
           const push = (data?: string) => { try { if (data) res.write(`event: state\ndata: ${data}\n\n`); } catch { unsubscribe(push); } };
-          const heartbeat = setInterval(() => res.write(": ping\n\n"), 25_000);
+          const heartbeat = setInterval(() => res.write("event: heartbeat\ndata: {}\n\n"), 25_000);
           const state = previous ?? readState();
           if (state) { previous = state; push(JSON.stringify(shown(state, held))); }
           streams.set(push, held);

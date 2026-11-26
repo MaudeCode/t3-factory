@@ -9,6 +9,41 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
   const browser = await engine.launch();
   try {
     const cases = [
+      ["Controls content uses the available width", "start", "startTests", 1280, async page => {
+        await page.evaluate(() => startTests.show("/controls"));
+        const size = await page.locator(".content > main").evaluate(main =>
+          [main.clientWidth, main.querySelector(".page").getBoundingClientRect().width]);
+        assert(size[0] > 760 && Math.abs(size[1] - size[0]) < 1);
+      }],
+      ["native dashboard has one Controls destination", "start", "startTests", 951, async page => {
+        await page.evaluate(() => startTests.show("/"));
+        const shortcut = page.locator('.side-foot a[href="/controls"]');
+        assert(await shortcut.isVisible(), "website sidebar keeps its shortcut");
+        await page.evaluate(() => document.documentElement.classList.add("factory-rail"));
+        assert(!await shortcut.isVisible() && await page.getByRole("button", { name: "Start a run" }).isVisible());
+      }],
+      ["disconnected Controls resumes in place", "start", "startTests", 382, async page => {
+        await page.evaluate(async () => {
+          await startTests.show("/controls");
+          const store = await import("/web/lib/store.js");
+          store.subscribe();
+          window.dispatchEvent(new Event("offline"));
+        });
+        const outage = page.getByRole("dialog", { name: "Factory is unreachable" });
+        await outage.waitFor();
+        await page.keyboard.press("Escape");
+        assert(await outage.isVisible());
+        await outage.getByRole("button", { name: "Retry connection" }).click();
+        await outage.waitFor({ state: "hidden" });
+        assert.equal(new URL(page.url()).pathname, "/controls");
+      }],
+      ["compact Runs states fit the list", "runs", "runsTests", 382, async page => {
+        await page.evaluate(() => runsTests.show("/runs"));
+        const group = page.getByRole("radiogroup", { name: "State" });
+        assert(await group.evaluate(el => el.scrollWidth <= el.clientWidth + 1));
+        await group.getByRole("radio", { name: /^All/ }).tap();
+        assert.equal(await group.getByRole("radio", { checked: true }).innerText().then(t => t.split(/\s/)[0]), "All");
+      }],
       ["touch navigation through Controls", "start", "startTests", 382, async page => {
         await page.locator(".tabbar").getByRole("link", { name: "Controls" }).tap();
         await page.getByRole("navigation", { name: "Factory controls" }).getByRole("link", { name: "Log" }).tap();

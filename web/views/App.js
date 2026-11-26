@@ -1,5 +1,5 @@
 import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
-import { authenticated, auth, version, connection, config, statusSection, live, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen } from "../lib/store.js";
+import { authenticated, auth, version, connection, unavailable, retryConnection, config, statusSection, live, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen } from "../lib/store.js";
 import { route, NAV, TABS, CONTROLS, follow, pageScroller } from "../lib/router.js";
 import { Page as PageFrame, Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover, RelativeTime } from "../ui/index.js";
 import { ago, until, moment, span } from "../lib/format.js";
@@ -159,15 +159,15 @@ function usePhone() {
 // One unit only, so the row it shares with the switch and Start never outgrows the sidebar: "36m", "2h", "4d".
 const brief = (seconds) => span(Math.max(0, seconds), true).split(" ")[0];
 const compactIn = (at, now) => `in ${brief((new Date(at) - now) / 1000)}`;
-function Automation({ bare }) {
+function Automation({ bare, named }) {
   const on = live.value.enabled, d = statusSection("decision").value;
   const next = d?.at ? Date.parse(d.at) + (config.value.pollSeconds ?? 60) * 1000 : null;
   // The schedule's next change to this switch, if it has one.
   const timer = on ? live.value.schedule.offAt : live.value.schedule.onAt, turns = on ? "Turns off" : "Turns on";
   return html`<div class="auto" title=${`${on ? "Automation on" : "Automation paused"}${timer ? `. ${turns} ${moment(timer)}` : ""}`}>
     <${Switch} label="Automation" checked=${on} disabled=${busy.value} onChange=${() => actions.toggle("enabled")} />
-    <small class=${`auto-short${on ? "" : " tone-attention"}`} aria-hidden="true">${on ? "On" : "Paused"}</small>
-    ${!bare && html`<span class="auto-time"><${Icon} name="clock" />
+    <small class=${`auto-short${on ? "" : " tone-attention"}`} aria-hidden="true">${named ? (on ? "Automation on" : "Automation paused") : (on ? "On" : "Paused")}</small>
+    ${!bare && (!named || timer || d?.at) && html`<span class="auto-time"><${Icon} name="clock" />
       <${RelativeTime} class="auto-when"
         text=${(now) => timer ? compactIn(timer, now) : on && next ? (next > now + 1000 ? compactIn(next, now) : "now") : d?.at ? brief((now - Date.parse(d.at)) / 1000) : "never"}
         title=${(now) => timer ? `${turns} ${until(timer, now)}` : on && next ? `Next check ${next > now + 1000 ? until(next, now) : "due now"}` : `Last check ${ago(d?.at, now)}`} /></span>`}
@@ -215,8 +215,8 @@ function Shell() {
       </aside>`}
     <div class="content">
       <div ref=${ptr} class="ptr" aria-live="polite"></div>
-      <main key=${page.startsWith("/runs") ? "/runs" : page === "/settings" ? page : page + param}>${controls ? html`<${PageFrame} title="Controls" narrow tools=${account}>
-        <div class="factory-control-row"><${Automation} /><${Updates} /><${Start} /></div>
+      <main key=${page.startsWith("/runs") ? "/runs" : page === "/settings" ? page : page + param}>${controls ? html`<${PageFrame} title="Controls" tools=${account}>
+        <div class="factory-control-row"><${Automation} named /><${Updates} /><${Start} /></div>
         <nav class="more-list" aria-label="Factory controls">${inMore.map(item => link(item))}</nav>
         ${version.value && html`<p class="more-version">Version ${version.value}</p>`}
       <//>` : html`<${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} />`}</main>
@@ -286,7 +286,7 @@ function useEditGuards() {
     const key = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (dirty.value && !busy.value) actions.save();
+        if (dirty.value && !busy.value && !unavailable.peek()) actions.save();
       }
     };
     const leave = (e) => {
@@ -303,13 +303,18 @@ function useEditGuards() {
 
 export function App() {
   useEditGuards();
-  if (authenticated.value === null) return null;
-  if (!authenticated.value) return html`<${Login} />`;
+  const offline = unavailable.value && html`<${Dialog} open dismissible=${false} title="Factory is unreachable"
+    actions=${html`<${Button} icon="sync" label="Retry connection" onClick=${retryConnection} />`}>
+    <p>Connect to your home network or VPN, such as Tailscale. Factory will reconnect automatically.</p>
+  <//>`;
+  if (authenticated.value === null) return offline || null;
+  if (!authenticated.value) return offline || html`<${Login} />`;
   return html`
     ${config.value && html`<${Shell} />`}
     <${TicketPanel} />
     <${Blocked} />
     <${Confirmation} />
     ${dirty.value && html`<${SaveBar} />`}
-    <${Toast} notice=${notice.value} onDone=${() => message("")} />`;
+    <${Toast} notice=${notice.value} onDone=${() => message("")} />
+    ${offline}`;
 }
