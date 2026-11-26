@@ -84,6 +84,31 @@ for (const retained of ['manual', 'error'] as const) test(`unchanged lane outcom
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('admission journals one quota hold per provider until that provider admits or holds for another reason', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-journal-')), store = new Store(dir);
+  try {
+    let minute = 0;
+    const check = (lane: { providerDriver?: string; manual?: boolean }, claude: string, codex: string) => store.decisionRecorder({ workKind: 'tickets', ...lane })({
+      reason: 'watching-streams', at: new Date(Date.UTC(2026, 0, 1, 0, minute++)).toISOString(),
+      streams: [{ driver: 'claudeAgent', provider: 'Claude', reason: claude }, { driver: 'codex', provider: 'Codex', reason: codex }],
+    });
+    const codex = { providerDriver: 'codex' }, claude = { providerDriver: 'claudeAgent' };
+    check(codex, 'no-eligible-model', 'quota-budget');
+    check(codex, 'no-eligible-model', 'quota-budget');
+    check(codex, 'no-eligible-model', 'quota-exhausted');
+    check(claude, 'provider-running', 'no-eligible-model');
+    check(codex, 'no-eligible-model', 'Quota automatic refresh failed: Codex quota snapshot is stale');
+    check({ manual: true }, 'quota-budget', 'no-eligible-ticket');
+    check(codex, 'no-eligible-model', 'quota-reserve');
+    check(codex, 'no-eligible-model', 'no-eligible-ticket');
+    check(codex, 'no-eligible-model', 'quota-reserve');
+    assert.deepEqual(store.events(50, undefined, 'quota.hold').toReversed().map(e => [e.text, e.data.holdId, e.data.reason]), [
+      ['Codex work held for quota', 'codex:2026-01-01T00:00:00.000Z', 'waiting for budget'],
+      ['Codex work held for quota', 'codex:2026-01-01T00:08:00.000Z', 'quota reserve'],
+    ], 'another lane, a manual start or an unreadable quota neither starts nor ends a hold');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('paused checks update status without adding activity between dispatches, errors, or restarts', () => {
   const dir = mkdtempSync(join(tmpdir(), 'factory-journal-'));
   try {

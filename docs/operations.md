@@ -20,6 +20,7 @@ The CLI works from source as `node src/main.ts COMMAND`, or as `t3-factory COMMA
 | `run` | Runs the scheduler continuously. |
 | `model-catalog` | Reads the models and options advertised by T3. |
 | `config-get` | Prints validated scheduler configuration. |
+| `cowtail-test` | Sends one test notification through the configured Cowtail source and prints `{ "ok": true }`, `{ "ok": false, "reason": "not-configured" }`, or the failed post's status and message, with tokens and URLs redacted. |
 | `config-save` | Reads `{ "base": ..., "config": ... }` on stdin; rejects stale edits and preserves JSONC comments where possible. |
 
 ### Scheduled on and off
@@ -173,15 +174,26 @@ The helper supplies review evidence, not the whole merge gate. Follow the suppli
 
 ## Phone notifications through Cowtail
 
-Factory can post to a Cowtail instance so the owner's phone hears about the runs that matter:
+Factory can post to a Cowtail instance so the owner's phone hears about the runs that matter. Each event type has a fixed Cowtail kind and a delivery the owner picks in Settings → Limits → Phone notifications, saved as `cowtail.events` in `config.jsonc`:
 
-| Event | Cowtail kind | Urgency |
-| --- | --- | --- |
-| A run needs you | `question` | `today` |
-| A run finished with at least one PR | `done` | `whenever` |
-| An Epic, chain or queued run finished | `done` | `today` |
+| Setting | Event | Cowtail kind | Default |
+| --- | --- | --- | --- |
+| Run needs you (`needsYou`) | A run is waiting on the owner | `question` | `today` |
+| Failures (`failed`) | T3 never confirmed a launch, so the run was dismissed and its ticket returned to ready; or a manual dispatch request failed (`dispatch.failed` in the journal) | `failure` | `today` |
+| Quota holds (`quotaHold`) | Automatic admission first holds a provider for quota (`quota-budget`, `quota-reserve` or `quota-exhausted`; `quota.hold` in the journal). It posts again only after that provider admits work or holds for another reason. A manual start or an unreadable allowance neither starts nor ends a hold. | `fyi` | `today` |
+| Finished without a PR (`noPr`) | A run finished without opening a PR; the body is its report reason | `done` | `today` |
+| Finished runs (`finished`) | A run finished with at least one PR, or an Epic, chain or queued run finished | `done` | `whenever` |
 
-A run that finished with no PRs, a dismissal, a cancelled plan and a queued run that was only dispatched post nothing. Each item links the run's PRs, carries the ticket key and project ID as context, and uses the dedupe key `t3-factory:<event>:<job or plan ID>:<state>`. The owner can raise or lower urgency in Cowtail with an override on `t3-factory:<kind>`.
+Each setting is one of:
+
+- `off`: posts nothing.
+- `whenever`: Cowtail's inbox only, with no push.
+- `today`: bundled into a push within 5 minutes and held during quiet hours.
+- `now`: pushes at once and repeats every 10 minutes, up to 3 times, until handled.
+
+An owner's dismissal, a cancelled plan, a queued run that was only dispatched, run starts, PRs opened mid-run, workspace cleanup and tracker sync errors post nothing. Each item links the run's PRs, carries the ticket key and project ID as context when known, and uses the dedupe key `t3-factory:<event>:<job, plan or request ID, or provider and hold start>:<state>`, so a retried post never duplicates and each new quota hold is a new item.
+
+The bell button in the Phone notifications section sends one `fyi` item at `now`, whatever the settings say, to check the setup end to end (`t3-factory cowtail-test`, served as `POST /api/cowtail/test`). It reports "Test notification sent", "Phone notifications are off", or Cowtail's error.
 
 To turn them on, register Factory as a Cowtail source and keep the token it prints, which Cowtail shows only once:
 

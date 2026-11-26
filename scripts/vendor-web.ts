@@ -65,6 +65,7 @@ const icons = {
   inbox: octicon("inbox"),
   issueOpened: octicon("issue-opened"),
   pulse: octicon("pulse"),
+  bell: octicon("bell"),
   gitBranch: octicon("git-branch"),
   repo: octicon("repo"),
   cpu: octicon("cpu"),

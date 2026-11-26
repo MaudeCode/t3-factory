@@ -189,7 +189,9 @@ test("state is pushed over the event stream whenever the factory writes, and run
     assert.equal((await fetch(`${url}/api/session-tickets/task-1/dismiss`, { method: "POST", headers: auth })).status, 200);
     assert.equal((await fetch(`${url}/api/session-tickets/task-1/dismiss`, { headers: auth })).status, 404, "dismissal is a POST");
     assert.deepEqual((await (await fetch(`${url}/api/sources`, { headers: auth })).json()).kanvil.labels, []);
-    assert.deepEqual(stopped, ["job-stop a1", "session-dismiss task-1", "sources"], "stop, dismissal and the catalogs go through the CLI");
+    assert.equal((await fetch(`${url}/api/cowtail/test`, { method: "POST", headers: { Origin: url } })).status, 401, "a test notification needs a session");
+    assert.deepEqual(await (await fetch(`${url}/api/cowtail/test`, { method: "POST", headers: auth })).json(), { ok: true });
+    assert.deepEqual(stopped, ["job-stop a1", "session-dismiss task-1", "sources", "cowtail-test"], "stop, dismissal, the catalogs and the test notification go through the CLI");
   } finally {
     server.close();
     rmSync(dir, { recursive: true, force: true });

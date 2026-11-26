@@ -39,6 +39,8 @@ test('a failed T3 body preserves its cause and phase after a parallel read drain
   assert.match(diagnosticLog, /UND_ERR_SOCKET/);
   assert.doesNotMatch(JSON.stringify(outcome) + diagnosticLog, /private-header|private-socket|authorization|remoteAddress/);
   assert.equal(f.store.jobs().length, 0);
+  assert.deepEqual(f.store.events(10, undefined, 'dispatch.failed').map(e => ({ text: e.text, data: e.data })), [{ text: 'Dispatch of FIX-1 failed',
+    data: { requestId: id, stage: 't3.shell', message: (outcome.data as any).message, ticketKey: 'FIX-1', projectId: 'FIX', state: 'failed' } }]);
 });
 
 test('safeError bounds nested causes and redacts credentials at every level', () => {

@@ -64,8 +64,15 @@ export function runManualRequest(c: Config, store: Store, options: CycleOptions,
     if (operation.state !== 'running') return;
     const deadline = context.controller.signal.reason instanceof ManualDeadline ? context.controller.signal.reason : error;
     const stage = deadline instanceof ManualDeadline ? deadline.stage : readFailure(error)?.stage ?? context.stage;
-    log('manual-request-failed', { requestId: id, stage, message: safeError(deadline), launched: context.launched });
-    settle({ code: 1, data: { reason: context.launched ? 'launch-uncertain' : deadline instanceof ManualDeadline ? 'manual-deadline-exceeded' : 'error', message: safeError(deadline), stage,
+    const message = safeError(deadline);
+    log('manual-request-failed', { requestId: id, stage, message, launched: context.launched });
+    const ticketKey = options.ticket?.trim().toUpperCase(), projectId = ticketKey && c.projects.find(p => ticketKey.startsWith(`${p.key}-`))?.kanvilId;
+    // The journal entry is a notice only: failing to write it must not keep the request from settling.
+    try {
+      store.record('dispatch.failed', `Dispatch of ${ticketKey || options.upstream || options.epic || options.reconcile || 'a run'} failed`,
+        { requestId: id, stage, message, ...ticketKey ? { ticketKey } : {}, ...projectId ? { projectId } : {}, state: 'failed' });
+    } catch (error) { log('journal-error', { requestId: id, message: safeError(error) }); }
+    settle({ code: 1, data: { reason: context.launched ? 'launch-uncertain' : deadline instanceof ManualDeadline ? 'manual-deadline-exceeded' : 'error', message, stage,
       ...context.launched ? { uncertain: true, ...context.ownership } : { notLaunched: true } } });
   };
   context.start(() => { if (operation.progress?.phase === 'queued') failure(context.controller.signal.reason); });

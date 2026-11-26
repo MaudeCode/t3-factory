@@ -18,6 +18,7 @@ import { T3, Kanvil } from './clients.ts';
 import { ticketDetail, epicDetail } from './ticket-detail.ts';
 import { createFactoryWeb, runFactory, webSettings } from './web.ts';
 import { serveMcp } from './mcp.ts';
+import { CowtailNotifier, cowtailSettings } from './cowtail.ts';
 import { runtimeVersion } from './version.ts';
 
 import { loadEnvironment } from './env.ts';
@@ -257,6 +258,13 @@ if (command === 'web') {
       },
     }));
   } catch (e) { console.error(safeError(e)); process.exitCode = 1; } finally { await kanvil.close().catch(() => {}); }
+} else if (command === 'cowtail-test') {
+  // The Settings test button: one push through the configured Cowtail source, whatever the per-event settings say.
+  try {
+    const outcome = await new CowtailNotifier({ job: () => undefined }, () => cowtailSettings(loadConfig(configPath))).test();
+    console.log(JSON.stringify(outcome));
+    if (!outcome.ok && !('reason' in outcome)) process.exitCode = 1;
+  } catch (e) { console.error(safeError(e)); process.exitCode = 1; }
 } else if (command === 'config-get' || command === 'config-save') {
   try {
     const result = command === 'config-get' ? loadConfig(configPath) : saveSettings(JSON.parse(readFileSync(0, 'utf8')), configPath);
@@ -326,6 +334,6 @@ if (command === 'web') {
   } finally { store?.close(); }
   }
 } else {
-  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | queue-pause | queue-resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | web | web-pair | mcp | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
+  console.error('Usage: t3-factory status | doctor | once [--dry-run] | run | pause | resume | queue-pause | queue-resume | upstream-pause | upstream-resume | repair-pause | repair-resume | triage-pause | triage-resume | triage-run | triage-retry TICKET_ID [--override-limits] | triage-promote TICKET_ID [--override-limits] | triage-close TICKET_ID | ticket KEY | epic EPIC_ID | config-get | config-save | model-catalog | sources | cowtail-test | web | web-pair | mcp | job-stop JOB_ID | job-dismiss JOB_ID [--reset-ticket] | plan-cancel PLAN_ID | plan-order PLAN_ID... | plan-override PLAN_ID [--override-limits | --override idle,reserve,labels,providers] | session-dismiss TASK_ID | dispatch [--ticket KEY | --upstream OWNER/REPO | --epic EPIC_ID] [--model auto|MODEL_ID] [--provider codex|claudeAgent] [--override-limits | --override idle,reserve,labels,providers] [--chain first|all] [--dry-run]');
   process.exitCode = 2;
 }

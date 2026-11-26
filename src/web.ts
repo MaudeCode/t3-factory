@@ -534,6 +534,10 @@ export function createFactoryWeb(options: {
           const result = await run(["plan-override", limits[1], ...overrideFlags(overrideLimits)]);
           return json(res, result.code ? 409 : 200, result.data);
         }
+        if (path === "/api/cowtail/test" && req.method === "POST") {
+          const result = await run(["cowtail-test"]);
+          return json(res, result.code ? 502 : 200, result.data);
+        }
         if ((path === "/api/models" || path === "/api/sources") && req.method === "GET") {
           const result = await run([path === "/api/models" ? "model-catalog" : "sources"]);
           return json(res, result.code ? 503 : 200, result.data);

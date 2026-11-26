@@ -40,6 +40,8 @@ function migrateLegacy(value: unknown): unknown {
     discoveryModel: 'opus', fallbackAtRemainingPercent: preferred?.minRemainingPercent ?? 15,
   } };
 }
+// A Cowtail urgency for one event type; off posts nothing.
+const delivery = (urgency: 'whenever' | 'today') => z.enum(['off', 'whenever', 'today', 'now']).default(urgency);
 const budget = z.object({ reservePercent: z.number().min(0).max(100), minRemainingPercent: z.number().min(0).max(100).default(0) }).strict();
 export const configSchema = z.preprocess(input => {
   const value = migrateLegacy(input);
@@ -83,7 +85,11 @@ export const configSchema = z.preprocess(input => {
   // Accept and discard the retired readiness-label setting in existing installations.
   kanvil: z.object({ url: origin('Kanvil'), workspaceId: z.string().min(1), readyLabel: z.string().optional() }).strict().transform(({ readyLabel, ...config }) => config),
   // Phone notifications; COWTAIL_TOKEN in the factory .env holds the source's token.
-  cowtail: z.object({ url: origin('Cowtail') }).strict().optional(),
+  // Each Factory event type's Cowtail urgency, or off.
+  cowtail: z.object({
+    url: origin('Cowtail'),
+    events: z.object({ needsYou: delivery('today'), failed: delivery('today'), quotaHold: delivery('today'), noPr: delivery('today'), finished: delivery('whenever') }).strict().prefault({}),
+  }).strict().optional(),
   quota: z.object({
     maxAgeSeconds: positive,
     claude: z.object({ fiveHour: budget, weekly: budget, fable: budget }).strict(),

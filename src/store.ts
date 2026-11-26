@@ -121,6 +121,7 @@ const STREAM_TEXT: Record<string, string> = {
   'quota-budget': 'waiting for budget', 'no-eligible-model': 'no automatic model', 'difficulty-limit': 'nothing within difficulty limits', 'label-limit': 'label limits are full',
   'needs-classification': 'tickets need difficulty labels', 'no-eligible-ticket': 'watching the queue', dispatched: 'starting work', 'would-dispatch': 'ready to start',
 };
+const QUOTA_HOLDS = new Set(['quota-budget', 'quota-reserve', 'quota-exhausted']);
 export function decisionText(result: { reason: string } & Record<string, unknown>): string {
   if (result.reason === 'dispatched') return `Started ${startedWork(result)} on ${result.model}`;
   if (result.reason === 'error') return `Check failed: ${result.message}`;
@@ -515,9 +516,26 @@ export class Store {
         this.set(key, JSON.stringify({ ...selected, checks }));
       }
     } else this.set(key, JSON.stringify(result));
+    this.trackQuotaHolds(result);
     const text = decisionText(result);
     // Dispatches have job events; routine paused checks are status, not activity.
     if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !before || decisionText(before) !== text)) this.record('decision', text, { reason: result.reason, origin: result.origin, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
+  }
+  // Journal a quota hold once per provider: when automatic admission first holds it for quota, and again only after that
+  // provider admits or holds for another reason. A lane decides only its own provider; manual starts and unreadable
+  // quotas (free-text reasons) leave a hold as it is.
+  private trackQuotaHolds(result: CheckDecision) {
+    if (result.origin?.manual) return;
+    for (const stream of (result.streams ?? []) as { driver?: string; provider?: string; reason?: string }[]) {
+      if (!stream.driver || !stream.reason || (result.origin?.providerDriver && stream.driver !== result.origin.providerDriver)) continue;
+      const key = `quotaHold:${stream.driver}`, held = this.get(key);
+      if (QUOTA_HOLDS.has(stream.reason)) {
+        if (held) continue;
+        const holdId = `${stream.driver}:${result.at}`;
+        this.set(key, holdId);
+        this.record('quota.hold', `${stream.provider ?? stream.driver} work held for quota`, { driver: stream.driver, hold: stream.reason, reason: STREAM_TEXT[stream.reason] ?? stream.reason.replaceAll('-', ' '), holdId, state: 'held' });
+      } else if (held && /^[a-z]+(-[a-z]+)*$/.test(stream.reason)) this.set(key, '');
+    }
   }
   get(key: string): string | null { return this.statement('SELECT value FROM metadata WHERE key=?').get(key)?.value as string ?? null; }
   set(key: string, value: string) { if (this.statement('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value != excluded.value').run(key, value).changes && ADMISSION_KEYS.test(key)) this.revision++; }

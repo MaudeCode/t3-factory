@@ -26,7 +26,8 @@
     "workspaceId": "YOUR_WORKSPACE_ID"
   },
   // Optional phone notifications. Set together with COWTAIL_TOKEN in .env, or leave both out.
-  // "cowtail": { "url": "https://cowtail.example.com" },
+  // Each event type is "off", "whenever", "today" or "now"; omitted ones take the defaults shown.
+  // "cowtail": { "url": "https://cowtail.example.com", "events": { "needsYou": "today", "failed": "today", "quotaHold": "today", "noPr": "today", "finished": "whenever" } },
   "models": [
     {
       "id": "default-model",
