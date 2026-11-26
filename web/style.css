@@ -565,6 +565,24 @@ h2 .help {
   color: var(--ink);
 }
 
+/* Counted navigation follows the available column width across all of its destinations. */
+@container page (max-width: 450px) {
+  .counted-tabs {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+  }
+  .counted-tabs button {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    align-items: center;
+    padding: 4px 1px;
+    font-size: var(--text-xs);
+    white-space: normal;
+  }
+  .counted-tabs button small { margin: 0; }
+}
+
 /* Sortable list */
 .sortable-row {
   transition: transform 0.16s var(--ease);
@@ -4318,23 +4336,6 @@ body:has(.split-panel[open]) .shell > .content > main {
   .runs-split .runs-detail {
     --runs-crumb: none;
   }
-}
-
-/* Keep every state reachable without a horizontal swipe in a phone-sized run list. */
-@container page (max-width: 450px) {
-  .runs > .segmented {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-  .runs > .segmented button {
-    display: grid;
-    grid-template-rows: 1fr auto;
-    align-items: center;
-    padding: 4px 1px;
-    font-size: var(--text-xs);
-    white-space: normal;
-  }
-  .runs > .segmented button small { margin: 0; }
 }
 
 /* Sources ----------------------------------------------------------------- */

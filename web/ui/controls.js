@@ -311,7 +311,8 @@ export const Check = ({ path, label, checked, onChange, hint, ...props }) =>
 
 // Exclusive filter chips. `options` is a list of [value, name, count?]. `icons` maps each value to a glyph that stands
 // for its name; `named` shows the name beside the glyph where there is room for it.
-export const Segmented = ({ path, options, value, onChange, label, icons, named, disabled }) => {
+// `fitCounts` gives each destination an equal column with the count below its label on narrow pages.
+export const Segmented = ({ path, options, value, onChange, label, icons, named, fitCounts, disabled }) => {
   const [current, change] = bind(path, value, onChange);
   const index = Math.max(0, options.findIndex(([v]) => v === current));
   const strip = useChosenInView(current);
@@ -327,7 +328,7 @@ export const Segmented = ({ path, options, value, onChange, label, icons, named,
     change(options[next][0]);
     e.currentTarget.querySelectorAll('button')[next].focus();
   };
-  return html`<div ref=${strip} class=${icons ? 'slots' : 'segmented'} role="radiogroup" aria-label=${label} onKeyDown=${keydown}>
+  return html`<div ref=${strip} class=${icons ? 'slots' : cls('segmented', fitCounts && 'counted-tabs')} role="radiogroup" aria-label=${label} onKeyDown=${keydown}>
     ${options.map(
       ([v, name, count], i) =>
         html`<button key=${v} type="button" role="radio" disabled=${disabled} aria-checked=${v === current} tabindex=${i === index ? 0 : -1} class=${icons && cls('slot', v === current && 'chosen')}

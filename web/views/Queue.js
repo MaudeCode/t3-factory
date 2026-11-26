@@ -185,7 +185,7 @@ export function Queue() {
   const [filters, setFilters] = useState({});
   const [query, setQuery] = useState("");
   const start = startOptions(), epics = epicLists(), up = needSection("upNext").value;
-  const tabs = html`<${Segmented} label="Queue view" value=${view} onChange=${(v) => navigate(VIEWS[v])}
+  const tabs = html`<${Segmented} fitCounts label="Queue view" value=${view} onChange=${(v) => navigate(VIEWS[v])}
     options=${[["next", "Up next", up?.tickets.length ?? 0], ["epics", "Epics", epics.open.length], ["sessions", "Sessions", sessionTicketCount()], ["reports", "Reports", readyReportCount()]]} />`;
   if (view === "sessions") return html`<${SessionTickets} lead=${tabs} />`;
   if (view === "reports") return html`<${ReadyReports} lead=${tabs} />`;

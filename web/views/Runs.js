@@ -85,7 +85,7 @@ export function Runs({ id } = {}) {
   return html`<div class=${`runs-split${id ? " has-run" : ""}`}>
   <div class="runs-list"><${Page} class="runs" title="Runs" count=${list.length} tools=${html`<${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers order=${html`<${OrderChoice} label="Start order" value=${order} onChange=${setOrder} />`} />`}>
     <${Segmented}
-      label="State"
+      fitCounts label="State"
       value=${state}
       onChange=${setState}
       options=${[["open", "Open", counts.open], ["waiting", "Needs you", counts.waiting], ["complete", "Finished", counts.complete], ["dismissed", "Settled", counts.dismissed], ["all", "All", counts.all]]}

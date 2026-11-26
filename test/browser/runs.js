@@ -5,7 +5,7 @@ import * as store from "../../web/lib/store.js";
 import { navigate } from "../../web/lib/router.js";
 import { confirmation, finishConfirmation } from "../../web/lib/confirmation.js";
 import { App } from "../../web/views/App.js";
-import { openSearch, tickRenders, checkTickRendersTimesOnly } from "./search.js";
+import { until, openSearch, tickRenders, checkTickRendersTimesOnly } from "./search.js";
 
 const root = document.querySelector("#root");
 const pause = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,7 +43,6 @@ async function show(path = "/runs", rows = jobs) {
   render(html`<${App} />`, root);
   await pause(200);
 }
-const until = async (ok) => { const end = Date.now() + 3000; while (!ok()) { if (Date.now() > end) throw new Error("Fixture did not settle"); await pause(20); } };
 const visible = (el) => !!el && el.getClientRects().length > 0;
 const list = () => root.querySelector(".runs-list"), detail = () => root.querySelector(".runs-detail");
 const rowLink = (key) => [...list().querySelectorAll("a.next-ticket")].find((a) => a.querySelector(".key")?.textContent === key);
