@@ -521,16 +521,18 @@ export class Store {
     // Dispatches have job events; routine paused checks are status, not activity.
     if (text && !['dispatched', 'disabled'].includes(result.reason) && (result.reason === 'error' || !before || decisionText(before) !== text)) this.record('decision', text, { reason: result.reason, origin: result.origin, streams: (result.streams as unknown[] | undefined)?.map((s: any) => ({ provider: s.provider, reason: s.reason })), message: result.message });
   }
-  // Journal a quota hold once per provider: when automatic admission first holds it for quota, and again only after that
-  // provider admits or holds for another reason. A lane decides only its own provider; manual starts and unreadable
-  // quotas (free-text reasons) leave a hold as it is.
+  // Journal a quota hold once per provider: when automatic admission first holds eligible work for quota, and again only
+  // after that provider admits, holds for another reason or has nothing waiting. A lane decides only its own provider;
+  // manual starts and unreadable quotas (free-text reasons) leave a hold as it is.
   private trackQuotaHolds(result: CheckDecision) {
     if (result.origin?.manual) return;
     for (const stream of (result.streams ?? []) as { driver?: string; provider?: string; reason?: string }[]) {
       if (!stream.driver || !stream.reason || (result.origin?.providerDriver && stream.driver !== result.origin.providerDriver)) continue;
       const key = `quotaHold:${stream.driver}`, held = this.get(key);
-      if (QUOTA_HOLDS.has(stream.reason)) {
-        if (held) continue;
+      // Quota is checked before the queue, so an empty queue still reports the quota reason.
+      if (QUOTA_HOLDS.has(stream.reason) && result.eligible === 0) { if (held) this.set(key, ''); }
+      else if (QUOTA_HOLDS.has(stream.reason)) {
+        if (held || !(Number(result.eligible) > 0)) continue;
         const holdId = `${stream.driver}:${result.at}`;
         this.set(key, holdId);
         this.record('quota.hold', `${stream.provider ?? stream.driver} work held for quota`, { driver: stream.driver, hold: stream.reason, reason: STREAM_TEXT[stream.reason] ?? stream.reason.replaceAll('-', ' '), holdId, state: 'held' });

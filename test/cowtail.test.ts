@@ -32,7 +32,7 @@ function fixture(request: (url: URL, init: RequestInit) => Promise<Response> = a
 }
 const OTHER = '22222222-2222-4222-8222-222222222222';
 const quotaCheck = (store: Store, at: string, reason = 'quota-budget') =>
-  store.decisionRecorder({ workKind: 'tickets', providerDriver: 'codex' })({ reason: 'watching-streams', at, streams: [{ driver: 'codex', provider: 'Codex', reason }] });
+  store.decisionRecorder({ workKind: 'tickets', providerDriver: 'codex' })({ reason: 'watching-streams', at, eligible: 1, streams: [{ driver: 'codex', provider: 'Codex', reason }] });
 
 test('a run that needs the owner and then merges its PR posts one question and one done item', () => {
   using f = fixture();

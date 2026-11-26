@@ -180,7 +180,7 @@ Factory can post to a Cowtail instance so the owner's phone hears about the runs
 | --- | --- | --- | --- |
 | Run needs you (`needsYou`) | A run is waiting on the owner | `question` | `today` |
 | Failures (`failed`) | T3 never confirmed a launch, so the run was dismissed and its ticket returned to ready; or a manual dispatch request failed (`dispatch.failed` in the journal) | `failure` | `today` |
-| Quota holds (`quotaHold`) | Automatic admission first holds a provider for quota (`quota-budget`, `quota-reserve` or `quota-exhausted`; `quota.hold` in the journal). It posts again only after that provider admits work or holds for another reason. A manual start or an unreadable allowance neither starts nor ends a hold. | `fyi` | `today` |
+| Quota holds (`quotaHold`) | Automatic admission first holds eligible work for quota (`quota-budget`, `quota-reserve` or `quota-exhausted`; `quota.hold` in the journal). It posts again only after that provider admits work, holds for another reason, or has nothing waiting; a provider under quota with an empty queue posts nothing. A manual start or an unreadable allowance neither starts nor ends a hold. | `fyi` | `today` |
 | Finished without a PR (`noPr`) | A run finished without opening a PR; the body is its report reason | `done` | `today` |
 | Finished runs (`finished`) | A run finished with at least one PR, or an Epic, chain or queued run finished | `done` | `whenever` |
 
