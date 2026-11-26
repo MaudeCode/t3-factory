@@ -184,7 +184,7 @@ function Shell() {
   const signOut = auth.value.mode === "oidc" ? "Sign out" : "Disconnect";
   const leave = () => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout();
   const versionTag = version.value && html`<${Tag} tone="label" class="version" title="Version">${version.value}<//>`;
-  const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory: Now"><img src="/icon.svg" width="24" height="24" alt="" /><span>Factory</span></a>`;
+  const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory: Now"><img src="/mark.png" width="24" height="24" alt="" /><span>Factory</span></a>`;
   const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); if (route.value.path === path && !location.search && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button)) { e.preventDefault(); pageScroller().scrollTo({ top: 0, behavior: "smooth" }); } else follow(e); }} aria-current=${current(path) ? "page" : undefined}>
     <${Icon} name=${icon} /><span>${name}</span>${badge(path)}
   </a>`;

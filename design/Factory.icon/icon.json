@@ -1,0 +1,58 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.07000,0.07500,0.14000,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "Factory.svg",
+          "name": "Factory",
+          "glass": true,
+          "blend-mode": "normal",
+          "fill": {
+            "solid": "extended-srgb:0.45000,0.50000,1.00000,1.00000"
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      },
+      "specular": true,
+      "lighting": "individual"
+    },
+    {
+      "layers": [
+        {
+          "image-name": "Chimney.svg",
+          "name": "Chimney",
+          "glass": true,
+          "blend-mode": "normal",
+          "fill": {
+            "solid": "extended-srgb:0.36900,0.41600,0.82400,1.00000"
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      },
+      "specular": true,
+      "lighting": "individual"
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "iOS"
+    ]
+  }
+}
