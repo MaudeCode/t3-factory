@@ -368,11 +368,19 @@ async function runsHeader() {
     return [x, y, height];
   });
   const before = bounds();
-  // Up next and Epics share one toolbar; Sessions and Reports bring their own.
+  // The toolbar can change actions, but each Queue destination must keep the same hit area.
   const tabs = () => [...root.querySelector('[aria-label="Queue view"]').querySelectorAll('button')];
-  for (const index of [1, 0]) {
+  const tabBoxes = () => tabs().map(tab => {
+    const { x, y, width, height } = tab.getBoundingClientRect();
+    return [x, y, width, height, tab.querySelector("small").getBoundingClientRect().y];
+  });
+  const initial = tabBoxes();
+  for (const index of [1, 2, 3, 0]) {
     tabs()[index].click(); await pause();
-    assert(JSON.stringify(bounds()) === JSON.stringify(before), `Queue header stays in place on ${tabs()[index].textContent}`);
+    const strip = tabs()[0].parentElement;
+    assert(strip.scrollWidth <= strip.clientWidth + 1 && strip.scrollLeft === 0, "all four Queue destinations stay visible");
+    assert(JSON.stringify(tabBoxes()) === JSON.stringify(initial), `Queue tabs keep their geometry on ${tabs()[index].textContent}`);
+    if (index < 2) assert(JSON.stringify(bounds()) === JSON.stringify(before), `Queue header stays in place on ${tabs()[index].textContent}`);
   }
   navigate("/runs", true); await pause();
   const runTabs = [...root.querySelector('[aria-label="State"]').querySelectorAll('button')], runsBefore = bounds();
