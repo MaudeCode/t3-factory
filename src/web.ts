@@ -356,6 +356,7 @@ export function createFactoryWeb(options: {
         return json(res, 200, {
           mode: options.oidc ? "oidc" : "pairing",
           loginUrl: `${origin}/auth/login`,
+          nativeHandoff: Boolean(options.oidc),
         });
       if (options.oidc && path === "/auth/login" && req.method === "GET")
         return await options.oidc.login(req, res);
@@ -382,6 +383,12 @@ export function createFactoryWeb(options: {
         !allowedOrigins.includes(req.headers.origin ?? "")
       )
         return json(res, 403, { message: "Origin is not allowed" });
+      if (options.oidc && path === "/api/auth/native/exchange" && req.method === "POST") {
+        if (req.headers.origin !== origin || host !== new URL(origin).host ||
+            !options.oidc.exchange(await body(req), res))
+          return json(res, 403, { message: "App sign-in expired or invalid. Sign in again." });
+        return;
+      }
       if (path === "/api/pair" && req.method === "POST") {
         if (!admin)
           return json(res, 401, {

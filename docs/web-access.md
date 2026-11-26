@@ -25,6 +25,12 @@ Sign-in uses state, nonce, PKCE, token validation, and a browser-bound transacti
 
 OIDC mode disables pairing endpoints and rejects old pairing cookies. An incomplete configuration stops startup. Signing out removes the factory session without signing the user out of other applications. Sessions survive web-service restarts in `<stateDir>/web-sessions.json`, a private mode-0600 file containing session credentials. Restored sessions recheck membership before granting access. Changing the OIDC settings or public origin invalidates stored sessions. Set the provider client's refresh-token lifetime to at least the desired factory session lifetime; a short provider lifetime can require earlier sign-in.
 
+### Returning from a system browser
+
+In OIDC mode, `GET /api/auth` advertises `nativeHandoff: true`. A client can start the usual `/auth/login` flow in the system browser with a `native_challenge`. The challenge is the unpadded base64url SHA-256 digest of a fresh 43-character base64url verifier generated from 32 random bytes. The client keeps the verifier private.
+
+After the provider and group checks pass, Factory redirects to its fixed `house.thezoo.t3factory://sign-in` callback with the challenge as `state` and a one-use `code`. The client checks the callback and state, then posts `{"code":"…","verifier":"…"}` as JSON to `/api/auth/native/exchange` from the configured Factory origin. Success sets the usual HttpOnly session cookie and returns the original `returnTo` path. The code expires after 60 seconds. Restarting Factory clears pending handoffs.
+
 ## Device pairing
 
 For a trusted private network without OIDC, explicitly choose `FACTORY_AUTH_MODE=pairing` and set `FACTORY_WEB_SESSION_SECRET` to at least 32 random characters. For example, generate a value locally with `openssl rand -hex 32` and save it only in `.env`.
