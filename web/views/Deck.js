@@ -1,7 +1,7 @@
 // Pieces shared by the pages that list runs and tickets: provider meters, the start bar, requests, rows.
 import { html, useRef, useState } from "../lib/h.js";
 import { config, statusSection, needSection, live, busy, jobs, launchOperations, quotaFor, actions, startRun, pendingRun, retryRequest, showBlockedChoice, sessionOverrides, setSessionOverrides, sessionProvider, setSessionProvider } from "../lib/store.js";
-import { follow, followRun, ticketClick } from "../lib/router.js";
+import { follow, followRun, ticketClick, ticketPanel } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import {
   ago,
@@ -220,7 +220,7 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
   const c = config.value;
   const label = `More actions for ${t.key ?? t.title}`;
   // A ticket or an inbox report opens in Factory's own panel; a modified or middle click keeps the link's tracker tab.
-  const panel = ticketClick(ticketKey(t.key ?? ""));
+  const key = ticketKey(t.key ?? ""), panel = ticketClick(key);
   const body = html`<${RowBody} tip=${typeof t.title === "string" ? t.title : undefined} title=${t.key ? html`<b class="key">${t.key}</b> ${t.title}` : t.title}>
     <${Meta} project=${project?.name ?? t.project ?? t.projectId} automationReady=${t.automationReady} priority=${t.priority} difficulty=${plain ? undefined : t.difficulty || false} labels=${t.labels ?? []} highlight=${(project?.priorityLabels ?? []).flat()} ...${meta}>${t.key && html`<span class="row-key" aria-hidden="true">${t.key}</span>`}${badge}${children}<//>
   <//>`;
@@ -230,7 +230,7 @@ export function TicketRow({ ticket: t, project, children, actions, secondaryActi
       ? html`<button type="button" class="next-toggle next-chevron" aria-label=${toggle.label} title=${toggle.label} aria-expanded=${toggle.expanded} disabled=${toggle.disabled} onClick=${toggle.onClick}><${Icon} name="chevronRight" /></button>${mark}<a class="next-ticket next-wrap" ...${link}>${body}</a>`
       : toggle
       ? html`<button type="button" class="next-ticket next-toggle next-wrap" aria-expanded=${toggle.expanded} disabled=${toggle.disabled} onClick=${toggle.onClick}><${Icon} name="chevronRight" />${body}</button>`
-      : html`${mark}<a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer", onClick: panel }}>${body}</a>`}
+      : html`${mark}<a class="next-ticket" ...${link ?? { href: ticketLink(c, { taskId: t.id, projectId: t.projectId }), target: "_blank", rel: "noopener noreferrer", "aria-current": key && ticketPanel.value === key ? "true" : undefined, onClick: panel }}>${body}</a>`}
     ${(actions || secondaryActions) && html`<div class="next-actions">${actions}
       ${secondaryActions && html`<${RowActions} label=${label}>${secondaryActions}<//>`}
     </div>`}

@@ -177,7 +177,7 @@ async function run() {
   assert(panel().textContent.includes("Synthetic ticket APP-2") && reads.filter((k) => k === "APP-2").length === 2, "Retry repeats the read");
   // Geometry.
   const box = panel().getBoundingClientRect();
-  assert(innerWidth <= 700 ? box.left === 0 && box.width === innerWidth : box.right === innerWidth && box.width >= 340 && box.left >= (innerWidth >= 820 ? 280 : innerWidth - 560), `the panel is a right drawer that leaves the list in view, or the whole screen on a phone: ${box.left},${box.width}`);
+  assert(panel().classList.contains("split-panel") ? root.querySelector(".content main").getBoundingClientRect().right <= box.left + 1 : innerWidth <= 700 ? box.left === 0 && box.width === innerWidth : box.right === innerWidth && box.width >= 340 && box.left >= (innerWidth >= 820 ? 280 : innerWidth - 560), `the panel is a right drawer that leaves the list in view, or the whole screen on a phone: ${box.left},${box.width}`);
   assert(box.height === innerHeight && document.documentElement.scrollWidth <= innerWidth && panel().scrollWidth <= panel().clientWidth, "the panel fills the height without sideways scroll");
   if (matchMedia("(pointer: coarse)").matches) for (const b of panel().querySelectorAll("button, a.btn")) assert(b.getBoundingClientRect().height >= 44, `panel controls are touch targets: ${b.textContent.trim()}`);
   // A home-screen app in landscape on a touch screen draws under the live-activity pill in the top right corner.

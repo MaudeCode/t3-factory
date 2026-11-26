@@ -9,6 +9,31 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
   const browser = await engine.launch();
   try {
     const cases = [
+      ["touch navigation through Controls", "start", "startTests", 382, async page => {
+        await page.locator(".tabbar").getByRole("link", { name: "Controls" }).tap();
+        await page.getByRole("navigation", { name: "Factory controls" }).getByRole("link", { name: "Log" }).tap();
+        await page.waitForURL("**/activity");
+        assert.match(await page.locator("main h1").innerText(), /^Log/);
+        assert.equal(await page.locator('.tabbar a[aria-current="location"]').textContent(), "Controls");
+      }],
+      ["fold with a selected ticket", "ticket", "ticketTests", 382, async page => {
+        await page.evaluate(async () => { await ticketTests.show("/queue"); await ticketTests.open("APP-1"); });
+        const panel = page.locator("dialog.ticket-panel[open]");
+        for (const [width, height, split] of [[669, 867, true], [385, 571, false], [951, 585, true]]) {
+          await page.setViewportSize({ width, height });
+          await page.waitForFunction(split => {
+            const d = document.querySelector("dialog.ticket-panel[open]");
+            return d && d.matches(":modal") !== split && (split === d.classList.contains("split-panel"));
+          }, split);
+          assert.equal(await panel.getAttribute("aria-label"), "APP-1");
+          if (split) {
+            const row = page.locator(".next:has(.next-ticket[aria-current=true])");
+            const bounds = await row.boundingBox();
+            assert(bounds.x + bounds.width <= (await panel.boundingBox()).x + 1,
+              "the entire selected row, including its actions, fits beside detail");
+          }
+        }
+      }],
       ["landscape header fits", "start", "startTests", 951, async page => {
         await page.evaluate(() => startTests.show("/"));
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "landscape header stays inside the viewport");

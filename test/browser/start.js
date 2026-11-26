@@ -178,7 +178,8 @@ async function duoLayout() {
   const noOverflow = () => assert(document.documentElement.scrollWidth <= innerWidth, 'Factory fits the viewport');
   noOverflow();
   const phone = innerWidth <= 600;
-  const shell = root.querySelector('.shell'), bar = root.querySelector(phone ? '.top' : '.side');
+  const shell = root.querySelector('.shell');
+  let bar = root.querySelector(phone ? '.top' : '.side');
   assert(!!root.querySelector('.tabbar') === phone && !!root.querySelector('.side') === !phone, 'the sidebar gives way to the top bar and tab bar at phone width');
   assert(shell.querySelectorAll('[aria-current="page"]').length === 1, 'only the Now link marks the current page');
   const priorConnection = store.connection.value, priorStatus = store.status.value;
@@ -194,14 +195,15 @@ async function duoLayout() {
   }
   store.status.value = priorStatus;
   store.connection.value = priorConnection; await pause();
-  // The running version is a filled tag in the sidebar, apart from its neighbours; a phone names it in More, not in its top bar.
-  // A phone and the rail have no room for it: both name the version in More.
+  // The running version is a filled tag in the sidebar, apart from its neighbours; a phone names it in Controls, not in its top bar.
+  // A phone and the rail have no room for it: both name the version in Controls.
   const compact = phone || shell.classList.contains('rail');
   if (compact) {
-    assert(!bar.querySelector('.version'), "the phone's top bar and the rail leave the version to More");
-    root.querySelector(phone ? '.tabbar button' : '.side-foot button[aria-label="More"]').click(); await pause();
-    assert(document.querySelector('dialog[open] .more-version')?.textContent === 'Version v0.5.1', 'More names the running version');
-    document.querySelector('dialog[open] .dialog-close').click(); await pause();
+    assert(!bar.querySelector('.version'), "the phone's top bar and the rail leave the version to Controls");
+    root.querySelector('.shell a[href="/controls"]').click(); await pause();
+    assert(root.querySelector('.more-version')?.textContent === 'Version v0.5.1', 'Controls names the running version');
+    navigate('/'); await pause();
+    bar = root.querySelector(phone ? '.top' : '.side');
   } else {
     const version = bar.querySelector('.version'), pad = parseFloat(getComputedStyle(version ?? bar).paddingLeft);
     assert(version?.matches('.tag.tag-label') && version.textContent === 'v0.5.1' && pad >= 6, 'the bar shows the running version as a padded tag');
@@ -227,11 +229,11 @@ async function duoLayout() {
     const tabs = [...root.querySelectorAll('.tabbar a, .tabbar button')];
     assert(tabs.length === 5 && tabs.every(el => bounds(el).width >= 44 && bounds(el).height >= 44), 'five tab-bar destinations with touch targets');
     tabs.at(-1).click(); await pause();
-    const more = root.querySelector('dialog[open][aria-label="More"]');
-    assert(more && new Set(hrefs()).size === 7, 'More holds every page the tab bar leaves out');
-    assert([...more.querySelectorAll('.more-list button')].map(el => el.textContent.trim()).join() === 'Appearance,Sign out', 'More offers Appearance and Sign out');
-    more.querySelector('a[href="/activity"]').click(); await pause();
-    assert(!root.querySelector('dialog[open]') && tabs.at(-1).getAttribute('aria-current') === 'page', 'a page from More closes it and marks More current');
+    const controls = root.querySelector('main .more-list');
+    assert(controls && new Set(hrefs()).size === 8, 'Controls links every destination outside the tab bar');
+    assert(root.querySelector('main button[aria-label="Appearance"]') && root.querySelector('main button[aria-label="Sign out"]'), 'Controls offers Appearance and Sign out');
+    controls.querySelector('a[href="/activity"]').click(); await pause();
+    assert(root.querySelector('.tabbar a[href="/controls"]').getAttribute('aria-current') === 'location', 'secondary pages keep Controls selected');
   } else {
     assert(hrefs().length === 7, 'every page is a direct sidebar link');
     assert([...root.querySelectorAll('.side nav')].map(n => n.getAttribute('aria-label')).join() === 'Work,Upkeep', 'pages are grouped');
@@ -247,8 +249,8 @@ async function duoLayout() {
     assert([...root.querySelectorAll('.side nav a')].every(a => a.textContent.trim()), 'collapsed links keep their names for assistive technology');
     noOverflow();
     if (!was) {
-      const more = root.querySelector('.side-foot button[aria-label="More"]'), side = root.querySelector('.side');
-      assert(!side.querySelector('.version') && more && bounds(more).left >= bounds(side).left && bounds(more).right <= bounds(side).right, "the rail's foot is one More button that fits it");
+      const more = root.querySelector('.side-foot a[href="/controls"]'), side = root.querySelector('.side');
+      assert(!side.querySelector('.version') && more && bounds(more).left >= bounds(side).left && bounds(more).right <= bounds(side).right, "the rail's foot is one Controls link that fits it");
       assert(side.scrollWidth <= side.clientWidth && getComputedStyle(side).scrollbarWidth === 'none', 'the rail never scrolls sideways and shows no scroll bar');
     }
     toggle().click(); await pause();
@@ -256,8 +258,7 @@ async function duoLayout() {
     localStorage.removeItem('factoryRail');
   }
   assert(root.querySelector('h1').textContent.includes('Log'), 'a secondary destination uses the ordinary page route');
-  if (phone) { root.querySelector('.tabbar button').click(); await pause(); [...root.querySelectorAll('.more-list button')][0].click(); await pause(); }
-  else if (shell.classList.contains('rail')) { root.querySelector('.side-foot button[aria-label="More"]').click(); await pause(); [...root.querySelectorAll('.more-list button')][0].click(); await pause(); }
+  if (compact) { root.querySelector('.shell a[href="/controls"]').click(); await pause(); root.querySelector('main button[aria-label="Appearance"]').click(); }
   else root.querySelector('button[aria-label="Appearance"]').click();
   await pause();
   assert(root.querySelector('dialog[open][aria-label="Appearance"]'), 'Appearance is accessible');

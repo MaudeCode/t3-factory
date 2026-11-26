@@ -1,7 +1,7 @@
 // One ticket, or one Epic, opened in place. A ticket, from any ticket row: what it asks for, what it waits on, its runs, and Run now.
 // Read-only apart from starting a run; the tracker stays one link away. Its Factory tab holds what the scheduler
 // knows about the ticket: where it stands and its latest run.
-import { html, useState, useEffect, useRef } from "../lib/h.js";
+import { html, useState, useEffect, useLayoutEffect, useRef } from "../lib/h.js";
 import { config, needSection, statusSection, jobs, history, loadHistory, busy, launchOperations, actions, pendingRun, startRun } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, epicPanel, closeEpic, follow, ticketClick, navigate } from "../lib/router.js";
@@ -107,10 +107,19 @@ const setWidth = (px) => { const root = document.documentElement.style; if (px) 
 const keepWidth = (px) => { setWidth(px); try { if (px) localStorage.setItem(WIDTH, String(px)); else localStorage.removeItem(WIDTH); } catch { /* private window: the width lasts until reload */ } };
 if (typeof document !== "undefined") { try { setWidth(Number(localStorage.getItem(WIDTH)) || 0); } catch { /* no stored width */ } }
 function PanelGrip() {
-  const ref = useRef(), [width, setShown] = useState();
+  const ref = useRef(), [bounds, setBounds] = useState({});
+  useLayoutEffect(() => {
+    const dialog = ref.current.closest("dialog");
+    const observer = new ResizeObserver(() => {
+      const style = getComputedStyle(dialog);
+      setBounds({ width: Math.round(dialog.getBoundingClientRect().width), min: parseFloat(style.minWidth), max: parseFloat(style.maxWidth) });
+    });
+    observer.observe(dialog);
+    return () => observer.disconnect();
+  }, []);
   // The width the stylesheet settled on, which is what gets stored and announced; nothing once the panel has gone.
   const measure = () => { const d = ref.current?.closest("dialog"); return d ? Math.round(d.getBoundingClientRect().width) : 0; };
-  const settle = (keep = true) => { const px = measure(); if (!px) return; if (keep) keepWidth(px); setShown(px); };
+  const settle = () => { const px = measure(); if (px) keepWidth(px); };
   const drag = (e) => {
     if (e.button) return;
     e.preventDefault();
@@ -122,14 +131,34 @@ function PanelGrip() {
     el.addEventListener("pointermove", move); el.addEventListener("pointerup", end); el.addEventListener("pointercancel", end);
   };
   const key = (e) => { const step = { ArrowLeft: 32, ArrowRight: -32 }[e.key]; if (step) { e.preventDefault(); setWidth(measure() + step); settle(); } };
-  return html`<div ref=${ref} class="panel-grip" role="separator" tabindex="0" aria-orientation="vertical" aria-valuenow=${width} aria-valuemin="340" aria-valuemax=${Math.max(340, (globalThis.innerWidth ?? 0) - 280)}
+  return html`<div ref=${ref} class="panel-grip" role="separator" tabindex="0" aria-orientation="vertical" aria-valuenow=${bounds.width} aria-valuemin=${bounds.min} aria-valuemax=${bounds.max}
     aria-label="Panel width in pixels: drag, or use the arrow keys" title="Drag to resize; double-click to reset"
-    onPointerDown=${drag} onKeyDown=${key} onFocus=${() => settle(false)} onDblClick=${() => { setWidth(0); try { localStorage.removeItem(WIDTH); } catch { /* nothing stored */ } settle(false); }}></div>`;
+    onPointerDown=${drag} onKeyDown=${key} onDblClick=${() => { setWidth(0); try { localStorage.removeItem(WIDTH); } catch { /* nothing stored */ } }}></div>`;
 }
 
-// A window with room for two columns docks the panel beside the page, so the list it was opened from stays in use.
-// The Duo's inner screen is the case that matters: 951 px, where a panel over the page hides the queue it came from.
-const docks = () => !!globalThis.matchMedia?.("(min-width: 820px)").matches;
+// The surrounding content width excludes the sidebar (and the system rail in the wrapper).
+function usePanelMode(open) {
+  const [mode, setMode] = useState("modal");
+  useLayoutEffect(() => {
+    if (!open) return;
+    const content = document.querySelector(".shell > .content");
+    const touch = matchMedia("(pointer: coarse)");
+    const layout = () => {
+      const space = content?.clientWidth ?? innerWidth;
+      const compact = touch.matches && innerWidth <= 1100;
+      const split = compact && innerWidth >= 640 && space >= 600;
+      document.documentElement.style.setProperty("--panel-space", space + "px");
+      setMode(split ? "split" : !compact && innerWidth >= 820 ? "docked" : "modal");
+    };
+    layout();
+    const observer = new ResizeObserver(layout);
+    if (content) observer.observe(content);
+    addEventListener("resize", layout);
+    touch.addEventListener("change", layout);
+    return () => { observer.disconnect(); removeEventListener("resize", layout); touch.removeEventListener("change", layout); };
+  }, [open]);
+  return mode;
+}
 
 export function TicketPanel() {
   const key = ticketPanel.value, epicKey = !key && epicPanel.value;
@@ -176,7 +205,8 @@ export function TicketPanel() {
   </div>` : !mine.data && html`<p class="ticket-state" role="status"><i class="spinner"></i> Reading ${noun}</p>`;
   const epic = epicKey ? epicById(epicKey) : undefined;
   // A member ticket opens over its Epic; closing it remounts the Epic with a fresh tracker read.
-  const side = docks(), shape = `ticket-panel${side ? " docked" : ""}`;
+  const mode = usePanelMode(Boolean(path)), side = mode !== "modal";
+  const shape = `ticket-panel${side ? " docked" : ""}${mode === "split" ? " split-panel" : ""}`;
   if (epicKey) return html`<${Dialog} key="epic" class=${shape} modal=${!side} open onClose=${closeEpic} title="Epic" head=${side && html`<${PanelGrip} />`}>
     ${state}
     ${mine.error?.status !== 404 && (mine.data || epic) && html`<${EpicDetail} epic=${epic} detail=${mine.data} />`}
