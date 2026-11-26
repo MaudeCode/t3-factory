@@ -11,6 +11,7 @@ export const auth = signal({ mode: "pairing", loginUrl: "" });
 export const version = signal("");
 export const authenticated = signal(null); // null while unknown
 export const loginError = signal("");
+export const unavailable = signal(false); // A failed state read or an offline browser, independent of SSE retry.
 export const connection = signal("connecting"); // connecting | live | retrying | polling | offline
 export const config = signal(null);
 export const base = signal(null);
@@ -115,7 +116,7 @@ export const dirty = computed(
 );
 export const jobs = computed(() => statusSection("jobs").value || []);
 
-api.onUnauthorized = () => (authenticated.value = false);
+api.onUnauthorized = () => batch(() => { unavailable.value = false; authenticated.value = false; });
 
 export function message(text, error = false) {
   notice.value = text ? { text, error, at: Date.now() } : null;
@@ -160,6 +161,7 @@ export function applyState(data, reset = false) {
         concurrency: data.config.concurrency,
       };
     }
+    unavailable.value = false;
     authenticated.value = true;
     if (!["live", "retrying"].includes(connection.value)) connection.value = "polling";
   });
@@ -176,9 +178,14 @@ function diff(a, b) {
   for (const k of keys) n += diff(a[k], b[k]);
   return n;
 }
+// A dead VPN route can leave fetch pending even though the phone still has internet.
+function stateReadSignal(signal) {
+  const timeout = AbortSignal.timeout(15000);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
 export async function load(reset = false, { quiet = false, signal } = {}) {
   try {
-    const asked = [...held], data = await api(`/api/state?with=${asked}`, { signal });
+    const asked = [...held], data = await api(`/api/state?with=${asked}`, { signal: stateReadSignal(signal) });
     if (signal?.aborted) return;
     // A section asked for while this read was out is missing from it: merge the rest, so that section stays.
     const late = [...held].filter((key) => !asked.includes(key));
@@ -186,7 +193,10 @@ export async function load(reset = false, { quiet = false, signal } = {}) {
     return data;
   } catch (error) {
     if (signal?.aborted) throw error;
-    if (error.status !== 401) connection.value = quiet ? "retrying" : "offline";
+    if (error.status !== 401 && (!quiet || connection.peek() !== "live")) {
+      unavailable.value = true;
+      connection.value = quiet ? "retrying" : "offline";
+    }
     if (!quiet && authenticated.value) message(error.message, true);
     throw error;
   }
@@ -582,9 +592,13 @@ export async function connect(code) {
   await load(true);
   restoreOperation();
 }
-export async function initialize() {
+let starting;
+export function initialize(signal) {
+  return starting ??= initializeOnce(signal).finally(() => { starting = undefined; });
+}
+async function initializeOnce(signal) {
   try {
-    auth.value = await api("/api/auth");
+    auth.value = await api("/api/auth", { signal: stateReadSignal(signal) });
     const sso = auth.value.mode === "oidc";
     if (new URLSearchParams(location.search).has("auth_error")) {
       loginError.value = "Sign-in was not completed or your account does not have access.";
@@ -594,21 +608,30 @@ export async function initialize() {
     if (pair) globalThis.history.replaceState(null, "", location.pathname + location.search);
     if (pair && !sso) await connect(pair);
     else {
-      await load(true);
-      restoreOperation();
+      await load(true, { signal });
+      if (!signal?.aborted) restoreOperation();
     }
   } catch (error) {
-    authenticated.value = false;
-    if (error.status !== 401) loginError.value = error.message;
+    if (signal?.aborted) return;
+    if (error.status && error.status < 500) {
+      unavailable.value = false;
+      authenticated.value = false;
+      if (error.status !== 401) loginError.value = error.message;
+    } else {
+      unavailable.value = true;
+      authenticated.value = null;
+    }
   }
 }
 
 // Own stream retries so a proxy response that permanently closes EventSource also recovers.
 // Background reads share one abortable request and never create action notifications.
+let reconnect;
+export const retryConnection = () => reconnect?.();
 export function subscribe() {
   let source = null, pending = null, stopped = false;
   let offline = globalThis.navigator?.onLine === false;
-  let nextStream = 0, nextRead = Date.now() + 15000;
+  let lastEvent = 0, nextStream = 0, nextRead = Date.now() + 15000;
   let streamDelay = 1000, readDelay = 1000;
   const close = () => {
     source?.close();
@@ -619,7 +642,10 @@ export function subscribe() {
     const controller = new AbortController();
     pending = controller;
     try {
-      await load(false, { quiet: true, signal: controller.signal });
+      if (authenticated.peek() === null) {
+        await initialize(controller.signal);
+        if (unavailable.peek()) throw new Error("Factory is unreachable");
+      } else await load(false, { quiet: true, signal: controller.signal });
       readDelay = 1000;
       nextRead = Date.now() + 15000;
       if (typeof EventSource === "undefined" && !controller.signal.aborted) connection.value = "polling";
@@ -634,8 +660,12 @@ export function subscribe() {
   const open = () => {
     if (source || typeof EventSource === "undefined" || Date.now() < nextStream) return;
     const current = source = new EventSource(`/api/events?with=${[...held]}`);
+    current.addEventListener("heartbeat", () => {
+      if (source === current) lastEvent = Date.now();
+    });
     current.addEventListener("state", (e) => {
       if (stopped || source !== current || !authenticated.value) return;
+      lastEvent = Date.now();
       const data = JSON.parse(e.data);
       pending?.abort();
       connection.value = "live";
@@ -660,17 +690,26 @@ export function subscribe() {
     if (!document.hidden) clock.value = Date.now();
     if (!authenticated.value) {
       close();
-      pending?.abort();
+      if (authenticated.peek() === false) pending?.abort();
+      if (authenticated.peek() === null && unavailable.peek() && !document.hidden && !offline && Date.now() >= nextRead) void refresh();
       return;
     }
-    if (offline) { connection.value = "retrying"; return; }
+    if (offline) { unavailable.value = true; connection.value = "retrying"; return; }
     if (document.hidden) return;
+    // Wi-Fi can stay online when the private route disappears. Probe after two missed server heartbeats.
+    if (connection.peek() === "live" && Date.now() - lastEvent >= 60000) {
+      close();
+      connection.value = "retrying";
+      nextStream = nextRead = 0;
+    }
     open();
     if (connection.value !== "live" && Date.now() >= nextRead) void refresh();
   };
   const disconnect = () => {
     if (stopped) return;
     offline = true;
+    unavailable.value = true;
+    if (authenticated.peek() === false) authenticated.value = null;
     close();
     pending?.abort();
     if (authenticated.value) connection.value = "retrying";
@@ -685,13 +724,16 @@ export function subscribe() {
     close();
     tick();
   };
+  reconnect = () => { if (globalThis.navigator?.onLine !== false) resume({ type: "online" }); };
   widen = () => { if (source && !stopped) { close(); open(); } };
+  if (offline) disconnect();
   const timer = setInterval(tick, 1000);
   document.addEventListener("visibilitychange", resume);
   window.addEventListener("online", resume);
   window.addEventListener("offline", disconnect);
   return () => {
     stopped = true;
+    reconnect = undefined;
     widen = () => {};
     clearInterval(timer);
     close();

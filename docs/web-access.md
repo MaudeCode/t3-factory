@@ -31,6 +31,12 @@ In OIDC mode, `GET /api/auth` advertises `nativeHandoff: true`. A client can sta
 
 After the provider and group checks pass, Factory redirects to its fixed `house.thezoo.t3factory://sign-in` callback with the challenge as `state` and a one-use `code`. The client checks the callback and state, then posts `{"code":"…","verifier":"…"}` as JSON to `/api/auth/native/exchange` from the configured Factory origin. Success sets the usual HttpOnly session cookie and returns the original `returnTo` path. The code expires after 60 seconds. Restarting Factory clears pending handoffs.
 
+## Away from the private network
+
+A site on the home LAN or tailnet requires a route to that network. Factory keeps the current open page in memory, including unsaved settings. Browser assets can be cached, but the private state API uses `no-store` and Factory does not save an offline dashboard. Stored preferences and pending request IDs serve separate purposes.
+
+If the browser goes offline or a state read fails, Factory shows a reconnect dialog. It keeps the current page behind the dialog and resumes after a successful state read or live snapshot. Even with Wi-Fi up, a silent live stream is checked after two missed heartbeat intervals plus a grace period. Reconnect to the home network or Tailscale; Retry connection asks for an immediate check. An expired session opens the normal sign-in page once the server answers.
+
 ## Device pairing
 
 For a trusted private network without OIDC, explicitly choose `FACTORY_AUTH_MODE=pairing` and set `FACTORY_WEB_SESSION_SECRET` to at least 32 random characters. For example, generate a value locally with `openssl rand -hex 32` and save it only in `.env`.

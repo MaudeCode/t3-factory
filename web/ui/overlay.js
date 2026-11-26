@@ -58,7 +58,7 @@ const CONTROLS = "a, button, input, select, textarea, label, summary, [role=butt
 // Every way out goes through `leave`: the `closing` class plays the exit while the dialog is still open and holds what
 // it showed, then the dialog closes. Safari hides a closed dialog at once, so a transition on `display` is no exit.
 // Content stays mounted for as long as the element is open, so a close that arrives through `open` never remounts it.
-export function Dialog({ open, onClose, title, children, actions, descriptionId, class: extra, modal = true, head }) {
+export function Dialog({ open, onClose, title, children, actions, descriptionId, class: extra, modal = true, dismissible = true, head }) {
   const ref = useRef(), timer = useRef(), last = useRef({});
   const [leaving, setLeaving] = useState(false), [, redraw] = useState(0);
   const view = open ? { title, head, children, actions } : last.current;
@@ -73,7 +73,7 @@ export function Dialog({ open, onClose, title, children, actions, descriptionId,
     timer.current = setTimeout(() => d.close(), ms);
   };
   // Escape belongs to a popover open inside the dialog before it belongs to the dialog.
-  const escape = (e) => { e.preventDefault(); if (!ref.current.querySelector(":popover-open")) leave(); };
+  const escape = (e) => { e.preventDefault(); if (dismissible && !ref.current.querySelector(":popover-open")) leave(); };
   // Reopened, or showing something else, while it was leaving: it stays.
   useLayoutEffect(() => {
     const d = ref.current;
@@ -94,17 +94,17 @@ export function Dialog({ open, onClose, title, children, actions, descriptionId,
   useEffect(() => {
     const d = ref.current;
     if (!open) return;
-    const outside = (e) => d.open && !d.matches(":modal") && !d.contains(e.target) && !e.target.closest?.(CONTROLS) && leave();
+    const outside = (e) => dismissible && d.open && !d.matches(":modal") && !d.contains(e.target) && !e.target.closest?.(CONTROLS) && leave();
     document.addEventListener("click", outside);
     return () => document.removeEventListener("click", outside);
-  }, [open]);
+  }, [open, dismissible]);
   return html`<dialog
     ref=${ref}
     class=${`${extra ?? ""}${leaving ? " closing" : ""}`}
     onClose=${() => { if (ref.current?.open) return; stay(); redraw((n) => n + 1); onClose?.(); }}
     onCancel=${escape}
     onKeyDown=${(e) => { if (e.key === "Escape" && !ref.current.matches(":modal")) escape(e); }}
-    onClick=${(e) => isBackdropClick(e, ref.current) && leave()}
+    onClick=${(e) => dismissible && isBackdropClick(e, ref.current) && leave()}
     aria-label=${view.title}
     aria-describedby=${descriptionId}
   >

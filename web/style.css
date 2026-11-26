@@ -1295,7 +1295,7 @@ body,
   font-size: var(--text-sm);
   white-space: nowrap;
 }
-.shell.rail .auto-time {
+.shell.rail .side .auto-time {
   display: none;
 }
 /* Octicons draw the sidebar on the right; ours is on the left. */
@@ -1432,10 +1432,10 @@ body,
   gap: 6px;
 }
 .shell.rail .side-head,
-.shell.rail .auto {
+.shell.rail .side .auto {
   padding: 0;
 }
-.shell.rail .auto {
+.shell.rail .side .auto {
   flex-direction: column;
   gap: var(--space-1);
 }
@@ -1559,6 +1559,7 @@ body,
 /* In the native rail, Controls always remains reachable. Keep dashboard controls on Now;
    let other pages use the space, including when the system turns its bars horizontally. */
 .factory-rail .shell:not([data-page="/"]):not([data-page="/start"]) > :is(.top, .side) { display: none; }
+.factory-rail .side-foot > a[href="/controls"] { display: none; }
 .factory-rail body { --tabbar: 0px; }
 .factory-control-row {
   display: flex;
@@ -1568,6 +1569,16 @@ body,
   padding-block: var(--space-3);
   margin-bottom: var(--space-2);
   border-bottom: 1px solid var(--line);
+}
+.factory-control-row .conn-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  clip-path: none;
+}
+@container page (max-width: 450px) {
+  .factory-control-row .auto-time { display: none; }
 }
 .factory-control-row .start { margin-left: auto; }
 .side-foot > a { display: grid; place-items: center; min-width: 44px; min-height: 44px; color: var(--muted); }
@@ -4227,7 +4238,8 @@ body:has(.split-panel[open]) .shell > .content > main {
 }
 .next:has(.next-ticket[aria-current="true"]) {
   background: var(--surface-2);
-  box-shadow: inset 3px 0 var(--accent-text);
+  /* Extend the fill into the gutter; the accent ends before the row's first status mark. */
+  box-shadow: -4px 0 var(--surface-2), -7px 0 var(--accent-text);
 }
 /* Runs: list and run ---------------------------------------------------------- */
 /* One at a time until the content column has room for both; then the run sits beside the list and follows it. */
@@ -4306,6 +4318,23 @@ body:has(.split-panel[open]) .shell > .content > main {
   .runs-split .runs-detail {
     --runs-crumb: none;
   }
+}
+
+/* Keep every state reachable without a horizontal swipe in a phone-sized run list. */
+@container page (max-width: 450px) {
+  .runs > .segmented {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .runs > .segmented button {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    align-items: center;
+    padding: 4px 1px;
+    font-size: var(--text-xs);
+    white-space: normal;
+  }
+  .runs > .segmented button small { margin: 0; }
 }
 
 /* Sources ----------------------------------------------------------------- */
