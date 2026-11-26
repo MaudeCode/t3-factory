@@ -7,9 +7,10 @@ export const NAV = [
   ["Work", [["/", "Now", "home"], ["/queue", "Queue", "checklist"], ["/runs", "Runs", "play"], ["/sources", "Sources", "inbox"]]],
   ["Upkeep", [["/activity", "Log", "pulse"], ["/cleanup", "Storage", "trash"], ["/settings", "Settings", "gear"]]],
 ];
-export const PAGES = NAV.flatMap(([, pages]) => pages);
-// The phone's bottom bar; the rest of NAV is behind More.
-export const TABS = [["/", "Now"], ["/queue", "Queue"], ["/runs", "Runs"], ["/sources", "Sources"]];
+// Controls is the fifth compact destination. Desktop already lists its destinations individually.
+export const CONTROLS = ["/controls", "Controls", "gear"];
+export const PAGES = [...NAV.flatMap(([, pages]) => pages), CONTROLS];
+export const TABS = [...NAV[0][1], CONTROLS];
 
 // Resolve a path to { page, param }. Unknown paths fall back to Now.
 export function match(href) {

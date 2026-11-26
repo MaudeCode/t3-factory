@@ -1,7 +1,7 @@
 import { html, signal, useState, useEffect, useRef } from "../lib/h.js";
 import { authenticated, auth, version, connection, config, statusSection, live, jobs, notice, dirty, changes, busy, blocked, actions, runChain, message, issues, issuesOpen } from "../lib/store.js";
-import { route, NAV, TABS, follow, pageScroller } from "../lib/router.js";
-import { Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover, RelativeTime } from "../ui/index.js";
+import { route, NAV, TABS, CONTROLS, follow, pageScroller } from "../lib/router.js";
+import { Page as PageFrame, Button, Dialog, Confirmation, Toast, Segmented, Switch, Icon, Tag, Meta, RowBody, Popover, RelativeTime } from "../ui/index.js";
 import { ago, until, moment, span } from "../lib/format.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
@@ -78,12 +78,20 @@ function usePullToRefresh(onRefresh) {
   const ref = useRef();
   useEffect(() => {
     const el = ref.current;
-    let start = null;
+    let start = null, pulling = false;
+    const reset = () => {
+      start = null;
+      if (pulling) { pulling = false; el.classList.add("settle"); el.style.height = "0px"; }
+    };
     const move = (e) => {
       if (start === null) return;
       const dy = e.touches[0].clientY - start.y;
+      // A tap can drift a few pixels. Leave it entirely to the link or button under the finger.
+      if (!pulling && Math.max(Math.abs(dy), Math.abs(e.touches[0].clientX - start.x)) < 8) return;
       // A sideways swipe belongs to the scroller under it.
-      if (dy <= 0 || Math.abs(e.touches[0].clientX - start.x) > dy) return void ((start = null), (el.style.height = "0px"));
+      if (dy <= 0 || Math.abs(e.touches[0].clientX - start.x) > dy) return reset();
+      el.classList.remove("settle");
+      pulling = true;
       if (e.cancelable) e.preventDefault();
       const d = Math.min(dy / 2, PULL);
       el.style.height = d + "px";
@@ -99,11 +107,12 @@ function usePullToRefresh(onRefresh) {
     const begin = (e) => {
       const t = e.touches[0];
       start = atTop(e.target) ? { x: t.clientX, y: t.clientY } : null;
-      el.classList.remove("settle");
     };
     const end = async () => {
       if (start === null) return;
       start = null;
+      if (!pulling) return;
+      pulling = false;
       el.classList.add("settle");
       if (parseFloat(el.style.height) >= PULL) {
         el.textContent = "Refreshing";
@@ -114,10 +123,12 @@ function usePullToRefresh(onRefresh) {
     document.addEventListener("touchstart", begin, { passive: true });
     document.addEventListener("touchmove", move, { passive: false });
     document.addEventListener("touchend", end, { passive: true });
+    document.addEventListener("touchcancel", reset, { passive: true });
     return () => {
       document.removeEventListener("touchstart", begin);
       document.removeEventListener("touchmove", move);
       document.removeEventListener("touchend", end);
+      document.removeEventListener("touchcancel", reset);
     };
   }, []);
   return ref;
@@ -174,7 +185,8 @@ function Start({ beside }) {
 
 function Shell() {
   const { page, param } = route.value;
-  const [picking, setPicking] = useState(false), [more, setMore] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const controls = page === CONTROLS[0];
   const phone = usePhone();
   const ptr = usePullToRefresh(actions.refresh);
   const Page = pages[page];
@@ -185,38 +197,34 @@ function Shell() {
   const leave = () => dirty.value ? confirmAction({ title: "Discard unsaved changes?", message: "Your unsaved settings will be lost.", label: auth.value.mode === "oidc" ? "Discard and sign out" : "Discard and disconnect" }, () => actions.logout()) : actions.logout();
   const versionTag = version.value && html`<${Tag} tone="label" class="version" title="Version">${version.value}<//>`;
   const wordmark = html`<a class="wordmark" href="/" onClick=${follow} aria-label="Factory: Now"><img src="/mark.png" width="24" height="24" alt="" /><span>Factory</span></a>`;
-  const link = ([path, name, icon]) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { setMore(false); if (route.value.path === path && !location.search && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button)) { e.preventDefault(); pageScroller().scrollTo({ top: 0, behavior: "smooth" }); } else follow(e); }} aria-current=${current(path) ? "page" : undefined}>
+  const link = ([path, name, icon], groupCurrent = false) => html`<a key=${path} href=${path} title=${name} onClick=${(e) => { if (route.value.path === path && !location.search && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button)) { e.preventDefault(); pageScroller().scrollTo({ top: 0, behavior: "smooth" }); } else follow(e); }} aria-current=${current(path) ? "page" : groupCurrent === true ? "location" : undefined}>
     <${Icon} name=${icon} /><span>${name}</span>${badge(path)}
   </a>`;
   const tabbed = new Set(TABS.map(([path]) => path));
   const inMore = NAV.flatMap(([, list]) => list).filter(([path]) => !tabbed.has(path));
-  return html`<div class=${`shell${phone ? " phone" : rail.value ? " rail" : ""}`}>
+  const account = html`<${Button} variant="ghost" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
+    <${Button} variant="ghost" icon="signOut" label=${signOut} onClick=${leave} />`;
+  return html`<div data-page=${page} class=${`shell${phone ? " phone" : rail.value ? " rail" : ""}`}>
     ${phone
-      ? html`<header class="top">${wordmark}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
+      ? !controls && html`<header class="top">${wordmark}<span class="right"><${Updates} /><${Automation} bare /><${Start} /></span></header>`
       : html`<aside class="side" aria-label="Sidebar">
-        <div class="side-head">${wordmark}${rail.value && html`<${Updates} />`}<${Button} variant="ghost" size="sm" icon=${rail.value ? "sidebarExpand" : "sidebar"} label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
-        <div class="side-run"><${Automation} /><${Start} beside /></div>
+        <div class="side-head">${wordmark}${rail.value && !controls && html`<${Updates} />`}<${Button} variant="ghost" size="sm" icon=${rail.value ? "sidebarExpand" : "sidebar"} label=${rail.value ? "Expand sidebar" : "Collapse sidebar"} aria-expanded=${!rail.value} onClick=${() => setRail(!rail.value)} /></div>
+        ${!controls && html`<div class="side-run"><${Automation} /><${Start} beside /></div>`}
         ${NAV.map(([group, list]) => html`<nav key=${group} aria-label=${group}><h2>${group}</h2>${list.map(link)}</nav>`)}
-        <div class="side-foot">${rail.value ? html`<${Button} variant="ghost" size="sm" icon="kebab" label="More" onClick=${() => setMore(true)} />` : html`<${Updates} />${versionTag}
-          <${Button} variant="ghost" size="sm" icon="paintbrush" label="Appearance" onClick=${() => setPicking(true)} />
-          <${Button} variant="ghost" size="sm" icon="signOut" label=${signOut} onClick=${leave} />`}</div>
+        <div class="side-foot">${rail.value ? link(CONTROLS) : !controls && html`<${Updates} />${versionTag}${account}`}</div>
       </aside>`}
     <div class="content">
       <div ref=${ptr} class="ptr" aria-live="polite"></div>
-      <main key=${page.startsWith("/runs") ? "/runs" : page === "/settings" ? page : page + param}><${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} /></main>
+      <main key=${page.startsWith("/runs") ? "/runs" : page === "/settings" ? page : page + param}>${controls ? html`<${PageFrame} title="Controls" narrow tools=${account}>
+        <div class="factory-control-row"><${Automation} /><${Updates} /><${Start} /></div>
+        <nav class="more-list" aria-label="Factory controls">${inMore.map(item => link(item))}</nav>
+        ${version.value && html`<p class="more-version">Version ${version.value}</p>`}
+      <//>` : html`<${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} />`}</main>
     </div>
     ${phone && html`<nav class="tabbar" aria-label="Pages">
-      ${TABS.map(([path, name]) => link([path, name, NAV.flatMap(([, list]) => list).find(([p]) => p === path)[2]]))}
-      <button type="button" aria-expanded=${more} aria-current=${inMore.some(([path]) => current(path)) ? "page" : undefined} onClick=${() => setMore(true)}><${Icon} name="kebab" /><span>More</span></button>
+      ${TABS.map(item => link(item, item === CONTROLS && inMore.some(([path]) => current(path))))}
     </nav>`}
   </div>
-  <${Dialog} open=${more} onClose=${() => setMore(false)} title="More">
-    <nav class="more-list" aria-label="More">${phone && inMore.map(link)}
-      <button type="button" onClick=${() => { setMore(false); setPicking(true); }}><${Icon} name="paintbrush" /><span>Appearance</span></button>
-      <button type="button" onClick=${() => { setMore(false); leave(); }}><${Icon} name="signOut" /><span>${signOut}</span></button>
-    </nav>
-    ${version.value && html`<p class="more-version">Version ${version.value}</p>`}
-  <//>
   <${ThemePicker} open=${picking} onClose=${() => setPicking(false)} />`;
 }
 

@@ -1,5 +1,5 @@
 // Dialog and toast. Both stay mounted so open and close can animate.
-import { html, useEffect, useRef, useState } from "../lib/h.js";
+import { html, useEffect, useLayoutEffect, useRef, useState } from "../lib/h.js";
 import { isBackdropClick, selectPosition } from "../lib/format.js";
 import { Button } from "./controls.js";
 import { confirmation, finishConfirmation } from "../lib/confirmation.js";
@@ -53,8 +53,7 @@ export function Popover({ open, onClose, anchor, label, width = 300, children, c
 
 const CONTROLS = "a, button, input, select, textarea, label, summary, [role=button], [role=switch], [tabindex], dialog, [popover], .toast";
 // Native <dialog>; closes on Escape, backdrop click, or its Close button. With `modal` false it opens beside the page
-// instead of over it, and the page stays in use; a tap on the page outside any control closes it. The choice is read
-// when the dialog opens. `head` sits between the title and Close. A dialog without `actions` opens with its body
+// instead of over it, and the page stays in use; a tap on the page outside any control closes it. An open dialog follows changes in modal presentation. `head` sits between the title and Close. A dialog without `actions` opens with its body
 // focused, so it scrolls from the keyboard and no button wears a focus ring nobody asked for.
 // Every way out goes through `leave`: the `closing` class plays the exit while the dialog is still open and holds what
 // it showed, then the dialog closes. Safari hides a closed dialog at once, so a transition on `display` is no exit.
@@ -76,12 +75,19 @@ export function Dialog({ open, onClose, title, children, actions, descriptionId,
   // Escape belongs to a popover open inside the dialog before it belongs to the dialog.
   const escape = (e) => { e.preventDefault(); if (!ref.current.querySelector(":popover-open")) leave(); };
   // Reopened, or showing something else, while it was leaving: it stays.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const d = ref.current;
     if (!open) return void (d.open && leave());
     if (timer.current) stay();
-    if (!d.open) modal ? d.showModal() : d.show();
-  }, [open, title]);
+    if (d.open && modal !== d.matches(":modal")) {
+      const focus = d.contains(document.activeElement) ? document.activeElement : null;
+      const body = d.querySelector(".dialog-body"), top = body?.scrollTop;
+      d.close();
+      modal ? d.showModal() : d.show();
+      focus?.focus({ preventScroll: true });
+      if (body) body.scrollTop = top;
+    } else if (!d.open) modal ? d.showModal() : d.show();
+  }, [open, title, modal]);
   useEffect(() => () => clearTimeout(timer.current), []);
   // Beside the page there is no backdrop to tap, so a tap on the page behind closes the panel. A control there keeps
   // its own meaning (a row opens its own ticket in the panel), and a scroll or drag is not a click.
@@ -95,7 +101,7 @@ export function Dialog({ open, onClose, title, children, actions, descriptionId,
   return html`<dialog
     ref=${ref}
     class=${`${extra ?? ""}${leaving ? " closing" : ""}`}
-    onClose=${() => { stay(); redraw((n) => n + 1); onClose?.(); }}
+    onClose=${() => { if (ref.current?.open) return; stay(); redraw((n) => n + 1); onClose?.(); }}
     onCancel=${escape}
     onKeyDown=${(e) => { if (e.key === "Escape" && !ref.current.matches(":modal")) escape(e); }}
     onClick=${(e) => isBackdropClick(e, ref.current) && leave()}

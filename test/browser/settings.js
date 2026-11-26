@@ -63,7 +63,7 @@ async function run() {
   // Navigation: work first, then upkeep, Settings last.
   const names = [...root.querySelectorAll(".side nav a span")].map((el) => el.textContent.trim());
   if (names.length) assert(names.join() === "Now,Queue,Runs,Sources,Log,Storage,Settings", `the sidebar reads work, then upkeep: ${names}`);
-  assert(root.querySelector('.shell [aria-current="page"]')?.textContent.trim().replace(/^More$/, "Settings") === "Settings", "navigation marks Settings");
+  assert(Boolean(root.querySelector('.side a[href="/settings"][aria-current="page"], .tabbar a[href="/controls"][aria-current="location"]')), "navigation marks Settings");
   // Sources tab: each source's settings, once, bound to the paths they always had.
   const prompts = [...main().querySelectorAll(".field")].filter((f) => f.textContent.includes("Prompt file on your Mac"));
   assert(prompts.map(sectionOf).join() === "Inbox triage,Discovery,Upstream releases", `one prompt file per source: ${prompts.map(sectionOf)}`);

@@ -151,7 +151,7 @@ export function RunDetail({ id, embedded }) {
         ["Finished", job.completedAt && html`<${RelativeTime} at=${job.completedAt} />, after ${duration(job.createdAt, job.completedAt)}`],
         ["Branch", job.thread?.branch && html`<span class="mono">${job.thread.branch}</span>`],
         ["Worktree", job.thread?.worktreePath && html`<span class="mono">${job.thread.worktreePath}</span>`],
-        ["T3 thread", job.thread && `${job.thread.title ? `${job.thread.title}, ` : ""}${job.thread.status}${job.thread.background?.length ? `, background: ${job.thread.background.join(", ")}` : ""}`],
+        ["T3 thread", job.thread && [job.thread.title, job.thread.status, job.thread.background?.length && `background: ${job.thread.background.join(", ")}`].filter(Boolean).join(", ")],
         ["Scheduler note", waiting ? null : job.reason],
       ]}
     />

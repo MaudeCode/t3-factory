@@ -1556,6 +1556,23 @@ body,
   text-align: left;
   cursor: pointer;
 }
+/* In the native rail, Controls always remains reachable. Keep dashboard controls on Now;
+   let other pages use the space, including when the system turns its bars horizontally. */
+.factory-rail .shell:not([data-page="/"]):not([data-page="/start"]) > :is(.top, .side) { display: none; }
+.factory-rail body { --tabbar: 0px; }
+.factory-control-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+.factory-control-row .start { margin-left: auto; }
+.side-foot > a { display: grid; place-items: center; min-width: 44px; min-height: 44px; color: var(--muted); }
+.side-foot > a span { font-size: var(--text-xs); }
+.tabbar [aria-current="location"] { color: var(--ink); background: var(--surface-2); }
 /* The floating bars sit above the tab bar. */
 body:has(.tabbar) .save-bar {
   bottom: calc(var(--space-4) + var(--tabbar) + env(safe-area-inset-bottom));
@@ -3786,6 +3803,9 @@ dialog.ticket-panel[open].closing {
   margin-bottom: var(--space-1);
 }
 .ticket-panel > .dialog-head h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   margin-right: auto;
   font-family: var(--mono);
   font-size: var(--text-sm);
@@ -4139,7 +4159,9 @@ dialog.ticket-panel:not(:modal) {
 }
 dialog.ticket-panel.docked {
   /* The owner's width when one is stored, never so wide that the list it came from is gone. */
-  width: clamp(340px, var(--panel-width, min(600px, 55vw)), calc(100vw - 280px));
+  min-width: 340px;
+  max-width: calc(100vw - 280px);
+  width: var(--panel-width, min(600px, 55vw));
   box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
 }
 /* The docked panel's left edge is its handle: a wide touch area with a short bar to show it. */
@@ -4188,6 +4210,25 @@ dialog.ticket-panel.docked {
   }
 }
 
+/* Reserve the same space the detail occupies. The list's own container queries now see its usable width. */
+:root:has(.split-panel[open]) {
+  --split-panel-width: clamp(300px, var(--panel-width, calc(var(--panel-space) / 2)), calc(var(--panel-space) - 290px));
+}
+dialog.ticket-panel.split-panel {
+  min-width: 300px;
+  max-width: calc(var(--panel-space) - 290px);
+  width: var(--split-panel-width);
+  box-shadow: none;
+  border-inline-start: 1px solid var(--line);
+}
+body:has(.split-panel[open]) .shell > .content > main {
+  margin-right: var(--split-panel-width);
+  container: page / inline-size;
+}
+.next:has(.next-ticket[aria-current="true"]) {
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 var(--accent-text);
+}
 /* Runs: list and run ---------------------------------------------------------- */
 /* One at a time until the content column has room for both; then the run sits beside the list and follows it. */
 .runs-split .runs-detail,
@@ -4241,11 +4282,11 @@ dialog.ticket-panel.docked {
 .runs-detail .crumb {
   display: var(--runs-crumb, inline);
 }
-@container page (min-width: 820px) {
+@container page (min-width: 600px) {
   .runs-split,
   .runs-split.has-run {
     display: grid;
-    grid-template-columns: minmax(320px, 2fr) minmax(0, 3fr);
+    grid-template-columns: minmax(285px, 2fr) minmax(0, 3fr);
     align-items: start;
   }
   /* Each side lays out by its own width, so the list reads as it does on a phone. */
@@ -4332,12 +4373,6 @@ dialog.ticket-panel.docked {
   /* The list and the form scroll apart: the list holds under the page head with its own scroll. */
   .runs-split .runs-detail {
     scrollbar-width: thin;
-  }
-  .runs-list .next:has([aria-current="true"]) {
-    background: var(--surface-2);
-    box-shadow:
-      calc(var(--space-2) * -1) 0 0 var(--surface-2),
-      var(--space-2) 0 0 var(--surface-2);
   }
   .split > :first-child {
     position: sticky;
