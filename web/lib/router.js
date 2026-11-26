@@ -96,18 +96,62 @@ const ticket = panel("ticket", ticketKey), epic = panel("epic", (id) => /^[\w-]{
 export const ticketPanel = ticket.value, openTicket = ticket.open, closeTicket = ticket.close, ticketClick = panelClick(ticket.open);
 export const epicPanel = epic.value, closeEpic = epic.close, epicClick = panelClick(epic.open);
 
-export function navigate(href, replace = false, keepScroll = false) {
+const scrollTop = (pane) => pane === window ? window.scrollY : pane.scrollTop;
+
+export function navigate(href, replace = false, keepScroll = false, runLink) {
   href = moved(href);
   const query = href.includes("?") ? href.slice(href.indexOf("?") + 1) : "";
   const next = match(href);
   const target = next.path + (query ? `?${query}` : "");
-  if (target !== location.pathname + location.search) history[replace ? "replaceState" : "pushState"](null, "", target);
+  const here = current();
+  if (target !== here) {
+    let entry = null;
+    if (!replace && next.page === "/runs/:id") {
+      const runReturn = { detail: target, top: scrollTop(pageScroller()) };
+      if (runLink) runReturn.rowY = runLink.getBoundingClientRect().top;
+      history.replaceState({ ...history.state, runReturn }, "", here);
+      entry = { runParent: here };
+    }
+    history[replace ? "replaceState" : "pushState"](entry, "", target);
+  }
   route.value = next;
   search.value = location.search;
   for (const sync of panels) sync(target);
   if (!keepScroll) pageScroller().scrollTo(0, 0);
 }
-globalThis.addEventListener?.("popstate", () => { const here = settle(); route.value = match(here); search.value = location.search; for (const sync of panels) sync(here); });
+globalThis.addEventListener?.("popstate", () => {
+  const previous = route.peek().path + search.peek(), here = settle();
+  route.value = match(here);
+  search.value = location.search;
+  for (const sync of panels) sync(here);
+  const saved = history.state?.runReturn;
+  if (saved?.detail === previous && Number.isFinite(saved.top)) {
+    // The list is still hidden until the router's render commits on compact screens.
+    requestAnimationFrame(() => {
+      if (current() !== here) return;
+      const pane = pageScroller();
+      const row = Number.isFinite(saved.rowY) && document.querySelector(`.runs-list .next-ticket[href="${CSS.escape(previous)}"]`);
+      const rect = row && row.getClientRects()[0];
+      const y = rect && Math.max(0, Math.min(saved.rowY, innerHeight - rect.height));
+      pane.scrollTo(0, rect ? scrollTop(pane) + rect.top - y : saved.top);
+    });
+  }
+});
+
+// Both native Back and the web breadcrumb return through the entry that opened the run.
+// A bookmark has no Factory parent, so it opens the Runs list in place.
+export function runParentHref() {
+  const parent = globalThis.history?.state?.runParent;
+  if (typeof parent !== "string" || !parent.startsWith("/")) return null;
+  const url = URL.parse(parent, location.href);
+  return url?.origin === location.origin && !url.pathname.startsWith("//") ? url.pathname + url.search : null;
+}
+export function backFromRun(event) {
+  if (event && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button)) return;
+  event?.preventDefault();
+  if (runParentHref()) history.back();
+  else navigate("/runs", true);
+}
 
 // A run chosen from the Runs list. Where the list and the run sit side by side, the list stays where it is scrolled;
 // where the run replaces the list, the page starts at its top like any other navigation.
@@ -115,7 +159,7 @@ export const followRun = (event) => {
   if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
   event.preventDefault();
   const beside = !!document.querySelector(".runs-split") && getComputedStyle(document.querySelector(".runs-split")).display === "grid";
-  navigate(event.currentTarget.getAttribute("href"), false, beside);
+  navigate(event.currentTarget.getAttribute("href"), false, beside, event.currentTarget);
 };
 // Click handler for internal links: same-tab navigation without a reload.
 export const follow = (event) => {

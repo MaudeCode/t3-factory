@@ -79,12 +79,20 @@ async function run() {
     assert(location.pathname === "/runs/run-3" && rowLink("APP-3").getAttribute("aria-current") === "true" && detail().textContent.includes("Synthetic ticket 3"), "Back returns to the previously selected run");
   } else {
     assert(visible(list()) && !visible(detail()), "below the breakpoint the list stands alone");
-    rowLink("APP-3").click(); await pause(200);
-    assert(location.pathname === "/runs/run-3" && !visible(list()) && visible(detail()) && scrollY === 0, "a run replaces the list and starts at its top");
+    await show("/runs?state=all");
+    const target = rowLink("APP-24");
+    target.scrollIntoView({ block: "center" });
+    const rowTop = target.getBoundingClientRect().top;
+    assert(scrollY > 0, "the selected run is below the first screen");
+    target.click(); await pause(200);
+    assert(location.pathname === "/runs/run-24" && !visible(list()) && visible(detail()) && scrollY === 0, "a run replaces the list and starts at its top");
     const crumb = detail().querySelector(".crumb");
-    assert(visible(crumb) && crumb.getAttribute("href") === "/runs", "the detail has its way back to Runs");
-    crumb.click(); await pause(200);
-    assert(location.pathname === "/runs" && visible(list()) && !visible(detail()), "the crumb returns to the list");
+    assert(visible(crumb) && crumb.getAttribute("href") === "/runs?state=all", "the detail links to the originating list");
+    store.status.value = { ...store.status.value, jobs: [job(99, "running", { createdAt: ago(0) }), ...jobs] };
+    crumb.click();
+    await until(() => visible(list()) && Math.abs(rowLink("APP-24").getBoundingClientRect().top - rowTop) <= 1,
+      "Back restores the same row even when a newer run arrives above it");
+    assert(location.pathname + location.search === "/runs?state=all" && visible(list()) && !visible(detail()), "Back returns to the original list address");
   }
   // A run opened by its address.
   await show("/runs/run-1");
