@@ -2,7 +2,7 @@
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import * as store from "../../web/lib/store.js";
-import { navigate } from "../../web/lib/router.js";
+import { backFromRun, navigate } from "../../web/lib/router.js";
 import { measure } from "../../web/lib/display.js";
 import { App } from "../../web/views/App.js";
 import { finishConfirmation } from "../../web/lib/confirmation.js";
@@ -168,6 +168,9 @@ async function run() {
   await show(); await open("APP-1"); await factory();
   panel().querySelector(".run-detail a.crumb").click(); await pause(300);
   assert(!panel() && location.pathname === "/runs/run-1" && !location.search.includes("ticket="), `a run link closes the panel and lands on the run: ${location.pathname}${location.search}`);
+  backFromRun();
+  await until(() => panel()?.querySelector(".ticket-title")?.textContent.includes("Synthetic ticket APP-1"), "run Back restores the ticket that opened it");
+  assert(location.pathname === "/queue" && new URLSearchParams(location.search).get("ticket") === "APP-1", "the ticket returns over its original queue");
   // Not found and failed reads.
   await show("/queue?ticket=APP-404");
   assert(panel().querySelector('[role="alert"]').textContent.includes("APP-404 was not found") && !button("Retry"), "an unknown ticket says so and offers no retry");

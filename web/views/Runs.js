@@ -1,7 +1,7 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useMemo, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, loadHistory, loadRun, actions, message } from "../lib/store.js";
-import { follow, openTicket } from "../lib/router.js";
+import { backFromRun, follow, openTicket, runParentHref } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS, runTitle } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Bars, Empty, Facts, Timeline, Page, Section, RelativeTime } from "../ui/index.js";
@@ -112,7 +112,10 @@ export function RunDetail({ id, embedded }) {
   useEffect(() => {
     loadRun(id).then((d) => shown.current === id && (d?.job ? (setError(""), setDetail(d)) : setError("Run not found")), (e) => shown.current === id && setError(e.message));
   }, [id, change]);
-  if (error) return html`<${Page} narrow title=${html`<a class="crumb" href="/runs" onClick=${follow}>Runs</a> Run`} lead=${error} />`;
+  const parent = runParentHref();
+  const label = embedded ? "Run" : parent && parent.split("?")[0] !== "/runs" ? "Back" : "Runs";
+  const crumb = html`<a class="crumb" href=${embedded ? `/runs/${id}` : parent || "/runs"} onClick=${embedded ? follow : backFromRun}>${label}</a>`;
+  if (error) return html`<${Page} narrow title=${html`${crumb} Run`} lead=${error} />`;
   if (!detail || detail.job.id !== id) return html`<${Page} narrow><${Empty}>Loading run.<//><//>`;
   const c = config.value,
     job = live ?? detail.job,
@@ -126,7 +129,7 @@ export function RunDetail({ id, embedded }) {
     kind = `${job.historyOnly ? "Archived run" : RUN_KINDS[job.kind]?.[1] ?? "Ticket run"}${project ? ` in ${project.name}` : ""}`,
     // A waiting run's callout already carries the scheduler's note, and a report often repeats it.
     waiting = job.state === "waiting";
-  return html`<${Page} class="run-detail" title=${html`<a class="crumb" href=${embedded ? `/runs/${id}` : "/runs"} onClick=${follow}>${embedded ? "Run" : "Runs"}</a> ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
+  return html`<${Page} class="run-detail" title=${html`${crumb} ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
     lead=${runTitle(job) || kind}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" icon="circleSlash" label="Stop run" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))} />`}>
     <div class="run-actions">
