@@ -1,0 +1,4 @@
+#!/bin/bash
+# The committed inputs to Factory.app. Git tree IDs include file contents and deletions.
+set -euo pipefail
+git ls-tree "${1:?supply the release commit or tag}" -- ios/Factory ios/Factory.xcodeproj design/Factory.icon | git hash-object --stdin
