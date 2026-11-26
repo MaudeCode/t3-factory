@@ -1,5 +1,5 @@
 // Synthetic data, actual queue component and dispatch store. No live dispatches.
-import { openSearch, checkPageHead, tickRenders, checkTickRendersTimesOnly } from "./search.js";
+import { until, openSearch, checkPageHead, tickRenders, checkTickRendersTimesOnly } from "./search.js";
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import { applyState, operations, status, history, setSessionProvider, setSessionOverrides, startRun, clock } from "../../web/lib/store.js";
@@ -348,11 +348,12 @@ async function runsHistory() {
   assert(root.querySelector('[href="https://github.com/example/repo/pull/1"]'), "PR link is retained");
   assert(root.querySelector('[href="/api/threads/thread-1/open"]'), "T3 session link is available");
   if (innerWidth <= 900) {
-    root.querySelector('[aria-label="More actions for APP-1"]').click(); await pause();
-    const menu = document.querySelector('.popover[aria-label="More actions for APP-1"]');
-    assert(menu?.querySelector('[aria-label="Open APP-1 in T3 Code"]'), "phone menu exposes the session link");
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await pause();
-    assert(!document.querySelector('.popover[aria-label="More actions for APP-1"]'), "phone menu closes with Escape");
+    const selector = '.popover[aria-label="More actions for APP-1"]';
+    root.querySelector('[aria-label="More actions for APP-1"]').click();
+    await until(() => document.querySelector(selector + ":popover-open"), "phone menu opens");
+    assert(document.querySelector(selector).querySelector('[aria-label="Open APP-1 in T3 Code"]'), "phone menu exposes the session link");
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await until(() => !document.querySelector(selector), "phone menu closes with Escape");
   }
   status.value = { ...status.value, jobs: Array.from({ length: 40 }, (_, i) => ({ ...filterJobs[0], id: `live-${i}`, label: `APP-${i + 10}`, state: i === 0 ? 'waiting' : 'running', reason: i === 0 ? 'Review the implementation result before continuing' : '', threadId: `thread-${i}`, thread: { title: 'A realistic run title with enough detail to wrap on a phone' } })) };
   await pause();

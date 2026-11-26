@@ -1,6 +1,15 @@
 import { options } from "../../web/vendor/preact.js";
 import { clock } from "../../web/lib/store.js";
 
+// Wait for the browser or component to publish the state the next interaction needs.
+export async function until(predicate, message = "Fixture did not settle") {
+  const end = Date.now() + 3000;
+  while (!predicate()) {
+    if (Date.now() > end) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+
 // Moves the clock on by `ms` and returns the names of the components that rendered for it. Preact renders every
 // component a signal change marked in one pass, so once anything has rendered, a page or row that read the clock has too.
 export async function tickRenders(ms = 1000) {
