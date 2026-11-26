@@ -12,7 +12,9 @@ const initial = {
 };
 let saved = structuredClone(initial), writes = [], fixtureJobs = [], quotaStatus = {};
 const state = () => ({ config: saved, status: { jobs: fixtureJobs, journal: [], ...quotaStatus } });
+let testReplies = [];
 window.fetch = async (url, init) => {
+  if (url === '/api/cowtail/test' && init?.method === 'POST') { const [status, body] = testReplies.shift(); return Response.json(body, { status }); }
   if (url === '/api/config' && init?.method === 'POST') { const input = JSON.parse(init.body); writes.push(input); saved = structuredClone(input.config); return Response.json({ ok: true }); }
   if (url === '/api/sources') return Response.json({ t3: [], kanvil: { projects: [], columns: {}, labels: ['app', 'web', 'test'] } });
   return Response.json(state());
@@ -284,7 +286,44 @@ async function scheduleStatus() {
   assert(auto().title === 'Automation on', 'no timer leaves the plain state');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.capacityTests = { epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance, showSchedule, schedule, scheduleStatus };
+const COWTAIL = { url: 'https://cowtail.example.test', events: { needsYou: 'today', failed: 'today', quotaHold: 'today', noPr: 'today', finished: 'whenever' } };
+const notificationSection = () => [...root.querySelectorAll('section.section')].find(el => el.querySelector('h2')?.textContent.startsWith('Phone notifications'));
+const chosenDelivery = label => notificationSection().querySelector(`[role="radiogroup"][aria-label="${label}"] [aria-checked="true"]`).textContent.trim();
+async function showNotifications(cowtail = COWTAIL) { await show(); saved = { ...structuredClone(initial), ...cowtail ? { cowtail: structuredClone(cowtail) } : {} }; await mount(); }
+// With Cowtail off the section explains how to turn it on and offers no choices.
+async function notificationsOff() {
+  await showNotifications(null);
+  assert(notificationSection()?.textContent.includes('COWTAIL_TOKEN') && !notificationSection().querySelector('[role="radiogroup"]'), 'the off section shows the setup hint and no choices');
+  assert(notificationSection().querySelectorAll('button[aria-label="Send a test notification"]').length === 1, 'the test button is still offered');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+// Five Off/Whenever/Today/Now groups through the real Segmented control, Save and reload.
+async function notificationChoices() {
+  await showNotifications();
+  const groups = [...notificationSection().querySelectorAll('[role="radiogroup"]')];
+  assert(groups.map(g => g.getAttribute('aria-label')).join() === 'Run needs you,Failures,Quota holds,Finished without a PR,Finished runs', 'one group per event type');
+  assert(groups.every(g => [...g.querySelectorAll('[role="radio"]')].map(b => b.textContent.trim()).join() === 'Off,Whenever,Today,Now'), 'each group offers Off, Whenever, Today and Now');
+  assert(chosenDelivery('Finished runs') === 'Whenever' && chosenDelivery('Quota holds') === 'Today', 'the saved choices are selected');
+  [...notificationSection().querySelectorAll('[role="radiogroup"][aria-label="Quota holds"] [role="radio"]')].find(b => b.textContent.trim() === 'Now').click(); await pause();
+  await store.actions.save(); await mount();
+  assert(writes.at(-1).config.cowtail.events.quotaHold === 'now' && chosenDelivery('Quota holds') === 'Now', 'a choice survives Save and reload');
+  assert(document.documentElement.scrollWidth <= innerWidth, 'the section fits the viewport');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+// The bell button posts once per press and reports each outcome through the Toast.
+async function notificationTest() {
+  await showNotifications();
+  const bell = () => notificationSection().querySelector('button[aria-label="Send a test notification"]');
+  testReplies = [[200, { ok: true }], [200, { ok: false, reason: 'not-configured' }], [502, { ok: false, status: 503, message: 'Cowtail item post returned HTTP 503' }]];
+  for (const [text, error] of [['Test notification sent', false], ['Phone notifications are off', false], ['Cowtail item post returned HTTP 503', true]]) {
+    bell().click(); await pause();
+    assert(store.notice.value?.text === text && store.notice.value.error === error && !bell().disabled, `the test button reports: ${text}`);
+  }
+  assert(testReplies.length === 0, 'each press posts once');
+  store.message('');
+  return { passed: true, viewport: [innerWidth, innerHeight] };
+}
+window.capacityTests = { notificationsOff, notificationChoices, notificationTest, showNotifications, epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance, showSchedule, schedule, scheduleStatus };
 const labelFixture = new URLSearchParams(location.search).get('labels');
 if (labelFixture === 'run') {
   try { await labelModes(); document.body.dataset.result = 'passed'; }

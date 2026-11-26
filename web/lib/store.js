@@ -322,6 +322,13 @@ export const actions = {
       await load();
       message({ retry: `${key} will be triaged again.`, promote: `${key} will become a ticket.`, close: `${key} closed.` }[action]);
     }),
+  // One push through Cowtail at Now, whatever the per-event settings say.
+  testNotification: () =>
+    run(async () => {
+      const result = await post("/api/cowtail/test", {});
+      // A failed post answers HTTP 502, which `post` throws and `run` shows as an error.
+      message(result.ok ? "Test notification sent" : "Phone notifications are off");
+    }),
   stopJob: (id) =>
     run(async () => {
       await post(`/api/jobs/${id}/stop`, {});

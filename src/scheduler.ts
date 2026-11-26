@@ -351,7 +351,7 @@ export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job
   }
 }
 // Dismissal keeps the workspace's branch, path and head so cleanup can still verify it.
-const UNCONFIRMED_LAUNCH = 'Dismissed because T3 could not confirm the launch';
+export const UNCONFIRMED_LAUNCH = 'Dismissed because T3 could not confirm the launch';
 const unconfirmedLaunchDismissed = (job: Pick<Job, 'state' | 'reason'>) =>
   job.state === 'dismissed' && job.reason === UNCONFIRMED_LAUNCH;
 const lateLaunchHasWork = (thread: Thread, timeout: number) =>

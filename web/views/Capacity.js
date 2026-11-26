@@ -1,7 +1,7 @@
 import { html } from "../lib/h.js";
-import { config, jobs, serverNow, quotaFor, set } from "../lib/store.js";
+import { config, jobs, serverNow, quotaFor, set, busy, actions } from "../lib/store.js";
 import { PROVIDERS, WINDOW_NAMES, providerOf, providerIcon, isActive, until, span, moment } from "../lib/format.js";
-import { Field, Range, Stepper, Slots, Toggle, Budget, Section, Segmented, Input, useReady, Page, Icon, RelativeTime } from "../ui/index.js";
+import { Button, Field, Range, Stepper, Slots, Toggle, Budget, Section, Segmented, Input, useReady, Page, Icon, RelativeTime } from "../ui/index.js";
 
 const minutes = (n) => span(n * 60);
 const seconds = (n) => span(n);
@@ -53,6 +53,26 @@ function Schedule() {
   <//>`;
 }
 
+// Each Factory event type's Cowtail delivery (`cowtail.events`); the test button ignores them.
+const DELIVERY = [["off", "Off"], ["whenever", "Whenever"], ["today", "Today"], ["now", "Now"]];
+const NOTIFICATIONS = [
+  ["needsYou", "Run needs you", "A run is waiting for your answer."],
+  ["failed", "Failures", "A launch or a dispatch failed."],
+  ["quotaHold", "Quota holds", "Queued work is waiting for quota."],
+  ["noPr", "Finished without a PR", "A run ended without opening a PR."],
+  ["finished", "Finished runs", "A run finished with PRs, or an Epic, chain or queued run finished."],
+];
+function Notifications() {
+  const on = !!config.value.cowtail;
+  return html`<${Section} title="Phone notifications"
+    hint=${on ? "Sent to Cowtail. Whenever lands in the inbox only. Today is bundled within 5 minutes and held during quiet hours. Now pushes at once and repeats every 10 minutes, up to 3 times, until handled." : undefined}
+    aside=${html`<${Button} size="sm" icon="bell" label="Send a test notification" disabled=${busy.value} onClick=${actions.testNotification} />`}>
+    ${on
+      ? NOTIFICATIONS.map(([key, label, hint]) => html`<${Field} group key=${key} label=${label} hint=${hint}><${Segmented} label=${label} path=${["cowtail", "events", key]} options=${DELIVERY} /><//>`)
+      : html`<p class="hint">Off. Set <code>cowtail.url</code> in config.jsonc and <code>COWTAIL_TOKEN</code> in the factory .env to send them to Cowtail.</p>`}
+  <//>`;
+}
+
 // The Settings area's Limits tab; `lead` is its tab strip.
 export function Capacity({ lead } = {}) {
   const running = Object.fromEntries(PROVIDERS.map((p) => [p.driver, jobs.value.filter((j) => providerOf(j) === p.driver && isActive(j)).length]));
@@ -85,5 +105,6 @@ export function Capacity({ lead } = {}) {
         <${Allowance} provider=${PROVIDERS[1]} title="Codex allowance" windows=${[["weekly", WINDOW_NAMES.weekly]]} />
       </div>
     </div>
+    <${Notifications} />
   <//>`;
 }
