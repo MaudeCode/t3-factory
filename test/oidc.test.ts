@@ -144,6 +144,7 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     method = "GET",
     cookie = "",
     extra: Record<string, string> = {},
+    payload: unknown = {},
   ) =>
     new Promise<{
       status: number;
@@ -173,10 +174,12 @@ test("SSO validates the OIDC flow and enforces group membership on every control
         },
       );
       r.on("error", reject);
-      r.end(method === "POST" ? "{}" : undefined);
+      r.end(method === "POST" ? JSON.stringify(payload) : undefined);
     });
-  const login = async (destination = "") => {
-    const start = await req("/auth/login" + (destination ? `?returnTo=${encodeURIComponent(destination)}` : ""));
+  const login = async (destination = "", nativeChallenge?: string) => {
+    const query = new URLSearchParams({ returnTo: destination });
+    if (nativeChallenge) query.set("native_challenge", nativeChallenge);
+    const start = await req("/auth/login?" + query);
     assert.equal(start.status, 302);
     flow = new URL(start.headers.location!);
     assert.equal(flow.searchParams.get("code_challenge_method"), "S256");
@@ -192,7 +195,9 @@ test("SSO validates the OIDC flow and enforces group membership on every control
     return req(f.callback, "GET", f.transaction);
   };
   try {
-    assert.equal(JSON.parse((await req("/api/auth")).data).mode, "oidc");
+    const capabilities = JSON.parse((await req("/api/auth")).data);
+    assert.equal(capabilities.mode, "oidc");
+    assert.equal(capabilities.nativeHandoff, true);
     for (const [path, method] of [
       ["/api/state", "GET"],
       ["/api/models", "GET"],
@@ -260,6 +265,38 @@ test("SSO validates the OIDC flow and enforces group membership on every control
       const attempt = await login(unsafe);
       assert.equal((await req(attempt.callback, 'GET', attempt.transaction)).headers.location, '/');
     }
+    // The system browser completes Pocket ID. Only the app that began the flow can claim its session.
+    const verifier = client.randomPKCECodeVerifier();
+    const challenge = await client.calculatePKCECodeChallenge(verifier);
+    const native = async () => {
+      const f = await login(destination, challenge);
+      const response = await req(f.callback, "GET", f.transaction);
+      const redirect = new URL(response.headers.location!);
+      assert.equal(redirect.protocol, "house.thezoo.t3factory:");
+      assert.equal(redirect.host, "sign-in");
+      assert.equal(redirect.searchParams.get("state"), challenge);
+      assert.ok(!response.headers["set-cookie"]?.some(c => c.startsWith("__Host-factory_session=")));
+      return redirect.searchParams;
+    };
+    const exchange = (code: string, proof = verifier) =>
+      req("/api/auth/native/exchange", "POST", "", {}, { code, verifier: proof });
+    groups = [];
+    assert.equal((await native()).get("error"), "denied");
+    groups = ["factory-admins"];
+    const nativeCode = (await native()).get("code")!;
+    assert.equal((await exchange(nativeCode, client.randomPKCECodeVerifier())).status, 403);
+    const foreign = await req("/api/auth/native/exchange", "POST", "", { Origin: "https://other.example" },
+      { code: nativeCode, verifier });
+    assert.equal(foreign.status, 403);
+    const redeemed = await exchange(nativeCode);
+    assert.equal(redeemed.status, 200);
+    assert.equal(JSON.parse(redeemed.data).returnTo, destination);
+    const nativeCookie = redeemed.headers["set-cookie"]![0].split(";")[0];
+    assert.equal((await req("/api/state", "GET", nativeCookie)).status, 200);
+    assert.equal((await exchange(nativeCode)).status, 403);
+    const staleCode = (await native()).get("code")!;
+    time += 61_000;
+    assert.equal((await exchange(staleCode)).status, 403);
     const success = await signIn();
     assert.equal(success.headers.location, "/");
     const sessionHeader = success.headers["set-cookie"]!.find((v) =>

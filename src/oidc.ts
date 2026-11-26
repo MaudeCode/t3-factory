@@ -51,7 +51,9 @@ export async function createOidc(
   origin = new URL(origin).origin;
   const provider = config;
   const callback = `${origin}/auth/callback`;
+  const proofValue = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
   type Flow = {
+    nativeChallenge?: string;
     state: string;
     nonce: string;
     verifier: string;
@@ -71,6 +73,7 @@ export async function createOidc(
   type Session = z.infer<typeof sessionSchema> & {
     checking?: Promise<boolean>;
   };
+  const handoffs = new Map<string, { challenge: string; expires: number; identity: Session; returnTo: string }>();
   const flows = new Map<string, Flow>(),
     sessions = new Map<string, Session>();
   const scope = createHash("sha256")
@@ -128,6 +131,7 @@ export async function createOidc(
   };
   persist();
   const prune = () => {
+    for (const [id, grant] of handoffs) if (grant.expires <= now()) handoffs.delete(id);
     for (const [id, flow] of flows) if (flow.expires <= now()) flows.delete(id);
     for (const [id, session] of sessions)
       if (session.expires <= now()) sessions.delete(id);
@@ -135,6 +139,42 @@ export async function createOidc(
   const allowed = (claims: Record<string, unknown>) =>
     Array.isArray(claims.groups) &&
     claims.groups.includes(settings.requiredGroup);
+  const validateLogin = async (req: IncomingMessage, flow: Flow): Promise<Session> => {
+    const tokens = await client.authorizationCodeGrant(
+      provider,
+      new URL(req.url!, origin),
+      {
+        pkceCodeVerifier: flow.verifier,
+        expectedState: flow.state,
+        expectedNonce: flow.nonce,
+      },
+    );
+    const subject = tokens.claims()?.sub;
+    if (!subject) throw new AccessDenied();
+    const info = await client.fetchUserInfo(
+      provider,
+      tokens.access_token,
+      subject,
+    );
+    if (!allowed(info)) throw new AccessDenied();
+    return {
+      subject,
+      token: tokens.access_token,
+      refresh: tokens.refresh_token,
+      tokenExpires: now() + (tokens.expires_in ?? 300) * 1000,
+      expires: now() + settings.sessionHours * 3_600_000,
+      checked: now(),
+    };
+  };
+  const issueCookie = (identity: Session) => {
+    if (sessions.size >= 1000) throw new Error("Too many active sessions");
+    const session = client.randomState();
+    sessions.set(session, identity);
+    persist();
+    return setCookie(sessionCookie, session, settings.sessionHours * 3600);
+  };
+  const nativeReturn = (state: string, result: Record<string, string>) =>
+    `house.thezoo.t3factory://sign-in?${new URLSearchParams({ state, ...result })}`;
   return {
     async login(req: IncomingMessage, res: ServerResponse) {
       // Canonical host keeps the transaction cookie on the registered callback host.
@@ -149,12 +189,14 @@ export async function createOidc(
         state = client.randomState(),
         nonce = client.randomNonce(),
         verifier = client.randomPKCECodeVerifier();
-      const destination = new URL(req.url!, origin).searchParams.get("returnTo") ?? "/";
+      const params = new URL(req.url!, origin).searchParams;
+      const nativeChallenge = proofValue.optional().parse(params.get("native_challenge") ?? undefined);
+      const destination = params.get("returnTo") ?? "/";
       const target = URL.parse(destination, origin);
       const returnTo = destination.startsWith("/") && !destination.startsWith("//") && !destination.includes("\\") && target?.origin === origin
         ? target.pathname + target.search
         : "/";
-      flows.set(id, { state, nonce, verifier, expires: now() + 600_000, returnTo });
+      flows.set(id, { state, nonce, verifier, expires: now() + 600_000, returnTo, nativeChallenge });
       const url = client.buildAuthorizationUrl(provider, {
         redirect_uri: callback,
         scope: "openid profile email groups offline_access",
@@ -180,43 +222,38 @@ export async function createOidc(
         req.headers.host !== new URL(origin).host
       )
         throw new AccessDenied();
-      const tokens = await client.authorizationCodeGrant(
-        provider,
-        new URL(req.url!, origin),
-        {
-          pkceCodeVerifier: flow.verifier,
-          expectedState: flow.state,
-          expectedNonce: flow.nonce,
-        },
-      );
-      const subject = tokens.claims()?.sub;
-      if (!subject) throw new AccessDenied();
-      const info = await client.fetchUserInfo(
-        provider,
-        tokens.access_token,
-        subject,
-      );
-      if (!allowed(info)) throw new AccessDenied();
+      let identity: Session;
+      try {
+        identity = await validateLogin(req, flow);
+      } catch (error) {
+        if (!flow.nativeChallenge) throw error;
+        res.writeHead(302, { Location: nativeReturn(flow.nativeChallenge, { error: "denied" }) });
+        res.end();
+        return;
+      }
       prune();
-      if (sessions.size >= 1000) throw new Error("Too many active sessions");
-      const session = client.randomState();
-      sessions.set(session, {
-        subject,
-        token: tokens.access_token,
-        refresh: tokens.refresh_token,
-        tokenExpires: now() + (tokens.expires_in ?? 300) * 1000,
-        expires: now() + settings.sessionHours * 3_600_000,
-        checked: now(),
-      });
-      persist();
-      res.writeHead(302, {
-        Location: flow.returnTo,
-        "Set-Cookie": [
-          setCookie(flowCookie, "", 0),
-          setCookie(sessionCookie, session, settings.sessionHours * 3600),
-        ],
-      });
+      if (flow.nativeChallenge) {
+        const code = client.randomState();
+        if (handoffs.size >= 1000) throw new Error("Too many pending app sign-ins");
+        handoffs.set(code, { identity, challenge: flow.nativeChallenge, returnTo: flow.returnTo, expires: now() + 60_000 });
+        res.writeHead(302, { Location: nativeReturn(flow.nativeChallenge, { code }) });
+      } else {
+        res.writeHead(302, {
+          Location: flow.returnTo,
+          "Set-Cookie": [setCookie(flowCookie, "", 0), issueCookie(identity)],
+        });
+      }
       res.end();
+    },
+    exchange(input: unknown, res: ServerResponse) {
+      const { code, verifier } = z.object({ code: proofValue, verifier: proofValue }).parse(input);
+      prune();
+      const grant = handoffs.get(code);
+      if (!grant || createHash("sha256").update(verifier).digest("base64url") !== grant.challenge) return false;
+      handoffs.delete(code);
+      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": issueCookie(grant.identity) });
+      res.end(JSON.stringify({ returnTo: grant.returnTo }));
+      return true;
     },
     async authenticated(req: IncomingMessage) {
       const id = cookie(req, sessionCookie) ?? "",
