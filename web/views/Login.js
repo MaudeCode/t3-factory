@@ -12,7 +12,7 @@ export function Login() {
   };
   return html`<main class="login">
     <div>
-      <img src="/icon.svg" width="40" height="40" alt="" />
+      <img src="/icon-192.png" width="40" height="40" alt="" />
       <h1>T3 Factory</h1>
       <p>${sso ? "Sign in with an authorized account to control the factory." : "Pair this device with your Mac to control the factory."}</p>
       ${sso
