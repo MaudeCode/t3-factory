@@ -426,3 +426,15 @@ then reopens the stream with the wider set. The set only grows while the page
 is open and is kept across reconnects; the fallback read asks for the same set.
 `test/web-live.test.ts` covers the server narrowing and
 `test/web-reconnect.test.ts` the store's read, reopen and reconnect.
+
+## iPhone Duo app
+
+Open `ios/Factory.xcodeproj` with Xcode 27.1 or later. Set `FACTORY_HOST` in a private build configuration to Factory’s HTTPS hostname. Use `DEVELOPMENT_TEAM` from the signing account for device archives. Debug builds also accept a localhost fixture port.
+
+The native tab bar reads its destinations from the deployed web router. All tabs share one web view and Factory session. Native Back follows ticket history, including related tickets. The iOS system sign-in sheet opens Factory’s OIDC flow so Pocket ID can use passkeys on the phone. After the usual group check, the server returns a single-use code to the app. The web view redeems it with the app’s private verifier and receives the regular HttpOnly Factory cookie.
+
+The system launch screen uses the named `LaunchBackground` color to match Factory's default dark canvas. The window restores the site's saved appearance before the web view loads. WebKit's transparent backing shows the native background until the document paints. For launch-color changes, record a cold start through the first visible page and inspect the frames between the app icon and the loaded UI.
+
+If the private site cannot load, the native shell offers Retry connection and attempts the original page again when the app returns to the foreground. The web client owns recovery once its scripts are running.
+
+Run `python3 ios/test-rail.py` to test cold-launch recovery, system-browser sign-in, the return to a cookie-authenticated page, and Queue → ticket → related ticket → Back on the Duo simulator with synthetic data. Set `FACTORY_SIMULATOR=id=<simulator UUID>` to select a particular local device. The iOS workflow runs on demand or on PRs changing the wrapper, its shared router, app icon, or the workflow itself.
