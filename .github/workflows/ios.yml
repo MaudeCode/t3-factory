@@ -1,0 +1,28 @@
+name: Factory iOS
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'design/Factory.icon/**'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Compile the client and UI test bundle
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+        run: |
+          xcodebuild -quiet build-for-testing -project ios/Factory.xcodeproj -scheme Factory \
+            -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO

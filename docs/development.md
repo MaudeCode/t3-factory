@@ -426,3 +426,23 @@ then reopens the stream with the wider set. The set only grows while the page
 is open and is kept across reconnects; the fallback read asks for the same set.
 `test/web-live.test.ts` covers the server narrowing and
 `test/web-reconnect.test.ts` the store's read, reopen and reconnect.
+
+## iPhone Duo app
+
+Open `ios/Factory.xcodeproj` with Xcode 27.1 or later. Set `FACTORY_HOST` in a private build configuration to Factory’s HTTPS hostname. Use `DEVELOPMENT_TEAM` from the signing account for device archives. Debug builds also accept a localhost fixture port.
+
+The native tab bar reads its destinations from the deployed web router. All tabs share one web view and Factory session. Native Back follows ticket history, including related tickets. The iOS system sign-in sheet opens Factory’s OIDC flow so Pocket ID can use passkeys on the phone. After the usual group check, the server returns a single-use code to the app. The web view redeems it with the app’s private verifier and receives the regular HttpOnly Factory cookie.
+
+The system launch screen uses the named `LaunchBackground` color to match Factory's default dark canvas. The window restores the site's saved appearance before the web view loads. WebKit's transparent backing shows the native background until the document paints. For launch-color changes, record a cold start through the first visible page and inspect the frames between the app icon and the loaded UI.
+
+If the private site cannot load, the native shell offers Retry connection and attempts the original page again when the app returns to the foreground. The web client owns recovery once its scripts are running.
+
+Run `python3 ios/test-rail.py` to test cold-launch recovery, system-browser sign-in, the return to a cookie-authenticated page, and Queue → ticket → related ticket → Back on the Duo simulator with synthetic data. Set `FACTORY_SIMULATOR=id=<simulator UUID>` to select a particular local device. The iOS workflow compiles the app and its UI test bundle without booting a simulator. It runs on demand or for changes under `ios/`, to the app icon, or to that workflow. Run the interaction test locally.
+
+### Conditional iOS publication
+
+A Factory release runs its normal server checks. On Linux, preflight compares the selected commit with its most recent first-parent version tag. `ios/release-inputs` reads the Git trees for `ios/Factory`, `ios/Factory.xcodeproj`, and `design/Factory.icon`. This compares the final packaged sources across the entire release range, including deletions. A first release with the client publishes it. Edits confined to the server, the remotely served website, CI, or UI test sources skip the macOS publish job. When adding a new packaged resource outside these directories, include it in the input list.
+
+For a changed client, the release checks out the preflight SHA and uses the pinned MaudeCode iOS actions to select a build number, sign the app, verify the IPA, upload to TestFlight, and wait for processing before tagging. The app's marketing version uses the numeric part of the Factory tag. A retry for the same version and commit reuses its uploaded build number. Unchanged clients retain their last published version.
+
+TestFlight setup uses the existing Factory bundle ID and a matching App Store Connect app record and App Store distribution profile. Limit the repository’s `testflight` environment to `main`, set its `FACTORY_IOS_HOST` environment secret to the deployed Factory hostname, and grant the repo access to the five shared Apple organization secrets documented in [the shared iOS publishing guide](https://github.com/MaudeCode/.github/blob/main/IOS.md). DevApps remains available for personal builds.

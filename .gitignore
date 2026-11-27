@@ -21,3 +21,6 @@ build/
 
 web-sessions.json
 web-sessions.json.*.tmp
+
+# Per-user Xcode state
+xcuserdata/

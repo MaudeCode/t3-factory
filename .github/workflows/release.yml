@@ -1,9 +1,7 @@
 name: Release
 run-name: Release ${{ inputs.tag }}
 
-# Tag last (RELEASES.md in MaudeCode/.github). Nothing is published here: the tag is the release, and the
-# Mac's deploy LaunchAgent (scripts/deploy.ts) installs each new vX.Y.Z tag. A failed release leaves no
-# tag, so the same version is released again once the cause is fixed.
+# Server releases install from the final tag. Publish the native client only if this release changes its packaged inputs.
 on:
   workflow_dispatch:
     inputs:
@@ -35,6 +33,7 @@ jobs:
       sha: ${{ steps.check.outputs.sha }}
       prerelease: ${{ steps.check.outputs.prerelease }}
       verified: ${{ steps.check.outputs.verified }}
+      ios_changed: ${{ steps.client.outputs.changed }}
     steps:
       - id: check
         uses: MaudeCode/.github/actions/release-preflight@20b180ba0237e316fcc65d83ed4e8f19ac5e16a7
@@ -43,6 +42,26 @@ jobs:
           sha: ${{ inputs.sha }}
           checks: |
             ci.yml: Checks (*
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.check.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare the packaged Factory client with the last release
+        id: client
+        run: |
+          set -euo pipefail
+          previous=$(git describe --first-parent --tags --always --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD)
+          released=''
+          if [[ "$previous" == v* ]]; then released=$(ios/release-inputs "$previous"); fi
+          candidate=$(ios/release-inputs HEAD)
+          if [[ "$candidate" == "$released" ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "Factory client matches $previous." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo "Factory client changed since $previous." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   freeze:
     needs: preflight
@@ -61,9 +80,78 @@ jobs:
     with:
       sha: ${{ needs.preflight.outputs.sha }}
 
+  publish-ios:
+    name: Publish changed iOS client
+    needs: [preflight, freeze, verify]
+    if: ${{ !failure() && !cancelled() && needs.preflight.outputs.ios_changed == 'true' }}
+    runs-on: xcode-27
+    environment: testflight
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      FACTORY_HOST: ${{ secrets.FACTORY_IOS_HOST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - name: Resolve app identity and marketing version
+        id: app
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ -n "${FACTORY_HOST:-}" && "$FACTORY_HOST" != factory.example.com ]] || { echo "::error::Set FACTORY_IOS_HOST for the testflight environment"; exit 1; }
+          bundle=$(xcodebuild -project ios/Factory.xcodeproj -scheme Factory -configuration Release \
+            -destination generic/platform=iOS -showBuildSettings -json | jq -er '.[] | select(.target == "Factory") | .buildSettings.PRODUCT_BUNDLE_IDENTIFIER')
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_VERSION%%-*}" >> "$GITHUB_OUTPUT"
+      - id: number
+        uses: MaudeCode/.github/actions/ios-build-number@4bbc93c8a0c4d2775fb9cbc614ad877a3c7ad3a9
+        with:
+          bundle-id: ${{ steps.app.outputs.bundle }}
+          version: ${{ steps.app.outputs.version }}
+          commit: ${{ needs.preflight.outputs.sha }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          app-store-connect-private-key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      - id: signing
+        uses: MaudeCode/.github/actions/ios-signing@4bbc93c8a0c4d2775fb9cbc614ad877a3c7ad3a9
+        with:
+          bundle-ids: ${{ steps.app.outputs.bundle }}
+          certificate-p12-base64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12_BASE64 }}
+          certificate-password: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          app-store-connect-private-key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      - name: Archive the release commit
+        env:
+          TEAM: ${{ steps.signing.outputs.team-id }}
+          PROFILE: ${{ fromJSON(steps.signing.outputs.profiles)[steps.app.outputs.bundle] }}
+          VERSION: ${{ steps.app.outputs.version }}
+          BUILD: ${{ steps.number.outputs.build-number }}
+        run: |
+          xcodebuild -quiet archive -project ios/Factory.xcodeproj -scheme Factory -configuration Release \
+            -destination generic/platform=iOS -archivePath "$RUNNER_TEMP/Factory.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE" FACTORY_HOST="$FACTORY_HOST" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
+      - uses: MaudeCode/.github/actions/ios-publish@4bbc93c8a0c4d2775fb9cbc614ad877a3c7ad3a9
+        with:
+          archive: ${{ runner.temp }}/Factory.xcarchive
+          export-options: ${{ steps.signing.outputs.export-options }}
+          bundle-id: ${{ steps.app.outputs.bundle }}
+          version: ${{ steps.app.outputs.version }}
+          build-number: ${{ steps.number.outputs.build-number }}
+          commit: ${{ needs.preflight.outputs.sha }}
+          upload: true
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          app-store-connect-private-key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+
   release:
     name: Tag and create GitHub release
-    needs: [preflight, freeze, verify]
+    needs: [preflight, freeze, verify, publish-ios]
     # A skipped verify is a pass; a failed one stops the release.
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
