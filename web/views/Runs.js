@@ -1,17 +1,17 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useMemo, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, loadHistory, loadRun, actions, message } from "../lib/store.js";
-import { route, useRailCommand, backFromRun, follow, openTicket, runParentHref } from "../lib/router.js";
+import { route, nativeFiltersEnabled, useRailCommand, backFromRun, follow, openTicket, runParentHref } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS, runTitle } from "../lib/format.js";
 import { Button, Select, Segmented, Field, Dialog, Popover, Chips, Tag, Icon, Bars, Empty, Facts, Timeline, Page, Section, RelativeTime } from "../ui/index.js";
-import { RunList, OrderChoice } from "./Deck.js";
+import { RunList, OrderChoice, runOrderOptions } from "./Deck.js";
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
 // show, so project and tag choices narrow each other to combinations that exist; `providers` adds the provider facet.
 // Tags are picked twice: the ones a row must carry, and the ones that hide a row.
 // `order` is the list's sort control; it leads the filter panel, which stays mounted so the choice is always in the page.
-export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false, children, order, searchLabel = "Find a ticket", filterLabel = "Filter runs", activeCount }) {
+export function RunFilters({ rows, filters, query, onFilters, onQuery, providers = false, sessions = false, facets, order, searchLabel = "Find a ticket", filterLabel = "Filter runs", activeCount }) {
   const [open, setOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const button = useRef();
@@ -19,17 +19,71 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   const change = (key, value) => onFilters({ ...filters, [key]: value });
   const active = activeCount ?? ["projects", "tags", "tagsNot", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
   const badge = active + Number(!!query.trim());
-  const inRail = useRailCommand(["/queue", "/runs"].includes(route.value.path), "filter", "Filter",
-    "line.3.horizontal.decrease", () => setOpen(true), { badge });
+  function catalog(selection) {
+    const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
+    for (const id of sessions ? selection.sessions ?? [] : []) if (!sessionNames.has(id)) sessionNames.set(id, "Session no longer listed");
+    const sessionOptions = [...sessionNames].sort((a, b) => a[1].localeCompare(b[1]));
+    // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
+    const picked = (key) => selection[key] ?? [];
+    const tags = [...new Set([...picked("tags"), ...picked("tagsNot"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
+    const tagOptions = tags.map(tag => [tag, tag]);
+    const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kanvilId) || rows.some(row => row.projectId === p.kanvilId && matchesRunFilters(row, { tags: picked("tags"), tagMode: Array.isArray(selection.tagMode) ? selection.tagMode[0] : selection.tagMode, tagsNot: picked("tagsNot") })));
+    return { sessionOptions, tagOptions, projectOptions: projectOptions.map(p => [p.kanvilId, p.name]) };
+  }
+  const { sessionOptions, tagOptions, projectOptions } = catalog(filters);
+  const difficulties = [["low", "Low"], ["med", "Medium"], ["high", "High"]];
+  const priorities = [["urgent", "Urgent", "alert"], ["high", "High", "arrowUp"], ["medium", "Medium", "dash"], ["low", "Low", "arrowDown"], ["none", "No priority", "circleSlash"]];
+  const drivers = PROVIDERS.map(p => [p.driver, p.name]);
+  const tagModes = [["or", "ANY"], ["and", "ALL"]];
+  const picked = key => filters[key] ?? [];
+  const anyTags = picked("tags").length + picked("tagsNot").length > 0;
+
+  // Native edits stay in a draft until Apply. Recompute dependent choices with the same catalog as the web form.
+  function editFilters({ values, text = query, apply = false } = {}) {
+    const selection = values ?? filters;
+    const options = values ? catalog(selection) : { sessionOptions, tagOptions, projectOptions };
+    const fields = [];
+    const field = (key, label, choices, selected = selection[key] ?? [], multiple = true, reset = []) => {
+      fields.push({ key, label, reset, options: choices.map(([id, title]) => ({ id, title })), selected, multiple });
+    };
+    const mode = values ? values.tagMode?.[0] : filters.tagMode;
+    if (facets) {
+      for (const { key, label, options } of facets) {
+        field(key, label, options, values?.[key] ?? [filters[key]], false, [options[0][0]]);
+      }
+    } else {
+      if (order) field("order", order.label, runOrderOptions, values?.order ?? [order.value], false, values?.order ?? [order.value]);
+      if (sessions) field("sessions", "Session", options.sessionOptions);
+      field("projects", "Project", options.projectOptions);
+      field("tags", "Tags", options.tagOptions);
+      field("tagsNot", "Without tags", options.tagOptions);
+      if ((selection.tags ?? []).length > 1) field("tagMode", "Match tags", tagModes, [mode ?? "or"], false);
+      field("difficulties", "Difficulty", difficulties);
+      field("priorities", "Priority", priorities);
+      if (providers) field("providers", "Provider", drivers);
+    }
+    if (apply) {
+      const next = Object.fromEntries(fields.filter(f => f.multiple && f.selected.length).map(f => [f.key, f.selected]));
+      if (next.tags?.length > 1 && mode === "and") next.tagMode = "and";
+      for (const facet of facets ?? []) next[facet.key] = values?.[facet.key]?.[0] ?? facet.options[0][0];
+      // A no-op Apply must keep the list's filter object and its expanded result window.
+      const changed = fields.some(({ key, multiple, selected }) => {
+        if (key === "order") return false;
+        if (!multiple) return selected[0] !== (filters[key] ?? (key === "tagMode" ? "or" : undefined));
+        const previous = filters[key] ?? [];
+        return selected.length !== previous.length || selected.some(id => !previous.includes(id));
+      });
+      if (changed) onFilters(next);
+      if (text !== query) onQuery(text);
+      if (order && order.value !== values?.order?.[0] && runOrderOptions.some(([id]) => id === values?.order?.[0])) order.onChange(values.order[0]);
+    }
+    return { text, searchLabel, fields };
+  }
+  const railPage = ["/queue", "/runs"].includes(route.value.path) ||
+    (nativeFiltersEnabled.value && ["/sources", "/cleanup"].includes(route.value.path));
+  const inRail = useRailCommand(railPage, "filter", "Filter",
+    "line.3.horizontal.decrease", () => setOpen(true), { badge, editFilters });
   const FilterPanel = inRail ? Dialog : Popover;
-  const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
-  for (const id of sessions ? filters.sessions ?? [] : []) if (!sessionNames.has(id)) sessionNames.set(id, "Session no longer listed");
-  const sessionOptions = [...sessionNames].sort((a, b) => a[1].localeCompare(b[1]));
-  // Project and tag choices narrow each other: only tags seen in the chosen projects, only projects that have the chosen tags.
-  const picked = (key) => filters[key] ?? [];
-  const tags = [...new Set([...picked("tags"), ...picked("tagsNot"), ...rows.filter(row => matchesRunFilters(row, { projects: picked("projects") })).flatMap(row => row.labels ?? [])])].sort();
-  const tagOptions = tags.map(tag => [tag, tag]), anyTags = picked("tags").length + picked("tagsNot").length > 0;
-  const projectOptions = config.value.projects.filter(p => !picked("tags").length || picked("projects").includes(p.kanvilId) || rows.some(row => row.projectId === p.kanvilId && matchesRunFilters(row, { tags: picked("tags"), tagMode: filters.tagMode, tagsNot: picked("tagsNot") })));
   // Few options get a row of named chips; projects and tags, which grow, get a multi-pick dropdown.
   const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} /> ${title}`, title];
   const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
@@ -43,14 +97,15 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
     <span ref=${button}><${Button} size="sm" icon="filter" label=${`${filterLabel}${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>`}
     <${FilterPanel} title="Filters" mounted=${!!order} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
       ${inRail && html`<div class="rail-search">${searchField(() => setOpen(false))}</div>`}
-      ${order && html`<${Field} group label="Order">${order}<//>`}
-      ${children ?? html`
+      ${order && html`<${Field} group label="Order"><${OrderChoice} ...${order} /><//>`}
+      ${facets ? facets.map(({ key, label, options }) => html`<${Field} group label=${key === "sort" ? "Order" : label}>
+        <${Select} label=${label} value=${filters[key]} onChange=${v => change(key, v)} options=${options} /><//>`) : html`
       ${sessions && html`<${Field} group label="Session"><${Select} multiple placeholder="Any" label="Session" value=${filters.sessions ?? []} options=${sessionOptions} onChange=${value => change("sessions", value)} /><//>`}
-      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions.map(p => [p.kanvilId, p.name])} onChange=${value => change("projects", value)} /><//>
+      <${Field} group label="Project"><${Select} multiple placeholder="Any" label="Project" value=${filters.projects ?? []} options=${projectOptions} onChange=${value => change("projects", value)} /><//>
       <${Field} group label="Tags">
         <div class="tags-pick">
           <${Select} multiple placeholder="Any" label="Tags" value=${filters.tags ?? []} options=${tagOptions} onChange=${value => change("tags", value)} />
-          ${(filters.tags?.length ?? 0) > 1 && html`<${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${[["or", "ANY"], ["and", "ALL"]]} />`}
+          ${(filters.tags?.length ?? 0) > 1 && html`<${Segmented} label="Match tags" value=${filters.tagMode ?? "or"} onChange=${value => change("tagMode", value)} options=${tagModes} />`}
           ${anyTags && html`<${Button} variant="ghost" size="sm" icon="x" label="Clear tags" onClick=${() => onFilters({ ...filters, tags: [], tagsNot: [] })} />`}
         </div>
         <div class="tags-pick">
@@ -58,9 +113,9 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
           <${Select} multiple placeholder="None" label="Without" value=${filters.tagsNot ?? []} options=${tagOptions} onChange=${value => change("tagsNot", value)} />
         </div>
       <//>
-      ${chips("difficulties", "Difficulty", [["low", "Low"], ["med", "Medium"], ["high", "High"]].map(([value, name]) => [value, html`<${Bars} level=${value} /> ${name}`, name]))}
-      ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("none", "circleSlash", "No priority")])}
-      ${providers && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
+      ${chips("difficulties", "Difficulty", difficulties.map(([value, name]) => [value, html`<${Bars} level=${value} /> ${name}`, name]))}
+      ${chips("priorities", "Priority", priorities.map(([id, title, icon]) => glyph(id, icon, title)))}
+      ${providers && chips("providers", "Provider", drivers.map(([id, title]) => glyph(id, providerIcon(id), title)))}
       `}
       ${(inRail ? badge : active) > 0 && html`<${Button} variant="ghost" size="sm" icon="x" label="Clear all filters" onClick=${() => { onFilters({}); onQuery(""); }} />`}
     <//>`;
@@ -107,7 +162,7 @@ export function Runs({ id } = {}) {
   // With no run named in the address, the first run listed is shown beside the list.
   const selected = id ?? list[0]?.id;
   return html`<div class=${`runs-split${id ? " has-run" : ""}`}>
-  <div class="runs-list"><${Page} class="runs" title="Runs" count=${list.length} tools=${html`<${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers order=${html`<${OrderChoice} label="Start order" value=${order} onChange=${setOrder} />`} />`}>
+  <div class="runs-list"><${Page} class="runs" title="Runs" count=${list.length} tools=${html`<${RunFilters} rows=${all} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} providers order=${{ label: "Start order", value: order, onChange: setOrder }} />`}>
     <${Segmented}
       fitCounts label="State"
       value=${state}

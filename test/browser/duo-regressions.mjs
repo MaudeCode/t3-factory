@@ -70,6 +70,28 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
         await tapRail(page, "Filter");
         assert.equal(await query.inputValue(), "APP-1");
       }],
+      ["native filter draft previews choices and applies to its originating list", "session-tickets", "sessionTests", 382, async page => {
+        await page.evaluate(() => sessionTests.show());
+        await installRail(page);
+        const action = await page.waitForFunction(() => window.railItems?.find(a => a.nativeFilters));
+        const path = (await action.jsonValue()).path;
+        const edit = draft => page.evaluate(([path, draft]) => factoryRail.editFilters(path, draft), [path, draft]);
+        const form = await edit({});
+        const field = (form, key) => form.fields.find(f => f.key === key);
+        const project = field(form, "projects").options.find(o => o.title === "Example");
+        assert(project && field(form, "sessions") && field(form, "order"));
+        const values = { projects: [project.id], order: ["oldest"] };
+        const preview = await edit({ values, text: "APP-2" });
+        assert.deepEqual(field(preview, "projects").selected, [project.id]);
+        assert.deepEqual(field(await edit({}), "projects").selected, []);
+        await edit({ values, text: "APP-2", apply: true });
+        await page.waitForFunction(() => window.railItems.some(a => a.nativeFilters && a.badge === 2));
+        assert.equal((await edit({})).text, "APP-2");
+        assert.deepEqual(field(await edit({}), "order").selected, ["oldest"]);
+        assert.equal(await page.getByRole("dialog", { name: "Filters" }).count(), 0);
+        await page.getByRole("radio", { name: /^Reports/ }).click();
+        assert.equal(await edit({ values, text: "stale", apply: true }), null);
+      }],
       ["rail selection follows the Queue view", "session-tickets", "sessionTests", 382, async page => {
         await page.evaluate(() => sessionTests.show());
         await installRail(page);

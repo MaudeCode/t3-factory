@@ -3,7 +3,7 @@ import { html, useEffect, useState, useRef } from "../lib/h.js";
 import { config, statusSection, operations, loadCleanup, inspectCleanup, startCleanup, stopCleanupQueue, cleanupOperationHolds, actions, message } from "../lib/store.js";
 import { cleanupResultSummary, projectCleanupResults, clockTime, formatBytes as bytes, ticketLink, threadLink, safeLink, prLabel } from "../lib/format.js";
 import { follow } from "../lib/router.js";
-import { Button, Select, Field, RowBody, Meta, Tag, Help, Icon, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check, RelativeTime } from "../ui/index.js";
+import { Button, RowBody, Meta, Tag, Help, Icon, Page, Section, Segmented, Facts, Empty, Timeline, Link, Check, RelativeTime } from "../ui/index.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { RunFilters } from "./Runs.js";
 
@@ -164,12 +164,13 @@ export function Cleanup() {
     catch (e) { if (epoch === generation.current) setError(e.message); } finally { if (epoch === generation.current) setLoading(false); }
   };
   const counts = data ? { present: (data.views?.retained ?? 0) + (data.views?.protected ?? 0), ready: data.groups?.ready ?? 0, blocked: (data.groups?.attention ?? 0) + (data.groups?.retrying ?? 0), inuse: data.groups?.protected ?? 0 } : {};
+  const facets = [
+    { key: "repository", label: "Repository", options: [["", "All repositories"], ...(data?.repositories ?? []).map(r => [r.path, r.path.split("/").at(-1)])] },
+    { key: "ownership", label: "Owner", options: [["", "Any"], ["factory", "Factory run"], ["t3-only", "T3 thread"], ["shared", "Shared"], ["orphan", "No owner"], ["unknown", "Unknown"]] },
+    { key: "sort", label: "Order worktrees", options: [["action", "Next action, oldest first"], ["repository", "Repository"], ["branch", "Branch"], ["path", "Path"], ["attempt", "Last attempt"], ["size", "Known size"]] },
+  ];
   const activeFilters = [filters.repository, filters.ownership, filters.sort !== "action"].filter(Boolean).length;
-  return html`<${Page} title="Storage" count=${data?.staleResults ? undefined : data?.total} class="cleanup-page" tools=${html`<${RunFilters} rows=${[]} filters=${filters} query=${filters.query} onQuery=${v => change("query", v)} onFilters=${v => setFilters(current => ({ ...current, repository: "", ownership: "", sort: "action", ...v }))} searchLabel="Find a branch or folder" filterLabel="Filter worktrees" activeCount=${activeFilters}>
-      <${Field} group label="Repository"><${Select} label="Repository" value=${filters.repository} onChange=${v => change("repository", v)} options=${[["", "All repositories"], ...(data?.repositories ?? []).map(r => [r.path, r.path.split("/").at(-1)])]} /><//>
-      <${Field} group label="Owner"><${Select} label="Owner" value=${filters.ownership} onChange=${v => change("ownership", v)} options=${[["", "Any"], ["factory", "Factory run"], ["t3-only", "T3 thread"], ["shared", "Shared"], ["orphan", "No owner"], ["unknown", "Unknown"]]} /><//>
-      <${Field} group label="Order"><${Select} label="Order worktrees" value=${filters.sort} onChange=${v => change("sort", v)} options=${[["action", "Next action, oldest first"], ["repository", "Repository"], ["branch", "Branch"], ["path", "Path"], ["attempt", "Last attempt"], ["size", "Known size"]]} /><//>
-    <//><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting worktrees" : "Select worktrees"} aria-pressed=${selecting} onClick=${() => { setSelecting(!selecting); setSelected([]); }} /><${Button} size="sm" icon="sync" label="Refresh cleanup inventory" disabled=${loading} onClick=${refresh} />
+  return html`<${Page} title="Storage" count=${data?.staleResults ? undefined : data?.total} class="cleanup-page" tools=${html`<${RunFilters} rows=${[]} filters=${filters} query=${filters.query} onQuery=${v => change("query", v)} onFilters=${v => { setSelected([]); setFilters(current => ({ ...current, repository: "", ownership: "", sort: "action", ...v })); }} searchLabel="Find a branch or folder" filterLabel="Filter worktrees" activeCount=${activeFilters} facets=${facets} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting worktrees" : "Select worktrees"} aria-pressed=${selecting} onClick=${() => { setSelecting(!selecting); setSelected([]); }} /><${Button} size="sm" icon="sync" label="Refresh cleanup inventory" disabled=${loading} onClick=${refresh} />
       ${data && !selecting && html`<${Button} size="sm" icon="trash" label=${preparing ? "Preparing…" : `Delete ${unused} unused ${unused === 1 ? "worktree" : "worktrees"}`} disabled=${loading || data.staleResults || preparing || !unused} onClick=${removeBatch} />`}`}>
     <${Segmented} label="Worktrees" value=${filters.view} onChange=${v => change("view", v)} options=${VIEWS.map(([value, label]) => [value, label, counts[value]])} />
     ${data?.filesystems?.length > 0 && html`<p class="hint cleanup-free">${data.filesystems.map(f => `${bytes(f.freeBytes)} free`).join(" · ")}</p>`}

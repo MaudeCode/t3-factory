@@ -1,5 +1,6 @@
 import AuthenticationServices
 import CryptoKit
+import SwiftUI
 import UIKit
 import WebKit
 
@@ -47,6 +48,7 @@ private struct Destination: Decodable, Equatable {
     let symbol: String?
     let badge: Int?
     let disabled: Bool?
+    let nativeFilters: Bool?
 
     var icon: String {
         if let symbol { return symbol }
@@ -92,6 +94,8 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
     }
     private var web: WKWebView!
     private var rail: RailState?
+    private weak var filterSheet: UIViewController?
+    private var filterPath: String?
     private var unavailableView: UIContentUnavailableView?
     private var retryURL: URL?
 
@@ -162,7 +166,11 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
             }) : nil
         let pageItems = (rail.actions ?? []).map { action in
             let item = UIBarButtonItem(image: UIImage(systemName: action.icon), primaryAction: UIAction(title: action.name) { [weak self] _ in
-                self?.command("openAction", path: action.path)
+                if action.nativeFilters == true {
+                    self?.openFilters(action.path)
+                } else {
+                    self?.command("openAction", path: action.path)
+                }
             })
             item.isEnabled = action.disabled != true
             if let count = action.badge, count > 0 { item.badge = .count(count) }
@@ -179,6 +187,34 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
         menu.accessibilityLabel = "More"
         content.navigationItem.rightBarButtonItem = hasControls ? nil : menu
         content.navigationItem.leftBarButtonItem?.accessibilityLabel = "Back"
+    }
+
+    private func readFilters(_ path: String, draft: [String: Any]) async throws -> FilterForm {
+        guard isFactory(web.url), unavailableView == nil,
+              rail?.actions?.contains(where: { $0.path == path && $0.nativeFilters == true }) == true else {
+            throw CancellationError()
+        }
+        let result = try await web.callAsyncJavaScript("return window.factoryRail.editFilters(path, draft)",
+            arguments: ["path": path, "draft": draft], in: nil, contentWorld: .page)
+        guard let result = result as? [String: Any] else { throw CancellationError() }
+        return try JSONDecoder().decode(FilterForm.self, from: JSONSerialization.data(withJSONObject: result))
+    }
+
+    private func openFilters(_ path: String) {
+        Task { @MainActor [self] in
+            guard let form = try? await readFilters(path, draft: [:]), presentedViewController == nil,
+                  unavailableView == nil, rail?.actions?.contains(where: { $0.path == path }) == true else { return }
+            let sheet = UIHostingController(rootView: FilterSheet(form: form) { [weak self] values, text, apply in
+                guard let self else { throw CancellationError() }
+                return try await self.readFilters(path, draft: ["values": values, "text": text, "apply": apply])
+            })
+            sheet.modalPresentationStyle = .pageSheet
+            sheet.sheetPresentationController?.detents = [.medium(), .large()]
+            sheet.sheetPresentationController?.prefersGrabberVisible = true
+            filterPath = path
+            filterSheet = sheet
+            present(sheet, animated: true)
+        }
     }
 
     private func command(_ name: String, path: String = "") {
@@ -203,6 +239,9 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
             defaults.set(next.appearance, forKey: FactoryScene.appearanceKey)
         }
         view.window?.overrideUserInterfaceStyle = FactoryScene.style(for: next.appearance)
+        if let filterSheet, !next.signedIn || next.actions?.contains(where: { $0.path == filterPath && $0.nativeFilters == true }) != true {
+            filterSheet.dismiss(animated: true)
+        }
         guard next.signedIn, !next.tabs.isEmpty else {
             if rail != nil || (selectedViewController as? UINavigationController)?.isNavigationBarHidden == false { showLogin() }
             return
@@ -336,6 +375,7 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
     }
 
     private func unavailable(_ url: URL?, message: String? = nil) {
+        filterSheet?.dismiss(animated: true)
         // Retry only a page GET. Action requests and sign-in callbacks belong to their original attempts.
         if let url, isFactory(url), !url.path.hasPrefix("/api/"), !url.path.hasPrefix("/auth/") {
             retryURL = url

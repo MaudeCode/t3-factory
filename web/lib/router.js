@@ -18,18 +18,23 @@ export const RAIL_ACTIONS = { "/": [startRun], "/runs": [startRun] };
 
 // Only a wrapper that can invoke in-place commands enables this capability.
 export const railCommandsEnabled = signal(false);
+export const nativeFiltersEnabled = signal(false);
 export const railCommands = signal([]);
-export function useRailCommand(eligible, key, name, symbol, invoke, { badge = 0, disabled = false } = {}) {
+export function useRailCommand(eligible, key, name, symbol, invoke, { badge = 0, disabled = false, editFilters } = {}) {
   const enabled = railCommandsEnabled.value && eligible;
   const scope = route.value.path + search.value;
   const callback = useRef(invoke);
   callback.current = invoke;
+  const editor = useRef(editFilters);
+  editor.current = editFilters;
+  const hasEditor = !!editFilters;
   useLayoutEffect(() => {
     if (!enabled) return;
     const command = { path: `${scope}#${key}`, scope, name, symbol, badge, disabled, invoke: () => callback.current() };
+    if (hasEditor) command.editFilters = draft => editor.current(draft);
     railCommands.value = [...railCommands.peek(), command].sort((a, b) => a.path.localeCompare(b.path));
     return () => { railCommands.value = railCommands.peek().filter(item => item !== command); };
-  }, [enabled, scope, key, name, symbol, badge, disabled]);
+  }, [enabled, scope, key, name, symbol, badge, disabled, hasEditor]);
   return enabled;
 }
 

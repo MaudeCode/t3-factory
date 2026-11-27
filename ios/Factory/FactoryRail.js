@@ -40,7 +40,7 @@
       const selected = tabs.find(tab => tab.path === path || (tab.path !== "/" && path.startsWith(tab.path + "/")));
       const ticket = router.ticketPanel.value, epic = router.epicPanel.value;
       send.postMessage({ signedIn: authenticated.value === true, tabs, more,
-        actions: pageActions().map(({ path, name, symbol, badge, disabled }) => ({ path, name, symbol, badge: badge ?? 0, disabled: !!disabled })),
+        actions: pageActions().map(({ path, name, symbol, badge, disabled, editFilters }) => ({ path, name, symbol, nativeFilters: !!editFilters, badge: badge ?? 0, disabled: !!disabled })),
         tab: selected?.path ?? history.state?.railParent ?? (path.startsWith("/start") ? "/" : controls?.path ?? "/"),
         waiting: jobs.value.filter(job => job.state === "waiting").length, issues: issues.value.length, title: ticket || (epic ? "Epic" : ""),
         appearance: theme.value.appearance, hasOptions: Boolean(accountButton()),
@@ -57,6 +57,10 @@
       if (!action || action.disabled) return;
       if (action.invoke) action.invoke();
       else router.navigate(path);
+    },
+    editFilters(path, draft) {
+      const command = pageActions().find(item => item.path === path);
+      return !command?.disabled && command?.editFilters ? command.editFilters(draft) : null;
     },
     account() { accountButton()?.click(); },
     back() {
@@ -75,6 +79,7 @@
     }
   };
   // Keep the web navigation available if the deployed router cannot be loaded.
+  if (controls && router.nativeFiltersEnabled) router.nativeFiltersEnabled.value = true;
   if (controls && router.railCommandsEnabled) router.railCommandsEnabled.value = true;
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
   addEventListener("resize", refresh);
