@@ -136,7 +136,7 @@ jobs:
             DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE" FACTORY_HOST="$FACTORY_HOST" \
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD"
-      - uses: MaudeCode/.github/actions/ios-publish@4bbc93c8a0c4d2775fb9cbc614ad877a3c7ad3a9
+      - uses: MaudeCode/.github/actions/ios-publish@58115f6d0e960898ac7c1c807c6cc8bd2d2279e7
         with:
           archive: ${{ runner.temp }}/Factory.xcarchive
           export-options: ${{ steps.signing.outputs.export-options }}
