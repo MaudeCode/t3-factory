@@ -219,7 +219,7 @@ function Shell() {
       </aside>`}
     <div class="content">
       <div ref=${ptr} class="ptr" aria-live="polite"></div>
-      <main hidden=${!!composerParent} key=${underlying.startsWith("/runs") ? "/runs" : underlying === "/settings" ? underlying : underlying + param}>${controls ? html`<${PageFrame} title="Controls" tools=${account}>
+      <main hidden=${!!composerParent} key=${underlying.startsWith("/runs") ? "/runs" : underlying === "/settings" ? underlying : underlying + (param ?? "")}>${controls ? html`<${PageFrame} title="Controls" tools=${account}>
         <div class="factory-control-row"><${Automation} named /><${Updates} /><${Start} /></div>
         <nav class="more-list" aria-label="Factory controls">${inMore.map(item => link(item))}</nav>
         ${version.value && html`<p class="more-version">Version ${version.value}</p>`}

@@ -27,7 +27,9 @@
   const accountButton = () => document.querySelector('.tabbar button, .side-foot button[aria-label="More"]');
   const pageActions = () => controls && authenticated.value && !unavailable?.value
     && !router.ticketPanel.value && !router.epicPanel.value && !document.querySelector("dialog:modal")
-    ? router.RAIL_ACTIONS?.[router.route.value.path] ?? [] : [];
+    ? [...(router.RAIL_ACTIONS?.[router.route.value.path] ?? []),
+       ...(router.railCommands?.value ?? []).filter(action => action.scope === location.pathname + location.search)]
+    : [];
   let queued = false;
   function refresh() {
     if (queued) return;
@@ -38,7 +40,7 @@
       const selected = tabs.find(tab => tab.path === path || (tab.path !== "/" && path.startsWith(tab.path + "/")));
       const ticket = router.ticketPanel.value, epic = router.epicPanel.value;
       send.postMessage({ signedIn: authenticated.value === true, tabs, more,
-        actions: pageActions(),
+        actions: pageActions().map(({ path, name, symbol, badge, disabled }) => ({ path, name, symbol, badge: badge ?? 0, disabled: !!disabled })),
         tab: selected?.path ?? history.state?.railParent ?? (path.startsWith("/start") ? "/" : controls?.path ?? "/"),
         waiting: jobs.value.filter(job => job.state === "waiting").length, issues: issues.value.length, title: ticket || (epic ? "Epic" : ""),
         appearance: theme.value.appearance, hasOptions: Boolean(accountButton()),
@@ -51,8 +53,10 @@
       if ([...tabs, ...more].some(item => item.path === path)) router.navigate(path);
     },
     openAction(path) {
-      if (!pageActions().some(action => action.path === path)) return;
-      router.navigate(path);
+      const action = pageActions().find(item => item.path === path);
+      if (!action || action.disabled) return;
+      if (action.invoke) action.invoke();
+      else router.navigate(path);
     },
     account() { accountButton()?.click(); },
     back() {
@@ -71,10 +75,11 @@
     }
   };
   // Keep the web navigation available if the deployed router cannot be loaded.
+  if (controls && router.railCommandsEnabled) router.railCommandsEnabled.value = true;
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
   addEventListener("resize", refresh);
   document.addEventListener("toggle", refresh, true);
   const root = document.getElementById("root");
   if (root) new MutationObserver(refresh).observe(root, { childList: true });
-  for (const signal of [theme, authenticated, jobs, issues, unavailable, router.route, router.ticketPanel, router.epicPanel]) signal?.subscribe(refresh);
+  for (const signal of [theme, authenticated, jobs, issues, unavailable, router.railCommands, router.route, router.ticketPanel, router.epicPanel]) signal?.subscribe(refresh);
 })();

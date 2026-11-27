@@ -30,6 +30,9 @@ final class RailNavigationTests: XCTestCase {
         tap(app.buttons["Back"].firstMatch)
         XCTAssertTrue(start.waitForExistence(timeout: timeout))
         tap(queue)
+        tap(app.buttons["Filter"].firstMatch)
+        XCTAssertTrue(app.webViews.textFields["Find a ticket"].firstMatch.waitForExistence(timeout: timeout))
+        tap(app.webViews.buttons["Close"].firstMatch)
         let ticket = app.links.matching(NSPredicate(format: "label BEGINSWITH %@", "Synthetic ticket APP-1")).firstMatch
         tap(ticket)
         tap(app.staticTexts["A finished blocker"].firstMatch)

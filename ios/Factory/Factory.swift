@@ -45,6 +45,8 @@ private struct Destination: Decodable, Equatable {
     let path: String
     let name: String
     let symbol: String?
+    let badge: Int?
+    let disabled: Bool?
 
     var icon: String {
         if let symbol { return symbol }
@@ -162,6 +164,8 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
             let item = UIBarButtonItem(image: UIImage(systemName: action.icon), primaryAction: UIAction(title: action.name) { [weak self] _ in
                 self?.command("openAction", path: action.path)
             })
+            item.isEnabled = action.disabled != true
+            if let count = action.badge, count > 0 { item.badge = .count(count) }
             item.accessibilityLabel = action.name
             return item
         }

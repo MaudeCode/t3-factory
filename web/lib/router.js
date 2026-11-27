@@ -1,5 +1,5 @@
 // Path-based routing on the History API. The server returns index.html for any extensionless path.
-import { signal } from "./h.js";
+import { signal, useLayoutEffect, useRef } from "./h.js";
 import { ticketKey } from "./format.js";
 
 // The sidebar's groups: [path, name, icon]. PAGES is the same list flat, for route matching.
@@ -15,6 +15,23 @@ export const TABS = [...NAV[0][1], CONTROLS];
 // Page actions open existing web routes. The native rail renders the current list beside its stable tabs.
 const startRun = { path: "/start/new", name: "Start a run", symbol: "play.fill" };
 export const RAIL_ACTIONS = { "/": [startRun], "/runs": [startRun] };
+
+// Only a wrapper that can invoke in-place commands enables this capability.
+export const railCommandsEnabled = signal(false);
+export const railCommands = signal([]);
+export function useRailCommand(eligible, key, name, symbol, invoke, { badge = 0, disabled = false } = {}) {
+  const enabled = railCommandsEnabled.value && eligible;
+  const scope = route.value.path + search.value;
+  const callback = useRef(invoke);
+  callback.current = invoke;
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const command = { path: `${scope}#${key}`, scope, name, symbol, badge, disabled, invoke: () => callback.current() };
+    railCommands.value = [...railCommands.peek(), command].sort((a, b) => a.path.localeCompare(b.path));
+    return () => { railCommands.value = railCommands.peek().filter(item => item !== command); };
+  }, [enabled, scope, key, name, symbol, badge, disabled]);
+  return enabled;
+}
 
 // Resolve a path to { page, param }. Unknown paths fall back to Now.
 export function match(href) {
