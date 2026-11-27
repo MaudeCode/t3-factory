@@ -36,3 +36,17 @@ test('Now lists each source in exactly one section and nothing else', () => {
 test('Now is empty when nothing is running, waiting or queued', () => {
   assert.deepEqual(nowSections({}), { needs: [], working: [], ci: [], queue: [] });
 });
+
+test('Now lists each blocked plan ticket once until it has an open run or leaves the active plan', () => {
+  const launchBlock = { reason: 'Ticket is in_progress; it must be in todo' };
+  const ticket = { id: 'ticket', key: 'APP-1', launchBlock };
+  const plans = [
+    { id: 'epic', state: 'active', epic: { id: 'e', title: 'Epic' }, tickets: [ticket, { id: 'done', done: true, launchBlock }, { id: 'slot', note: 'Waiting for a free Codex slot' }] },
+    { id: 'chain', state: 'active', tickets: [], target: ticket },
+    { id: 'old', state: 'cancelled', tickets: [{ id: 'old-ticket', launchBlock }] },
+  ];
+  const open = nowSections({ plans });
+  assert.deepEqual(open.needs, [{ kind: 'blocked-ticket', id: 'blocked-ticket', ticket, hold: launchBlock }]);
+  assert.deepEqual(ids(open.queue), ['epic', 'chain']);
+  assert.deepEqual(nowSections({ plans, jobs: [job('working', 'running', { taskId: ticket.id })] }).needs, []);
+});

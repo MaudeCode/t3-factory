@@ -296,6 +296,19 @@ const blocks = (f: ReturnType<typeof dispatchFixture>, source: string, target: s
 const plan = (f: ReturnType<typeof dispatchFixture>) => f.store.plans().at(-1)!;
 const foreign = (f: ReturnType<typeof dispatchFixture>, id: string, status = 'todo') => { const task = { ...f.task(id, 7, status), projectId: 'OTHER', key: 'OTHER-7' }; f.tasks.push(task); return task; };
 
+test('an Epic exposes a member status refusal before checking provider capacity and clears it on refresh', async t => {
+  const f = epicFixture(t, 'a', 'b');
+  f.tasks[0].status = 'in_progress';
+  setConfig(f, () => { f.c.concurrency.codex = 0; });
+  assert.equal((await startEpic(f)).reason, 'plan-started');
+  const projected = () => readStatus(f.c, f.store).plans.find(p => p.id === plan(f).id)!.tickets;
+  assert.deepEqual(projected().map(t => t.launchBlock?.reason), ['Ticket is in_progress; it must be in todo', undefined]);
+  f.tasks[0].status = 'todo';
+  await advance(f);
+  assert.deepEqual(projected().map(t => t.launchBlock?.reason), [undefined, undefined]);
+  assert.equal(f.launches.length, 0);
+});
+
 test('an Epic starts every free member at once and the rest as their blockers finish, then ends without an extra launch', async t => {
   const f = epicFixture(t, 'a', 'b', 'c');
   blocks(f, 'a', 'c');

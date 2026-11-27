@@ -2,7 +2,7 @@
 import { html, render } from "../../web/lib/h.js";
 import "../../web/lib/theme.js";
 import * as store from "../../web/lib/store.js";
-import { navigate } from "../../web/lib/router.js";
+import { navigate, openTicket, closeTicket } from "../../web/lib/router.js";
 import { confirmation, finishConfirmation } from "../../web/lib/confirmation.js";
 import { App } from "../../web/views/App.js";
 import { tickRenders, checkTickRendersTimesOnly } from "./search.js";
@@ -168,5 +168,58 @@ async function epicLink() {
   assert(open() === "", "its toggle still closes it");
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.nowTests = { show, run, load, epicLink, showEpics, heavy, light };
+const refusal = { id: "x6", key: "APP-705", reason: "Ticket is in_progress; it must be in todo" };
+async function showBlockedTicket() {
+  await show([]);
+  const epic = state.status.plans.find((p) => p.epic);
+  Object.assign(epic.tickets[1], { title: "Blocked Epic member", projectId: "p", launchBlock: { reason: refusal.reason } });
+  state.status.plans = [epic];
+  state.status.triageReports = [];
+  store.applyState(state, true);
+  await pause();
+}
+async function blockedTicket() {
+  await showBlockedTicket();
+  const s = sections(), [row] = rows(s["Needs you"]);
+  assert(keys(s["Needs you"]).join() === refusal.key && row.querySelector("a").getAttribute("href") === `?ticket=${refusal.key}`, "the blocked member has one linked row in Needs you");
+  assert(row.querySelector(".now-note").title === refusal.reason && row.querySelector('button[aria-label="Investigate and fix in T3"]'), "the row gives the refusal and its action");
+  assert(keys(s["Your queue"]).join() === "Billing v2", "the Epic stays queued");
+  noOverflow();
+  return { passed: true };
+}
+async function refusedStart() {
+  await show([]);
+  const oldFetch = window.fetch;
+  const post = (url, init, data) => {
+    posts.push({ url, body: JSON.parse(init.body) });
+    return Response.json({ id: init.headers["Idempotency-Key"], state: "done", result: { data } });
+  };
+  window.fetch = async (url, init) => {
+    if (url === "/api/dispatch" && init?.method === "POST") return post(url, init, { reason: "no-eligible-ticket", skipped: [refusal] });
+    if (url === `/api/tickets/${refusal.key}/reconcile` && init?.method === "POST") return post(url, init, { reason: "dispatched" });
+    if (url === `/api/tickets/${refusal.key}`) return Response.json({ id: refusal.id, key: refusal.key, projectId: "p", title: "Blocked ticket", status: "in_progress", priority: "medium", difficulty: "med", kind: "bug", labels: [], scopes: [], automationReady: true, blockedBy: [], blocks: [], readiness: [], createdAt: ago(1) });
+    return oldFetch(url, init);
+  };
+  try {
+    state.status.triageReports = [];
+    store.applyState(state, true);
+    store.startRun({ ticket: refusal.key, model: "auto" });
+    const investigate = 'button[aria-label="Investigate and fix in T3"]';
+    const requestButton = () => sections()["Needs you"].querySelector(investigate);
+    for (let n = 0; n < 50 && !requestButton(); n++) await pause();
+    assert(requestButton() && !requestButton().disabled, "the named status refusal offers Investigate on Now");
+    openTicket(refusal.key);
+    const panel = () => root.querySelector("dialog.ticket-panel[open]");
+    for (let n = 0; n < 50 && !panel()?.querySelector(investigate); n++) await pause();
+    const panelButton = panel()?.querySelector(investigate);
+    assert(panelButton && !panelButton.disabled && panel().querySelector(".ticket-callout").textContent.includes(refusal.reason), "the ticket panel offers Investigate beside the launch refusal");
+    panelButton.click(); await pause();
+    assert(confirmation.value?.title === `Investigate ${refusal.key} in T3?` && posts.length === 1, "Investigation asks before sending");
+    finishConfirmation(true);
+    for (let n = 0; n < 50 && (posts.length < 2 || store.operations.value.length); n++) await pause();
+    assert(posts.length === 2 && posts[1].url === `/api/tickets/${refusal.key}/reconcile` && posts[1].body.reconcile, "confirmation sends a reconcile for this ticket");
+  } finally { closeTicket(); window.fetch = oldFetch; store.operations.value = []; }
+  return { passed: true };
+}
+window.nowTests = { show, run, load, epicLink, showEpics, blockedTicket, showBlockedTicket, refusedStart, heavy, light };
 await show();

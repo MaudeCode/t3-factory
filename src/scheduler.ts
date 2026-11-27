@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { automationHold, taskDifficulty, taskHold } from './policy.ts';
 import { T3, Kanvil, KanvilTaskNotFound, listTasks, relationsSchema, stableRequestId, type Task, type Epic } from './clients.ts';
 import { commandWait, executing, providerExecuting, subagentDescendants, waiting, stalledMonitor, DEFAULT_MONITORING_TIMEOUT_MINUTES, ticketDifficulty, ticketLabelRank, branchKind, compareTicketPriority, mentionsTicket, threadsReferencingTicket, selectTicket, queueOrder, acceptsDifficulty, selectAssignment, type Thread, type Candidate, type TicketPriority } from './policy.ts';
-import { Store, assignedBranch, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision, type ReconcileEvidence } from './store.ts';
+import { Store, assignedBranch, jobLabel, planTickets, cleanupActionPending, type Job, type Plan, type PlanTicket, type Decision, type TicketLaunchBlock } from './store.ts';
 import { promptFor } from './prompts.ts';
 import { loadConfig, overridableLimits, type Config, type OverridableLimit, type OverrideLimits, type Project, type DispatchProvider } from './config.ts';
 
@@ -113,7 +113,7 @@ async function compareReleases(repo: string, watermark: string, tags: string[]) 
 }
 // Bounded work that goes ahead of tickets and does not wait for idle time: an upstream review or a CI repair.
 export type PendingReview = { project: Project; upstream: NonNullable<Job['upstream']>; repair?: never; reconcile?: never } | { project: Project; repair: NonNullable<Job['repair']>; upstream?: never; reconcile?: never }
-  // A reconcile the owner started for one ticket held back by earlier work.
+  // A reconcile the owner started for one ticket that cannot launch normally.
   | { project: Project; reconcile: NonNullable<Job['reconcile']> & { taskId: string; ticketKey: string; labels: string[] }; upstream?: never; repair?: never };
 // Each watched repository yields at most one review: from its last reviewed release to the newest release that strictly descends from it.
 // Releases at, behind or diverged from the watermark are skipped whenever they were published; a refresh caches the verified range for its base.
@@ -937,6 +937,11 @@ function epicHold(c: Config, store: Store, epics?: Epic[]) {
   return (ticket: Pick<Task, 'id' | 'epicId'>) => running(ticket) || (c.holdEpicTicketsUntilStarted ? unstarted(ticket) : '');
 }
 
+function ticketStateBlock(project: Project, task: Task, owned?: Pick<Job, 'state'>) {
+  return !project.readyStatuses.includes(task.status) ? `Ticket is ${task.status}; it must be in ${project.readyStatuses.join(' or ')}`
+    : owned ? `Ticket already has a ${owned.state} factory run` : taskHold(task);
+}
+
 export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jobs: Job[], store: Store, ticketKey?: string, cancelledFinished = false) {
   // A project's switch stops only work the factory picks itself; a named ticket comes from any configured project.
   const projects = ticketKey ? c.projects : c.projects.filter(p => p.enabled);
@@ -956,9 +961,7 @@ export async function inventory(c: Config, kanvil: Kanvil, threads: Thread[], jo
     const p = projects.find(p => p.kanvilId === t.projectId)!;
     const key = `${p.key}-${t.number}`;
     if (ticketKey && key !== ticketKey) return false;
-    const reason = !p.readyStatuses.includes(t.status) ? `Ticket is ${t.status}; it must be in ${p.readyStatuses.join(' or ')}`
-      : owned.has(t.id) ? `Ticket already has a ${owned.get(t.id)!.state} factory run`
-      : taskHold(t);
+    const reason = ticketStateBlock(p, t, owned.get(t.id));
     if (reason && ticketKey) skipped.push({ key, reason, id: t.id });
     return !reason;
   });
@@ -1074,7 +1077,7 @@ async function publishQueue(c: Config, store: Store, kanvil: Kanvil, queue: Pick
   await refreshEpics(c, store, kanvil);
 }
 
-export interface Skipped { key: string; reason: string; id?: string; blockedBy?: string[]; ticket?: Candidate; conflict?: 'artifacts'; evidence?: ReconcileEvidence }
+export interface Skipped extends TicketLaunchBlock { key: string; id?: string; blockedBy?: string[]; ticket?: Candidate }
 export interface CycleOptions { requestId?: string; dryRun?: boolean; doctor?: boolean; manual?: boolean; overrideLimits?: OverrideLimits; ticket?: string; upstream?: string; epic?: string; reconcile?: string; model?: string; provider?: DispatchProvider; chain?: 'first' | 'all'; continuation?: boolean; agent?: boolean }
 // The thresholds this start skips; automatic work skips none.
 export const skips = (options: Pick<CycleOptions, 'manual' | 'overrideLimits'>) => new Set<OverridableLimit>(!options.manual ? [] : options.overrideLimits === true ? overridableLimits : options.overrideLimits || []);
@@ -1455,14 +1458,16 @@ function discoveryAvailable(project: Project, jobs: Job[], store: Store, skipPro
   return project.enabled && !skipProjects.has(project.kanvilId) && !jobs.some(job => job.projectId === project.kanvilId && job.kind === 'discovery' && !['complete', 'dismissed'].includes(job.state)) && Number(store.get(`discoveryAfter:${project.kanvilId}`) ?? 0) <= Date.now();
 }
 
-// A reconcile starts only for a ticket the queue holds back by earlier work, and never beside another open run for it.
+// A reconcile starts only for an identified ticket the queue refuses, and never beside another open run for it.
 async function pendingReconcile(c: Config, store: Store, kanvil: Kanvil, threads: Thread[], jobs: Pick<Job, 'state' | 'ticketKey'>[], key: string): Promise<PendingReview | { reason: string; message: string }> {
   const ticketKey = key.trim().toUpperCase(), project = c.projects.find(p => ticketKey.startsWith(`${p.key}-`));
   if (!/^[A-Z0-9]+-\d+$/.test(ticketKey) || !project) throw new Error('Ticket project is not configured in the factory settings');
   if (jobs.some(job => job.ticketKey === ticketKey && !['complete', 'dismissed'].includes(job.state))) return { reason: 'reconcile-running', message: `${ticketKey} already has an open run.` };
   const held = (await inventory(c, kanvil, threads, store.jobs(), store, ticketKey)).skipped.find(s => s.key === ticketKey);
-  if (!held?.conflict) return { reason: 'reconcile-not-needed', message: `${ticketKey} is not held back by earlier work${held ? `: ${held.reason}` : '; start it normally'}.` };
-  return { project, reconcile: { taskId: held.id!, ticketKey, title: held.ticket?.title ?? '', labels: (held.ticket?.labels ?? []).map(label => label.name), reason: held.reason, ...held.evidence! } };
+  if (!held?.id) return { reason: 'reconcile-not-needed', message: held?.reason ?? `${ticketKey} can start normally.` };
+  const task = held.ticket ?? await kanvil.task(held.id, project.kanvilId);
+  const evidence = held.evidence ?? { threads: [], refs: [], openPR: false };
+  return { project, reconcile: { taskId: held.id, ticketKey, title: task.title ?? '', labels: (task.labels ?? []).map(label => label.name), reason: held.reason, ...evidence, ...(held.conflict ? {} : { investigateState: true }) } };
 }
 
 const selectionChanged = (reason: string) => ['ticket-changed-before-dispatch', 'ticket-order-or-eligibility-changed', 'ticket-preparing', 'no-eligible-ticket', 'label-limit'].includes(reason);
@@ -1522,7 +1527,9 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
     const driver = plan?.driver ?? instances.get(preset.model.instanceId);
     const queued = ticketKey && queuedPlan(store, ticketKey);
     if (queued && queued.id !== activePlanId) return decision('ticket-queued', { ticket: ticketKey, planId: queued.id, message: 'Ticket has a queued run. Cancel it before starting with different choices.' });
-    if (driver && busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(driver)) return decision(c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running', { driver });
+    const providerBusy = driver && busyProviders(jobs, shell.threads, instances, c.monitoringTimeoutMinutes, c.concurrency, undefined, options).has(driver);
+    const providerHold = () => decision(c.concurrency[driver === 'codex' ? 'codex' : 'claude'] === 0 ? 'provider-disabled' : 'provider-running', { driver });
+    if (providerBusy && !ticketKey) return providerHold();
     const cleanupRun = !plan?.review && options.reconcile ? await pendingReconcile(c, store, kanvil, shell.threads, jobs, options.reconcile) : undefined;
     if (cleanupRun && 'reason' in cleanupRun) return decision(cleanupRun.reason, { message: cleanupRun.message });
     const review = plan?.review ?? cleanupRun ?? (options.upstream ? (await pendingReviews(c, store, jobs, Date.now(), false)).find(r => r.upstream?.repo === options.upstream!.toLowerCase()) : undefined);
@@ -1543,6 +1550,7 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const chained = options.manual && ticketKey ? await chainResponse(c, store, t3, kanvil, instances, shell.threads, options, queue, skip, decision, clients.currentConfig ?? plan?.currentConfig, recordDecision) : undefined;
       return chained ?? decision('no-eligible-ticket', { ticket: ticketKey, skipped: queue.skipped, message: 'Ticket must be classified, within the model difficulty limit, SF-ready, unblocked, and not already owned.' });
     }
+    if (providerBusy) return providerHold();
     // A chain continuation is still user-authorized work, but it starts later and on its own, so only the chain's recorded overrides waive the automatic quota and idle policy.
     // An agent's request is not the owner's, so it keeps the automatic reserve and idle policy too.
     const manualPolicy = !!options.manual && !options.continuation && !options.agent;
@@ -1699,13 +1707,17 @@ async function dispatchOne(c: Config, store: Store, options: CycleOptions, plan?
       const waived = [...skip].filter(l => !currentManualCodex || !['idle', 'reserve'].includes(l)).map(l => ({ idle: 'idle', reserve: 'quota reserve', labels: 'label-limit', providers: 'provider-limit' })[l]);
       const modelReason = (options.continuation ? 'Started by a chain the user requested. ' : options.agent ? 'Started by an agent request. ' : options.manual ? `Manual dispatch${waived.length ? ` with ${waived.join('/')} thresholds overridden for this run` : ''}. ` : '') + currentQuota.factoryRouting.reason;
       const now = new Date().toISOString(), id = randomUUID();
-      const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind, ...(review?.upstream ? { upstream: review.upstream } : {}), ...(review?.repair ? { repair: review.repair } : {}), ...(review?.reconcile ? { reconcile: { title: review.reconcile.title, reason: review.reconcile.reason, threads: review.reconcile.threads, refs: review.reconcile.refs, openPR: review.reconcile.openPR } } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? review?.reconcile?.taskId ?? null, ticketKey: queue.selected?.key ?? review?.reconcile?.ticketKey ?? null, ...(queue.selected?.title ? { title: queue.selected.title } : {}), threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
+      const job: Job = { id, providerDriver: currentQuota.driver, modelSelection: selectedModel, modelReason, ...(queue.selected?.difficulty ? { difficulty: queue.selected.difficulty } : {}), kind, ...(review?.upstream ? { upstream: review.upstream } : {}), ...(review?.repair ? { repair: review.repair } : {}), projectId: project.kanvilId, taskId: queue.selected?.id ?? review?.reconcile?.taskId ?? null, ticketKey: queue.selected?.key ?? review?.reconcile?.ticketKey ?? null, ...(queue.selected?.title ? { title: queue.selected.title } : {}), threadId: randomUUID(), messageId: randomUUID(), createdAt: now, state: 'dispatching', reason: 'Dispatch prepared', lastPersonalActivity: null, reportPath: join(c.stateDir, 'reports', `${id}.json`), command: null, prUrls: [], completedAt: null };
       if (checked) {
         job.labels = checked.labels.map(l => l.name);
         job.priority = checked.task.priority;
       }
       // A reconcile can deliver its ticket's work, so the ticket's labels keep their prompt guards and label slots.
-      if (review?.reconcile) job.labels = review.reconcile.labels;
+      if (review?.reconcile) {
+        const { taskId, ticketKey, labels, ...evidence } = review.reconcile;
+        job.reconcile = evidence;
+        job.labels = labels;
+      }
       const u = job.upstream, r = job.repair;
       const title = job.kind === 'ticket' ? `Factory: ${job.ticketKey}` : job.kind === 'reconcile' ? `Factory reconcile: ${job.ticketKey}` : u ? `Upstream review: ${u.name} ${u.base}..${u.candidate}` : r ? `CI repair: ${project.name} ${r.workflow} run ${r.runId}` : `Factory discovery: ${project.name}`;
       // Ticket branches carry the ticket's kind (fix, feat, perf, ...) so release tooling can bump versions from them.
@@ -1807,7 +1819,8 @@ function taskReader(c: Config, kanvil: Kanvil, { cancelledFinished = false, cach
     const p = c.projects.find(p => p.kanvilId === t.projectId), labels = t.labels ?? [];
     let difficulty: PlanTicket['difficulty'];
     try { difficulty = taskDifficulty(t); } catch { /* reported when it is its turn */ }
-    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, hold: automationHold(t) || undefined, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
+    const refusal = p ? ticketStateBlock(p, t) : 'Its project is not included in the factory';
+    return { id: t.id, key: p ? `${p.key}-${t.number}` : t.key ?? `#${t.number}`, title: t.title, projectId: t.projectId, status: t.status, priority: t.priority, createdAt: t.createdAt, difficulty, automationReady: t.automationReady, hold: automationHold(t) || undefined, launchBlock: refusal ? { reason: refusal } : undefined, labels: labels.map(label => label.name), labelRank: p ? ticketLabelRank(labels, p.priorityLabels) : undefined, runnable: !!p, blockedBy: [], done: await done(t), ...t.readiness ? { readiness: t.readiness } : {} };
   };
   return { task, relations, done, node, projects, get ids() { return tasks.keys(); } };
 }
@@ -1925,7 +1938,7 @@ async function startEpic(c: Config, store: Store, t3: T3, kanvil: Kanvil, instan
 }
 // One reading of a plan's tickets: its Epic's members and what they wait for, then every other ticket it lists.
 // While the feed is synchronized it reads the live projection; final dispatch validation re-reads fresh before any launch.
-type PlanReading = { epic?: Awaited<ReturnType<typeof epicTree>>; epicError?: string; tickets: Map<string, Pick<PlanTicket, 'status' | 'difficulty' | 'hold' | 'done'> | { note: string }> };
+type PlanReading = { epic?: Awaited<ReturnType<typeof epicTree>>; epicError?: string; tickets: Map<string, Pick<PlanTicket, 'status' | 'difficulty' | 'hold' | 'done' | 'launchBlock' | 'runnable'> | { note: string }> };
 async function readPlan(c: Config, kanvil: Kanvil, plan: Plan, cached: boolean): Promise<PlanReading> {
   const reading: PlanReading = { tickets: new Map() };
   if (plan.epic) try { reading.epic = await backgroundRead(() => epicTree(c, kanvil, plan.epic!.id, cached)); } catch (error) {
@@ -1935,7 +1948,7 @@ async function readPlan(c: Config, kanvil: Kanvil, plan: Plan, cached: boolean):
   }
   const refreshed = new Set(reading.epic?.tickets.map(ticket => ticket.id)), reader = taskReader(c, kanvil, { cancelledFinished: !!plan.epic, cached }), limit = readLimiter();
   await readAll(planTickets(plan).filter(t => !refreshed.has(t.id)).map(t => limit(async () => {
-    try { const { status, difficulty, hold, done } = await backgroundRead(async () => reader.node(await reader.task(t.id))); reading.tickets.set(t.id, { status, difficulty, hold, done }); }
+    try { const { status, difficulty, hold, done, launchBlock, runnable } = await backgroundRead(async () => reader.node(await reader.task(t.id))); reading.tickets.set(t.id, { status, difficulty, hold, done, launchBlock, runnable }); }
     catch (error) { reading.tickets.set(t.id, { note: safeError(error) }); }
   })));
   return reading;
@@ -2019,9 +2032,13 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     // save takes them from the stored plan first, so the pass never uses or writes back the ones it started with.
     const stored = () => { const now = store.plan(plan.id); if (now) plan.overrideLimits = now.overrideLimits; return now; };
     const reading = await sharedPlanReading(c, kanvil, plan);
+    const earlierWork = new Map(planTickets(plan).filter(t => t.launchBlock?.conflict === 'artifacts').map(t => [t.id, t.launchBlock]));
     const refreshed = plan.epic ? applyEpicReading(store, plan, reading) : undefined;
     const all = planTickets(plan);
-    for (const t of all) if (!refreshed?.has(t.id) && reading.tickets.has(t.id)) Object.assign(t, reading.tickets.get(t.id));
+    for (const t of all) {
+      if (!refreshed?.has(t.id) && reading.tickets.has(t.id)) Object.assign(t, reading.tickets.get(t.id));
+      t.launchBlock ??= earlierWork.get(t.id);
+    }
     if (stored()?.state !== 'active') continue;
     // An Epic also waits for a good read of its members and for any tickets hidden from the factory.
     if (all.every(t => t.done) && !plan.epic?.error && !plan.epic?.restrictedCount) { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); continue; }
@@ -2029,6 +2046,7 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
     const jobs = store.jobSummaries();
     for (const t of chainReady(plan, jobs)) {
       if (stored()?.state !== 'active') break;
+      if (t.launchBlock && !t.launchBlock.conflict) { t.note = t.launchBlock.reason; continue; }
       if (!c.queue.enabled) { t.note = 'Queued runs are held'; continue; }
       if (providerDriver && plan.provider && providerDriver !== plan.provider) continue;
       if (!t.runnable) { t.note = 'Its project is not included in the factory'; continue; }
@@ -2050,7 +2068,10 @@ export async function runPlans(c: Config, store: Store, t3: T3, kanvil: Kanvil, 
             stored();
             const result = await dispatchOne(c, store, { manual: true, continuation: !only, agent: plan.agent, ticket: t.key, model: preset.id, provider: plan.provider, overrideLimits: plan.overrideLimits }, undefined, { t3, kanvil, currentConfig, decide }, plan.id);
             results.push(result);
-            t.note = result.reason === 'dispatched' ? undefined : String((result as any).skipped?.[0]?.reason ?? (result as any).message ?? result.reason);
+            const skipped = result.skipped as Skipped[] | undefined;
+            const refusal = skipped?.find(s => s.id === t.id && !s.blockedBy?.length);
+            t.launchBlock = refusal && { reason: refusal.reason, conflict: refusal.conflict, evidence: refusal.evidence };
+            t.note = result.reason === 'dispatched' ? undefined : String(skipped?.[0]?.reason ?? result.message ?? result.reason);
             if (plan.queued && result.reason === 'dispatched' && stored()?.state === 'active') { plan.state = 'done'; plan.finishedAt = new Date().toISOString(); store.savePlan(plan); }
             if (!limitHold(result.reason) && !['quota-exhausted', 'codex-quota-exhausted'].includes(result.reason)) break;
           }
