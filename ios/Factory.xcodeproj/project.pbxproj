@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		4744AAEE0001000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4744AAEE0001000000000002 /* Assets.xcassets */; };
 		07DEE6E575603F24085576DD /* Factory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331FF79509B5867BA0727862 /* Factory.swift */; };
+		661782417AC54BEAA4678851 /* FilterSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43076371CC83447487ED743F /* FilterSheet.swift */; };
 		2351CD903662F899B905DAB7 /* Factory.icon in Resources */ = {isa = PBXBuildFile; fileRef = 3800861A702B645F2C25C0E2 /* Factory.icon */; };
 		437F5192E8FE4E00E1C2255C /* RailNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07741295A21175D6D7B9006B /* RailNavigationTests.swift */; };
 		582D3DC01436B2F6157C3268 /* FactoryRail.js in Resources */ = {isa = PBXBuildFile; fileRef = 66978E7DC06C39670F4DCCD9 /* FactoryRail.js */; };
@@ -28,6 +29,7 @@
 		4744AAEE0001000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		07741295A21175D6D7B9006B /* RailNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RailNavigationTests.swift; sourceTree = "<group>"; };
 		331FF79509B5867BA0727862 /* Factory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Factory.swift; sourceTree = "<group>"; };
+		43076371CC83447487ED743F /* FilterSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterSheet.swift; sourceTree = "<group>"; };
 		3800861A702B645F2C25C0E2 /* Factory.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = Factory.icon; sourceTree = "<group>"; };
 		3E6F7FCD4014A6FC8D9AEAD2 /* Factory.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Factory.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		46FD1622F79EB4B2696B2261 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -51,6 +53,7 @@
 			children = (
 				4744AAEE0001000000000002 /* Assets.xcassets */,
 				331FF79509B5867BA0727862 /* Factory.swift */,
+				43076371CC83447487ED743F /* FilterSheet.swift */,
 				66978E7DC06C39670F4DCCD9 /* FactoryRail.js */,
 				46FD1622F79EB4B2696B2261 /* Info.plist */,
 			);
@@ -183,6 +186,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				07DEE6E575603F24085576DD /* Factory.swift in Sources */,
+				661782417AC54BEAA4678851 /* FilterSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

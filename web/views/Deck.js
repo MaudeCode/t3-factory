@@ -267,7 +267,8 @@ export function StartOptions({ limits } = {}) {
 }
 
 // Newest or oldest first, for ticket and run lists. It sits in the list's filter panel, named `label`.
-export const OrderChoice = ({ label, value, onChange, disabled }) => html`<${Segmented} named label=${label} value=${value} onChange=${onChange} disabled=${disabled} icons=${{ newest: "arrowDown", oldest: "arrowUp" }} options=${[["newest", "Newest first"], ["oldest", "Oldest first"]]} />`;
+export const runOrderOptions = [["newest", "Newest first"], ["oldest", "Oldest first"]];
+export const OrderChoice = ({ label, value, onChange, disabled }) => html`<${Segmented} named label=${label} value=${value} onChange=${onChange} disabled=${disabled} icons=${{ newest: "arrowDown", oldest: "arrowUp" }} options=${runOrderOptions} />`;
 
 // Icon-only start of one ticket through the ordinary checks; `hold` names why it is disabled, `origin` the page that started it.
 // A named start that passes every limit, for a ticket its queue, chain or Epic keeps waiting; the page's provider choice applies.

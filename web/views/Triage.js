@@ -3,7 +3,7 @@ import { config, statusSection, live, busy, actions, launchOperations, TRIAGE_OR
 import { confirmAction } from "../lib/confirmation.js";
 import { byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, streamReason, ticketKey, triageSummary } from "../lib/format.js";
 import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, RelativeTime } from "../ui/index.js";
-import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice, SectionSwitch } from "./Deck.js";
+import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, SectionSwitch } from "./Deck.js";
 import { RunFilters, TicketSelection } from "./Runs.js";
 import { follow, ticketClick } from "../lib/router.js";
 
@@ -130,7 +130,7 @@ export function ReadyReports({ lead }) {
   const picked = rows.filter((r) => selected.includes(r.id));
   const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
   return html`<${Page} class="queue" title="Queue" count=${rows.length}
-    tools=${html`<${RunFilters} rows=${tickets} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} order=${html`<${OrderChoice} label="Promotion order" value=${order} onChange=${setOrder} />`} /><${StartOptions} /><${TicketSelection} selecting=${selecting} onChange=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    tools=${html`<${RunFilters} rows=${tickets} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} order=${{ label: "Promotion order", value: order, onChange: setOrder }} /><${StartOptions} /><${TicketSelection} selecting=${selecting} onChange=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${lead}
     <${Section} class="list">
       ${selecting && !!rows.length && html`<div class="selection-bar">
@@ -178,7 +178,7 @@ export function Triage({ lead } = {}) {
   const waits = (statusSection("triageDecision").value?.results ?? []).filter((r) => r.outcome === "waiting");
   const heldRow = (row) => ["waiting", "awaiting-promotion"].includes(row.event.data.outcome) ? (waits.find((r) => r.ticket === row.event.data.ticket) ?? waits.find((r) => r.admission))?.reason : undefined;
   return html`<${Page} title="Sources" hint=${HINT}
-    actions=${html`${c.triage && html`<${SectionSwitch} kind="triage" label="Inbox triage" on="Triage on" off="Triage paused" /><${StartOptions} limits=${["reserve"]} />`}`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} order=${html`<${OrderChoice} label="Result order" value=${order} onChange=${setOrder} />`} />`}>
+    actions=${html`${c.triage && html`<${SectionSwitch} kind="triage" label="Inbox triage" on="Triage on" off="Triage paused" /><${StartOptions} limits=${["reserve"]} />`}`} tools=${html`<${RunFilters} rows=${[...open, ...activity]} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} order=${{ label: "Result order", value: order, onChange: setOrder }} />`}>
     ${lead}
     <${Section} title="Inboxes" class="triage-inboxes" aside=${html`<${Button} size="sm" icon="play" label="Triage waiting reports now" title=${triaging ? "Triage is running" : waiting ? "Triage waiting reports now, once past the pause and the quota reserve" : "No reports are waiting"} disabled=${busy.value || !waiting || triaging} onClick=${actions.triageNow} /><a class="btn btn-sm btn-icon" href="/settings/sources" onClick=${follow} aria-label="Triage settings" title="Triage settings"><${Icon} name="gear" /></a>`}>
       ${c.triage && !live.value.triage && html`<p class="hint tone-attention"><${Icon} name="alert" /> Triage is paused. New reports wait until it is turned on.</p>`}
