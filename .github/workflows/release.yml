@@ -89,7 +89,7 @@ jobs:
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
-      FACTORY_HOST: ${{ vars.FACTORY_IOS_HOST }}
+      FACTORY_HOST: ${{ secrets.FACTORY_IOS_HOST }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
