@@ -3,6 +3,7 @@
 import base64
 import functools
 import hashlib
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ class SignInFixture(SimpleHTTPRequestHandler):
     cookie = "fixture=" + secrets.token_urlsafe()
     grants = {}
     first_page = True
+    first_run = True
 
     def reply(self, status, body=b"", **headers):
         self.send_response(status)
@@ -32,6 +34,12 @@ class SignInFixture(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         url = urlsplit(self.path)
+        if url.path == "/runs/link-first" and SignInFixture.first_run:
+            SignInFixture.first_run = False
+            return self.reply(404)  # The public gateway serves only Apple's association file.
+        if url.path.startswith("/runs/link-"):
+            # A unique page and query show which URL the scene actually loaded.
+            return self.reply(200, f"<p>{escape(self.path)}</p>".encode(), **{"Content-Type": "text/html"})
         if url.path == "/" and SignInFixture.first_page:
             SignInFixture.first_page = False
             return self.reply(503)
