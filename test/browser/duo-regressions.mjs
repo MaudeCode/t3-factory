@@ -26,6 +26,31 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
         assert(await page.getByRole("switch", { name: "Automation" }).isVisible());
         assert(await page.getByRole("button", { name: "Start a run" }).isVisible());
       }],
+      ["native composer Back restores the filtered Runs list", "runs", "runsTests", 382, async page => {
+        await page.evaluate(() => runsTests.showLong());
+        // The production bridge imports /lib/ while the fixtures serve the same modules under /web/lib/.
+        await page.addScriptTag({ type: "importmap", content: JSON.stringify({ imports: { "/lib/": "/web/lib/" } }) });
+        await page.evaluate(() => { window.webkit = { messageHandlers: { factoryRail: { postMessage() {} } } }; });
+        await page.addScriptTag({ url: "/ios/Factory/FactoryRail.js" });
+        await page.waitForFunction(() => !!window.factoryRail);
+        const finished = page.getByRole("radio", { name: /^Finished/ });
+        await finished.click();
+        await page.getByRole("button", { name: "Search", exact: true }).click();
+        const query = page.getByRole("textbox", { name: "Find a ticket" });
+        await query.fill("APP-1");
+        await query.press("Enter");
+        await page.getByRole("button", { name: /^Show 100 more/ }).click();
+        const links = page.locator(".runs-list a.next-ticket");
+        assert.equal(await links.count(), 200);
+        await page.evaluate(() => factoryRail.openAction("/start/new"));
+        await page.getByRole("heading", { name: "Start a run" }).waitFor();
+        await page.evaluate(() => factoryRail.back());
+        await finished.waitFor();
+        assert.equal(await finished.getAttribute("aria-checked"), "true");
+        assert.equal(await links.count(), 200);
+        await page.getByRole("button", { name: "Search", exact: true }).click();
+        assert.equal(await query.inputValue(), "APP-1");
+      }],
       ["disconnected Controls resumes in place", "start", "startTests", 382, async page => {
         await page.evaluate(async () => {
           await startTests.show("/controls");

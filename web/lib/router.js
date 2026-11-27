@@ -111,11 +111,13 @@ export function navigate(href, replace = false, keepScroll = false, runLink) {
   const here = current();
   if (target !== here) {
     let entry = null;
-    if (!replace && next.page === "/runs/:id") {
+    const parent = route.peek().path;
+    const railAction = RAIL_ACTIONS[parent]?.some(action => action.path === target);
+    if (!replace && (next.page === "/runs/:id" || railAction)) {
       const runReturn = { detail: target, top: scrollTop(pageScroller()) };
       if (runLink) runReturn.rowY = runLink.getBoundingClientRect().top;
       history.replaceState({ ...history.state, runReturn }, "", here);
-      entry = { runParent: here };
+      entry = railAction ? { railParent: parent } : { runParent: here };
     }
     history[replace ? "replaceState" : "pushState"](entry, "", target);
   }

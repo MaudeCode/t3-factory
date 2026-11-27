@@ -190,7 +190,10 @@ function Shell() {
   const controls = page === CONTROLS[0];
   const phone = usePhone();
   const ptr = usePullToRefresh(actions.refresh);
-  const Page = pages[page];
+  // Keep the originating page mounted while composing so Back restores its local list state.
+  const composerParent = page === "/start/new" && history.state?.railParent;
+  const underlying = composerParent || page;
+  const Page = pages[underlying];
   const waiting = jobs.value.filter((j) => j.state === "waiting").length;
   const current = (path) => page === path || (path === "/" && page === "/start") || (path === "/runs" && page === "/runs/:id");
   const badge = (path) => path === "/runs" && waiting > 0 && html`<b class="badge" title="Runs that need you">${waiting}</b>`;
@@ -216,11 +219,12 @@ function Shell() {
       </aside>`}
     <div class="content">
       <div ref=${ptr} class="ptr" aria-live="polite"></div>
-      <main key=${page.startsWith("/runs") ? "/runs" : page === "/settings" ? page : page + param}>${controls ? html`<${PageFrame} title="Controls" tools=${account}>
+      <main hidden=${!!composerParent} key=${underlying.startsWith("/runs") ? "/runs" : underlying === "/settings" ? underlying : underlying + param}>${controls ? html`<${PageFrame} title="Controls" tools=${account}>
         <div class="factory-control-row"><${Automation} named /><${Updates} /><${Start} /></div>
         <nav class="more-list" aria-label="Factory controls">${inMore.map(item => link(item))}</nav>
         ${version.value && html`<p class="more-version">Version ${version.value}</p>`}
       <//>` : html`<${Page} id=${param} initialTicket=${page === "/start" ? param : undefined} />`}</main>
+      ${composerParent && html`<main><${NewRun} /></main>`}
     </div>
     ${phone && html`<nav class="tabbar" aria-label="Pages">
       ${TABS.map(item => link(item, item === CONTROLS && inMore.some(([path]) => current(path))))}

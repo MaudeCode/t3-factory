@@ -52,9 +52,7 @@
     },
     openAction(path) {
       if (!pageActions().some(action => action.path === path)) return;
-      const parent = router.route.value.path;
       router.navigate(path);
-      history.replaceState({ ...history.state, railParent: parent }, "");
     },
     account() { accountButton()?.click(); },
     back() {
