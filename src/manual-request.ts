@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Config } from './config.ts';
 import type { Store } from './store.ts';
 import type { CycleOptions } from './scheduler.ts';
-import { log, safeError } from './scheduler.ts';
+import { dispatchPreview, log, safeError } from './scheduler.ts';
 import type { ControlResult } from './control.ts';
 import { readOperation, saveOperation, type Operation } from './operations.ts';
 import { ReadContext, ManualDeadline, readFailure } from './read-context.ts';
@@ -28,9 +28,10 @@ export function recoverOperation(stateDir: string, store: Store, operation: Oper
 
 export function runManualRequest(c: Config, store: Store, options: CycleOptions, enqueue: Enqueue, pass: (options: CycleOptions, queueWaitMs: number) => Promise<{ reason: string } & Record<string, unknown>>, requests = new Map<string, Promise<ControlResult>>(), finished: (operation: Operation) => void = () => {}, controlReceivedAt?: string): Promise<ControlResult> {
   const id = options.requestId ?? randomUUID(), command = { ...options, requestId: id, manual: true };
-  const prior = readOperation(c.stateDir, id);
+  const requestKey = options.dryRun ? `preview:${id}` : id;
+  const prior = options.dryRun ? undefined : readOperation(c.stateDir, id);
   if (prior?.command && !isDeepStrictEqual(prior.command, command)) return Promise.resolve({ code: 1, data: { message: 'Request ID already belongs to another command' } });
-  const running = requests.get(id);
+  const running = requests.get(requestKey);
   if (running) return running;
   if (prior && !prior.command && ['done', 'failed', 'uncertain'].includes(prior.state)) return Promise.resolve(prior.result ?? { code: 1, data: { reason: 'launch-uncertain', uncertain: true, message: 'This legacy request has no confirmed outcome. Inspect its existing run before starting another request.' } });
   if (prior?.command) {
@@ -42,7 +43,7 @@ export function runManualRequest(c: Config, store: Store, options: CycleOptions,
   const operation: Operation = { ...prior, id, input: prior?.input ?? command, command, state: 'running', createdAt: prior?.createdAt ?? new Date(accepted).toISOString(),
     progress: { phase: 'queued', stage: 'queued', acceptedAt: new Date(accepted).toISOString(), updatedAt: new Date(now).toISOString(), deadlineAt: new Date(accepted + c.manualPrelaunchSeconds * 1000).toISOString(), controlReceivedAt, schedulerAcceptedAt: new Date(now).toISOString() } };
   log('manual-accepted', { requestId: id, receivedAt: prior?.createdAt ?? new Date(accepted).toISOString(), controlReceivedAt, acceptedAt: new Date(now).toISOString(), admissionMs: now - accepted });
-  const publish = () => { saveOperation(c.stateDir, operation); };
+  const publish = () => { if (!options.dryRun) saveOperation(c.stateDir, operation); };
   const context = new ReadContext(Date.parse(operation.progress!.deadlineAt), stage => {
     const previous = operation.progress!;
     log('manual-phase', { requestId: id, stage: previous.stage, ms: Date.now() - Date.parse(previous.updatedAt) });
@@ -51,14 +52,14 @@ export function runManualRequest(c: Config, store: Store, options: CycleOptions,
   publish();
   let finish!: (result: ControlResult) => void;
   const result = new Promise<ControlResult>(resolve => { finish = resolve; });
-  requests.set(id, result);
+  requests.set(requestKey, result);
   const settle = (result: ControlResult) => {
     if (operation.state !== 'running') return;
     log('manual-phase', { requestId: id, stage: context.stage, ms: Date.now() - Date.parse(operation.progress!.updatedAt), outcome: (result.data as any)?.reason });
     operation.state = (result.data as any)?.uncertain ? 'uncertain' : 'done'; operation.result = result;
-    try { publish(); finished(operation); }
+    try { publish(); if (!options.dryRun) finished(operation); }
     catch (error) { result = { code: 1, data: { uncertain: true, message: `Could not persist the request outcome: ${safeError(error)}. Check factory status before retrying.` } }; }
-    context.finish(); context.onStage?.(); finish(result); requests.delete(id);
+    context.finish(); context.onStage?.(); finish(result); requests.delete(requestKey);
   };
   const failure = (error: unknown) => {
     if (operation.state !== 'running') return;
@@ -68,12 +69,13 @@ export function runManualRequest(c: Config, store: Store, options: CycleOptions,
     log('manual-request-failed', { requestId: id, stage, message, launched: context.launched });
     const ticketKey = options.ticket?.trim().toUpperCase(), projectId = ticketKey && c.projects.find(p => ticketKey.startsWith(`${p.key}-`))?.kanvilId;
     // The journal entry is a notice only: failing to write it must not keep the request from settling.
-    try {
+    if (!options.dryRun) try {
       store.record('dispatch.failed', `Dispatch of ${ticketKey || options.upstream || options.epic || options.reconcile || 'a run'} failed`,
         { requestId: id, stage, message, ...ticketKey ? { ticketKey } : {}, ...projectId ? { projectId } : {}, state: 'failed' });
     } catch (error) { log('journal-error', { requestId: id, message: safeError(error) }); }
-    settle({ code: 1, data: { reason: context.launched ? 'launch-uncertain' : deadline instanceof ManualDeadline ? 'manual-deadline-exceeded' : 'error', message, stage,
-      ...context.launched ? { uncertain: true, ...context.ownership } : { notLaunched: true } } });
+    const data = { reason: context.launched ? 'launch-uncertain' : deadline instanceof ManualDeadline ? 'manual-deadline-exceeded' : 'error', message, stage,
+      ...context.launched ? { uncertain: true, ...context.ownership } : { notLaunched: true } };
+    settle({ code: 1, data: options.dryRun ? dispatchPreview({ ...data, at: new Date().toISOString() }, options.ticket) : data });
   };
   context.start(() => { if (operation.progress?.phase === 'queued') failure(context.controller.signal.reason); });
   void enqueue(async queueWaitMs => {

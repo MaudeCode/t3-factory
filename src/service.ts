@@ -590,7 +590,9 @@ export class FactoryService {
         this.logPass(lane, { reason, outcome: held.decision.reason, ms: performance.now() - started, queueWaitMs, skipped: true });
         return held.decision;
       }
-      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide: decide(), currentConfig: () => this.settings() });
+      const preview = options.manual && options.dryRun;
+      const result = await cycle(c, this.store, options, { t3: this.t3, kanvil, github: this.github, deferCleanup: true, deferReconcile: true, backgroundInventory: true, workKind, providerDriver, decide: preview ? undefined : decide(), currentConfig: () => this.settings() });
+      if (preview) return result;
       for (const id of this.uncertainRequests) {
         const job = this.store.jobByRequest(id), operation = readOperation(c.stateDir, id);
         if (operation && (job?.thread || job?.reason === 'T3 accepted dispatch' || operation.progress?.planId)) { recoverOperation(c.stateDir, this.store, operation); this.uncertainRequests.delete(id); }
@@ -601,7 +603,7 @@ export class FactoryService {
     } catch (error) {
       if (this.stopped && !options.manual) return { reason: 'stopped' };
       const message = safeError(error); log('error', { message, reason, ms: performance.now() - started, queueWaitMs });
-      decide()({ reason: 'error', message, at: new Date().toISOString() });
+      if (!(options.manual && options.dryRun)) decide()({ reason: 'error', message, at: new Date().toISOString() });
       throw error;
     } finally {
       if ((options.manual || reason === 'once') && !options.dryRun && !options.doctor) { this.scheduleCleanup(true); this.scheduleCollection(); }

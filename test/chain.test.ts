@@ -12,7 +12,49 @@ import { cycle, runPlans, cancelPlan, setPlanOverrides, orderPlans, refreshInven
 import type { OverrideLimits } from '../src/config.ts';
 import type { Thread } from '../src/policy.ts';
 import { v2Thread } from './v2-fixture.ts';
-import { mockLaunchConnection, dispatchFixture, deferred } from './dispatch-fixture.ts';
+import { mockLaunchConnection, dispatchFixture, serviceFixture, deferred } from './dispatch-fixture.ts';
+import { savedOperations } from '../src/operations.ts';
+
+const dryRunCases = [
+  { name: 'runnable ticket', options: {}, start: ['FIX-1'], wait: [] },
+  { name: 'runnable ticket with chain', options: { chain: 'all' }, start: ['FIX-1'], wait: [] },
+  { name: 'blocked ticket', options: {}, blocked: true, start: [], wait: ['FIX-2', 'FIX-1'] },
+  { name: 'first blocker', options: { chain: 'first' }, blocked: true, start: ['FIX-2'], wait: ['FIX-1'] },
+  { name: 'whole chain', options: { chain: 'all' }, blocked: true, start: ['FIX-2'], wait: ['FIX-1'] },
+  { name: 'whole chain with a preset', options: { chain: 'all', model: 'sol' }, blocked: true, start: ['FIX-2'], wait: ['FIX-1'] },
+  { name: 'Epic with one free slot', options: { epic: 'epic' }, blocked: true, start: ['FIX-2'], wait: ['FIX-1', 'FIX-3'] },
+  { name: 'runnable ticket with the provider off', options: { overrideLimits: [] }, providerOff: true, start: [], wait: ['FIX-1'] },
+  { name: 'invalid model', options: { model: 'missing' }, start: [], wait: ['FIX-1'] },
+] as const;
+
+for (const scenario of dryRunCases) test(`dispatch dry run leaves plans and events unchanged for ${scenario.name}`, async t => {
+  const f = serviceFixture(t);
+  const epic = 'epic' in scenario.options;
+  if ('blocked' in scenario) f.tasks[1].status = 'todo';
+  if (epic) {
+    f.tasks.push(f.task('other', 3, 'todo'));
+    f.epics.push({ id: 'epic', title: 'Launch', archived: false, members: ['root', 'blocker', 'other'], restrictedCount: 0 });
+  }
+  if ('providerOff' in scenario) setConfig(f, () => { f.c.concurrency.codex = 0; });
+  const state = () => ({ plans: f.store.plans(), events: f.store.events(), jobs: f.store.jobs(), requests: savedOperations(f.c.stateDir) });
+  const before = state();
+  const { code, data } = await f.internal.handle({ type: 'dispatch', options: {
+    ...epic ? {} : { ticket: 'FIX-1' }, model: 'auto',
+    overrideLimits: epic ? [] : true, ...scenario.options, dryRun: true,
+  } });
+  const after = state();
+  assert.deepEqual(after.plans, before.plans, 'no plan persisted');
+  assert.deepEqual(after.events, before.events, 'no event recorded');
+  assert.deepEqual(after.jobs, before.jobs, 'no job ownership reserved');
+  assert.deepEqual(after.requests, before.requests, 'no launch request persisted');
+  assert.equal(f.launches.length, 0);
+  assert.equal(data.dryRun, true);
+  assert.equal('planId' in data, false);
+  assert.deepEqual(data.wouldStart, scenario.start);
+  assert.deepEqual(data.wouldWait, scenario.wait);
+  assert.equal(code, scenario.start.length ? 0 : 1);
+  if (scenario.start.length) assert.equal(data.reason, 'would-dispatch');
+});
 
 // FIX-50 is blocked by FIX-49, FIX-48, and FIX-47; FIX-48 is blocked by FIX-13. The user may run the first
 // runnable blocker, or the whole chain in priority order within the run limits, then FIX-50.

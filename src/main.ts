@@ -316,7 +316,7 @@ if (command === 'web') {
       await delay(500); claimed = store.claim();
     }
     if (!claimed) { store.close(); store = undefined; throw new Error('The scheduler is busy and not answering on its control socket. Try again shortly.'); }
-    decide = store.decisionRecorder({ workKind: 'tickets', manual: options.manual });
+    if (!(options.manual && options.dryRun)) decide = store.decisionRecorder({ workKind: 'tickets', manual: options.manual });
     const result = options.manual
       ? (await runManualRequest(c, store, options, async (work, _foreground, meta) => { await meta.context.run(() => work(0)); }, opts => cycle(c, store!, opts, { decide }))).data
       : await cycle(c, store, options, { decide });
@@ -327,7 +327,7 @@ if (command === 'web') {
     }
   } catch (e) {
     const message = safeError(e); log('error', { message });
-    if (store) {
+    if (store && !(options.manual && options.dryRun)) {
       (decide ?? store.decisionRecorder({ workKind: 'tickets', manual: options.manual }))({ reason: 'error', message, at: new Date().toISOString() });
     }
     process.exitCode = 1;
