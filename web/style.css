@@ -1574,10 +1574,9 @@ body,
   text-align: left;
   cursor: pointer;
 }
-/* In the native rail, Controls always remains reachable. Keep dashboard controls on Now;
-   let other pages use the space, including when the system turns its bars horizontally. */
-.factory-rail .shell:not([data-page="/"]):not([data-page="/start"]) > :is(.top, .side) { display: none; }
-.factory-rail .side-foot > a[href="/controls"] { display: none; }
+/* The native Controls destination owns automation, Start and connection status. */
+.factory-rail .shell > :is(.top, .side) { display: none; }
+.factory-rail .shell { grid-template-columns: minmax(0, 1fr); }
 .factory-rail body { --tabbar: 0px; }
 .factory-control-row {
   display: flex;

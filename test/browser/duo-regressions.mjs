@@ -15,12 +15,16 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
           [main.clientWidth, main.querySelector(".page").getBoundingClientRect().width]);
         assert(size[0] > 760 && Math.abs(size[1] - size[0]) < 1);
       }],
-      ["native dashboard has one Controls destination", "start", "startTests", 951, async page => {
+      ["native dashboard leaves global controls to the Controls destination", "start", "startTests", 951, async page => {
         await page.evaluate(() => startTests.show("/"));
         const shortcut = page.locator('.side-foot a[href="/controls"]');
         assert(await shortcut.isVisible(), "website sidebar keeps its shortcut");
         await page.evaluate(() => document.documentElement.classList.add("factory-rail"));
-        assert(!await shortcut.isVisible() && await page.getByRole("button", { name: "Start a run" }).isVisible());
+        assert(!await page.locator(".side").isVisible());
+        assert.equal(await page.locator(".content").evaluate(el => el.getBoundingClientRect().top), 0);
+        await page.evaluate(() => startTests.show("/controls"));
+        assert(await page.getByRole("switch", { name: "Automation" }).isVisible());
+        assert(await page.getByRole("button", { name: "Start a run" }).isVisible());
       }],
       ["disconnected Controls resumes in place", "start", "startTests", 382, async page => {
         await page.evaluate(async () => {

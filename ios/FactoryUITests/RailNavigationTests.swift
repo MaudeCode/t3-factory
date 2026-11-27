@@ -23,6 +23,12 @@ final class RailNavigationTests: XCTestCase {
         waitForExpectations(timeout: timeout)
         if consent.exists { consent.tap() }
         else if appConsent.exists { appConsent.tap() }
+        let start = app.buttons["Start a run"].firstMatch
+        tap(start)
+        XCTAssertTrue(app.webViews.textFields["Ticket number"].firstMatch.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.webViews.buttons["Start next eligible ticket"].firstMatch.isEnabled)
+        tap(app.buttons["Back"].firstMatch)
+        XCTAssertTrue(start.waitForExistence(timeout: timeout))
         tap(queue)
         let ticket = app.links.matching(NSPredicate(format: "label BEGINSWITH %@", "Synthetic ticket APP-1")).firstMatch
         tap(ticket)

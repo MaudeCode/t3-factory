@@ -12,10 +12,15 @@ export const CONTROLS = ["/controls", "Controls", "gear"];
 export const PAGES = [...NAV.flatMap(([, pages]) => pages), CONTROLS];
 export const TABS = [...NAV[0][1], CONTROLS];
 
+// Page actions open existing web routes. The native rail renders the current list beside its stable tabs.
+const startRun = { path: "/start/new", name: "Start a run", symbol: "play.fill" };
+export const RAIL_ACTIONS = { "/": [startRun], "/runs": [startRun] };
+
 // Resolve a path to { page, param }. Unknown paths fall back to Now.
 export function match(href) {
   const [path] = href.split("?");
   const query = href.slice(path.length + 1);
+  if (path === startRun.path) return { page: path, path };
   if (path === "/start") {
     const tickets = new URLSearchParams(query).getAll("ticket");
     return { page: path, param: tickets.length === 1 ? ticketKey(tickets[0]) : "", path };

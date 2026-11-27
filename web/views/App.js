@@ -7,7 +7,7 @@ import { confirmAction } from "../lib/confirmation.js";
 import { THEMES, APPEARANCES, theme, choose, appearance } from "../lib/theme.js";
 import { display } from "../lib/display.js";
 import { Login } from "./Login.js";
-import { OperationActions, Composer } from "./Deck.js";
+import { OperationActions, Operations, Composer } from "./Deck.js";
 import { Now } from "./Now.js";
 import { TicketPanel } from "./TicketPanel.js";
 import { Runs } from "./Runs.js";
@@ -17,7 +17,8 @@ import { Settings } from "./Settings.js";
 import { Cleanup } from "./Cleanup.js";
 import { Activity } from "./Activity.js";
 
-const pages = { "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": Runs, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/settings": Settings, "/sources": Sources };
+const NewRun = () => html`<${PageFrame} title="Start a run"><div class="start-pop"><${Composer} /></div><${Operations} /><//>`;
+const pages = { "/start/new": NewRun, "/": Now, "/start": Now, "/runs": Runs, "/runs/:id": Runs, "/queue": Queue, "/activity": Activity, "/cleanup": Cleanup, "/settings": Settings, "/sources": Sources };
 const CONNECTION = { connecting: "Connecting", live: "Live", retrying: "Retrying", polling: "Polling", offline: "Offline" };
 
 // Palette and light or dark choice, kept in this browser.
