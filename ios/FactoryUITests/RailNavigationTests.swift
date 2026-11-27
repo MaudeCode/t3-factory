@@ -2,6 +2,21 @@ import XCTest
 
 final class RailNavigationTests: XCTestCase {
     @MainActor
+    func testRunLinksReachTheRequestedPageOnLaunchAndWhileRunning() {
+        let app = XCUIApplication()
+        app.terminate()
+        let first = "runs/link-first?ticket=APP-12"
+        app.open(URL(string: "factory://" + first)!)
+        let retry = app.buttons["Retry connection"].firstMatch
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        retry.tap()
+        XCTAssertTrue(app.webViews.staticTexts["/" + first].firstMatch.waitForExistence(timeout: 10))
+        let next = "runs/link-second?ticket=APP-13"
+        XCUIDevice.shared.system.open(URL(string: "factory://" + next)!)
+        XCTAssertTrue(app.webViews.staticTexts["/" + next].firstMatch.waitForExistence(timeout: 10))
+    }
+
+    @MainActor
     func testSystemSignInThenBackRetracesRelatedTicketToQueue() {
         continueAfterFailure = false
         let timeout: TimeInterval = 30

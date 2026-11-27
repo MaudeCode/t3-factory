@@ -27,9 +27,29 @@ final class FactoryScene: UIResponder, UIWindowSceneDelegate {
         let window = UIWindow(windowScene: scene)
         window.overrideUserInterfaceStyle = Self.style(for: UserDefaults.standard.string(forKey: Self.appearanceKey))
         window.backgroundColor = Self.canvas
-        window.rootViewController = FactoryController()
+        let controller = FactoryController()
+        if let link = options.userActivities.compactMap(Self.webLink).first ?? options.urlContexts.first?.url {
+            controller.openLink(link)
+        }
+        window.rootViewController = controller
         self.window = window
         window.makeKeyAndVisible()
+    }
+
+    private static func webLink(_ activity: NSUserActivity) -> URL? {
+        activity.activityType == NSUserActivityTypeBrowsingWeb ? activity.webpageURL : nil
+    }
+
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        if let url = Self.webLink(userActivity) {
+            (window?.rootViewController as? FactoryController)?.openLink(url)
+        }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
+        if let url = contexts.first?.url {
+            (window?.rootViewController as? FactoryController)?.openLink(url)
+        }
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
@@ -90,7 +110,9 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
 
     private func isFactory(_ url: URL?) -> Bool {
         guard let url else { return false }
-        return url.scheme == origin.scheme && url.host == origin.host && url.port == origin.port
+        let defaultPort = origin.scheme == "https" ? 443 : 80
+        return url.scheme?.lowercased() == origin.scheme && url.host?.lowercased() == origin.host?.lowercased()
+            && (url.port ?? defaultPort) == (origin.port ?? defaultPort)
     }
     private var web: WKWebView!
     private var rail: RailState?
@@ -98,6 +120,37 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
     private var filterPath: String?
     private var unavailableView: UIContentUnavailableView?
     private var retryURL: URL?
+
+    private var launchURL: URL?
+
+    // Only dashboard pages can be opened through a link. Auth, API and static files have other owners.
+    private static func isPagePath(_ path: String) -> Bool {
+        path.wholeMatch(of: #//(?:runs(?:/[A-Za-z0-9_-]+)?|settings(?:/[A-Za-z0-9_-]+)?|start(?:/new)?|queue|sources|activity|cleanup|controls)?/#) != nil
+    }
+
+    func openLink(_ url: URL) {
+        guard let link = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              link.user == nil, link.password == nil, (link.fragment ?? "").isEmpty,
+              var target = URLComponents(url: origin, resolvingAgainstBaseURL: false) else { return }
+        var path = link.percentEncodedPath
+        if link.scheme?.lowercased() == "factory", link.port == nil {
+            if let page = link.percentEncodedHost, !page.isEmpty { path = "/" + page + path }
+        } else if link.scheme?.lowercased() != "https" || !isFactory(url) { return }
+        if path.isEmpty { path = "/" }
+        guard Self.isPagePath(path) else { return }
+        target.percentEncodedPath = path
+        target.percentEncodedQuery = link.percentEncodedQuery
+        guard let destination = target.url else { return }
+        if web == nil {
+            launchURL = destination
+        } else {
+            signInTask?.cancel()
+            authentication?.cancel()
+            filterSheet?.dismiss(animated: false)
+            retryURL = nil
+            loadPage(destination)
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -119,7 +172,8 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
         web.scrollView.contentInsetAdjustmentBehavior = .never
         web.translatesAutoresizingMaskIntoConstraints = false
         showLogin()
-        loadPage(origin)
+        loadPage(launchURL ?? origin)
+        launchURL = nil
     }
 
     func disconnect() {
@@ -402,7 +456,9 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         if response.isForMainFrame, isFactory(response.response.url),
-           let http = response.response as? HTTPURLResponse, (500...599).contains(http.statusCode) {
+           let http = response.response as? HTTPURLResponse,
+           (500...599).contains(http.statusCode) || (http.statusCode == 404 && Self.isPagePath(http.url?.path ?? "")) {
+            // Off the private network, the public association-file host returns 404 for dashboard pages.
             unavailable(http.url)
             decisionHandler(.cancel)
         } else { decisionHandler(.allow) }
