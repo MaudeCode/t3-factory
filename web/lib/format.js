@@ -165,14 +165,16 @@ export function operationText(op) {
   if (op.state === "running") return p?.phase === "queued" ? "Queued at scheduler" : p?.phase === "checking" ? `Checking · ${p.stage}` : p?.phase === "launching" ? "Starting T3 run" : "Waiting for scheduler progress";
   return d?.reason === "dispatched" ? `Started ${d.ticket || "ticket"} with ${d.model}.` : d?.skipped?.[0]?.reason || d?.message || d?.reason || "Check factory status before retrying.";
 }
-// The hold on a named start that earlier work refused (a thread, branch or pull request already names the ticket), with
-// what the scheduler found. A reconcile run settles it; see `Investigate` in web/views/Deck.js.
-export const earlierWork = (op) => op.input?.reconcile || !op.input?.ticket ? undefined
-  : (op.result?.data?.skipped ?? []).find((s) => s.conflict === "artifacts" && s.key?.toUpperCase() === op.input.ticket.toUpperCase());
-// The scheduler's three notes for that hold (`inventory` in src/scheduler.ts), which is all a plan's ticket keeps of it.
-// ponytail: matched by wording; have the plan ticket carry `conflict` like a held row if these sentences ever change.
-export const EARLIER_WORK = /^Existing (T3 thread or branch|Git branch|open PR) references this ticket$/;
-export const blockedByEarlierWork = (planTicket) => !planTicket.done && EARLIER_WORK.test(planTicket.note ?? "");
+// A completed named start with an identified ticket-level refusal. Missing tickets and failed investigations offer no action.
+export function ticketRefusal(op) {
+  const key = ticketKey(op.input?.ticket);
+  if (op.state !== "done" || op.input?.reconcile || op.choiceHandled || !key) return;
+  return op.result?.data?.skipped?.find((s) => (s.id || s.conflict === "artifacts") && ticketKey(s.key) === key);
+}
+// Older saved plans kept only the note for an artifact refusal.
+const EARLIER_WORK = /^Existing (T3 thread or branch|Git branch|open PR) references this ticket$/;
+export const planLaunchBlock = (t) => !t.done && !t.umbrella
+  ? t.launchBlock ?? (EARLIER_WORK.test(t.note ?? "") ? { reason: t.note, conflict: "artifacts" } : undefined) : undefined;
 // What earlier work was found, one line each.
 export const evidenceLines = (e) => [
   ...new Set((e?.refs ?? []).map((ref) => ref.replace(/^refs\/(heads|remotes\/[^/]+)\//, ""))).values()].map((name) => ["Branch", name]).concat(
@@ -200,12 +202,20 @@ export const isFinished = (job) => !isOpen(job);
 // A provider held back by its allowance: nothing starts on it until the window resets or the owner overrides.
 export const QUOTA_HOLDS = ["quota-exhausted", "quota-budget", "quota-reserve"];
 // What the Now page lists, by section. Needs you: waiting runs, inbox reports only the owner can move, background
-// problems, and requests that ended without starting. Working and CI: active runs, split on whether a pull request
+// problems, requests that ended without starting, and tickets a running plan cannot launch. Working and CI: active runs, split on whether a pull request
 // exists yet. Your queue: what the owner started that has not finished starting. Nothing else belongs on the page.
 export function nowSections({ jobs = [], plans = [], operations = [], reports = [], issues = [] }) {
   const listed = new Set(), problem = (source, href, p) => ({ kind: "problem", id: `problem-${source}-${p.op?.id ?? p.title}`, source, href, problem: p });
+  const activePlans = plans.filter((p) => p.state === "active");
+  const owned = new Set(jobs.filter(isOpen).map((j) => j.taskId));
+  const blocked = new Map();
+  for (const plan of activePlans) for (const ticket of [...plan.tickets, ...(plan.target ? [plan.target] : [])]) {
+    const hold = planLaunchBlock(ticket);
+    if (hold && !owned.has(ticket.id) && !blocked.has(ticket.id)) blocked.set(ticket.id, { kind: "blocked-ticket", id: `blocked-${ticket.id}`, ticket, hold });
+  }
   const needs = [
     ...jobs.filter((j) => !j.historyOnly && j.state === "waiting").map((job) => ({ kind: "run", id: job.id, job })),
+    ...blocked.values(),
     ...reports.filter((event) => event.data.stage === "owner").map((event) => ({ kind: "report", id: `report-${event.data.ticketId}`, event })),
     ...issues.flatMap((i) => (i.error.problems ?? [{ title: i.error.message }]).map((p) => { if (p.op) listed.add(p.op.id); return problem(i.source, i.href, p); })),
   ];
@@ -218,7 +228,7 @@ export function nowSections({ jobs = [], plans = [], operations = [], reports = 
     ci: active.filter((r) => r.job.prUrls?.length > 0),
     queue: [
       ...operations.filter(pending).map((op) => ({ kind: "request", id: op.id, op })),
-      ...plans.filter((p) => p.state === "active").map((plan) => ({ kind: plan.epic ? "epic" : "plan", id: plan.id, plan })),
+      ...activePlans.map((plan) => ({ kind: plan.epic ? "epic" : "plan", id: plan.id, plan })),
     ],
   };
 }

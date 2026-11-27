@@ -5,7 +5,7 @@ import { html, useState, useEffect, useLayoutEffect, useRef } from "../lib/h.js"
 import { config, needSection, statusSection, jobs, history, loadHistory, busy, launchOperations, actions, pendingRun, startRun } from "../lib/store.js";
 import { api } from "../lib/api.js";
 import { ticketPanel, closeTicket, epicPanel, closeEpic, follow, ticketClick, navigate } from "../lib/router.js";
-import { ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel, isOpen, threadLink, PENDING_KINDS, earlierWork, evidenceLines, blockedByEarlierWork, holdNote, modelName } from "../lib/format.js";
+import { ticketKey, safeLink, stateLabel, toneOf, overrideText, byNewest, ticketStatusLabel, isOpen, threadLink, PENDING_KINDS, ticketRefusal, evidenceLines, planLaunchBlock, holdNote, modelName } from "../lib/format.js";
 import { Button, Dialog, Icon, Tag, Mark, Meta, Facts, Empty, Text, Segmented, RelativeTime } from "../ui/index.js";
 import { startHold, runNow, forceStart, startOptions, Investigate, PanelBar } from "./Deck.js";
 import { RunDetail } from "./Runs.js";
@@ -24,21 +24,21 @@ function Detail({ ticket: t, tab }) {
   const start = startOptions();
   // Where the scheduler has this ticket right now, in its own words.
   const up = needSection("upNext").value, position = up?.tickets.findIndex((x) => x.id === t.id) ?? -1, held = up?.held.find((h) => ticketKey(h.key) === t.key);
-  const line = position >= 0 ? `Up next: ${position + 1} of ${up.tickets.length} in the queue.` : held ? html`Held back: ${held.reason} <${Investigate} held=${held} quiet />` : null;
+  const line = position >= 0 ? `Up next: ${position + 1} of ${up.tickets.length} in the queue.` : held ? `Held back: ${held.reason}` : null;
   const seen = new Set(), runs = [...jobs.value, ...(history.value ?? [])].filter((j) => j.taskId === t.id && !seen.has(j.id) && seen.add(j.id)).toSorted(byNewest);
   const tracker = safeLink(t.url);
   // A ticket with a run under way leads with that run: its state, why it waits, and the way into its session.
   const current = runs.find(isOpen);
-  // Earlier work in the way: the scheduler's own hold, or the answer to the last start asked for from this browser.
-  const refused = launchOperations.value.findLast((op) => !["queued", "running"].includes(op.state) && earlierWork(op)?.key === t.key);
+  const refused = launchOperations.value.findLast((op) => ticketRefusal(op)?.key === t.key);
   // A ticket of a running Epic or chain is held "with its Epic" in the queue; the plan's own row knows what stops it.
-  const planned = (statusSection("plans").value ?? []).filter((p) => p.state === "active").flatMap((p) => p.target ? [...p.tickets, p.target] : p.tickets)
-    .find((x) => x.id === t.id && !x.done);
-  const conflict = held?.conflict === "artifacts" ? held : planned && blockedByEarlierWork(planned) ? { reason: planned.note, conflict: "artifacts" } : refused && earlierWork(refused);
+  const inPlans = (statusSection("plans").value ?? []).filter((p) => p.state === "active").flatMap((p) => p.target ? [...p.tickets, p.target] : p.tickets)
+    .filter((x) => x.id === t.id && !x.done);
+  const planned = inPlans[0], blockedInPlan = inPlans.map(planLaunchBlock).find(Boolean);
+  const block = (held?.conflict === "artifacts" ? held : blockedInPlan) ?? (refused && ticketRefusal(refused));
   const memberOf = t.epicId ? epicById(t.epicId) : undefined;
   // A ticket its running chain or Epic keeps waiting, with nothing unfinished ahead of it, can be started by name with
   // every limit overridden; the plan stays as it is. Anything else starts through the ordinary checks.
-  const force = !!planned && !current && !conflict && t.blockedBy.every((b) => b.done);
+  const force = !!planned && !current && !block && t.blockedBy.every((b) => b.done);
   const hold = CLOSED.includes(t.status) ? `${t.key} is ${ticketStatusLabel(t.status).toLowerCase()}.` : pendingRun(t.key) ? "A request for this ticket is already pending." : force ? null : startHold(row);
   const waits = planned && !force && t.blockedBy.filter((b) => !b.done).map((b) => b.key);
   // An inbox report still open: what triage made of it and what the owner can do about it.
@@ -49,7 +49,7 @@ function Detail({ ticket: t, tab }) {
     : current ? { tone: toneOf(current.state) || "on", label: stateLabel(current.state), detail: current.state === "waiting" ? holdNote(current.thread?.pending ? PENDING_KINDS[current.thread.pending] ?? current.reason : current.reason) : html`<${RelativeTime} at=${current.createdAt} form="for" />` }
     : CLOSED.includes(t.status) ? { tone: t.status === "done" ? "ok" : "", label: ticketStatusLabel(t.status) }
     : pendingRun(t.key) ? { tone: "on", label: "Starting" }
-    : conflict ? { tone: "attention", label: "Held back", detail: holdNote(conflict.reason) }
+    : block ? { tone: "attention", label: "Held back", detail: holdNote(block.reason) }
     : planned ? { tone: force ? "attention" : "", label: "Waiting", detail: waits?.length ? `after ${waits.join(", ")}` : holdNote(planned.note) ?? "for a slot" }
     : held ? { label: "Held back", detail: holdNote(held.reason) }
     : position >= 0 ? { label: "Up next", detail: `${position + 1} of ${up.tickets.length}` }
@@ -58,10 +58,10 @@ function Detail({ ticket: t, tab }) {
   const bar = html`<${PanelBar} ...${standing}>
     ${tracker && html`<a class="btn btn-icon btn-ghost" href=${tracker} target="_blank" rel="noopener noreferrer" aria-label="Open in tracker" title="Open in tracker"><${Icon} name="issueOpened" /></a>`}
     ${report?.data.stage === "owner" && decisions(report.data).toReversed().map((a, i, all) => html`<${Button} key=${a.id} variant=${i === all.length - 1 ? "primary" : ""} icon=${a.icon} label=${a.label} disabled=${busy.value} onClick=${a.run} />`)}
-    ${!t.inbox && !current && conflict && !pendingRun(t.key) && html`<${Investigate} held=${{ ...conflict, key: t.key, id: t.id }} onStart=${() => refused && actions.dismissOperation(refused.id)} />`}
+    ${project && !t.inbox && !current && block && !pendingRun(t.key) && html`<${Investigate} held=${{ ...block, key: t.key, id: t.id }} onStart=${() => refused && actions.dismissOperation(refused.id)} />`}
     ${!t.inbox && (current
       ? current.threadId && html`<a class="btn btn-icon btn-primary" href=${threadLink(current)} aria-label="Open in T3 Code" title="Open in T3 Code"><${Icon} name="commentDiscussion" /></a>`
-      : html`<${Button} variant=${conflict ? undefined : "primary"} icon="play" disabled=${!!hold} aria-label="Run now" title=${hold ?? (force ? "Run now: any model, every limit overridden" : `Run now: ${overrideText(start.overrideLimits).toLowerCase()} and start this ticket`)}
+      : html`<${Button} variant=${block ? undefined : "primary"} icon="play" disabled=${!!hold} aria-label="Run now" title=${hold ?? (force ? "Run now: any model, every limit overridden" : `Run now: ${overrideText(start.overrideLimits).toLowerCase()} and start this ticket`)}
           onClick=${() => force ? forceStart(t.key) : runNow(row, hold, undefined, start)} />`)}
   <//>`;
   // A run link is ordinary navigation: it leaves the panel's address, which closes the panel without a second history step.
@@ -74,11 +74,12 @@ function Detail({ ticket: t, tab }) {
   // Factory's side of the ticket in full: the run under way, or why it is not starting and what was found in the way.
   const factory = t.inbox ? report && html`<p class="ticket-line">${outcomeText(report)}. ${advice} <${DuplicateLink} of=${verdict === "duplicate" && report.data.duplicateOf} /></p>`
     : current ? html`<p class="ticket-state"><${Tag} state=${current.state} />${current.state === "waiting" ? html`<span>${current.thread?.pending ? PENDING_KINDS[current.thread.pending] ?? current.reason : current.reason}</span>` : html`<span>for <${RelativeTime} at=${current.createdAt} form="for" /></span>`}</p>`
-    : hold && (!planned || CLOSED.includes(t.status) || pendingRun(t.key)) ? html`<p class="ticket-line">${hold}</p>`
-    : conflict ? html`<div class="ticket-callout">
-        <p class="ticket-line"><b>${held || planned ? "Held back" : "Not started"}:</b> ${conflict.reason}</p>
-        ${evidenceLines(conflict.evidence).length > 0 && html`<ul>${evidenceLines(conflict.evidence).map(([kind, name]) => html`<li key=${kind + name}><span>${kind}</span> <code>${name}</code></li>`)}</ul>`}
+    : pendingRun(t.key) ? html`<p class="ticket-line">${hold}</p>`
+    : block ? html`<div class="ticket-callout">
+        <p class="ticket-line"><b>${held || blockedInPlan ? "Held back" : "Not started"}:</b> ${block.reason}</p>
+        ${evidenceLines(block.evidence).length > 0 && html`<ul>${evidenceLines(block.evidence).map(([kind, name]) => html`<li key=${kind + name}><span>${kind}</span> <code>${name}</code></li>`)}</ul>`}
       </div>`
+    : hold && (!planned || CLOSED.includes(t.status)) ? html`<p class="ticket-line">${hold}</p>`
     : planned ? html`<p class="ticket-line">${waits?.length ? `Waits in its ${memberOf ? "Epic" : "chain"} for ${waits.join(", ")}.` : `Waiting in its ${memberOf ? "Epic" : "chain"}${planned.note ? `: ${holdNote(planned.note)}` : " for a slot"}.`}</p>`
     : held ? html`<p class="ticket-line">Held back: ${held.reason}</p>`
     : line && html`<p class="ticket-line">${line}</p>`;

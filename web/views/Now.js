@@ -2,9 +2,9 @@
 import { html, useState } from "../lib/h.js";
 import { config, statusSection, jobs, issues, launchOperations, busy } from "../lib/store.js";
 import { follow, ticketClick } from "../lib/router.js";
-import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket, runTitle, holdNote, safeLink, prLabel } from "../lib/format.js";
+import { ago, duration, PROVIDERS, PENDING_KINDS, decisionSentence, providerOf, providerName, providerIcon, threadLink, byNewest, operationText, nowSections, factoryTicket, runTitle, holdNote, safeLink, prLabel, ticketKey } from "../lib/format.js";
 import { Icon, Empty, RelativeTime } from "../ui/index.js";
-import { Machine, Composer, OperationActions, CancelPlan, planProgress, requestName } from "./Deck.js";
+import { Machine, Composer, OperationActions, CancelPlan, planProgress, requestName, Investigate } from "./Deck.js";
 import { decide, reportRow } from "./Triage.js";
 
 // How many rows a section shows before "N more"; a phone-width column shows two (see .now-section in style.css).
@@ -15,7 +15,7 @@ const LIMIT = 8, NARROW = 2;
 // run is one tab away; its link still names the run's page for a new tab.
 function Row({ icon, iconLabel, tone, id, title, note, end, href, external, onClick = follow }) {
   const text = html`<span class=${`now-icon ${tone ?? ""}`}><${Icon} name=${icon} label=${iconLabel} /></span>
-    ${id && html`<b class="key">${id}</b>`}<span class="now-title">${title}</span>${note && html`<span class="now-note">${note}</span>`}`;
+    ${id && html`<b class="key">${id}</b>`}<span class="now-title">${title}</span>${note && html`<span class="now-note" title=${note}>${note}</span>`}`;
   return html`<li class="now-row">
     ${href ? html`<a class="now-main" href=${href} onClick=${external ? undefined : onClick}>${text}</a>` : html`<span class="now-main">${text}</span>`}
     ${end}
@@ -42,6 +42,12 @@ function Problem({ item }) {
   const p = item.problem;
   return html`<${Row} icon="alert" iconLabel="Problem" tone="attention" title=${p.title} note=${p.cause} href=${item.href}
     end=${p.op && html`<span class="now-actions"><${OperationActions} op=${p.op} /></span>`} />`;
+}
+function BlockedTicket({ ticket, hold }) {
+  const key = ticketKey(ticket.key);
+  return html`<${Row} icon="alert" iconLabel="Not started" tone="attention" id=${ticket.key} title=${ticket.title} note=${hold.reason}
+    href=${key && `?ticket=${encodeURIComponent(key)}`} onClick=${ticketClick(key)}
+    end=${key && ticket.runnable !== false && html`<${Investigate} held=${{ ...hold, key, id: ticket.id }} />`} />`;
 }
 // A request that ended without starting needs the owner; one still on its way is in the owner's queue.
 function Request({ op, needs }) {
@@ -76,6 +82,7 @@ export function Now({ initialTicket } = {}) {
   const newest = (list) => list.toSorted((a, b) => byNewest(a.job, b.job));
   const needsRow = (item) => item.kind === "run" ? html`<${Run} key=${item.id} job=${item.job} needs />`
     : item.kind === "report" ? html`<${Report} key=${item.id} event=${item.event} />`
+    : item.kind === "blocked-ticket" ? html`<${BlockedTicket} key=${item.id} ticket=${item.ticket} hold=${item.hold} />`
     : item.kind === "request" ? html`<${Request} key=${item.id} op=${item.op} needs />`
     : html`<${Problem} key=${item.id} item=${item} />`;
   const run = (item) => html`<${Run} key=${item.id} job=${item.job} />`;

@@ -689,18 +689,18 @@ test('launch feedback excludes cleanup operations without dropping their recover
   } finally { store.operations.value = []; }
 });
 
-test('a start refused by earlier work is recognised, with what was found, for the ticket it named', async () => {
-  const { earlierWork, evidenceLines, blockedByEarlierWork } = await import('../web/lib/format.js');
+test('a start refusal preserves earlier-work evidence for the ticket it named', async () => {
+  const { ticketRefusal, evidenceLines, planLaunchBlock } = await import('../web/lib/format.js');
   const skipped = [{ key: 'APP-7', reason: 'Existing Git branch references this ticket', conflict: 'artifacts', evidence: { threads: ['t1'], refs: ['refs/heads/fix/APP-7-old', 'refs/remotes/origin/fix/APP-7-old'], openPR: true } }];
-  const op = (input: object, extra: object[] = skipped) => ({ input, result: { data: { skipped: extra } } });
-  assert.equal(earlierWork(op({ ticket: 'app-7' }))?.key, 'APP-7');
-  assert.equal(earlierWork(op({ ticket: 'APP-8' })), undefined, 'another ticket\'s hold is not this one\'s');
-  assert.equal(earlierWork(op({ ticket: 'APP-7', reconcile: true })), undefined, 'a refused investigation offers no second one');
-  assert.equal(earlierWork(op({ ticket: 'APP-7' }, [{ key: 'APP-7', reason: 'Runs with its Epic' }])), undefined);
+  const op = (input: object, extra: object[] = skipped) => ({ state: 'done', input, result: { data: { skipped: extra } } });
+  assert.equal(ticketRefusal(op({ ticket: 'app-7' }))?.key, 'APP-7');
+  assert.equal(ticketRefusal(op({ ticket: 'APP-8' })), undefined, 'another ticket\'s hold is not this one\'s');
+  assert.equal(ticketRefusal(op({ ticket: 'APP-7', reconcile: true })), undefined, 'a refused investigation offers no second one');
+  assert.equal(ticketRefusal(op({ ticket: 'APP-7' }, [{ key: 'APP-7', reason: 'Ticket was not found in its project' }])), undefined);
   assert.deepEqual(evidenceLines(skipped[0].evidence), [['Branch', 'fix/APP-7-old'], ['Pull request', 'open'], ['T3 threads', '1']], 'a branch and its remote copy are one line');
-  assert.equal(blockedByEarlierWork({ note: 'Existing open PR references this ticket' }), true);
-  assert.equal(blockedByEarlierWork({ note: 'Existing open PR references this ticket', done: true }), false);
-  assert.equal(blockedByEarlierWork({ note: 'Waiting for a free Claude slot' }), false);
+  assert.equal(planLaunchBlock({ note: 'Existing open PR references this ticket' })?.conflict, 'artifacts');
+  assert.equal(planLaunchBlock({ note: 'Existing open PR references this ticket', done: true }), undefined);
+  assert.equal(planLaunchBlock({ note: 'Waiting for a free Claude slot' }), undefined);
 });
 
 test('a row says why a ticket waits in a few words: a code as its words, a known sentence as its short form, any other as its first sentence', async () => {

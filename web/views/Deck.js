@@ -13,8 +13,8 @@ import {
   streamReason,
   holdNote,
   runTitle,
-  earlierWork,
-  blockedByEarlierWork,
+  ticketRefusal,
+  planLaunchBlock,
   QUOTA_HOLDS,
   providerOf,
   providerName,
@@ -91,7 +91,7 @@ function Operation({ op }) {
 
 // What can be done with a request that ended without starting. The request row and the notification area share these.
 export function OperationActions({ op }) {
-  const d = op.result?.data, settled = !["queued", "running"].includes(op.state), held = settled && earlierWork(op);
+  const d = op.result?.data, held = ticketRefusal(op);
   return html`${held && html`<${Investigate} held=${held} onStart=${() => actions.dismissOperation(op.id)} />`}
     ${!op.choiceHandled && d?.reason === "blocked-ticket-plan-required" && html`<${Button} size="sm" icon="checklist" label="Choose how to run it" onClick=${() => showBlockedChoice(op.id)} />`}
     ${op.notReceived && html`<${Button} size="sm" icon="sync" label="Retry saved request" onClick=${() => retryRequest(op.id)} />`}
@@ -139,10 +139,11 @@ export function Operations({ list = launchOperations.value } = {}) {
 export function PlanRows({ plan, show = () => true }) {
   const all = plan.target ? [...plan.tickets, plan.target] : plan.tickets, byId = new Map(all.map((t) => [t.id, t]));
   const jobByTask = new Map(jobs.value.filter(isOpen).map((j) => [j.taskId, j]));
-  const state = (t, job) => {
+  const state = (t, job, blocked) => {
     if (t.done) return ["Done", "ok", ""];
     if (job) return [stateLabel(job.state), toneOf(job.state), ""];
     if (plan.state && plan.state !== "active") return ["Not run", "", ""];
+    if (blocked) return ["Needs you", "attention", holdNote(blocked.reason)];
     const ahead = t.blockedBy.filter((id) => !byId.get(id)?.done).map((id) => byId.get(id)?.key ?? "?");
     if (t === plan.target && plan.tickets.some((x) => !x.done)) return ["Last", "", "after every ticket above"];
     if (ahead.length) return ["Waits", "", `after ${ahead.join(", ")}`];
@@ -156,19 +157,18 @@ export function PlanRows({ plan, show = () => true }) {
     t.automationReady === false ? t.readiness?.reasons?.map((r) => r.message).join("; ") || "Automation readiness is off" : t.hold,
   ];
   return all.filter(show).map((t) => {
-    const job = jobByTask.get(t.id), [label, tone, note] = state(t, job);
+    const job = jobByTask.get(t.id), blocked = !job && plan.state === "active" && planLaunchBlock(t);
+    const [label, tone, note] = state(t, job, blocked);
     // The scheduler writes the same not-included note, so a repeated reason shows once.
     const detail = [...new Set([note || (job ? modelName(config.value, job) : ""), t.outside && "outside this Epic", ...(t.done || job ? [] : reasons(t).map(holdNote))])].filter(Boolean).join(" · ");
     // The row opens the ticket in Factory's panel, which lists its runs; a modified or middle click keeps the tracker tab.
-    // Earlier work in the way of a ticket that is next: the scheduler says so in its note.
-    const blocked = !job && blockedByEarlierWork(t);
     const waiting = label === "Next" && !t.done && !job && plan.state === "active" && !blocked;
     // The short reason is the row's; hovering or opening the ticket gives the scheduler's own words.
-    const full = [t.note, ...(t.done || job ? [] : reasons(t))].filter(Boolean).join(" · ");
+    const full = [blocked?.reason ?? t.note, ...(t.done || job ? [] : reasons(t))].filter(Boolean).join(" · ");
     return html`<a class="chain-row" key=${t.id} href=${ticketLink(config.value, { taskId: t.id, projectId: t.projectId })} target="_blank" rel="noopener noreferrer" onClick=${ticketClick(ticketKey(t.key))}>
       <${Mark} tone=${label ? tone : ""} label=${label || "Queued"} /><${RowBody} title=${html`<b class="key">${t.key}</b> ${t.title}`}>${html`<${Meta} automationReady=${t.automationReady}><span class="row-key" aria-hidden="true">${t.key}</span>${label && html`<${Tag} tone=${tone}>${label}<//>`}${detail && html`<span class="meta-detail" title=${full || undefined}>${detail}</span>`}<//>`}<//>
-    <//>${(blocked || waiting) && html`<span class="chain-fix" key=${`${t.id}-fix`}>${blocked
-      ? html`<${Investigate} held=${{ key: t.key, id: t.id, conflict: "artifacts" }} />`
+    <//>${(blocked && t.runnable !== false || waiting) && html`<span class="chain-fix" key=${`${t.id}-fix`}>${blocked
+      ? html`<${Investigate} held=${{ ...blocked, key: t.key, id: t.id }} />`
       : html`<${Button} size="sm" icon="play" class="next-run" label=${`Start ${t.key} now: any model, every limit overridden`} disabled=${busy.value || pendingRun(t.key)} onClick=${() => startNow(t)} />`}</span>`}`;
   });
 }
@@ -278,11 +278,13 @@ export const RunNow = ({ ticket: t, hold, origin, overrideLimits = true, provide
   title=${hold ?? `${overrideText(overrideLimits)} and start this ticket now.`}
   onClick=${() => runNow(t, hold, origin, { overrideLimits, provider })}><${Icon} name="play" /><//>`;
 
-// A held row whose ticket waits on earlier threads, branches or PRs: after a confirmation, a run settles that work.
+// A ticket refused by the scheduler can be investigated in a new T3 run after confirmation.
 // An icon button named by its tooltip, offered wherever the hold is stated. `quiet` is for a list of several, where one
 // accent button per row would shout. `onStart` runs once the request is on its way.
-export const Investigate = ({ held: h, quiet, onStart }) => h.conflict === "artifacts" && html`<${Button} size="sm" variant=${quiet ? undefined : "primary"} icon="search" class="investigate next-run" label="Investigate and fix in T3" disabled=${!!pendingRun(h.key) || openJob(h)}
-  onClick=${() => confirmAction({ title: `Investigate ${h.key} in T3?`, message: "A Factory run in a new T3 thread closes the ticket if its work already merged, delivers unmerged work, or removes clean abandoned branches, worktrees and threads so the ticket can start again. Active sessions are left alone.", label: "Start run" },
+export const Investigate = ({ held: h, quiet, onStart }) => html`<${Button} size="sm" variant=${quiet ? undefined : "primary"} icon="search" class="investigate next-run" label="Investigate and fix in T3" disabled=${!!pendingRun(h.key) || openJob(h)}
+  onClick=${() => confirmAction({ title: `Investigate ${h.key} in T3?`, message: h.conflict === "artifacts"
+    ? "A Factory run in a new T3 thread closes the ticket if its work already merged, delivers unmerged work, or removes clean abandoned branches, worktrees and threads so the ticket can start again. Active sessions are left alone."
+    : "A Factory run in a new T3 thread checks why the ticket cannot start and asks you if it needs a decision.", label: "Start run" },
     () => { if (startRun({ ticket: h.key, reconcile: true, model: "auto", ...startOptions() })) onStart?.(); })} />`;
 
 // What the factory would start next, in order. The same list feeds the deck and the runs page.
@@ -309,7 +311,7 @@ export function UpNext({ limit = 5, children, filters, query = "", start }) {
     ${all && held.length > 0 && html`<h3 class="held-title">Held back<small>${held.length}</small></h3>
       ${Object.entries(Object.groupBy(held, (h) => h.reason)).map(([reason, list]) => html`<div class="held-group" key=${reason}>
         <p class="held-reason">${reason}<small>${list.length}</small></p>
-        ${list.map((h) => html`<div class="held" key=${h.key}><a class="held-ticket" href=${`?ticket=${encodeURIComponent(ticketKey(h.key))}`} onClick=${ticketClick(ticketKey(h.key))}><${RowBody} tip=${h.title} title=${html`<b class="key">${h.key}</b> ${h.title}`}><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []}><span class="row-key" aria-hidden="true">${h.key}</span><//><//></a><${Investigate} held=${h} quiet /></div>`)}
+        ${list.map((h) => html`<div class="held" key=${h.key}><a class="held-ticket" href=${`?ticket=${encodeURIComponent(ticketKey(h.key))}`} onClick=${ticketClick(ticketKey(h.key))}><${RowBody} tip=${h.title} title=${html`<b class="key">${h.key}</b> ${h.title}`}><${Meta} automationReady=${h.automationReady} priority=${h.priority} difficulty=${h.difficulty} labels=${h.labels ?? []}><span class="row-key" aria-hidden="true">${h.key}</span><//><//></a>${h.conflict === "artifacts" && html`<${Investigate} held=${h} quiet />`}</div>`)}
       </div>`)}`}
     ${q && html`<p class="hint">Queue read <${RelativeTime} at=${q.at} />${!all && held.length ? `. ${held.length} held back` : ""}.</p>`}
   <//>`;

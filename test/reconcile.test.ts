@@ -43,6 +43,20 @@ for (const [name, arrange] of Object.entries(leftovers)) test(`a ticket held bac
 const reconcileRun = (f: Fixture, overrideLimits: OverrideLimits = ['idle', 'reserve', 'labels']) =>
   cycle(f.c, f.store, { manual: true, model: 'auto', reconcile: 'FIX-1', overrideLimits }, { t3: f.t3, kanvil: f.kanvil });
 
+test('a named start refused for its ticket status can launch a diagnostic reconcile', async t => {
+  const f = dispatchFixture(t);
+  f.tasks[0].status = 'in_progress';
+  f.c.concurrency.codex = 0;
+  writeFileSync(process.env.T3_FACTORY_CONFIG!, JSON.stringify(f.c));
+  const refusal = 'Ticket is in_progress; it must be in todo';
+  const result = await cycle(f.c, f.store, { manual: true, ticket: 'FIX-1', model: 'sol' }, { t3: f.t3, kanvil: f.kanvil });
+  assert.deepEqual(result.skipped, [{ key: 'FIX-1', id: 'root', reason: refusal }]);
+  assert.equal((await reconcileRun(f, true)).reason, 'dispatched');
+  const [launch] = f.launches as { initialMessage: { text: string } }[];
+  assert.ok(launch.initialMessage.text.includes(refusal));
+  assert.match(launch.initialMessage.text, /Investigate why Factory refused to start FIX-1/);
+});
+
 test('a reconcile run starts for a ticket held back by earlier work, in its own thread and chore branch', async t => {
   const f = dispatchFixture(t);
   leftovers.thread(f);

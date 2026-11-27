@@ -44,15 +44,15 @@ Manual jobs can overlap other runs and can start while automatic dispatch is pau
 
 ### Tickets held back by earlier work
 
-The scheduler holds a ready ticket back when earlier work still references it: a T3 thread or branch, a Git branch, an open pull request, or a finished run whose work it cannot verify. In the Queue's Held back list and on the ticket panel's held line, such a ticket has an icon-only **Investigate in T3** button (a magnifier). Other held reasons have none. After a confirmation it starts a reconcile run, the same request as:
+The scheduler holds a ready ticket back when earlier work still references it: a T3 thread or branch, a Git branch, an open pull request, or a finished run whose work it cannot verify. The Queue's Held back list offers **Investigate and fix in T3** for those tickets. A named start refused for the ticket's status, readiness or another ticket-level gate also offers Investigate on Now and in the ticket panel. When an active Epic or chain has a blocked member, Now lists the member under Needs you, with the reason and the action. After confirmation, Investigate starts a reconcile run, the same request as:
 
 ```sh
 t3-factory dispatch --reconcile APP-123 --model auto
 ```
 
-The web app sends it to `POST /api/tickets/<key>/reconcile`, and its progress shows in Operations like any start. A reconcile run is refused when the ticket is not held back by earlier work, or when any run for it is still open. It goes through the same model selection, quota, provider-limit, label-limit and override choices as a manual start. A request that a limit holds is refused, never queued, because a queued start would pick whichever other ticket is ready. Like upstream reviews and CI repairs, it does not wait for provider idle time.
+The web app sends it to `POST /api/tickets/<key>/reconcile`, and its progress shows in Operations like any start. The scheduler checks the current refusal and requires a known ticket with no open Factory run. It uses the same model selection, quota, provider-limit, label-limit and override choices as a manual start. Like upstream reviews and CI repairs, it launches without an idle-time gate. A limit refusal ends the request.
 
-The run starts in a new thread titled `Factory reconcile: <TICKET>`, on a `chore/factory-reconcile-<id>` branch. Its prompt, [`prompts/reconcile.md`](../prompts/reconcile.md), carries the threads, refs and open pull request the scheduler found, and the configured delivery workflow. The run takes one of four outcomes:
+The run starts in a new thread titled `Factory reconcile: <TICKET>`, on a `chore/factory-reconcile-<id>` branch. A ticket-state investigation receives the live refusal and diagnoses it within Kanvil's workflow and ownership rules. If the ticket needs a decision or an action from the owner, the run reports `awaiting-human` and asks in that thread. An earlier-work reconcile uses [`prompts/reconcile.md`](../prompts/reconcile.md) with the threads, refs and open pull request the scheduler found. It takes one of four outcomes:
 
 - Work already merged on the release branch: it records the evidence, closes the ticket in a done status, deletes merged clean branches and worktrees and archives stale threads, then reports `no-work`.
 - An unmerged branch or open pull request with real work: it delivers it through the delivery workflow with every gate unchanged and reports `complete` with the merged pull request, verified like a ticket run.

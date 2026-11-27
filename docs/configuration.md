@@ -77,7 +77,7 @@ A project's `upstreams` list names GitHub repositories whose releases the projec
 
 ### Reconcile runs
 
-`reconcile.promptFile` is the prompt of a reconcile run, started from a ticket held back by earlier work (see [operations](operations.md#tickets-held-back-by-earlier-work)). It defaults to the [`prompts/reconcile.md`](../prompts/reconcile.md) that ships with the running code; the scheduler replaces `{{ticketKey}}`, `{{title}}`, `{{link}}`, `{{repo}}`, `{{baseBranch}}` and `{{evidence}}` in it. The section is optional.
+`reconcile.promptFile` is the template for a reconcile run started from a ticket held back by earlier work (see [operations](operations.md#tickets-held-back-by-earlier-work)). It defaults to the bundled [`prompts/reconcile.md`](../prompts/reconcile.md). The scheduler replaces `{{ticketKey}}`, `{{title}}`, `{{link}}`, `{{repo}}`, `{{baseBranch}}` and `{{evidence}}` in it. A ticket-state investigation uses the built-in diagnostic prompt. The section is optional.
 
 ### CI repairs
 

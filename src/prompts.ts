@@ -34,8 +34,10 @@ function promptBody(job: Job, project: Project, config: Config, manual: boolean)
   }
   if (job.kind === 'reconcile') {
     const r = job.reconcile!, key = job.ticketKey!;
+    const link = `${config.kanvil.url}/projects/${encodeURIComponent(project.kanvilId)}/tickets/${encodeURIComponent(job.taskId!)}`;
+    if (r.investigateState) return `${common}\n\nInvestigate why Factory refused to start ${key} (${r.title}): ${link}\n\nScheduler refusal: ${r.reason}\n\nRead the live ticket, its workflow status, readiness, ownership, dependencies and any existing work. Establish why the ticket is in this state and the exact action that would let it proceed. This is a diagnostic run for one ticket. Correct verified stale tracker metadata only if the normal Kanvil ownership and workflow rules allow it. Never override a hold, take over a claim, move an intentionally parked ticket, or start an implementation. Do not mutate other sessions, branches, pull requests or worktrees. If operator action is needed, report awaiting-human and ask for that action in this thread. If the blocker is resolved or the ticket is already finished, report no-work with the observed outcome. Leave this worktree clean.\n\n${deliveryWorkflow(config, manual)}`;
     const evidence = [`- Scheduler refusal: ${r.reason}`, ...r.threads.map(id => `- T3 thread ${id}`), ...r.refs.map(ref => `- Git ref ${ref}`), ...r.openPR ? [`- An open pull request mentions ${key}`] : []].join('\n');
-    const template = fill(config.reconcile.promptFile, { ticketKey: key, title: r.title, link: `${config.kanvil.url}/projects/${encodeURIComponent(project.kanvilId)}/tickets/${encodeURIComponent(job.taskId!)}`, repo: project.githubRepo, baseBranch: project.baseBranch, evidence });
+    const template = fill(config.reconcile.promptFile, { ticketKey: key, title: r.title, link, repo: project.githubRepo, baseBranch: project.baseBranch, evidence });
     return `${common}\n\n${template}\n\nThis run settles earlier work; it does not start a new implementation of ${key}. Whenever you close or deliver ${key}, follow the supplied skill's ticket, claim and tracker steps, and release any claim you take. A delivered pull request keeps its validation, regression proof, CI, Codex review, merge gates and explicit Hold unchanged.\n\n${deliveryWorkflow(config, manual)}`;
   }
   if (job.kind === 'discovery') {

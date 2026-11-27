@@ -25,8 +25,8 @@ export interface Job {
   upstream?: { name: string; repo: string; base: string; candidate: string; baseCommit?: string; candidateCommit?: string };
   // A repair covers one failed run of a watched workflow; its report fills in the failed jobs it repaired and those it did not.
   repair?: { workflow: string; runId: number; runUrl: string; sha: string; failedJobs: string[]; repaired?: string[]; unrepaired?: string[] };
-  // A reconcile settles the earlier work that holds its ticket back; it records what the scheduler found at the start.
-  reconcile?: ReconcileEvidence & { title: string; reason: string };
+  // A reconcile records the launch refusal and any earlier work the scheduler found.
+  reconcile?: ReconcileEvidence & { title: string; reason: string; investigateState?: true };
   ticketKey: string | null; threadId: string; messageId: string; createdAt: string;
   // The ticket's title when the run started, so a run list can say what each run is for.
   title?: string;
@@ -73,6 +73,7 @@ export function assignedBranch(job: Pick<Job, 'branch' | 'command'>): string | u
 }
 // The earlier work that holds a ticket back: T3 threads that reference it, Git refs that name it, and whether an open PR mentions it.
 export interface ReconcileEvidence { threads: string[]; refs: string[]; openPR: boolean }
+export interface TicketLaunchBlock { reason: string; conflict?: 'artifacts'; evidence?: ReconcileEvidence }
 export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream' | 'repair'>): string {
   return job.ticketKey ?? (job.upstream ? `${job.upstream.name} ${job.upstream.candidate}` : job.repair ? `${job.repair.workflow} run ${job.repair.runId}` : 'Discovery');
 }
@@ -81,7 +82,7 @@ export function jobLabel(job: Pick<Job, 'ticketKey' | 'upstream' | 'repair'>): s
 export interface PlanTicket {
   id: string; key: string; title: string; projectId: string; status: string; priority: string; createdAt: string;
   difficulty?: Difficulty; automationReady?: boolean; labels?: string[]; labelRank?: number; runnable: boolean; blockedBy: string[]; done: boolean; note?: string;
-  outside?: boolean; hold?: string; umbrella?: boolean; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
+  outside?: boolean; hold?: string; launchBlock?: TicketLaunchBlock; umbrella?: boolean; readiness?: { ready: boolean; reasons: { code: string; message: string }[] };
 }
 export interface Plan { queued?: boolean; agent?: true; requestId?: string; id: string; createdAt: string; target?: PlanTicket; epic?: { id: string; title: string; restrictedCount?: number; error?: string }; tickets: PlanTicket[]; model: string; provider?: DispatchProvider; overrideLimits: OverrideLimits; state: 'active' | 'done' | 'cancelled'; finishedAt?: string }
 // Every ticket of a plan, with any target last.
