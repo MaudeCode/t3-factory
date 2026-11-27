@@ -1,10 +1,10 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useMemo, useRef, useState } from "../lib/h.js";
 import { config, status, jobs, history, busy, loadHistory, loadRun, actions, message } from "../lib/store.js";
-import { backFromRun, follow, openTicket, runParentHref } from "../lib/router.js";
+import { route, useRailCommand, backFromRun, follow, openTicket, runParentHref } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS, runTitle } from "../lib/format.js";
-import { Button, Select, Segmented, Field, Popover, Chips, Tag, Icon, Bars, Empty, Facts, Timeline, Page, Section, RelativeTime } from "../ui/index.js";
+import { Button, Select, Segmented, Field, Dialog, Popover, Chips, Tag, Icon, Bars, Empty, Facts, Timeline, Page, Section, RelativeTime } from "../ui/index.js";
 import { RunList, OrderChoice } from "./Deck.js";
 
 // Search and Filter popovers for any ticket or run list. `rows` are everything the list could
@@ -18,6 +18,10 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   const searchButton = useRef(), searchInput = useRef();
   const change = (key, value) => onFilters({ ...filters, [key]: value });
   const active = activeCount ?? ["projects", "tags", "tagsNot", "difficulties", "priorities", ...(providers ? ["providers"] : []), ...(sessions ? ["sessions"] : [])].filter(key => filters[key]?.length).length;
+  const badge = active + Number(!!query.trim());
+  const inRail = useRailCommand(["/queue", "/runs"].includes(route.value.path), "filter", "Filter",
+    "line.3.horizontal.decrease", () => setOpen(true), { badge });
+  const FilterPanel = inRail ? Dialog : Popover;
   const sessionNames = new Map(sessions ? rows.flatMap(row => row.sources ?? []).map(source => [source.threadId, source.title || "Untitled session"]) : []);
   for (const id of sessions ? filters.sessions ?? [] : []) if (!sessionNames.has(id)) sessionNames.set(id, "Session no longer listed");
   const sessionOptions = [...sessionNames].sort((a, b) => a[1].localeCompare(b[1]));
@@ -29,13 +33,16 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
   // Few options get a row of named chips; projects and tags, which grow, get a multi-pick dropdown.
   const glyph = (value, icon, title) => [value, html`<${Icon} name=${icon} /> ${title}`, title];
   const chips = (key, label, options) => html`<${Field} group label=${label}><${Chips} label=${label} value=${filters[key] ?? []} options=${options} onChange=${value => change(key, value)} /><//>`;
-  return html`<span ref=${searchButton}><${Button} size="sm" icon="search" label="Search" title=${query ? `${searchLabel}: ${query}` : searchLabel} aria-expanded=${searchOpen} aria-pressed=${!!query.trim()} onClick=${() => setSearchOpen(v => !v)} /></span>
+  const searchField = (close, focus) => html`<input ref=${searchInput} autofocus=${!inRail} class="mono search" value=${query} onInput=${e => onQuery(e.target.value)}
+    onKeyDown=${e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); close(); focus?.(); } }} placeholder=${searchLabel} aria-label=${searchLabel} />
+    <${Button} size="sm" variant="ghost" icon="x" label="Clear search" disabled=${!query} onClick=${() => { onQuery(""); searchInput.current.focus(); }} />`;
+  return html`${!inRail && html`<span ref=${searchButton}><${Button} size="sm" icon="search" label="Search" title=${query ? `${searchLabel}: ${query}` : searchLabel} aria-expanded=${searchOpen} aria-pressed=${!!query.trim()} onClick=${() => setSearchOpen(v => !v)} /></span>
     <${Popover} class="search-panel" open=${searchOpen} onClose=${() => setSearchOpen(false)} anchor=${searchButton} label=${searchLabel} width=${380}>
-      <input ref=${searchInput} autofocus class="mono search" value=${query} onInput=${e => onQuery(e.target.value)} onKeyDown=${e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); setSearchOpen(false); searchButton.current.querySelector("button").focus(); } }} placeholder=${searchLabel} aria-label=${searchLabel} />
-      <${Button} size="sm" variant="ghost" icon="x" label="Clear search" disabled=${!query} onClick=${() => { onQuery(""); searchInput.current.focus(); }} />
+      ${searchField(() => setSearchOpen(false), () => searchButton.current.querySelector("button").focus())}
     <//>
-    <span ref=${button}><${Button} size="sm" icon="filter" label=${`${filterLabel}${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>
-    <${Popover} mounted=${!!order} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
+    <span ref=${button}><${Button} size="sm" icon="filter" label=${`${filterLabel}${active ? `, ${active} active` : ""}`} aria-expanded=${open} aria-pressed=${active > 0} onClick=${() => setOpen((v) => !v)}>${active || null}<//></span>`}
+    <${FilterPanel} title="Filters" mounted=${!!order} open=${open} onClose=${() => setOpen(false)} anchor=${button} label="Filters" width=${340}>
+      ${inRail && html`<div class="rail-search">${searchField(() => setOpen(false))}</div>`}
       ${order && html`<${Field} group label="Order">${order}<//>`}
       ${children ?? html`
       ${sessions && html`<${Field} group label="Session"><${Select} multiple placeholder="Any" label="Session" value=${filters.sessions ?? []} options=${sessionOptions} onChange=${value => change("sessions", value)} /><//>`}
@@ -55,8 +62,25 @@ export function RunFilters({ rows, filters, query, onFilters, onQuery, providers
       ${chips("priorities", "Priority", [glyph("urgent", "alert", "Urgent"), glyph("high", "arrowUp", "High"), glyph("medium", "dash", "Medium"), glyph("low", "arrowDown", "Low"), glyph("none", "circleSlash", "No priority")])}
       ${providers && chips("providers", "Provider", PROVIDERS.map(p => glyph(p.driver, providerIcon(p.driver), p.name)))}
       `}
-      ${active > 0 && html`<${Button} variant="ghost" size="sm" icon="x" label="Clear all filters" onClick=${() => { onFilters({}); onQuery(""); }} />`}
+      ${(inRail ? badge : active) > 0 && html`<${Button} variant="ghost" size="sm" icon="x" label="Clear all filters" onClick=${() => { onFilters({}); onQuery(""); }} />`}
     <//>`;
+}
+
+// Reports and Sessions share selection mode. Bulk actions stay next to the selected rows.
+export function TicketSelection({ selecting, onChange }) {
+  const name = selecting ? "Done selecting tickets" : "Select tickets";
+  const disabled = busy.value;
+  const inRail = useRailCommand(route.value.path === "/queue", selecting ? "done" : "select", name,
+    selecting ? "checkmark" : "checklist", onChange, { disabled });
+  return !inRail && html`<${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${name} aria-pressed=${selecting} disabled=${disabled} onClick=${onChange} />`;
+}
+
+function ThreadAction({ job, embedded }) {
+  const link = useRef();
+  const name = "Open in T3 Code";
+  const inRail = useRailCommand(!embedded && route.value.page === "/runs/:id" && route.value.param === job.id,
+    "thread", name, "arrow.up.forward.app", () => link.current.click());
+  return html`<a ref=${link} hidden=${inRail} class="btn btn-sm btn-icon btn-primary" href=${threadLink(job)} aria-label=${name} title=${name}><${Icon} name="commentDiscussion" /></a>`;
 }
 
 const RUNS_PAGE = 100;
@@ -133,7 +157,7 @@ export function RunDetail({ id, embedded }) {
     lead=${runTitle(job) || kind}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" icon="circleSlash" label="Stop run" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))} />`}>
     <div class="run-actions">
-      ${job.threadId && html`<a class="btn btn-sm btn-icon btn-primary" href=${threadLink(job)} aria-label="Open in T3 Code" title="Open in T3 Code"><${Icon} name="commentDiscussion" /></a>`}
+      ${job.threadId && html`<${ThreadAction} job=${job} embedded=${embedded} />`}
       ${prs.map((href) => html`<a key=${href} class="btn btn-sm" href=${href} target="_blank" rel="noopener noreferrer" title=${prLabel(href)}><${Icon} name="pullRequest" /><span>${prLabel(href).replace(/^PR /, "")}</span></a>`)}
       ${ticket && !embedded && (inFactory ? html`<${Button} size="sm" icon="tag" label="Ticket" onClick=${() => openTicket(inFactory)} />` : html`<a class="btn btn-sm btn-icon" href=${ticket} target="_blank" rel="noopener noreferrer" aria-label="Ticket" title="Ticket"><${Icon} name="tag" /></a>`)}
       <a class="btn btn-sm btn-icon" href=${`/cleanup?query=${encodeURIComponent(job.id)}`} onClick=${follow} aria-label="Cleanup review" title="Cleanup review"><${Icon} name="trash" /></a>

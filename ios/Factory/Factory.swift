@@ -44,9 +44,13 @@ final class FactoryScene: UIResponder, UIWindowSceneDelegate {
 private struct Destination: Decodable, Equatable {
     let path: String
     let name: String
+    let symbol: String?
+    let badge: Int?
+    let disabled: Bool?
 
     var icon: String {
-        switch path {
+        if let symbol { return symbol }
+        return switch path {
         case "/": "house"
         case "/queue": "checklist"
         case "/runs": "play.circle"
@@ -60,6 +64,7 @@ private struct Destination: Decodable, Equatable {
 private struct RailState: Decodable, Equatable {
     let signedIn: Bool
     let tabs: [Destination]
+    let actions: [Destination]?
     let more: [Destination]
     let tab: String
     let title: String
@@ -155,6 +160,17 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
             image: UIImage(systemName: "chevron.backward"), primaryAction: UIAction(title: "Back") { [weak self] _ in
                 self?.command("back")
             }) : nil
+        let pageItems = (rail.actions ?? []).map { action in
+            let item = UIBarButtonItem(image: UIImage(systemName: action.icon), primaryAction: UIAction(title: action.name) { [weak self] _ in
+                self?.command("openAction", path: action.path)
+            })
+            item.isEnabled = action.disabled != true
+            if let count = action.badge, count > 0 { item.badge = .count(count) }
+            item.accessibilityLabel = action.name
+            return item
+        }
+        content.setToolbarItems(pageItems, animated: false)
+        nav.setToolbarHidden(pageItems.isEmpty, animated: false)
         let actions = rail.more.map { destination in
             UIAction(title: destination.name) { [weak self] _ in self?.command("navigate", path: destination.path) }
         }

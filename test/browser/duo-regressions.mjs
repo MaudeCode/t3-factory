@@ -4,6 +4,17 @@ import assert from "node:assert/strict";
 
 const { chromium, webkit } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 const origin = process.env.FACTORY_FIXTURE_URL ?? "http://127.0.0.1:3860";
+async function installRail(page) {
+  // The production bridge imports /lib/ while the fixtures serve the same modules under /web/lib/.
+  await page.addScriptTag({ type: "importmap", content: JSON.stringify({ imports: { "/lib/": "/web/lib/" } }) });
+  await page.evaluate(() => { window.webkit = { messageHandlers: { factoryRail: { postMessage(state) { window.railItems = state.actions; } } } }; });
+  await page.addScriptTag({ url: "/ios/Factory/FactoryRail.js" });
+  await page.waitForFunction(() => !!window.factoryRail);
+}
+async function tapRail(page, name) {
+  const action = await page.waitForFunction(name => window.railItems?.find(a => a.name === name && !a.disabled && a.path.startsWith(location.pathname + location.search + "#")), name);
+  await page.evaluate(({ path }) => factoryRail.openAction(path), action);
+}
 const results = [];
 for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
   const browser = await engine.launch();
@@ -15,12 +26,69 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
           [main.clientWidth, main.querySelector(".page").getBoundingClientRect().width]);
         assert(size[0] > 760 && Math.abs(size[1] - size[0]) < 1);
       }],
-      ["native dashboard has one Controls destination", "start", "startTests", 951, async page => {
+      ["native dashboard leaves global controls to the Controls destination", "start", "startTests", 951, async page => {
         await page.evaluate(() => startTests.show("/"));
         const shortcut = page.locator('.side-foot a[href="/controls"]');
         assert(await shortcut.isVisible(), "website sidebar keeps its shortcut");
         await page.evaluate(() => document.documentElement.classList.add("factory-rail"));
-        assert(!await shortcut.isVisible() && await page.getByRole("button", { name: "Start a run" }).isVisible());
+        assert(!await page.locator(".side").isVisible());
+        assert.equal(await page.locator(".content").evaluate(el => el.getBoundingClientRect().top), 0);
+        await page.evaluate(() => startTests.show("/controls"));
+        assert(await page.getByRole("switch", { name: "Automation" }).isVisible());
+        assert(await page.getByRole("button", { name: "Start a run" }).isVisible());
+      }],
+      ["native composer Back keeps Now expanded", "runs", "runsTests", 382, async page => {
+        await page.evaluate(() => runsTests.show("/"));
+        await installRail(page);
+        const working = page.locator(".now-section").filter({ has: page.getByRole("heading", { name: /^Working/ }) });
+        await working.getByRole("button", { name: /more$/ }).click();
+        await page.evaluate(() => factoryRail.openAction("/start/new"));
+        await page.getByRole("heading", { name: "Start a run" }).waitFor();
+        await page.evaluate(() => factoryRail.back());
+        await working.waitFor();
+        assert(await working.getByRole("button", { name: "Show fewer" }).isVisible());
+      }],
+      ["native composer Back restores the filtered Runs list", "runs", "runsTests", 382, async page => {
+        await page.evaluate(() => runsTests.showLong());
+        await installRail(page);
+        const finished = page.getByRole("radio", { name: /^Finished/ });
+        await finished.click();
+        await tapRail(page, "Filter");
+        const query = page.getByRole("textbox", { name: "Find a ticket" });
+        await query.fill("APP-1");
+        await query.press("Enter");
+        await page.waitForFunction(() => window.railItems?.find(a => a.name === "Filter")?.badge === 1);
+        await page.getByRole("button", { name: /^Show 100 more/ }).click();
+        const links = page.locator(".runs-list a.next-ticket");
+        assert.equal(await links.count(), 200);
+        await page.evaluate(() => factoryRail.openAction("/start/new"));
+        await page.getByRole("heading", { name: "Start a run" }).waitFor();
+        await page.evaluate(() => factoryRail.back());
+        await finished.waitFor();
+        assert.equal(await finished.getAttribute("aria-checked"), "true");
+        assert.equal(await links.count(), 200);
+        await tapRail(page, "Filter");
+        assert.equal(await query.inputValue(), "APP-1");
+      }],
+      ["rail selection follows the Queue view", "session-tickets", "sessionTests", 382, async page => {
+        await page.evaluate(() => sessionTests.show());
+        await installRail(page);
+        await tapRail(page, "Select tickets");
+        assert(await page.getByRole("button", { name: "Run selected tickets" }).isVisible());
+        await tapRail(page, "Done selecting tickets");
+        await page.getByRole("radio", { name: /^Reports/ }).click();
+        await tapRail(page, "Select tickets");
+        await page.waitForFunction(() => window.railItems?.some(a => a.name === "Done selecting tickets" && a.path.includes("reports")));
+        await page.getByRole("radio", { name: /^Up next/ }).click();
+        await page.waitForFunction(() => window.railItems?.some(a => a.name === "Filter") && !window.railItems.some(a => a.name.includes("selecting") || a.name === "Select tickets"));
+      }],
+      ["rail opens the selected run's T3 thread", "runs", "runsTests", 382, async page => {
+        await page.evaluate(() => runsTests.show("/runs/run-1"));
+        await installRail(page);
+        const opened = page.waitForRequest(req => new URL(req.url()).pathname === "/api/threads/th1/open");
+        await page.route("**/api/threads/th1/open", route => route.fulfill({ status: 204 }));
+        await tapRail(page, "Open in T3 Code");
+        await opened;
       }],
       ["disconnected Controls resumes in place", "start", "startTests", 382, async page => {
         await page.evaluate(async () => {

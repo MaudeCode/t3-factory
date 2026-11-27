@@ -4,7 +4,7 @@ import { confirmAction } from "../lib/confirmation.js";
 import { byNewest, kanvil, matchesRunFilters, operationText, overrideText, projectLink, promotionLimit, streamReason, ticketKey, triageSummary } from "../lib/format.js";
 import { Button, Field, Input, Slots, Check, Tag, Icon, Empty, Link, Section, Page, RelativeTime } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, StartOptions, startOptions, OrderChoice, SectionSwitch } from "./Deck.js";
-import { RunFilters } from "./Runs.js";
+import { RunFilters, TicketSelection } from "./Runs.js";
 import { follow, ticketClick } from "../lib/router.js";
 
 const HINT = "Untrusted inbox reports are checked against each project's tickets and code in a read-only sandbox. Actionable reports that pass the promotion checks become ready tickets in the project, written by factory code without the report's text. Every open report is listed once by what it waits on: under Needs you until you make a ticket of it, send it through triage again or close it, and under In progress while triage or promotion will act on it.";
@@ -130,7 +130,7 @@ export function ReadyReports({ lead }) {
   const picked = rows.filter((r) => selected.includes(r.id));
   const held = picked.map((r) => startHold(r) ?? r.unavailable).find(Boolean);
   return html`<${Page} class="queue" title="Queue" count=${rows.length}
-    tools=${html`<${RunFilters} rows=${tickets} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} order=${html`<${OrderChoice} label="Promotion order" value=${order} onChange=${setOrder} />`} /><${StartOptions} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+    tools=${html`<${RunFilters} rows=${tickets} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} order=${html`<${OrderChoice} label="Promotion order" value=${order} onChange=${setOrder} />`} /><${StartOptions} /><${TicketSelection} selecting=${selecting} onChange=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${lead}
     <${Section} class="list">
       ${selecting && !!rows.length && html`<div class="selection-bar">

@@ -2,7 +2,7 @@
 // router and store so switching native tabs keeps one page and one event stream.
 (async () => {
   const router = await import(new URL("/lib/router.js", location.origin).href);
-  const { authenticated, jobs, issues } = await import(new URL("/lib/store.js", location.origin).href);
+  const { authenticated, jobs, issues, unavailable } = await import(new URL("/lib/store.js", location.origin).href);
   const { theme } = await import(new URL("/lib/theme.js", location.origin).href);
   const tabs = router.TABS.map(([path, name]) => ({ path, name }));
   const more = router.NAV.flatMap(([, rows]) => rows)
@@ -25,6 +25,11 @@
     .shell > .content { flex: 1 }
   `);
   const accountButton = () => document.querySelector('.tabbar button, .side-foot button[aria-label="More"]');
+  const pageActions = () => controls && authenticated.value && !unavailable?.value
+    && !router.ticketPanel.value && !router.epicPanel.value && !document.querySelector("dialog:modal")
+    ? [...(router.RAIL_ACTIONS?.[router.route.value.path] ?? []),
+       ...(router.railCommands?.value ?? []).filter(action => action.scope === location.pathname + location.search)]
+    : [];
   let queued = false;
   function refresh() {
     if (queued) return;
@@ -35,7 +40,8 @@
       const selected = tabs.find(tab => tab.path === path || (tab.path !== "/" && path.startsWith(tab.path + "/")));
       const ticket = router.ticketPanel.value, epic = router.epicPanel.value;
       send.postMessage({ signedIn: authenticated.value === true, tabs, more,
-        tab: selected?.path ?? (path === "/start" ? "/" : controls?.path ?? "/"),
+        actions: pageActions().map(({ path, name, symbol, badge, disabled }) => ({ path, name, symbol, badge: badge ?? 0, disabled: !!disabled })),
+        tab: selected?.path ?? history.state?.railParent ?? (path.startsWith("/start") ? "/" : controls?.path ?? "/"),
         waiting: jobs.value.filter(job => job.state === "waiting").length, issues: issues.value.length, title: ticket || (epic ? "Epic" : ""),
         appearance: theme.value.appearance, hasOptions: Boolean(accountButton()),
         back: Boolean(ticket || epic || router.route.value.page === "/runs/:id" || (!selected && path !== "/")),
@@ -46,6 +52,12 @@
     navigate(path) {
       if ([...tabs, ...more].some(item => item.path === path)) router.navigate(path);
     },
+    openAction(path) {
+      const action = pageActions().find(item => item.path === path);
+      if (!action || action.disabled) return;
+      if (action.invoke) action.invoke();
+      else router.navigate(path);
+    },
     account() { accountButton()?.click(); },
     back() {
       // A direct detail link has no parent entry. Close to its own page.
@@ -53,6 +65,8 @@
         const ticket = Boolean(router.ticketPanel.value);
         if (history.state?.[ticket ? "ticketPanel" : "epicPanel"]) history.back();
         else (ticket ? router.closeTicket : router.closeEpic)();
+      } else if (history.state?.railParent) {
+        history.back();
       } else if (router.route.value.page === "/runs/:id") {
         if (router.backFromRun) router.backFromRun();
         else router.navigate("/runs");
@@ -61,9 +75,11 @@
     }
   };
   // Keep the web navigation available if the deployed router cannot be loaded.
+  if (controls && router.railCommandsEnabled) router.railCommandsEnabled.value = true;
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
   addEventListener("resize", refresh);
+  document.addEventListener("toggle", refresh, true);
   const root = document.getElementById("root");
   if (root) new MutationObserver(refresh).observe(root, { childList: true });
-  for (const signal of [theme, authenticated, jobs, issues, router.route, router.ticketPanel, router.epicPanel]) signal.subscribe(refresh);
+  for (const signal of [theme, authenticated, jobs, issues, unavailable, router.railCommands, router.route, router.ticketPanel, router.epicPanel]) signal?.subscribe(refresh);
 })();

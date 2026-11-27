@@ -5,7 +5,7 @@ import { confirmAction } from "../lib/confirmation.js";
 import { ago, byNewest, matchesRunFilters, threadLink, ticketKey, operationText, overrideText } from "../lib/format.js";
 import { Button, Check, Icon, Empty, Page, Section, RelativeTime } from "../ui/index.js";
 import { TicketRow, RunNow, runNow, startHold, openRun, Operations, StartOptions, startOptions, OrderChoice } from "./Deck.js";
-import { RunFilters } from "./Runs.js";
+import { RunFilters, TicketSelection } from "./Runs.js";
 
 const HINT = "Tickets that T3 sessions reported creating, confirmed against the tracker. Factory discovery and upstream release-review sessions are excluded. A ticket here still needs its readiness checks to start, and nothing starts on its own.";
 
@@ -43,7 +43,7 @@ export function SessionTickets({ lead } = {}) {
     const ids = tickets.map(t => t.taskId), keys = tickets.map(t => t.key).join(", ");
     confirmAction({ title: `Remove ${tickets.length === 1 ? keys : `${tickets.length} tickets`} from the session list?`, message: `${keys}. Kanvil tickets, their runs and automatic scheduling are unchanged. Removed entries do not come back when a session reports them again.`, label: "Remove" }, () => actions.dismissSessionTicket(ids));
   };
-  return html`<${Page} class="queue" title="Queue" count=${s ? rows.length : null} hint=${HINT} tools=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions order=${html`<${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} />`} /><${StartOptions} /><${Button} size="sm" icon=${selecting ? "check" : "checklist"} label=${selecting ? "Done selecting tickets" : "Select tickets"} aria-pressed=${selecting} disabled=${busy.value} onClick=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
+  return html`<${Page} class="queue" title="Queue" count=${s ? rows.length : null} hint=${HINT} tools=${html`<${RunFilters} rows=${s?.rows ?? []} filters=${filters} query=${query} onFilters=${setFilters} onQuery=${setQuery} sessions order=${html`<${OrderChoice} label="Creation order" value=${order} onChange=${setOrder} />`} /><${StartOptions} /><${TicketSelection} selecting=${selecting} onChange=${() => { setSelecting(!selecting); setSelected([]); }} />`}>
     ${lead}
     ${s?.error && html`<p class="hint tone-attention stale-list"><${Icon} name="alert" />${s.error.message} <${Button} variant="ghost" size="sm" icon="alert" label="See issues" onClick=${() => (issuesOpen.value = true)} /></p>`}
     <${Operations} list=${requests.filter((op) => op.origin !== SESSION_ORIGIN && op.origin !== TRIAGE_ORIGIN)} />
