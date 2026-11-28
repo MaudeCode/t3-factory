@@ -345,8 +345,18 @@ function currentReport(job: Job, t: Thread): boolean {
   if (statSync(job.reportPath).mtimeMs > answeredAt) return true;
   try { return JSON.parse(readFileSync(job.reportPath, 'utf8')).status !== 'awaiting-human'; } catch { return true; }
 }
+class MissingCompletionReport extends Error {}
+function waitForReport(job: Job, thread: Thread, store: Store, error: unknown) {
+  job.state = 'waiting';
+  job.reason = safeError(error);
+  if (error instanceof MissingCompletionReport) {
+    job.reportMissing = true;
+    const outcome = thread.latestRunId && store.turnOutcome(job.id, thread.latestRunId);
+    if (outcome) job.reason = `T3 turn ${outcome} without a completion report; inspect in T3`;
+  }
+}
 export function readCompletionReport(job: Job) {
-  if (!existsSync(job.reportPath)) throw new Error('Turn ended without a completion report; inspect in T3');
+  if (!existsSync(job.reportPath)) throw new MissingCompletionReport('Turn ended without a completion report; inspect in T3');
   const report = reportSchema.parse(JSON.parse(readFileSync(job.reportPath, 'utf8')));
   if (report.jobId !== job.id) throw new Error('Completion report job ID mismatch');
   return report;
@@ -403,6 +413,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
   await readAll(store.jobSummaries('unsettled').map(original => store.exclusive([`job:${original.id}`], async () => {
     await backgroundCheckpoint();
     const job = store.job(original.id)!;
+    delete job.reportMissing;
     const t = byId.get(job.threadId);
     if (t && unconfirmedLaunchDismissed(job) && lateLaunchHasWork(t, c.monitoringTimeoutMinutes)) {
       if (allowMonitorStop) {
@@ -421,7 +432,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
           if (report.status === 'awaiting-human') throw new Error(report.reason);
           if (job.state !== 'complete') await verifyCompletionReport(c, kanvil, job, t, report);
         }
-      } catch (error) { job.state = 'waiting'; job.reason = safeError(error); store.save(job); return; }
+      } catch (error) { waitForReport(job, t, store, error); store.save(job); return; }
       await dismissJob(store, job, 'Dismissed by settling the task in T3', t); return;
     }
     if (job.state === 'complete') { if (t && allowMonitorStop && job.workspaceCleanedAt) await settleFinished(t3, job, t); return; }
@@ -469,7 +480,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
       store.save(job); return;
     }
     if (executing(t, c.monitoringTimeoutMinutes) || ['dispatching', 'running'].includes(job.state)) job.lastExecutionAt = t.updatedAt;
-    job.thread = { title: t.title, status: t.status, branch: t.branch, worktreePath: t.worktreePath, updatedAt: t.updatedAt, pending: t.pendingRuntimeRequest?.kind ?? null, background: t.pendingBackgroundTasks.map(b => b.kind) };
+    job.thread = { title: t.title, status: t.status, branch: t.branch, worktreePath: t.worktreePath, updatedAt: t.updatedAt, pending: t.pendingRuntimeRequest?.kind ?? null, pendingId: t.pendingRuntimeRequest?.id, pendingAt: t.pendingRuntimeRequest?.createdAt, background: t.pendingBackgroundTasks.map(b => b.kind) };
     // The session's linked pull requests, before any report names them, so a run waiting on CI shows its PR.
     const linked = t.pullRequests.filter(p => p.source !== 'stack-dismissed').map(p => p.url);
     if (linked.some(url => !job.prUrls.includes(url))) job.prUrls = [...new Set([...job.prUrls, ...linked])];
@@ -496,7 +507,7 @@ export async function reconcile(c: Config, store: Store, t3: T3, kanvil: Kanvil,
           job.state = 'complete'; job.reason = report.reason; job.completedAt = new Date().toISOString();
           log('job-complete', { jobId: job.id, ticket: job.ticketKey, prUrls: job.prUrls });
         }
-      } catch (e) { job.state = 'waiting'; job.reason = safeError(e); }
+      } catch (error) { waitForReport(job, t, store, error); }
     }
     store.save(job);
   })));

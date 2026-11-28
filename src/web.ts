@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hookPath, type milestoneHooks } from "./milestones.ts";
 import { oidcSchema, type createOidc } from "./oidc.ts";
 import { overrideLimitsSchema, dispatchProviderSchema } from "./config.ts";
 import { spawn } from "node:child_process";
@@ -188,6 +189,7 @@ function shown<T extends { status?: object }>(state: T, held: Set<string>) {
 export function createFactoryWeb(options: {
   config: WebConfig;
   secret: string;
+  milestone?: NonNullable<ReturnType<typeof milestoneHooks>>["receive"];
   oidc?: Awaited<ReturnType<typeof createOidc>>;
   dataDir: string;
   readState: () => { status?: object; config?: object; now?: string; version?: unknown; [key: string]: unknown };
@@ -323,17 +325,19 @@ export function createFactoryWeb(options: {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
   };
-  const body = async (req: IncomingMessage) => {
+  const rawBody = async (req: IncomingMessage) => {
     if (req.headers["content-type"]?.split(";")[0] !== "application/json")
       throw new Error("Expected application/json");
-    let data = "";
+    const chunks: Buffer[] = [];
+    let length = 0;
     for await (const chunk of req) {
-      data += chunk;
-      if (Buffer.byteLength(data) > 512_000)
-        throw new Error("Request is too large");
+      length += chunk.length;
+      if (length > 512_000) throw new Error("Request is too large");
+      chunks.push(chunk);
     }
-    return JSON.parse(data || "{}");
+    return Buffer.concat(chunks);
   };
+  const body = async (req: IncomingMessage) => JSON.parse((await rawBody(req)).toString() || "{}");
   let settingsBusy = false;
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -352,6 +356,10 @@ export function createFactoryWeb(options: {
       !options.oidc &&
       equal(req.headers.authorization ?? "", `Bearer ${secret}`);
     try {
+      if (path === hookPath && req.method === "POST" && options.milestone) {
+        const reply = options.milestone(req.headers, await rawBody(req));
+        return json(res, reply.status, reply.body);
+      }
       if (path === "/api/auth" && req.method === "GET")
         return json(res, 200, {
           mode: options.oidc ? "oidc" : "pairing",
