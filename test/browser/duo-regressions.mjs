@@ -143,6 +143,7 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
       }],
       ["fold with a selected ticket", "ticket", "ticketTests", 382, async page => {
         await page.evaluate(async () => { await ticketTests.show("/queue"); await ticketTests.open("APP-1"); });
+        await installRail(page);
         const panel = page.locator("dialog.ticket-panel[open]");
         for (const [width, height, split] of [[669, 867, true], [385, 571, false], [951, 585, true]]) {
           await page.setViewportSize({ width, height });
@@ -151,6 +152,8 @@ for (const [name, engine] of [["Chromium", chromium], ["WebKit", webkit]]) {
             return d && d.matches(":modal") !== split && (split === d.classList.contains("split-panel"));
           }, split);
           assert.equal(await panel.getAttribute("aria-label"), "APP-1");
+          assert.equal(await panel.getByRole("button", { name: "Close", exact: true }).isVisible(), split);
+          assert(await panel.getByRole("radio", { name: "Runs" }).isVisible());
           if (split) {
             const row = page.locator(".next:has(.next-ticket[aria-current=true])");
             const bounds = await row.boundingBox();

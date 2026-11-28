@@ -437,7 +437,9 @@ For HTTPS links, enable Associated Domains on the Factory bundle ID and use a pr
 
 The native tab bar reads its destinations from the deployed web router. All tabs share one web view and Factory session. Native Back follows ticket history, including related tickets. The iOS system sign-in sheet opens Factory’s OIDC flow so Pocket ID can use passkeys on the phone. After the usual group check, the server returns a single-use code to the app. The web view redeems it with the app’s private verifier and receives the regular HttpOnly Factory cookie.
 
-The system launch screen uses the named `LaunchBackground` color to match Factory's default dark canvas. The window restores the site's saved appearance before the web view loads. WebKit's transparent backing shows the native background until the document paints. For launch-color changes, record a cold start through the first visible page and inspect the frames between the app icon and the loaded UI.
+The system launch screen uses the named `LaunchBackground` color to match Factory's default dark canvas. The window restores the site's saved appearance before the web view loads. WebKit's transparent backing shows the native background until the document paints. The native canvas then follows the page's theme color, including palette changes. For launch-color changes, record a cold start through the first visible page and inspect the frames between the app icon and the loaded UI.
+
+Ticket and epic details use that same canvas beside the rail. In full-screen detail, the native bar shows the title and Back. The web pane keeps the Ticket and Runs tabs, actions and content. When both panes fit, the detail keeps its own header and Close control.
 
 If the private site cannot load, the native shell offers Retry connection and attempts the original page again when the app returns to the foreground. The web client owns recovery once its scripts are running.
 
