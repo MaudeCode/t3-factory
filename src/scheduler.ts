@@ -31,6 +31,7 @@ const cleanupPending = (job: Job) => (job.state === 'complete' || job.state === 
 const reportSchema = z.object({
   jobId: z.string(), status: z.enum(['complete', 'awaiting-human', 'no-work']), reason: z.string(),
   prUrls: z.array(z.url()).default([]), createdTaskIds: z.array(z.string()).default([]),
+  supersededBy: z.url().optional(),
   // Repair runs name the failed jobs of their run they repaired and those they left for a person.
   repairedJobs: z.array(z.string()).default([]), unrepairedJobs: z.array(z.string()).default([]),
   // An upstream review that covered a different range than it was given names it.
@@ -246,13 +247,21 @@ export async function pendingRepairs(c: Config, store: Store, jobs: RepairJobs, 
   }));
   return pending.filter((row): row is PendingReview => !!row);
 }
-async function verifyMerged(project: Project, urls: string[]) {
-  for (const url of urls) {
-    const u = new URL(url);
-    if (u.origin !== 'https://github.com' || !new RegExp(`^/${project.githubRepo}/pull/[0-9]+$`).test(u.pathname)) throw new Error('Completion report PR belongs to the wrong repository');
-    const pr = z.object({ state: z.literal('MERGED'), baseRefName: z.string(), mergeCommit: z.object({ oid: z.string().min(40) }) }).parse(await gh(['pr', 'view', u.pathname.split('/').at(-1)!, '--repo', project.githubRepo, '--json', 'state,baseRefName,mergeCommit']));
-    if (pr.baseRefName !== project.baseBranch) throw new Error('Completed PR targets the wrong release branch');
+async function readMergedPullRequest(project: Project, url: string) {
+  const u = new URL(url), number = u.pathname.split('/').at(-1);
+  if (u.origin !== 'https://github.com' || !number || !/^\d+$/.test(number) || u.pathname.toLowerCase() !== `/${project.githubRepo.toLowerCase()}/pull/${number}`) {
+    throw new Error('Completion report PR belongs to the wrong repository');
   }
+  const pr = z.object({
+    state: z.enum(['OPEN', 'CLOSED', 'MERGED']), baseRefName: z.string(), headRefName: z.string().min(1).optional(),
+    mergeCommit: z.object({ oid: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/) }).nullable(),
+  }).parse(await gh(['pr', 'view', number, '--repo', project.githubRepo, '--json', 'state,baseRefName,headRefName,mergeCommit']));
+  if (pr.state !== 'MERGED' || !pr.mergeCommit) throw new Error('Completion report PR is not merged');
+  if (pr.baseRefName !== project.baseBranch) throw new Error('Completed PR targets the wrong release branch');
+  return { headBranch: pr.headRefName, mergeCommit: pr.mergeCommit.oid };
+}
+async function verifyMerged(project: Project, urls: string[]) {
+  for (const url of urls) await readMergedPullRequest(project, url);
 }
 async function released(project: Project, head: string, release = `refs/remotes/origin/${project.baseBranch}`, signal?: AbortSignal): Promise<boolean> {
   const repo = project.repoPath;
@@ -268,16 +277,20 @@ async function released(project: Project, head: string, release = `refs/remotes/
     return cherry.split('\n').filter(Boolean).every(line => line.startsWith('-'));
   } catch { return false; }
 }
-// Manual deletion verifies the remote release tip without mutating repository refs or trusting an old tracking ref.
-export async function verifyReleasedWorkspaceHead(project: Project, head: string, signal?: AbortSignal): Promise<string> {
+// Verify against the remote release tip without mutating branch refs or trusting an old tracking ref.
+async function remoteReleaseTip(project: Project, signal?: AbortSignal): Promise<string> {
   const ref = `refs/heads/${project.baseBranch}`;
   const remote = await git(project.repoPath, ['ls-remote', '--exit-code', 'origin', ref], signal);
   const fields = remote.split(/\s+/);
   if (fields.length !== 2 || fields[1] !== ref || !/^[a-f0-9]{40,64}$/.test(fields[0])) throw new Error('Remote release branch could not be verified');
   // The tip is only comparable once its commit is local.
   if (!await git(project.repoPath, ['cat-file', '-e', `${fields[0]}^{commit}`], signal).then(() => true, () => false)) await git(project.repoPath, ['fetch', '--quiet', 'origin', ref], signal);
-  if (!await released(project, head, fields[0], signal)) throw new Error('Workspace HEAD is not verified merged into the remote release branch');
   return fields[0];
+}
+export async function verifyReleasedWorkspaceHead(project: Project, head: string, signal?: AbortSignal): Promise<string> {
+  const tip = await remoteReleaseTip(project, signal);
+  if (!await released(project, head, tip, signal)) throw new Error('Workspace HEAD is not verified merged into the remote release branch');
+  return tip;
 }
 async function branchTip(project: Project, branch: string): Promise<string> {
   return git(project.repoPath, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).catch(() => '');
@@ -286,33 +299,44 @@ async function branchTip(project: Project, branch: string): Promise<string> {
 async function refHistory(path: string, ref: string): Promise<string[]> {
   return (await git(path, ['reflog', 'show', '--format=%H', ref]).catch(() => '')).split('\n').filter(Boolean);
 }
-// A Factory branch back at its released creation commit, in a checkout also on it, holds no work of its run.
-// A commit pushed straight to the release branch would pass an ancestry check alone, so every commit the reflogs
-// visited must be that commit or one the release branch never received. Discarded scratch commits are no delivery.
-async function untouchedHead(project: Project, branch: string, worktreePath?: string | null): Promise<string> {
+// Only the creation commit or a verified independent merge can be the final head or a released reflog entry.
+async function untouchedHead(project: Project, branch: string, worktreePath?: string | null, supersession?: { head: string; tip: string }): Promise<string> {
   const history = await refHistory(project.repoPath, `refs/heads/${branch}`), created = history.at(-1);
   if (!created) return '';
   const tips = [await branchTip(project, branch)];
   // A leftover directory without its .git link is no checkout; only the branch refs can speak for it.
   if (worktreePath && existsSync(join(worktreePath, '.git'))) { tips.push(await git(worktreePath, ['rev-parse', 'HEAD'])); history.push(...await refHistory(worktreePath, 'HEAD')); }
-  if (!tips.every(head => head === created) || !await released(project, created)) return '';
-  for (const head of new Set(history)) if (head !== created && await released(project, head)) return '';
-  return created;
+  const expected = supersession?.head ?? created;
+  if (!tips.every(head => head === expected) || !await released(project, created, supersession?.tip)) return '';
+  for (const head of new Set(history)) {
+    if (head !== created && head !== supersession?.head && await released(project, head, supersession?.tip)) return '';
+  }
+  return expected;
 }
 // A delivered ticket is closed in a done status. One closed without delivery may also be cancelled (a duplicate,
 // superseded, or cancelled by the owner) whatever the project's done statuses say.
 const ticketClosed = (project: Project, task: Task, delivered: boolean) => project.doneStatuses.includes(task.status) || !delivered && task.status === 'cancelled';
 // A hold is unfinished work, even when the agent removed the ticket from the ready queue.
 // A reconcile that cleared abandoned leftovers leaves its ticket open so it can start again.
-async function verifyClosedWithoutDelivery(project: Project, task: Task, job: Job, thread: Thread, mayStayOpen = false) {
-  if (!mayStayOpen && !ticketClosed(project, task, false)) {
+async function verifyClosedWithoutDelivery(project: Project, task: Task, job: Job, thread: Thread, mayStayOpen: boolean, supersededBy?: string) {
+  if ((!mayStayOpen || supersededBy) && !ticketClosed(project, task, false)) {
     throw new Error('Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved');
   }
   const unmerged = new Error('Unmerged work remains; deliver it through a PR or report awaiting-human');
   const branch = assignedBranch(job), worktree = thread.worktreePath && existsSync(thread.worktreePath) ? thread.worktreePath : null;
   if (worktree && (await git(worktree, ['status', '--porcelain']) || await git(worktree, ['rev-parse', '--abbrev-ref', 'HEAD']) !== branch)) throw unmerged;
   if (!branch || !await branchTip(project, branch)) throw new Error('Workspace head cannot be verified; inspect the work in T3 or report awaiting-human');
-  if (!await untouchedHead(project, branch, worktree)) throw unmerged;
+  let supersession: { head: string; tip: string } | undefined;
+  if (supersededBy) {
+    const pr = await readMergedPullRequest(project, supersededBy);
+    if (!pr.headBranch || pr.headBranch === branch) throw new Error('Superseding PR must come from a different branch');
+    const head = pr.mergeCommit, tip = await remoteReleaseTip(project);
+    if (!await git(project.repoPath, ['merge-base', '--is-ancestor', head, tip]).then(() => true, () => false)) {
+      throw new Error('Superseding PR merge commit is not on the release branch');
+    }
+    supersession = { head, tip };
+  }
+  if (!await untouchedHead(project, branch, worktree, supersession)) throw unmerged;
 }
 // A report describes the current wait unless it is an awaiting-human report answered since it was written.
 function currentReport(job: Job, t: Thread): boolean {
@@ -329,10 +353,14 @@ export function readCompletionReport(job: Job) {
 }
 export async function verifyCompletionReport(c: Config, kanvil: Kanvil, job: Job, t: Thread, report: z.infer<typeof reportSchema>) {
   const project = projectFor(c, job);
-  if (job.kind === 'ticket' || job.kind === 'reconcile') {
+  const ticketJob = job.kind === 'ticket' || job.kind === 'reconcile';
+  if (report.supersededBy && (!ticketJob || report.status !== 'no-work' || report.prUrls.length)) {
+    throw new Error('Superseding PR evidence requires a ticket no-work report with empty prUrls');
+  }
+  if (ticketJob) {
     if (report.status !== 'complete' && report.prUrls.length) throw new Error('Ticket cannot finish as no-work');
     const task = await kanvil.task(job.taskId!, project.kanvilId);
-    if (!report.prUrls.length) await verifyClosedWithoutDelivery(project, task, job, t, job.kind === 'reconcile');
+    if (!report.prUrls.length) await verifyClosedWithoutDelivery(project, task, job, t, job.kind === 'reconcile', report.supersededBy);
     else {
       if (!ticketClosed(project, task, true)) throw new Error('Ticket not yet verified Done in Kanvil');
       await verifyMerged(project, report.prUrls);
@@ -511,7 +539,11 @@ export async function verifyCleanupHead(c: Config, store: Store, kanvil: Kanvil,
   } else {
     // Discovery and tickets closed without delivery verify their head against the release branch.
     head = job.workspaceCleanup?.head ?? await git(path, ['rev-parse', 'HEAD']);
-    if (!await released(project, head)) throw new Error('Workspace head is not part of the release branch');
+    if (!await released(project, head)) {
+      // The superseding merge may already be on the remote while the local tracking ref is still stale.
+      if (!existsSync(job.reportPath) || !readCompletionReport(job).supersededBy) throw new Error('Workspace head is not part of the release branch');
+      await verifyReleasedWorkspaceHead(project, head);
+    }
   }
   return head;
 }

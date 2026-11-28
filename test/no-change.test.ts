@@ -11,7 +11,8 @@ import type { T3, Kanvil } from '../src/clients.ts';
 import { v2Thread, v2Projection } from './v2-fixture.ts';
 
 // A reconcile run may also clear abandoned leftovers and leave its ticket open for a new start.
-const accepted = { 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done', 'discarded-commit': 'done', 'reconcile-cleared': 'todo' } as const;
+const accepted = { 'superseded': 'done', 'done': 'done', 'cancelled': 'cancelled', 'complete-empty': 'done', 'missing-worktree': 'done', 'discarded-commit': 'done', 'reconcile-cleared': 'todo' } as const;
+const unmerged = 'Unmerged work remains; deliver it through a PR or report awaiting-human';
 const unfinished = 'Ticket remains unfinished; keep this job awaiting-human until the blocker is resolved';
 const rejected = {
   'unlabeled': unfinished,
@@ -24,7 +25,16 @@ const rejected = {
   'held-settled': unfinished,
   'awaiting-human-settled': 'Choose the reproduction route',
   'settled-no-report': 'Turn ended without a completion report; inspect in T3',
-  'dirty': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
+  'dirty': unmerged,
+  'superseded-without-proof': unmerged,
+  'superseded-dirty': unmerged,
+  'superseded-extra-commit': unmerged,
+  'superseded-direct-release': unmerged,
+  'superseded-own-branch': 'Superseding PR must come from a different branch',
+  'superseded-wrong-base': 'Completed PR targets the wrong release branch',
+  'superseded-open-pr': 'Completion report PR is not merged',
+  'superseded-open-ticket': unfinished,
+  'superseded-off-release': 'Superseding PR merge commit is not on the release branch',
   'extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'missing-worktree-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
   'switched-branch-extra-commit': 'Unmerged work remains; deliver it through a PR or report awaiting-human',
@@ -37,7 +47,7 @@ const rejected = {
 } as const;
 
 for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (keyof typeof accepted | keyof typeof rejected)[]) {
-  test(`ticket closed without delivery: ${scenario}`, async () => {
+  test(`ticket closed without delivery: ${scenario}`, async (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'factory-no-change-')), repo = join(dir, 'repo'), tree = join(dir, 'tree'); mkdirSync(repo);
     const git = (path: string, ...args: string[]) => execFileSync('git', ['-C', path, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', ...args], { encoding: 'utf8' }).trim();
     git(repo, 'init', '-q', '-b', 'main'); writeFileSync(join(repo, 'file'), 'released\n'); git(repo, 'add', 'file'); git(repo, 'commit', '-qm', 'released');
@@ -49,16 +59,48 @@ for (const scenario of [...Object.keys(accepted), ...Object.keys(rejected)] as (
     const job: Job = { id: 'job', kind: scenario.startsWith('reconcile') ? 'reconcile' : 'ticket', projectId: 'project', taskId: 'task', ticketKey: 'FIX-1', threadId: 'thread', messageId: 'initial', createdAt: '2026-01-01T00:00:00Z', completedAt: null, state: 'waiting', reason: 'Ticket cannot finish as no-work', lastPersonalActivity: null, reportPath: join(dir, 'report.json'), prUrls: [], command: { workspaceStrategy: { type: 'worktree', branch } } };
     const thread = v2Thread({ id: job.threadId, projectId: project.t3Id, branch, worktreePath: tree, status: 'completed' });
     if (scenario.includes('settled')) thread.settledOverride = 'settled';
-    const report = { jobId: job.id, status: ['complete-empty', 'held-complete'].includes(scenario) ? 'complete' : 'no-work', reason: 'Already delivered on main; evidence recorded on the ticket', prUrls: scenario === 'no-work-with-pr' ? ['https://github.com/fixture/repo/pull/1'] : [], createdTaskIds: [] };
+    const superseded = scenario.startsWith('superseded');
+    const report = { ...(superseded && scenario !== 'superseded-without-proof' ? { supersededBy: 'https://github.com/fixture/repo/pull/2' } : {}), jobId: job.id, status: ['complete-empty', 'held-complete'].includes(scenario) ? 'complete' : 'no-work', reason: 'Already delivered on main; evidence recorded on the ticket', prUrls: scenario === 'no-work-with-pr' ? ['https://github.com/fixture/repo/pull/1'] : [], createdTaskIds: [] };
     if (scenario === 'awaiting-human-settled') { report.status = 'awaiting-human'; report.reason = 'Choose the reproduction route'; }
     if (scenario !== 'settled-no-report') writeFileSync(job.reportPath, JSON.stringify(report));
-    const status = scenario in accepted ? accepted[scenario as keyof typeof accepted] : scenario === 'backlog' ? 'backlog' : ['still-ready', 'unlabeled', 'automation-disabled', 'held', 'held-complete', 'held-settled', 'archived'].includes(scenario) ? 'todo' : 'done';
+    const status = scenario in accepted ? accepted[scenario as keyof typeof accepted] : scenario === 'backlog' ? 'backlog' : ['still-ready', 'unlabeled', 'automation-disabled', 'held', 'held-complete', 'held-settled', 'archived', 'superseded-open-ticket'].includes(scenario) ? 'todo' : 'done';
     const kanvil = { config: c.kanvil, task: async () => ({ id: 'task', projectId: 'project', number: 1, title: 'Fixture', createdAt: job.createdAt, priority: 'low', status, automationReady: scenario !== 'automation-disabled', holdReason: scenario.startsWith('held') ? 'Decision pending' : null, archived: scenario === 'archived', labels: [{ name: 'med' }, ...(scenario === 'unlabeled' ? [] : [{ name: 'sf' }])] }) } as unknown as Kanvil;
     const threads = [thread];
     const t3 = { shell: async () => ({ threads }), request: async () => ({ projection: v2Projection(thread) }), terminals: async () => [],
       dispatch: async (command: any) => { thread.worktreePath = null; thread.branch = null; assert.equal(command.type, 'thread.metadata.update'); } } as unknown as T3;
     try {
-      if (scenario === 'dirty') writeFileSync(join(tree, 'untracked'), 'keep me');
+      const originalPath = process.env.PATH;
+      if (superseded) {
+        const bin = join(dir, 'bin');
+        mkdirSync(bin);
+        // Leave the discarded implementation in the reflog after checking out the independent merge.
+        writeFileSync(join(tree, 'file'), 'abandoned work\n'); git(tree, 'commit', '-qam', 'abandoned implementation');
+        if (scenario === 'superseded-direct-release') git(repo, 'merge', '-q', '--ff-only', branch);
+        writeFileSync(join(repo, 'replacement'), 'independently delivered\n');
+        git(repo, 'add', 'replacement'); git(repo, 'commit', '-qm', 'superseding PR');
+        const merge = git(repo, 'rev-parse', 'HEAD');
+        git(repo, 'remote', 'add', 'origin', repo);
+        if (scenario === 'superseded-off-release') git(repo, 'reset', '-q', '--hard', 'HEAD^');
+        // Keep the tracking ref behind to exercise both reconciliation and cleanup against the remote.
+        git(tree, 'reset', '-q', '--hard', merge);
+        const open = scenario === 'superseded-open-pr';
+        const metadata = {
+          state: open ? 'OPEN' : 'MERGED', headRefName: scenario === 'superseded-own-branch' ? branch : 'fix/independent',
+          baseRefName: scenario === 'superseded-wrong-base' ? 'other' : 'main', mergeCommit: open ? null : { oid: merge },
+        };
+        writeFileSync(join(bin, 'gh'), `#!/bin/sh
+case "$1 $2 $3 $4 $5" in
+  'pr view 2 --repo fixture/repo') printf '%s\\n' '${JSON.stringify(metadata)}';;
+  *) exit 1;;
+esac
+`, { mode: 0o755 });
+        process.env.PATH = `${bin}:${originalPath}`;
+        t.after(() => {
+          if (originalPath === undefined) delete process.env.PATH;
+          else process.env.PATH = originalPath;
+        });
+      }
+      if (scenario === 'dirty' || scenario === 'superseded-dirty') writeFileSync(join(tree, 'untracked'), 'keep me');
       if (scenario.endsWith('extra-commit')) { writeFileSync(join(tree, 'file'), 'new work\n'); git(tree, 'commit', '-qam', 'unmerged'); }
       if (scenario.startsWith('switched-branch')) git(tree, 'switch', '-qc', 'other', 'main');
       if (scenario.startsWith('missing-worktree')) { git(repo, 'worktree', 'remove', tree); thread.worktreePath = null; }
