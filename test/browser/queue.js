@@ -558,6 +558,8 @@ async function epicPanelTest() {
     // A running Epic's overrides are its plan's own, not the page's start choices.
     assert(chip("label limits").getAttribute("aria-pressed") === "true" && chip("quota reserve").getAttribute("aria-pressed") === "false" && !panel().querySelector('[aria-label="Start provider"]'), "a running Epic shows the limits it overrides and no start provider");
     assert(fits(), "the panel and its controls stay inside the viewport");
+    const body = panel().querySelector(".dialog-body");
+    assert(body.scrollWidth === body.clientWidth, "Epic member rows fit the scrolling detail body");
     chip("quota reserve").click(); await pause(); await pause();
     assert(JSON.stringify(posts) === JSON.stringify([["/api/plans/moving-plan/overrides", { overrideLimits: ["labels", "reserve"] }]]), `changing a chip saves the plan's overrides: ${JSON.stringify(posts)}`);
     chip("label limits").click(); await pause(); await pause();

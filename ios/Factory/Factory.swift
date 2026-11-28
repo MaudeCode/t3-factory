@@ -115,6 +115,7 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
             && (url.port ?? defaultPort) == (origin.port ?? defaultPort)
     }
     private var web: WKWebView!
+    private var themeObservation: NSKeyValueObservation?
     private var rail: RailState?
     private weak var filterSheet: UIViewController?
     private var filterPath: String?
@@ -163,6 +164,7 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
         configuration.userContentController.addUserScript(WKUserScript(
             source: "if (location.origin === \(expected)) {\n\(script)\n}", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: configuration)
+        themeObservation = web.observe(\.themeColor) { [weak self] _, _ in self?.updateCanvas() }
         // Let the native canvas show through until the first document paints.
         web.isOpaque = false
         web.backgroundColor = .clear
@@ -184,7 +186,6 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
 
     private func page(_ item: Destination? = nil) -> UINavigationController {
         let content = UIViewController()
-        content.view.backgroundColor = FactoryScene.canvas
         let navigation = UINavigationController(rootViewController: content)
         navigation.setNavigationBarHidden(true, animated: false)
         if let item {
@@ -200,9 +201,17 @@ final class FactoryController: UITabBarController, UITabBarControllerDelegate, W
         attach()
     }
 
+    private func updateCanvas() {
+        let color = web.themeColor ?? FactoryScene.canvas
+        view.backgroundColor = color
+        view.window?.backgroundColor = color
+        (selectedViewController as? UINavigationController)?.topViewController?.view.backgroundColor = color
+    }
+
     private func attach() {
         guard let nav = selectedViewController as? UINavigationController, let content = nav.topViewController else { return }
         if web.superview !== content.view {
+            updateCanvas()
             web.removeFromSuperview()
             content.view.addSubview(web)
             let area = content.view.safeAreaLayoutGuide

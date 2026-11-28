@@ -15,7 +15,7 @@ const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 // The tracker's text is untrusted: this description would run script if it were ever parsed as markup.
 const HOSTILE = 'First line.\n<img src=x onerror="window.__ticketXss = true">\n<script>window.__ticketXss = true</script>\nLast line.\n\n## Outcome\n\nSet `mode` to **on**, see [the guide](https://docs.example/guide) or [this](javascript:window.__ticketXss=true).\n\n```\n' + "x".repeat(400) + '\n```\n\n| Ticket | Note |\n| --- | --- |\n| APP-90 | ' + "long cell text ".repeat(20) + '|';
 const detail = (key, extra = {}) => ({
-  id: `id-${key}`, projectId: "p", key, title: `Synthetic ticket ${key}`, status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: ["feat", "web"], scopes: ["web"],
+  id: `id-${key}`, projectId: "p", key, title: `Synthetic ticket ${key}`, status: "todo", priority: "high", difficulty: "med", kind: "feature", labels: ["feat", "web", "component-" + "subsystem".repeat(8)], scopes: ["web"],
   inbox: false, description: HOSTILE, acceptanceCriteria: "- first criterion\n- second criterion", automationReady: true, holdReason: null, readiness: [],
   blockedBy: [{ key: "APP-90", title: "A finished blocker", done: true }], blocks: [{ key: "APP-91", title: "A dependent", done: false }], epic: "Billing v2", createdAt: ago(600),
   url: `https://tracker.example/projects/p/tickets/id-${key}`, ...extra,
@@ -106,6 +106,8 @@ async function run() {
   assert(panel().querySelectorAll(".ticket-text li").length === 2, "criteria written as a list render as one");
   const pre = body.querySelector("pre");
   assert(pre.scrollWidth <= pre.clientWidth && pre.getBoundingClientRect().height > 60 && panel().scrollWidth <= panel().clientWidth, "a long code line wraps inside the panel");
+  const scroller = panel().querySelector(".dialog-body");
+  assert(scroller.scrollWidth === scroller.clientWidth, "long ticket labels fit the scrolling detail body");
   const table = body.querySelector("table");
   assert(table.getBoundingClientRect().right <= body.getBoundingClientRect().right + 1, "a table with long cells stays inside the panel");
   // The panel opens on the ticket; Factory's side of it, the latest run, is the second tab.

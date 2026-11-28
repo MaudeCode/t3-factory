@@ -2081,6 +2081,12 @@ button.next-chevron:not(:disabled):hover > .icon {
 .ticket-panel .epic-tickets {
   margin-left: 0;
 }
+.ticket-panel .chain-row {
+  margin-inline: 0;
+}
+.ticket-panel .chain-row .row-body > span {
+  white-space: normal;
+}
 /* Touch-sized controls would otherwise sit on the row's separators. */
 .epic .next-actions {
   align-items: center;
@@ -3881,6 +3887,12 @@ dialog.ticket-panel[open].closing {
 .ticket-meta {
   flex-wrap: wrap;
 }
+.ticket-meta.meta > span {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .ticket-line,
 .ticket-state {
   color: var(--muted);
@@ -4473,6 +4485,23 @@ body:has(.split-panel[open]) .shell > .content > main {
 /* Ticket panel tabs: the run detail inside the panel lays out by the panel's width, not the window's. */
 .ticket-panel .dialog-body {
   container: page / inline-size;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  overscroll-behavior-x: none;
+}
+.factory-rail dialog.ticket-panel,
+.factory-rail .ticket-panel .panel-bar {
+  background: var(--bg);
+}
+/* The native navigation bar already names a full-screen detail and provides Back. */
+.factory-rail dialog.ticket-panel:modal {
+  width: 100%;
+  border: 0;
+  box-shadow: none;
+}
+.factory-rail .ticket-panel:modal > .dialog-head > :is(h2, .dialog-close),
+.factory-rail .ticket-panel:modal > .dialog-head:not(:has(.segmented)) {
+  display: none;
 }
 .ticket-panel .segmented {
   margin-bottom: var(--space-4);
