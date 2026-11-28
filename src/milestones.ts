@@ -18,9 +18,20 @@ const data = z.discriminatedUnion('type', [
   z.object({ type: z.literal('pr.watch_wake'), summary: z.string(), outcome: z.enum(['completed', 'failed', 'cancelled', 'updated', 'unknown']), watchEnded: z.boolean(), pullRequests: z.array(z.object({ repository: id, host: id, number: z.number().int().positive() })) }),
 ]).and(z.object({ id, threadId: id, projectId: id, occurredAt: z.iso.datetime({ offset: true }) }));
 const envelope = z.object({ name: z.enum(names), cursor: id, data });
+type Feed = { mode: 'starting' | 'webhook' | 'polling' | 'retrying'; checkedAt?: string; error?: string };
+const lastEventSchema = z.object({ name: z.enum(names), jobId: id, label: z.string(), receivedAt: z.iso.datetime(), transport: z.enum(['webhook', 'polling']) });
 const cursorKey = (name: string) => 'milestoneCursor:' + name;
 
 export function milestoneHooks(store: Store, config: () => Config, publicOrigin: string) {
+  const feeds = Object.fromEntries(names.map(name => [name, { mode: 'starting' }])) as Record<typeof names[number], Feed>;
+  const subscriptions = new Map<string, string>();
+  const previous = store.get('lastFactoryMilestone');
+  let lastEvent = previous ? lastEventSchema.parse(JSON.parse(previous)) : null;
+  let snapshot = { feeds: { ...feeds }, lastEvent };
+  function observe(name: typeof names[number], value: Feed) {
+    feeds[name] = value;
+    snapshot = { feeds: { ...feeds }, lastEvent };
+  }
   let saved: ReturnType<typeof milestoneGrant>;
   try { saved = milestoneGrant(config()); }
   catch { console.warn('Stored milestone grant is unreadable; Factory will request a replacement'); }
@@ -51,6 +62,8 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
     try { body = JSON.parse(raw.toString('utf8')); } catch { return { status: 400 }; }
     if (body?.type === 'verification' && typeof body.challenge === 'string') return { status: 200, body: { challenge: body.challenge } };
     if (body?.type === 'gap' || body?.type === 'terminated') {
+      const name = names.find(name => subscriptions.get(name) === headers['x-mcp-subscription-id']);
+      if (name) observe(name, { mode: 'retrying', error: body.type === 'gap' ? 'T3 reported a gap in event history' : 'T3 ended the subscription' });
       console.warn('T3 milestone subscription reported', body.type);
       return { status: 204 };
     }
@@ -76,6 +89,9 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
         }
         store.record(event.type, jobLabel(job) + ' ' + text, { ...event, projectId: job.projectId, ticketKey: job.ticketKey, milestoneId: event.id }, job.id, event.occurredAt);
       }
+      lastEvent = { name: event.type, jobId: job.id, label: jobLabel(job), receivedAt: new Date().toISOString(), transport: advance ? 'webhook' : 'polling' };
+      store.set('lastFactoryMilestone', JSON.stringify(lastEvent));
+      snapshot = { feeds: { ...feeds }, lastEvent };
     }
     if (advance) store.set(cursorKey(event.type), cursor);
     return { status: 204 };
@@ -90,6 +106,8 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
         try {
           const c = config(), endpoint = new URL('/mcp', c.t3.url);
           if (c.t3.milestones === false) {
+            if (feeds[name].mode !== 'starting') observe(name, { mode: 'starting' });
+            subscriptions.delete(name);
             await delay(next, undefined, { signal }).catch(() => {});
             continue;
           }
@@ -118,6 +136,8 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
           if (webhook && (error?.code === -32027 || error?.code === -32602)) {
             // Private callback destinations can be refused by T3. Its authenticated event feed
             // carries the same occurrences and cursors without changing the server's network policy.
+            subscriptions.delete(name);
+            observe(name, { mode: 'starting' });
             retryWebhookAt = Date.now() + 600_000;
             console.warn('T3 declined the milestone callback; using events/poll for', name);
             continue;
@@ -126,6 +146,10 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
           if (result.truncated) console.warn('T3 milestone history has a gap for', name);
           if (webhook) {
             if (!result.id || !Number.isFinite(Date.parse(result.refreshBefore))) throw new Error('Invalid milestone lease');
+            subscriptions.set(name, result.id);
+            observe(name, { mode: 'webhook', checkedAt: new Date().toISOString(),
+              ...(result.deliveryStatus?.lastError ? { error: 'T3 reported a webhook delivery failure' }
+                : result.truncated ? { error: 'T3 reported a gap in event history' } : {}) });
             if (!store.get(cursorKey(name)) && typeof result.cursor === 'string') store.set(cursorKey(name), result.cursor);
             next = Math.max(1000, Math.min(600_000, (Date.parse(result.refreshBefore) - Date.now()) / 2));
           } else {
@@ -135,15 +159,23 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
                 throw new Error('Invalid polled milestone');
             }
             store.set(cursorKey(name), page.cursor);
+            observe(name, { mode: 'polling', checkedAt: new Date().toISOString(),
+              ...(result.truncated ? { error: 'T3 reported a gap in event history' } : {}) });
             if (page.hasMore) continue;
           }
           if (expiresAt) next = Math.min(next, Math.max(1000, expiresAt - Date.now() - 30_000));
         } catch (error) {
-          if (!signal.aborted) console.warn('T3 milestone subscription failed', name, error instanceof Error ? error.message : 'unknown failure');
+          if (!signal.aborted) {
+            const message = error instanceof Error ? error.message : '';
+            const http = /HTTP (\d{3})/.exec(message)?.[1];
+            // The UI exposes a classified cause. OAuth and transport errors can contain private details.
+            observe(name, { mode: 'retrying', error: http ? 'T3 returned HTTP ' + http : 'Could not establish or refresh the T3 event feed' });
+            console.warn('T3 milestone subscription failed', name, message);
+          }
         }
         await delay(next, undefined, { signal }).catch(() => {});
       }
     }));
   }
-  return { receive, follow };
+  return { receive, follow, get status() { return snapshot; } };
 }

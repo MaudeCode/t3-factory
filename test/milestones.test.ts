@@ -180,11 +180,16 @@ test('a fresh deployment provisions one read-only grant and consumes milestones 
   writeFileSync(f.config.t3.credentialFile, JSON.stringify({ token: 'factory-session' }));
   const stop = new AbortController();
   f.store.onEvent = event => { if (event.kind === 'thread.run_settled') completed.resolve(); };
-  const following = milestoneHooks(f.store, () => f.config, 'https://factory.example').follow(stop.signal);
+  const hooks = milestoneHooks(f.store, () => f.config, 'https://factory.example');
+  assert.equal(hooks.status.lastEvent, null);
+  const following = hooks.follow(stop.signal);
   try {
     await Promise.race([completed.promise, once(t.signal, 'abort').then(() => { throw new Error('Missing milestone'); })]);
     assert.equal(f.store.turnOutcome('job', 'ended'), 'completed');
     assert.equal(f.store.get('milestoneCursor:thread.run_settled'), 'tail');
+    assert.equal(hooks.status.feeds['thread.run_settled'].mode, 'polling');
+    const receipt = milestoneHooks(f.store, () => f.config, 'https://factory.example').status.lastEvent;
+    assert.deepEqual([receipt?.jobId, receipt?.name, receipt?.transport], ['job', 'thread.run_settled', 'polling']);
     assert.equal(registrations, 1); assert.equal(approvals, 1);
     assert.equal(milestoneGrant(f.config)?.token, 'outside');
     assert.equal(statSync(join(f.config.stateDir, 'milestone-grant.json')).mode & 0o777, 0o600);

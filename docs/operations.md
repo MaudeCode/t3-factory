@@ -182,6 +182,8 @@ Deployer starts Factory web as part of the normal release installation. On start
 
 T3 attempts signed delivery to `/api/t3/milestones` at `FACTORY_PUBLIC_ORIGIN`. When T3 refuses the callback, including a private address, Factory reads the same milestones through authenticated MCP polling and periodically retries webhook delivery.
 
+Open **Settings → Sources → T3 session milestones** to check delivery. Each of the four feeds shows its transport and latest successful check or retry reason. **Last event received** links to the Factory run that received the most recent matching milestone. It stays empty until an owned run produces an event. Feed failures also appear in Factory’s top-bar issues.
+
 The web service renews four subscriptions for configured T3 projects and saves a cursor for each. Only jobs Factory owns get timeline entries. Questions and approvals have individual request IDs, so answering one clears that request and a later approval gets its own Cowtail item. The timeline also records the outcome of each settled turn and which PRs woke a watch. A failed or cancelled turn with a missing completion report stays open for inspection. Factory still verifies delivery using the report, Kanvil and GitHub.
 
 T3 retains recent milestones in memory. After a disconnect Factory resumes from its saved cursors. A T3 restart or retention gap can leave missing historical entries. The normal shell reconciliation continues to track current job state. The Factory web log reports gaps, declined subscriptions and expired access.

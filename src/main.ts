@@ -90,7 +90,7 @@ if (command === 'web') {
         compactJobs = status.jobs.map(compact);
       }
       refreshRequested = false;
-      return { config: cachedConfig!, status: { ...status, jobs: compactJobs }, version, now: new Date().toISOString() };
+      return { config: cachedConfig!, status: { ...status, jobs: compactJobs, milestones: current.t3.milestones === false ? { disabled: true } : hooks.status }, version, now: new Date().toISOString() };
     },
     cleanupInventory: input => {
       const current = loadConfig(configPath), data = readCleanupCatalog(current, store, input.offset, input.limit, input);
@@ -115,7 +115,9 @@ if (command === 'web') {
     },
     // Runs only while a page is subscribed: the scheduler's writes show in the Store's data version, settings in the config file.
     watch: (notify) => {
-      const stopStore = store.watch(notify, 1000, () => refreshRequested || (cachedStatus?.expiresAt ?? 0) <= Date.now());
+      let lastMilestones = hooks.status;
+      const stopStore = store.watch(() => { lastMilestones = hooks.status; notify(); }, 1000,
+        () => lastMilestones !== hooks.status || refreshRequested || (cachedStatus?.expiresAt ?? 0) <= Date.now());
       const config = watch(dirname(configPath), (_, name) => { if (!name || name === basename(configPath)) refreshRequested = true; });
       return () => { stopStore(); config.close(); };
     },
