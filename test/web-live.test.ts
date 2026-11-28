@@ -126,7 +126,7 @@ test("state is pushed over the event stream whenever the factory writes, and run
     config: webConfigSchema.parse({ publicOrigin: `http://127.0.0.1:${port}`, host: "127.0.0.1", port }),
     secret,
     dataDir: dir,
-    readState: () => ({ config: { enabled: true }, status: { jobs, journal: [{ id: 1, text: "hello" }] }, now: new Date().toISOString(), version }),
+    readState: () => ({ config: { enabled: true }, status: { jobs, journal: [{ id: 1, text: "hello" }, ...store.events()] }, now: new Date().toISOString(), version }),
     history: () => [{ id: "a1", state: "complete" }],
     report: (id) => (id === "a1" ? { job: { id }, events: [], report: { status: "complete", reason: "done" } } : undefined),
     watch: (fn) => { const stop = store.watch(fn); return () => { stop(); (++closes === 1 ? unwatched : reclosed).resolve(); }; },
@@ -167,6 +167,10 @@ test("state is pushed over the event stream whenever the factory writes, and run
     t.mock.timers.tick(1000);
     t.mock.timers.tick(150);
     const second = await read();
+    store.record("pr.watch_wake", "CI finished", {}, "milestone"); // Same connection as the SSE watcher.
+    t.mock.timers.tick(1000);
+    t.mock.timers.tick(150);
+    assert.match(await read(), /"text":"CI finished"/);
     await reader.cancel();
     await unwatched.promise;
     const { now, ...delta } = JSON.parse(second.split("data: ")[1]);
@@ -176,7 +180,7 @@ test("state is pushed over the event stream whenever the factory writes, and run
     const nextReader = reconnected.body!.getReader();
     const snapshot = new TextDecoder().decode((await nextReader.read()).value);
     await nextReader.cancel();
-    assert.deepEqual(JSON.parse(snapshot.split("data: ")[1]).status, { jobs, journal: [{ id: 1, text: "hello" }] });
+    assert.deepEqual(JSON.parse(snapshot.split("data: ")[1]).status, { jobs, journal: [{ id: 1, text: "hello" }, ...store.events()] });
     await reclosed.promise; // the last page closing stops the watch
     const after = checks.mock.callCount();
     t.mock.timers.tick(5000);

@@ -25,7 +25,9 @@ window.fetch = async (url, init) => {
   if (read) {
     reads.push(read[1]); readSteps.push(step);
     const found = jobs.find((j) => j.id === read[1]) ?? historyRows.find((j) => j.id === read[1]);
-    return found ? Response.json({ job: found, events: [{ id: 1, time: ago(4), kind: "job.created", text: `Started ${found.label}`, data: {} }], report: found.state === "complete" ? { status: "complete", reason: "Merged and verified." } : null }) : Response.json({ message: "Run not found" }, { status: 404 });
+    const events = store.journal.value.filter(event => event.jobId === read[1]);
+    const resolvedInputId = events.find(event => event.kind === "thread.input_resolved")?.data.requestId;
+    return found ? Response.json({ job: found, resolvedInputId, events: [{ id: 1, time: ago(4), kind: "job.created", text: `Started ${found.label}`, data: {} }, ...events.toReversed()], report: found.state === "complete" ? { status: "complete", reason: "Merged and verified." } : null }) : Response.json({ message: "Run not found" }, { status: 404 });
   }
   if (init?.method === "POST") { posts.push(url); return Response.json({ ok: true }); }
   if (/^\/api\/tickets\//.test(url)) return Response.json({ id: "t1", projectId: "p", key: "APP-1", title: "Synthetic ticket 1", status: "in_progress", priority: "high", difficulty: "med", kind: "feature", labels: [], scopes: [], description: "", acceptanceCriteria: "", automationReady: true, holdReason: null, readiness: [], blockedBy: [], blocks: [], epic: null, createdAt: ago(900), url: "https://tracker.example/projects/p/tickets/t1" });
@@ -187,6 +189,17 @@ async function reportReads() {
     loud.push(live("run-1", change));
     await until(() => readSteps.includes(step));
   }
+  step++; loud.push(step);
+  store.applyState({ delta: true, status: { journal: [{ id: step, jobId: "run-1", kind: "pr.watch_wake", text: "CI finished", time: ago(0), data: {} }] } });
+  await until(() => detail().textContent.includes("CI finished"));
+  const pending = id => j => ({ state: "waiting", reason: "T3 is awaiting human input", thread: { ...j.thread, pending: "permission", pendingId: id } });
+  loud.push(live("run-1", pending("first")));
+  await until(() => readSteps.includes(step) && detail().querySelector(".callout"));
+  step++; loud.push(step);
+  store.applyState({ delta: true, status: { journal: [{ id: step, jobId: "run-1", kind: "thread.input_resolved", text: "Approval resolved", time: ago(0), data: { requestId: "first" } }] } });
+  await until(() => detail().textContent.includes("Approval resolved") && !detail().querySelector(".callout"));
+  loud.push(live("run-1", pending("second")));
+  await until(() => readSteps.includes(step) && detail().querySelector(".callout"));
   step++; store.applyState({ delta: true, status: { jobs: store.jobs.value.filter((j) => j.id !== "run-1") } }); loud.push(step);
   await until(() => readSteps.includes(step));
   assert(!quiet.some((s) => readSteps.includes(s)), `another run and the open run's progress times read nothing: ${readSteps} after ${quiet}`);

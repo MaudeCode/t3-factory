@@ -16,8 +16,8 @@ export const threadSchema = z.object({
   branch: z.string().nullable(), worktreePath: z.string().nullable(),
   updatedAt: at, latestUserMessageAt: at.nullable(), archivedAt: z.string().nullable(),
   status: z.enum(['idle', ...activeStatuses, 'waiting', 'completed', ...stoppedStatuses]),
-  activeRunId: z.string().nullable(), latestRunCompletedAt: at.nullish(),
-  pendingRuntimeRequest: z.object({ kind: z.string(), createdAt: z.string() }).passthrough().nullable(),
+  activeRunId: z.string().nullable(), latestRunId: z.string().nullish(), latestRunCompletedAt: at.nullish(),
+  pendingRuntimeRequest: z.object({ kind: z.string(), id: z.string().optional(), createdAt: z.string() }).passthrough().nullable(),
   // T3 lists background work only once the latest run settles. Monitors include pull request watches.
   pendingBackgroundTasks: z.array(z.object({ taskId: z.string(), kind: z.string() }).passthrough()).default([]),
   // Pull requests the session linked; `watch` is set while T3 watches one for CI and review.

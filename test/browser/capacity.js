@@ -323,7 +323,21 @@ async function notificationTest() {
   store.message('');
   return { passed: true, viewport: [innerWidth, innerHeight] };
 }
-window.capacityTests = { notificationsOff, notificationChoices, notificationTest, showNotifications, epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance, showSchedule, schedule, scheduleStatus };
+async function milestoneStatus() {
+  const at = new Date().toISOString();
+  const feeds = Object.fromEntries(Object.keys(store.milestoneFeeds).map(name => [name, { mode: 'webhook', checkedAt: at }]));
+  quotaStatus = { milestones: { feeds, lastEvent: null } };
+  await mount('/settings/sources');
+  assert(root.textContent.includes('4 of 4 healthy') && root.textContent.includes('Waiting for the first Factory run event'), 'connected feeds can be idle');
+  const milestones = { feeds: { ...feeds, 'thread.run_settled': { mode: 'retrying', error: 'T3 returned HTTP 403' }, 'pr.watch_wake': { mode: 'polling', checkedAt: at } },
+    lastEvent: { name: 'pr.watch_wake', label: 'APP-1', jobId: 'run-1', transport: 'polling', receivedAt: at } };
+  store.applyState({ delta: true, status: { milestones } });
+  await pause();
+  assert(root.textContent.includes('3 of 4 healthy') && root.textContent.includes('T3 returned HTTP 403') && root.textContent.includes('Polling'), 'partial failures and fallback have distinct states');
+  assert(root.querySelector('a[href="/runs/run-1"]')?.textContent === 'APP-1', 'the receipt opens the run');
+  assert(store.issues.value.some(issue => issue.href === '/settings/sources'), 'feed failure reaches the issue indicator');
+}
+window.capacityTests = { milestoneStatus, notificationsOff, notificationChoices, notificationTest, showNotifications, epicHold, run, liveEdit, show, mount, showLabels, labelModes, settingsLayout, allowances, showAllowance, showSchedule, schedule, scheduleStatus };
 const labelFixture = new URLSearchParams(location.search).get('labels');
 if (labelFixture === 'run') {
   try { await labelModes(); document.body.dataset.result = 'passed'; }

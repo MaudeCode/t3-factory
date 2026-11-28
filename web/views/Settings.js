@@ -1,10 +1,10 @@
 // Everything that is configured rather than operated: projects, models, limits, and the sources' own settings.
 // One tab each, in the address. Edits are bound to the config and survive a change of tab until saved or discarded.
 import { html } from "../lib/h.js";
-import { config } from "../lib/store.js";
-import { navigate } from "../lib/router.js";
-import { span } from "../lib/format.js";
-import { Segmented, Field, Input, Range, Page, Section, Empty } from "../ui/index.js";
+import { config, statusSection, milestoneFeeds } from "../lib/store.js";
+import { navigate, follow } from "../lib/router.js";
+import { span, moment } from "../lib/format.js";
+import { Segmented, Field, Input, Range, Page, Section, Empty, Facts, Tag } from "../ui/index.js";
 import { Projects } from "./Projects.js";
 import { Models } from "./Models.js";
 import { Capacity } from "./Capacity.js";
@@ -17,8 +17,19 @@ const minutes = (m) => span(m * 60);
 // What each source reads and how often: the prompt files, intervals and promotion limits, in one place.
 function SourceSettings({ lead }) {
   const c = config.value;
+  const milestones = statusSection("milestones").value;
+  const feeds = Object.entries(milestones?.feeds ?? {});
+  const connected = feeds.filter(([, f]) => !f.error && ["webhook", "polling"].includes(f.mode)).length;
+  const last = milestones?.lastEvent;
+  const modes = { starting: "Connecting", webhook: "Webhook", polling: "Polling", retrying: "Retrying" };
   return html`<${Page} class="settings-page" title="Settings" hint="How each source of new tickets is read. Switching a source on or off is on the Sources page.">
     ${lead}
+    <${Section} title="T3 session milestones" aside=${html`<${Tag} tone=${feeds.length && connected === feeds.length ? "ok" : feeds.some(([, f]) => f.error) ? "attention" : ""}>${milestones?.disabled ? "Off" : feeds.length ? connected + " of " + feeds.length + " healthy" : "Status unavailable"}<//>`}>
+      ${feeds.length > 0 && html`<${Facts} items=${[
+        ...feeds.map(([name, f]) => [milestoneFeeds[name], [modes[f.mode], f.error ?? (f.checkedAt && moment(f.checkedAt))].filter(Boolean).join(" · ")]),
+        ["Last event received", last ? html`<span><a href=${"/runs/" + encodeURIComponent(last.jobId)} onClick=${follow}>${last.label}</a> · ${milestoneFeeds[last.name]} · ${modes[last.transport]} · ${moment(last.receivedAt)}</span>` : "Waiting for the first Factory run event"],
+      ]} />`}
+    <//>
     <${Section} title="Inbox triage">
       ${c.triage ? html`<${TriageSettings} />` : html`<${Empty}>No inboxes. Add <code>inbox</code> and <code>scopes</code> to a project and a <code>triage</code> section to the config file to turn triage on.<//>`}
     <//>

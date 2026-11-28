@@ -176,14 +176,26 @@ Only a fresh PR-body `+1` reaction from the verified Codex account, with an unch
 
 The helper supplies review evidence, not the whole merge gate. Follow the supplied skill and use its expected-head guard when merging.
 
+## T3 session milestone webhooks
+
+Deployer starts Factory web as part of the normal release installation. On startup the web service uses its configured T3 session to request a read-only app grant. T3 requires that session to have `access:write` and `orchestration:read`. Factory keeps the grant and signing key in the private state directory across upgrades and renews expiring grants automatically. To disable this integration set `t3.milestones` to `false` in Factory configuration.
+
+T3 attempts signed delivery to `/api/t3/milestones` at `FACTORY_PUBLIC_ORIGIN`. When T3 refuses the callback, including a private address, Factory reads the same milestones through authenticated MCP polling and periodically retries webhook delivery.
+
+Open **Settings → Sources → T3 session milestones** to check delivery. Each of the four feeds shows its transport and latest successful check or retry reason. **Last event received** links to the Factory run that received the most recent matching milestone. It stays empty until an owned run produces an event. Feed failures also appear in Factory’s top-bar issues.
+
+The web service renews four subscriptions for configured T3 projects and saves a cursor for each. Only jobs Factory owns get timeline entries. Questions and approvals have individual request IDs, so answering one clears that request and a later approval gets its own Cowtail item. The timeline also records the outcome of each settled turn and which PRs woke a watch. A failed or cancelled turn with a missing completion report stays open for inspection. Factory still verifies delivery using the report, Kanvil and GitHub.
+
+T3 retains recent milestones in memory. After a disconnect Factory resumes from its saved cursors. A T3 restart or retention gap can leave missing historical entries. The normal shell reconciliation continues to track current job state. The Factory web log reports gaps, declined subscriptions and expired access.
+
 ## Phone notifications through Cowtail
 
 Factory can post to a Cowtail instance so the owner's phone hears about the runs that matter. Each event type has a fixed Cowtail kind and a delivery the owner picks in Settings → Limits → Phone notifications, saved as `cowtail.events` in `config.jsonc`:
 
 | Setting | Event | Cowtail kind | Default |
 | --- | --- | --- | --- |
-| Run needs you (`needsYou`) | A run is waiting on the owner | `question` | `today` |
-| Failures (`failed`) | T3 never confirmed a launch, so the run was dismissed and its ticket returned to ready; or a manual dispatch request failed (`dispatch.failed` in the journal) | `failure` | `today` |
+| Run needs you (`needsYou`) | A run is waiting on the owner | `approval` or `question` | `today` |
+| Failures (`failed`) | A turn ended without a completion report, T3 never confirmed a launch, so the run was dismissed and its ticket returned to ready; or a manual dispatch request failed (`dispatch.failed` in the journal) | `failure` | `today` |
 | Quota holds (`quotaHold`) | Automatic admission first holds eligible work for quota (`quota-budget`, `quota-reserve` or `quota-exhausted`; `quota.hold` in the journal). It posts again only after that provider admits work, holds for another reason, or has nothing waiting; a provider under quota with an empty queue posts nothing. A manual start or an unreadable allowance neither starts nor ends a hold. | `fyi` | `today` |
 | Finished without a PR (`noPr`) | A run finished without opening a PR; the body is its report reason | `done` | `today` |
 | Finished runs (`finished`) | A run finished with at least one PR, or an Epic, chain or queued run finished | `done` | `whenever` |
@@ -195,7 +207,7 @@ Each setting is one of:
 - `today`: bundled into a push within 5 minutes and held during quiet hours.
 - `now`: pushes at once and repeats every 10 minutes, up to 3 times, until handled.
 
-An owner's dismissal, a cancelled plan, a queued run that was only dispatched, run starts, PRs opened mid-run, workspace cleanup and tracker sync errors post nothing. Each item links the run's PRs, carries the ticket key and project ID as context when known, and uses the dedupe key `t3-factory:<event>:<job, plan or request ID, or provider and hold start>:<state>`, so a retried post never duplicates and each new quota hold is a new item.
+An owner's dismissal, a cancelled plan, a queued run that was only dispatched, run starts, PRs opened mid-run, workspace cleanup and tracker sync errors post nothing. Each item links the run's PRs, carries the ticket key and project ID as context when known, and uses the dedupe key `t3-factory:<event>:<job, plan or request ID, or provider and hold start>:<state>`, for these events. An identified T3 input request uses its job and request IDs instead, and links to the T3 thread.
 
 The bell button in the Phone notifications section sends one `fyi` item at `now`, whatever the settings say, to check the setup end to end (`t3-factory cowtail-test`, served as `POST /api/cowtail/test`). It reports "Test notification sent", "Phone notifications are off", or Cowtail's error.
 

@@ -24,7 +24,10 @@ const KINDS = { needsYou: 'question', failed: 'failure', quotaHold: 'fyi', noPr:
 // The journal events that reach the owner's phone and the setting each one belongs to. Every other event posts nothing.
 function eventSetting(event: FactoryEvent, urls: string[]): { key: keyof CowtailEvents; title?: string; body?: string } | undefined {
   const { state, reason, stage, message } = event.data;
+  if (event.kind === 'thread.needs_input' && !event.data.inactive) return { key: 'needsYou' };
   if (event.kind === 'job.state' && event.jobId) {
+    if (state === 'waiting' && event.data.requestId) return; // The request owns its Cowtail item.
+    if (state === 'waiting' && event.data.reportMissing === true) return { key: 'failed' };
     if (state === 'waiting') return { key: 'needsYou' };
     if (state === 'complete') return urls.length ? { key: 'finished' } : { key: 'noPr', title: `${event.text} without a PR` };
     if (state === 'dismissed' && reason === UNCONFIRMED_LAUNCH) return { key: 'failed' };
@@ -34,17 +37,22 @@ function eventSetting(event: FactoryEvent, urls: string[]): { key: keyof Cowtail
   if (event.kind === 'plan.state' && state === 'done' && event.text.endsWith('finished')) return { key: 'finished' };
 }
 
-export function cowtailItem(event: FactoryEvent, prUrls: (jobId: string) => string[], events: CowtailEvents): CowtailItem | undefined {
+export function cowtailItem(event: FactoryEvent, prUrls: (jobId: string) => string[], events: CowtailEvents, origin = process.env.FACTORY_PUBLIC_ORIGIN): CowtailItem | undefined {
   const { state, reason, ticketKey, projectId } = event.data, id = event.jobId ?? event.data.planId ?? event.data.requestId ?? event.data.holdId;
   const urls = event.jobId ? prUrls(event.jobId) : [], setting = eventSetting(event, urls), urgency = setting && events[setting.key];
   if (!setting || !urgency || urgency === 'off' || typeof id !== 'string') return undefined;
+  const requestId = setting.key === 'needsYou' && typeof event.data.requestId === 'string' ? event.data.requestId : undefined;
+  const approval = requestId && event.data.kind === 'approval';
+  const links = prLinks(urls);
+  if (requestId && origin && typeof event.data.threadId === 'string')
+    links.unshift({ label: 'Open in T3', url: new URL('/api/threads/' + encodeURIComponent(event.data.threadId) + '/open', origin).href });
   const body = setting.body ?? reason;
   const context = Object.fromEntries(Object.entries({ ticketKey, projectId }).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && !!entry[1]));
   return {
-    kind: KINDS[setting.key], urgency, title: (setting.title ?? event.text).slice(0, 500),
+    kind: approval ? 'approval' : KINDS[setting.key], urgency, title: (setting.title ?? event.text).slice(0, 500),
     ...typeof body === 'string' && body ? { body: body.slice(0, 20_000) } : {},
-    ...urls.length ? { links: prLinks(urls).slice(0, 20) } : {},
-    dedupeKey: `t3-factory:${event.kind}:${id}:${state}`,
+    ...links.length ? { links: links.slice(0, 20) } : {},
+    dedupeKey: requestId ? `t3-factory:input:${id}:${requestId}` : `t3-factory:${event.kind}:${id}:${state}`,
     ...Object.keys(context).length ? { context } : {},
   };
 }

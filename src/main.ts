@@ -22,6 +22,7 @@ import { CowtailNotifier, cowtailSettings } from './cowtail.ts';
 import { runtimeVersion } from './version.ts';
 
 import { loadEnvironment } from './env.ts';
+import { milestoneHooks } from './milestones.ts';
 import { createOidc } from './oidc.ts';
 
 loadEnvironment();
@@ -70,7 +71,10 @@ if (command === 'web') {
   let compactSource: NonNullable<typeof cachedStatus>['status']['jobs'] | undefined;
   let refreshRequested = false;
   let compactJobs: ReturnType<typeof compact>[] = [];
-  const server = createFactoryWeb({ config, secret, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
+  const hooks = milestoneHooks(store, () => loadConfig(configPath), config.publicOrigin);
+  const leases = new AbortController();
+  store.onEvent = new CowtailNotifier(store, () => cowtailSettings(loadConfig(configPath))).notify;
+  const server = createFactoryWeb({ config, secret, milestone: hooks.receive, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
     readState: () => {
       refreshRequested = true;
       const current = loadConfig(configPath), serialized = JSON.stringify(current);
@@ -86,7 +90,7 @@ if (command === 'web') {
         compactJobs = status.jobs.map(compact);
       }
       refreshRequested = false;
-      return { config: cachedConfig!, status: { ...status, jobs: compactJobs }, version, now: new Date().toISOString() };
+      return { config: cachedConfig!, status: { ...status, jobs: compactJobs, milestones: current.t3.milestones === false ? { disabled: true } : hooks.status }, version, now: new Date().toISOString() };
     },
     cleanupInventory: input => {
       const current = loadConfig(configPath), data = readCleanupCatalog(current, store, input.offset, input.limit, input);
@@ -105,17 +109,24 @@ if (command === 'web') {
     report: (id) => {
       const job = store.job(id);
       if (!job) return undefined;
-      return { job: compact(job), events: store.events(200, id).toReversed(), report: existsSync(job.reportPath) ? JSON.parse(readFileSync(job.reportPath, 'utf8')) : null };
+      const pending = job.thread?.pendingId;
+      const resolvedInputId = pending && store.inputResolved(id, pending) ? pending : undefined;
+      return { job: compact(job), resolvedInputId, events: store.events(200, id).sort((a, b) => Date.parse(a.time) - Date.parse(b.time) || a.id - b.id), report: existsSync(job.reportPath) ? JSON.parse(readFileSync(job.reportPath, 'utf8')) : null };
     },
     // Runs only while a page is subscribed: the scheduler's writes show in the Store's data version, settings in the config file.
     watch: (notify) => {
-      const stopStore = store.watch(notify, 1000, () => refreshRequested || (cachedStatus?.expiresAt ?? 0) <= Date.now());
+      let lastMilestones = hooks.status;
+      const stopStore = store.watch(() => { lastMilestones = hooks.status; notify(); }, 1000,
+        () => lastMilestones !== hooks.status || refreshRequested || (cachedStatus?.expiresAt ?? 0) <= Date.now());
       const config = watch(dirname(configPath), (_, name) => { if (!name || name === basename(configPath)) refreshRequested = true; });
       return () => { stopStore(); config.close(); };
     },
   });
-  server.listen(config.port, config.host, () => console.log(`Factory web controls listening on ${config.host}:${config.port}`));
-  const shutdown = () => { server.closeAllConnections(); server.close(); store.close(); };
+  server.listen(config.port, config.host, () => {
+    console.log(`Factory web controls listening on ${config.host}:${config.port}`);
+    void hooks.follow(leases.signal);
+  });
+  const shutdown = () => { leases.abort(); server.closeAllConnections(); server.close(); store.close(); };
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);
 } else if (command === 'cleanup-cancel') {
   const c = loadConfig(configPath);

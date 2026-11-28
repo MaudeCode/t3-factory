@@ -89,13 +89,23 @@ const startProblem = (op) => {
   const title = d?.reason === "blocked-ticket-plan-required" ? `${key} waits on other tickets` : op.state === "uncertain" ? `Couldn't confirm ${key} started` : `Couldn't start ${key}`;
   return { title, cause: operationText(op), subjects: [], raw: [], op };
 };
+export const milestoneFeeds = {
+  "thread.needs_input": "Questions and approvals",
+  "thread.input_resolved": "Input resolutions",
+  "thread.run_settled": "Turn outcomes",
+  "pr.watch_wake": "PR watch wakes",
+};
 // Problems listed by the top bar's notification area, each with the page it affects.
 export const issues = computed(() => {
   const failed = (origin) => {
     const list = operations.value.filter((op) => op.origin === origin && !["queued", "running"].includes(op.state));
     return list.length && { problems: list.map(startProblem) };
   };
+  const feedErrors = Object.entries(statusSection("milestones").value?.feeds ?? {}).filter(([, feed]) => feed.error);
   return [
+    { source: "T3 session milestones", href: "/settings/sources", error: feedErrors.length && {
+      problems: feedErrors.map(([name, feed]) => ({ title: milestoneFeeds[name], cause: feed.error, subjects: [], raw: [] })),
+    } },
     { source: "Session tickets", href: "/queue?origin=sessions", error: statusSection("sessionTickets").value?.error },
     { source: "Epics", href: "/queue?view=epics", error: statusSection("epicsError").value },
     { source: "Session ticket starts", href: "/queue?origin=sessions", note: "Not started", error: failed(SESSION_ORIGIN) },

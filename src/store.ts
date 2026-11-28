@@ -36,6 +36,7 @@ export interface Job {
   lastExecutionAt?: string;
   // When reconciliation last saw the job resume from waiting; an awaiting-human report written earlier has been answered.
   resumedAt?: string;
+  reportMissing?: true;
   automationMessageIds?: string[];
   dismissedAt?: string;
   dismissedHead?: string;
@@ -49,7 +50,7 @@ export interface Job {
   priority?: string;
   prUrls: string[]; completedAt: string | null;
   // Snapshot of the T3 thread from the last reconcile, for the web app.
-  thread?: { title: string; status: string; branch: string | null; worktreePath: string | null; updatedAt: string; pending: string | null; background: string[] };
+  thread?: { title: string; status: string; branch: string | null; worktreePath: string | null; updatedAt: string; pending: string | null; pendingId?: string; pendingAt?: string; background: string[] };
   // A persisted request is never retried until T3 confirms its command roster is empty.
   commandStop?: { status: 'requested' | 'uncertain' | 'confirmed'; requestedAt: string; confirmedAt?: string; error?: string };
   workspaceCleanup?: { path: string; branch: string; head: string };
@@ -225,6 +226,7 @@ export class Store {
   private readonly observedLocks = new Set<string>();
   onCleanupChange?: (projectIds: string[]) => void;
   // Called after every journal insert; a throwing listener never fails the write.
+  private journalWrites = 0;
   onEvent?: (event: FactoryEvent) => void;
   onClose?: () => void;
   constructor(dir: string) {
@@ -239,11 +241,15 @@ export class Store {
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, time TEXT NOT NULL, kind TEXT NOT NULL, job_id TEXT, text TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS events_job ON events(job_id);
+      CREATE TABLE IF NOT EXISTS milestones(job_id TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL, occurred_at TEXT NOT NULL, request_id TEXT, run_id TEXT, outcome TEXT, PRIMARY KEY(job_id,id));
+      CREATE INDEX IF NOT EXISTS milestones_input ON milestones(job_id,request_id,kind);
+      CREATE INDEX IF NOT EXISTS milestones_turn ON milestones(job_id,run_id,kind);
       CREATE TRIGGER IF NOT EXISTS events_retention AFTER INSERT ON events BEGIN DELETE FROM events WHERE id <= new.id - 5000; END;
       CREATE TABLE IF NOT EXISTS plans(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_threads(id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS session_tickets(task_id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS job_sources(id TEXT PRIMARY KEY, kind TEXT, thread_id TEXT);
+      CREATE INDEX IF NOT EXISTS job_sources_thread ON job_sources(thread_id);
       CREATE TRIGGER IF NOT EXISTS jobs_source_insert AFTER INSERT ON jobs BEGIN
         INSERT OR REPLACE INTO job_sources VALUES(new.id, json_extract(new.data, '$.kind'), json_extract(new.data, '$.threadId')); END;
       CREATE TRIGGER IF NOT EXISTS history_source_insert AFTER INSERT ON job_history BEGIN
@@ -351,10 +357,10 @@ export class Store {
   dataVersion(): number { return this.statement('PRAGMA data_version').get()!.data_version as number; }
   // Calls notify after another connection writes, checking at most once per interval; returns the stop function.
   watch(notify: () => void, intervalMs = 1000, needsRefresh?: () => boolean) {
-    let seen = this.dataVersion();
+    let seen = this.dataVersion(), journal = this.journalWrites;
     const timer = setInterval(() => {
       if (this.closed) return clearInterval(timer);
-      const now = this.dataVersion(); if (now !== seen || needsRefresh?.()) { seen = now; notify(); }
+      const now = this.dataVersion(); if (now !== seen || journal !== this.journalWrites || needsRefresh?.()) { seen = now; journal = this.journalWrites; notify(); }
     }, intervalMs);
     return () => clearInterval(timer);
   }
@@ -408,6 +414,22 @@ export class Store {
     if (this.statement('INSERT INTO job_history VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(job.id, JSON.stringify({ ...row, ...branch ? { branch } : {}, historyOnly: true })).changes && command !== undefined)
       this.statement('INSERT OR IGNORE INTO job_commands VALUES(?,?)').run(job.id, JSON.stringify(command));
   }
+  jobForThread(threadId: string) {
+    const row = this.statement('SELECT min(id) AS id FROM job_sources WHERE thread_id=? HAVING count(*)=1').get(threadId);
+    return row ? this.job(String(row.id)) : undefined;
+  }
+  inputResolved(jobId: string, requestId: string) {
+    return !!this.statement("SELECT 1 FROM milestones WHERE job_id=? AND kind='thread.input_resolved' AND request_id=? LIMIT 1").get(jobId, requestId);
+  }
+  recordInput(job: Job, requestId: string, kind: 'approval' | 'user_input', at: string, milestoneId: string) {
+    const inactive = ['complete', 'dismissed'].includes(job.state);
+    this.record('thread.needs_input', jobLabel(job) + (kind === 'approval' ? ' needs approval' : ' has a question'), {
+      milestoneId, kind, requestId, threadId: job.threadId, ticketKey: job.ticketKey, projectId: job.projectId, inactive,
+    }, job.id, at);
+  }
+  turnOutcome(jobId: string, runId: string) {
+    return this.statement("SELECT outcome FROM milestones WHERE job_id=? AND kind='thread.run_settled' AND run_id=? LIMIT 1").get(jobId, runId)?.outcome;
+  }
   job(id: string): Job | undefined {
     const row = this.statement('SELECT data FROM jobs WHERE id=? UNION ALL SELECT data FROM job_history WHERE id=? LIMIT 1').get(id, id);
     if (!row) return undefined;
@@ -424,7 +446,13 @@ export class Store {
     if (this.statement('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET task_id=excluded.task_id, data=excluded.data WHERE jobs.data != excluded.data OR jobs.task_id IS NOT excluded.task_id').run(job.id, ['complete', 'dismissed'].includes(job.state) ? null : job.taskId, JSON.stringify(row)).changes && (!before || jobInputs(before) !== jobInputs(row))) this.revision++;
     const label = jobLabel(job), detail = { ticketKey: job.ticketKey, projectId: job.projectId, kind: job.kind, state: job.state, model: job.modelSelection?.model, provider: job.providerDriver };
     if (!before) this.record('job.created', `${label} started on ${job.modelSelection?.model ?? 'the assigned model'}`, { ...detail, reason: job.modelReason }, job.id);
-    else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason }, job.id);
+    else if (before.state !== job.state) this.record('job.state', `${label} ${STATE_TEXT[job.state]}`, { ...detail, reason: job.reason, ...(job.reportMissing ? { reportMissing: true } : {}), ...(job.reason === 'T3 is awaiting human input' && job.thread?.pendingId && job.thread.pendingAt ? { requestId: job.thread.pendingId } : {}) }, job.id);
+    if (job.state === 'waiting' && job.reason === 'T3 is awaiting human input' && job.thread?.pendingId && job.thread.pendingAt &&
+        (before?.thread?.pendingId !== job.thread.pendingId || before.state !== 'waiting')) {
+      const { pending, pendingId, pendingAt } = job.thread;
+      this.recordInput(job, pendingId, ['permission', 'command', 'file-read', 'file-change'].includes(pending ?? '') ? 'approval' : 'user_input',
+        pendingAt, 'thread.needs_input:' + pendingId);
+    }
     for (const url of job.prUrls ?? []) if (!before?.prUrls?.includes(url)) this.record('job.pr', `${label} opened ${url.replace(/^https:\/\/github\.com\//, '')}`, { ...detail, url }, job.id);
     const lifecycle = (j: Job) => JSON.stringify([j.state, j.thread?.worktreePath, j.thread?.branch, j.thread?.status, j.resumedAt, j.workspaceCleanup?.path, j.dismissedWorktreePath, j.workspaceCleanedAt]);
     if (!before || lifecycle(before) !== lifecycle(job)) this.onCleanupChange?.([...new Set([job.projectId, ...before ? [before.projectId] : []])]);
@@ -469,8 +497,24 @@ export class Store {
     this.statement('INSERT INTO session_tickets VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET data=excluded.data WHERE data != excluded.data').run(ticket.taskId, JSON.stringify(ticket));
     return ticket;
   }
-  record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null) {
-    const time = new Date().toISOString(), { lastInsertRowid } = this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(time, kind, jobId, text, JSON.stringify(data));
+  record(kind: string, text: string, data: Record<string, unknown> = {}, jobId: string | null = null, time = new Date().toISOString()) {
+    const milestone = typeof data.milestoneId === 'string' && jobId !== null;
+    if (milestone) this.db.exec('BEGIN IMMEDIATE');
+    let lastInsertRowid;
+    try {
+      if (milestone) {
+        const receipt = this.statement('INSERT OR IGNORE INTO milestones VALUES(?,?,?,?,?,?,?)').run(jobId, String(data.milestoneId), kind, new Date(time).toISOString(),
+          typeof data.requestId === 'string' ? data.requestId : null, typeof data.runId === 'string' ? data.runId : null, typeof data.outcome === 'string' ? data.outcome : null);
+        if (!receipt.changes) { this.db.exec('COMMIT'); return; }
+        if (kind === 'thread.needs_input') data.inactive ||= this.inputResolved(jobId, String(data.requestId));
+      }
+      ({ lastInsertRowid } = this.statement('INSERT INTO events(time, kind, job_id, text, data) VALUES(?,?,?,?,?)').run(time, kind, jobId, text, JSON.stringify(data)));
+      if (milestone) this.db.exec('COMMIT');
+    } catch (error) {
+      if (milestone) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    this.journalWrites++; // SQLite data_version excludes this connection’s own commits.
     try { this.onEvent?.({ id: Number(lastInsertRowid), time, kind, jobId, text, data }); } catch { /* The journal write stands; a listener reports its own failures. */ }
   }
   events(limit = 100, jobId?: string, kind?: string): FactoryEvent[] {

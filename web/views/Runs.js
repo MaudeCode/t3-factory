@@ -1,6 +1,6 @@
 // Every run the factory has made, and one run in full.
 import { html, useEffect, useMemo, useRef, useState } from "../lib/h.js";
-import { config, status, jobs, history, busy, loadHistory, loadRun, actions, message } from "../lib/store.js";
+import { config, status, jobs, journal, history, busy, loadHistory, loadRun, actions, message } from "../lib/store.js";
 import { route, nativeFiltersEnabled, useRailCommand, backFromRun, follow, openTicket, runParentHref } from "../lib/router.js";
 import { confirmAction } from "../lib/confirmation.js";
 import { duration, clockTime, PROVIDERS, stateLabel, toneOf, providerOf, providerName, providerIcon, isOpen, ticketLink, factoryTicket, projectLink, safeLink, prLabel, threadLink, modelName, projectOf, difficultyLabel, PENDING_KINDS, matchesRunFilters, runsList, STOPS, stopOf, RUN_KINDS, runTitle } from "../lib/format.js";
@@ -187,10 +187,13 @@ export function RunDetail({ id, embedded }) {
   const shown = useRef(id);
   if (shown.current !== id) { shown.current = id; setDetail(null); setError(""); }
   // The report is read again only when this run changes in a way it can show, or leaves the live list; progress times and other runs do not.
-  const live = jobs.value.find((j) => j.id === id), change = live ? JSON.stringify([live.state, live.reason, live.prUrls, live.thread?.status, live.thread?.pending]) : "";
+  const live = jobs.value.find((j) => j.id === id), change = live ? JSON.stringify([live.state, live.reason, live.prUrls, live.thread?.status, live.thread?.pending, live.thread?.pendingId]) : "";
+  const lastEvent = journal.value.find(event => event.jobId === id)?.id;
   useEffect(() => {
-    loadRun(id).then((d) => shown.current === id && (d?.job ? (setError(""), setDetail(d)) : setError("Run not found")), (e) => shown.current === id && setError(e.message));
-  }, [id, change]);
+    let active = true;
+    loadRun(id).then((d) => active && shown.current === id && (d?.job ? (setError(""), setDetail(d)) : setError("Run not found")), (e) => active && shown.current === id && setError(e.message));
+    return () => { active = false; };
+  }, [id, change, lastEvent]);
   const parent = runParentHref();
   const label = embedded ? "Run" : parent && parent.split("?")[0] !== "/runs" ? "Back" : "Runs";
   const crumb = html`<a class="crumb" href=${embedded ? `/runs/${id}` : parent || "/runs"} onClick=${embedded ? follow : backFromRun}>${label}</a>`;
@@ -207,7 +210,8 @@ export function RunDetail({ id, embedded }) {
     inFactory = factoryTicket(c, job),
     kind = `${job.historyOnly ? "Archived run" : RUN_KINDS[job.kind]?.[1] ?? "Ticket run"}${project ? ` in ${project.name}` : ""}`,
     // A waiting run's callout already carries the scheduler's note, and a report often repeats it.
-    waiting = job.state === "waiting";
+    waiting = job.state === "waiting",
+    answered = detail.resolvedInputId && detail.resolvedInputId === job.thread?.pendingId && job.reason === "T3 is awaiting human input";
   return html`<${Page} class="run-detail" title=${html`${crumb} ${job.label} <${Tag} tone=${toneOf(job.state)}>${stateLabel(job.state)}<//>`}
     lead=${runTitle(job) || kind}
     actions=${isOpen(job) && html`<${Button} variant="danger" size="sm" icon="circleSlash" label="Stop run" disabled=${busy.value} onClick=${() => confirmAction({ title: `Stop ${job.label}?`, message: "T3 ends the run; the worktree and any open PR stay as they are.", label: "Stop run" }, () => actions.stopJob(job.id))} />`}>
@@ -220,7 +224,7 @@ export function RunDetail({ id, embedded }) {
     <ol class="run-track" aria-label="Progress">${STOPS.map((name, i) => html`<li key=${name} class=${i + 1 === stop ? "now" : i + 1 < stop ? "past" : ""} aria-current=${i + 1 === stop ? "step" : undefined}>${name}</li>`)}</ol>
     <div class="run-grid">
     <div>
-    ${waiting && html`<p class="callout">${job.thread?.pending ? `T3 ${PENDING_KINDS[job.thread.pending] ?? `is waiting: ${job.thread.pending}`}. ` : ""}${job.reason}</p>`}
+    ${waiting && !answered && html`<p class="callout">${job.thread?.pending ? `T3 ${PENDING_KINDS[job.thread.pending] ?? `is waiting: ${job.thread.pending}`}. ` : ""}${job.reason}</p>`}
     <${Facts}
       items=${[
         ["Run", project ? html`${kind.replace(` in ${project.name}`, "")} in <a href=${projectLink(c, project.kanvilId)} target="_blank" rel="noopener noreferrer">${project.name}</a>` : kind],
