@@ -4,7 +4,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { jobLabel, type Store } from './store.ts';
-import { milestoneGrant } from './milestone-login.ts';
+import { milestoneGrant, provisionGrant } from './milestone-grant.ts';
 import type { Config } from './config.ts';
 
 export const hookPath = '/api/t3/milestones';
@@ -21,18 +21,23 @@ const envelope = z.object({ name: z.enum(names), cursor: id, data });
 const cursorKey = (name: string) => 'milestoneCursor:' + name;
 
 export function milestoneHooks(store: Store, config: () => Config, publicOrigin: string) {
-  let saved;
+  let saved: ReturnType<typeof milestoneGrant>;
   try { saved = milestoneGrant(config()); }
-  catch {
-    console.warn('Factory milestone grant is invalid for this T3 environment; run milestone-login and restart the web service');
-    return;
+  catch { console.warn('Stored milestone grant is unreadable; Factory will request a replacement'); }
+  let provisioning: ReturnType<typeof provisionGrant> | undefined;
+  async function credential(c: Config, signal: AbortSignal) {
+    const origin = new URL(c.t3.url).origin;
+    if (saved?.origin === origin && (!saved.expiresAt || saved.expiresAt > Date.now() + 30_000)) return saved;
+    provisioning ??= provisionGrant(c, signal, saved?.origin === origin ? saved.secret : undefined).finally(() => { provisioning = undefined; });
+    const issued = await provisioning;
+    if (issued.origin !== origin) throw new Error('T3 changed during milestone setup');
+    saved = issued;
+    return issued;
   }
-  if (!saved) return;
-  const { token, secret, origin } = saved;
-  const key = Buffer.from(secret.slice(6), 'base64');
-  const delivery = { mode: 'webhook', url: new URL(hookPath, publicOrigin).href, secret };
 
   function receive(headers: IncomingHttpHeaders, raw: Buffer) {
+    if (!saved || config().t3.milestones === false) return { status: 410 };
+    const key = Buffer.from(saved.secret.slice(6), 'base64');
     const msg = headers['webhook-id'], stamp = headers['webhook-timestamp'], signatures = headers['webhook-signature'];
     if (typeof msg !== 'string' || !msg || typeof stamp !== 'string' || typeof signatures !== 'string' ||
         !/^\d+$/.test(stamp) || Math.abs(Date.now() / 1000 - Number(stamp)) > 300) return { status: 401 };
@@ -49,11 +54,15 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
       console.warn('T3 milestone subscription reported', body.type);
       return { status: 204 };
     }
+    return ingest(body, saved.origin);
+  }
+
+  function ingest(body: unknown, origin: string, advance = true) {
     const parsed = envelope.safeParse(body);
     if (!parsed.success || parsed.data.name !== parsed.data.data.type) return { status: 400 };
     const { data: event, cursor } = parsed.data;
     const current = config();
-    if (new URL(current.t3.url).origin !== origin) return { status: 410 };
+    if (current.t3.milestones === false || new URL(current.t3.url).origin !== origin) return { status: 410 };
     const job = store.jobForThread(event.threadId);
     if (job && current.projects.some(p => p.kanvilId === job.projectId && p.t3Id === event.projectId)) {
       if (event.type === 'thread.needs_input') {
@@ -68,21 +77,29 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
         store.record(event.type, jobLabel(job) + ' ' + text, { ...event, projectId: job.projectId, ticketKey: job.ticketKey, milestoneId: event.id }, job.id, event.occurredAt);
       }
     }
-    store.set(cursorKey(event.type), cursor);
+    if (advance) store.set(cursorKey(event.type), cursor);
     return { status: 204 };
   }
 
   async function follow(signal: AbortSignal) {
     // Each event type has its own lease and cursor. A failed renewal cannot starve another type.
     await Promise.all(names.map(async name => {
+      let retryWebhookAt = 0;
       while (!signal.aborted) {
         let next = 30_000;
         try {
           const c = config(), endpoint = new URL('/mcp', c.t3.url);
-          if (endpoint.origin !== origin) throw new Error('T3 origin changed; run milestone-login');
+          if (c.t3.milestones === false) {
+            await delay(next, undefined, { signal }).catch(() => {});
+            continue;
+          }
+          const { token, secret, origin, expiresAt } = await credential(c, signal);
+          const webhook = Date.now() >= retryWebhookAt;
+          const method = webhook ? 'events/subscribe' : 'events/poll';
           const params = {
             name, arguments: { projectIds: [...new Set(c.projects.map(p => p.t3Id))].sort() },
-            cursor: store.get(cursorKey(name)) ?? null, ttlMs: 900_000, delivery,
+            cursor: store.get(cursorKey(name)) ?? null,
+            ...(webhook ? { ttlMs: 900_000, delivery: { mode: 'webhook', url: new URL(hookPath, publicOrigin).href, secret } } : { maxEvents: 100 }),
             _meta: {
               'io.modelcontextprotocol/protocolVersion': '2026-07-28',
               'io.modelcontextprotocol/clientCapabilities': { extensions: { 'io.modelcontextprotocol/events': {} } },
@@ -90,14 +107,37 @@ export function milestoneHooks(store: Store, config: () => Config, publicOrigin:
             },
           };
           const response = await fetch(endpoint, { method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
-            headers: { authorization: 'Bearer ' + token, accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-name': name, 'mcp-method': 'events/subscribe', 'mcp-protocol-version': '2026-07-28' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'events/subscribe', params }) });
-          if (!response.ok) throw new Error('MCP returned HTTP ' + response.status);
-          const { result } = await response.json();
-          if (!result?.id || !Number.isFinite(Date.parse(result.refreshBefore))) throw new Error('MCP declined the milestone subscription');
-          if (!store.get(cursorKey(name)) && typeof result.cursor === 'string') store.set(cursorKey(name), result.cursor);
+            headers: { authorization: 'Bearer ' + token, accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-name': name, 'mcp-method': method, 'mcp-protocol-version': '2026-07-28' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+          if (!response.ok && response.status !== 400) {
+            // Grants saved by the original interactive login did not record their expiry.
+            if (response.status === 401 && saved?.token === token && !saved.expiresAt) saved = undefined;
+            throw new Error('MCP returned HTTP ' + response.status);
+          }
+          const { result, error } = await response.json();
+          if (webhook && (error?.code === -32027 || error?.code === -32602)) {
+            // Private callback destinations can be refused by T3. Its authenticated event feed
+            // carries the same occurrences and cursors without changing the server's network policy.
+            retryWebhookAt = Date.now() + 600_000;
+            console.warn('T3 declined the milestone callback; using events/poll for', name);
+            continue;
+          }
+          if (!result) throw new Error('MCP declined ' + method);
           if (result.truncated) console.warn('T3 milestone history has a gap for', name);
-          next = Math.max(1000, Math.min(600_000, (Date.parse(result.refreshBefore) - Date.now()) / 2));
+          if (webhook) {
+            if (!result.id || !Number.isFinite(Date.parse(result.refreshBefore))) throw new Error('Invalid milestone lease');
+            if (!store.get(cursorKey(name)) && typeof result.cursor === 'string') store.set(cursorKey(name), result.cursor);
+            next = Math.max(1000, Math.min(600_000, (Date.parse(result.refreshBefore) - Date.now()) / 2));
+          } else {
+            const page = z.object({ cursor: id, events: z.array(z.object({ data })), hasMore: z.boolean() }).parse(result);
+            for (const event of page.events) {
+              if (ingest({ name, data: event.data, cursor: page.cursor }, origin, false).status !== 204)
+                throw new Error('Invalid polled milestone');
+            }
+            store.set(cursorKey(name), page.cursor);
+            if (page.hasMore) continue;
+          }
+          if (expiresAt) next = Math.min(next, Math.max(1000, expiresAt - Date.now() - 30_000));
         } catch (error) {
           if (!signal.aborted) console.warn('T3 milestone subscription failed', name, error instanceof Error ? error.message : 'unknown failure');
         }

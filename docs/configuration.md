@@ -22,7 +22,7 @@ The scheduler log records a lane's pass only when its wake reason or outcome cha
 | `monitoringTimeoutMinutes` | When an inactive factory-owned monitor may be stopped and parked. Defaults to 30. |
 | `runtimeMode` | T3 execution permission mode: `full-access`, `auto`, or `auto-accept-edits`. Choose according to the permissions you intend to grant. |
 | `stateDir` | Absolute directory for the SQLite ledger, reports, and status. |
-| `t3` | Local server origin and private session credential file. |
+| `t3` | Local server origin and private session credential file. Session milestones start automatically. Set `milestones: false` to disable them. |
 | `kanvil` | HTTPS origin and workspace ID. HTTP is allowed only for loopback. The API credential is `KANVIL_API_KEY` in the environment. |
 | `cowtail` | Optional. `{ url, events }`: `url` is the Cowtail HTTPS origin for phone notifications (HTTP only on loopback). The source token is `COWTAIL_TOKEN` in the environment; set both or neither. `events` picks each event type's delivery, one of `off`, `whenever`, `today` or `now`: `needsYou` (default `today`), `failed` (`today`), `quotaHold` (`today`), `noPr` (`today`) and `finished` (`whenever`). A missing key takes its default. See [phone notifications](operations.md#phone-notifications-through-cowtail). |
 

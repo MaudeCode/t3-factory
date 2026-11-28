@@ -226,6 +226,7 @@ export class Store {
   private readonly observedLocks = new Set<string>();
   onCleanupChange?: (projectIds: string[]) => void;
   // Called after every journal insert; a throwing listener never fails the write.
+  private journalWrites = 0;
   onEvent?: (event: FactoryEvent) => void;
   onClose?: () => void;
   constructor(dir: string) {
@@ -356,10 +357,10 @@ export class Store {
   dataVersion(): number { return this.statement('PRAGMA data_version').get()!.data_version as number; }
   // Calls notify after another connection writes, checking at most once per interval; returns the stop function.
   watch(notify: () => void, intervalMs = 1000, needsRefresh?: () => boolean) {
-    let seen = this.dataVersion();
+    let seen = this.dataVersion(), journal = this.journalWrites;
     const timer = setInterval(() => {
       if (this.closed) return clearInterval(timer);
-      const now = this.dataVersion(); if (now !== seen || needsRefresh?.()) { seen = now; notify(); }
+      const now = this.dataVersion(); if (now !== seen || journal !== this.journalWrites || needsRefresh?.()) { seen = now; journal = this.journalWrites; notify(); }
     }, intervalMs);
     return () => clearInterval(timer);
   }
@@ -513,6 +514,7 @@ export class Store {
       if (milestone) this.db.exec('ROLLBACK');
       throw error;
     }
+    this.journalWrites++; // SQLite data_version excludes this connection’s own commits.
     try { this.onEvent?.({ id: Number(lastInsertRowid), time, kind, jobId, text, data }); } catch { /* The journal write stands; a listener reports its own failures. */ }
   }
   events(limit = 100, jobId?: string, kind?: string): FactoryEvent[] {

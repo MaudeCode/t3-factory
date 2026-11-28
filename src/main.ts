@@ -22,7 +22,6 @@ import { CowtailNotifier, cowtailSettings } from './cowtail.ts';
 import { runtimeVersion } from './version.ts';
 
 import { loadEnvironment } from './env.ts';
-import { milestoneLogin } from './milestone-login.ts';
 import { milestoneHooks } from './milestones.ts';
 import { createOidc } from './oidc.ts';
 
@@ -46,8 +45,7 @@ const switches: Record<string, { path: string[]; value: boolean; message: string
 // A section switch needs its section; the message names what is missing.
 // Sections that need a prompt in the file before their switch means anything. Repairs default theirs, so they are not here.
 const sections: Record<string, string> = { upstream: 'No upstream reviews are configured', triage: 'No inbox triage is configured' };
-if (command === 'milestone-login') await milestoneLogin(loadConfig(configPath));
-else if (command === 'web') {
+if (command === 'web') {
   const { config, secret, oidc } = webSettings();
   const c = loadConfig(configPath), store = new Store(c.stateDir), version = runtimeVersion(join(import.meta.dirname, '..'));
   // A run stores its ticket's title from dispatch on. Earlier runs borrow one from the plans and session tickets that named
@@ -75,8 +73,8 @@ else if (command === 'web') {
   let compactJobs: ReturnType<typeof compact>[] = [];
   const hooks = milestoneHooks(store, () => loadConfig(configPath), config.publicOrigin);
   const leases = new AbortController();
-  if (hooks) store.onEvent = new CowtailNotifier(store, () => cowtailSettings(loadConfig(configPath))).notify;
-  const server = createFactoryWeb({ config, secret, milestone: hooks?.receive, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
+  store.onEvent = new CowtailNotifier(store, () => cowtailSettings(loadConfig(configPath))).notify;
+  const server = createFactoryWeb({ config, secret, milestone: hooks.receive, oidc: oidc ? await createOidc(oidc, config.publicOrigin, undefined, Date.now, join(c.stateDir, "web-sessions.json")) : undefined, dataDir: c.stateDir, run: viaService,
     readState: () => {
       refreshRequested = true;
       const current = loadConfig(configPath), serialized = JSON.stringify(current);
@@ -124,7 +122,7 @@ else if (command === 'web') {
   });
   server.listen(config.port, config.host, () => {
     console.log(`Factory web controls listening on ${config.host}:${config.port}`);
-    void hooks?.follow(leases.signal);
+    void hooks.follow(leases.signal);
   });
   const shutdown = () => { leases.abort(); server.closeAllConnections(); server.close(); store.close(); };
   process.once('SIGTERM', shutdown); process.once('SIGINT', shutdown);

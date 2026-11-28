@@ -81,7 +81,7 @@ export const configSchema = z.preprocess(input => {
   monitoringTimeoutMinutes: positive.default(DEFAULT_MONITORING_TIMEOUT_MINUTES),
   runtimeMode: z.enum(['full-access', 'auto', 'auto-accept-edits']),
   stateDir: absolute,
-  t3: z.object({ url: z.url(), credentialFile: absolute, autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
+  t3: z.object({ url: z.url(), credentialFile: absolute, milestones: z.boolean().optional(), autonomousThreadIds: z.array(z.string().min(1)).optional() }).strict(),
   // Accept and discard the retired readiness-label setting in existing installations.
   kanvil: z.object({ url: origin('Kanvil'), workspaceId: z.string().min(1), readyLabel: z.string().optional() }).strict().transform(({ readyLabel, ...config }) => config),
   // Phone notifications; COWTAIL_TOKEN in the factory .env holds the source's token.

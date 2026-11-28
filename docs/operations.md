@@ -178,9 +178,9 @@ The helper supplies review evidence, not the whole merge gate. Follow the suppli
 
 ## T3 session milestone webhooks
 
-Run `t3-factory milestone-login` on the Factory host. Open the printed T3 sign-in URL on the same machine and approve orchestration read access. Factory saves the OAuth grant and a generated signing key in `<stateDir>/milestone-grant.json` with owner-only permissions. Restart the Factory web service after sign-in. Repeat the login and restart when T3 revokes or expires the grant. To disconnect, revoke the grant in T3, remove that file and restart the web service.
+Deployer starts Factory web as part of the normal release installation. On startup the web service uses its configured T3 session to request a read-only app grant. T3 requires that session to have `access:write` and `orchestration:read`. Factory keeps the grant and signing key in the private state directory across upgrades and renews expiring grants automatically. To disable this integration set `t3.milestones` to `false` in Factory configuration.
 
-T3 must be able to POST to `/api/t3/milestones` at `FACTORY_PUBLIC_ORIGIN`. T3 accepts public HTTPS destinations by default. For a private Factory installation, explicitly allow the Factory hostname with `T3CODE_MCP_WEBHOOK_ALLOWED_HOSTS` on the T3 server. Factory checks the raw-body signature and delivery timestamp before answering the verification challenge or accepting events.
+T3 attempts signed delivery to `/api/t3/milestones` at `FACTORY_PUBLIC_ORIGIN`. When T3 refuses the callback, including a private address, Factory reads the same milestones through authenticated MCP polling and periodically retries webhook delivery.
 
 The web service renews four subscriptions for configured T3 projects and saves a cursor for each. Only jobs Factory owns get timeline entries. Questions and approvals have individual request IDs, so answering one clears that request and a later approval gets its own Cowtail item. The timeline also records the outcome of each settled turn and which PRs woke a watch. A failed or cancelled turn with a missing completion report stays open for inspection. Factory still verifies delivery using the report, Kanvil and GitHub.
 
